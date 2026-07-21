@@ -90,6 +90,7 @@ POST /api/key
 POST /api/mouse/move
 POST /api/mouse/click
 POST /api/mouse/scroll
+POST /api/mouse/absolute
 POST /api/input/release-all
 
 POST /power
@@ -114,13 +115,23 @@ protocol = 1
 report_length = 8
 ```
 
-鼠标：
+相对鼠标（BIOS/UEFI）：
 
 ```text
 subclass = 1
 protocol = 2
 report_length = 4
 ```
+
+绝对指针（网页坐标同步）：
+
+```text
+subclass = 0
+protocol = 0
+report_length = 6
+```
+
+建议同时创建两个鼠标接口。桌面系统使用绝对指针实现坐标同步，BIOS/UEFI 使用相对 Boot Mouse。
 
 虚拟介质配置填写 `mass_storage.*` 下的 `lun.0` 目录，而不是 `lun.0/file` 文件。切换介质只修改现有 LUN，不会解绑 UDC，因此不会主动让键鼠一起掉线。
 

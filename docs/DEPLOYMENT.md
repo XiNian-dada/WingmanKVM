@@ -46,7 +46,7 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
 
-示例规则会授权所有 `hidg*`，生产环境最好为程序创建稳定的 `/dev/wingmankvm-keyboard` 和 `/dev/wingmankvm-mouse` symlink，并只授权目标采集卡。
+示例规则会授权所有 `hidg*`，生产环境最好创建稳定的 `/dev/wingmankvm-keyboard`、`/dev/wingmankvm-mouse` 和 `/dev/wingmankvm-absolute-pointer` symlink，并只授权实际使用的设备。
 
 ## 4. Gadget 检查
 
@@ -59,7 +59,18 @@ cat /sys/kernel/config/usb_gadget/*/functions/hid.*/report_length
 find /sys/kernel/config/usb_gadget -path '*/mass_storage.*/lun.0' -type d
 ```
 
-Boot Keyboard 应为 `1 / 1 / 8`，Boot Mouse 应为 `1 / 2 / 4`。report descriptor 必须与 report length 一致。
+Boot Keyboard 应为 `1 / 1 / 8`，Boot Mouse 应为 `1 / 2 / 4`，Absolute Pointer 应为 `0 / 0 / 6`。report descriptor 必须与 report length 一致。建议同时保留相对和绝对鼠标接口：相对接口用于 BIOS/UEFI，绝对接口用于桌面系统的网页坐标同步。
+
+Absolute Pointer 使用 3 个按钮、16 位绝对 X/Y（`0..=32767`）和 8 位相对滚轮。其无 Report ID descriptor 可写为：
+
+```text
+05 01 09 02 A1 01 09 01 A1 00
+05 09 19 01 29 03 15 00 25 01 95 03 75 01 81 02
+95 01 75 05 81 03
+05 01 09 30 09 31 16 00 00 26 FF 7F 75 10 95 02 81 02
+09 38 15 81 25 7F 75 08 95 01 81 06
+C0 C0
+```
 
 Mass Storage LUN 初始化脚本可在创建 function 后，仅把目标属性授权给服务用户：
 
