@@ -60,10 +60,6 @@ impl Config {
         Ok(config)
     }
 
-    pub fn load_default() -> Result<Self, ConfigError> {
-        Self::load(default_config_path())
-    }
-
     pub fn load_or_default(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         match Self::load(path) {
@@ -81,10 +77,6 @@ impl Config {
         let mut contents = serde_json::to_vec_pretty(self).map_err(ConfigError::Serialize)?;
         contents.push(b'\n');
         atomic_write(path, &contents)
-    }
-
-    pub fn save_default(&self) -> Result<(), ConfigError> {
-        self.save_atomic(default_config_path())
     }
 
     fn validate_version(&self) -> Result<(), ConfigError> {

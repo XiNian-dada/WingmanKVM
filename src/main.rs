@@ -1,11 +1,10 @@
-use std::net::SocketAddr;
-
 use anyhow::Context;
-use axum::{Router, routing::get};
 
 mod auth;
 mod config;
 mod devices;
+mod web;
+mod web_ui;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -16,14 +15,18 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let app = Router::new().route("/healthz", get(|| async { "ok" }));
-    let address = SocketAddr::from(([0, 0, 0, 0], 8080));
+    let state = web::AppState::load().context("failed to load WingmanKVM state")?;
+    let address = state.server_address().await?;
+    let app = web::router(state);
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .with_context(|| format!("failed to listen on {address}"))?;
 
     tracing::info!(%address, "WingmanKVM is listening");
-    axum::serve(listener, app)
-        .await
-        .context("HTTP server failed")
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .context("HTTP server failed")
 }

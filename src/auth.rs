@@ -146,6 +146,7 @@ impl AdminPasswordHash {
         }
     }
 
+    #[cfg(test)]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -203,12 +204,14 @@ impl AuthRecord {
         Ok(self.username == username && password_matches)
     }
 
+    #[allow(dead_code)]
     pub fn set_password(&mut self, password: &str) -> Result<(), AuthError> {
         self.password_hash = AdminPasswordHash::new(password)?;
         self.updated_at_unix_seconds = unix_time_now()?;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn set_username(&mut self, username: impl Into<String>) -> Result<(), AuthError> {
         self.username = validate_username(username.into())?;
         self.updated_at_unix_seconds = unix_time_now()?;
@@ -250,6 +253,7 @@ impl AuthStore {
         Self::new(default_auth_path())
     }
 
+    #[cfg(test)]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -285,6 +289,7 @@ impl AuthStore {
         Ok(Some(record))
     }
 
+    #[allow(dead_code)]
     pub fn save(&self, record: &AuthRecord) -> Result<(), AuthError> {
         let _guard = self
             .write_lock
@@ -390,6 +395,7 @@ impl SessionStore {
         write_sessions(&self.sessions).remove(token).is_some()
     }
 
+    #[allow(dead_code)]
     pub fn revoke_all(&self) {
         write_sessions(&self.sessions).clear();
     }
@@ -406,6 +412,7 @@ impl SessionStore {
         read_sessions(&self.sessions).len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
