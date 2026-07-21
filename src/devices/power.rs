@@ -36,6 +36,8 @@ pub enum PowerError {
     WorkerStopped,
     #[error("failed to start gpioset: {0}")]
     Spawn(#[source] std::io::Error),
+    #[error("gpioset 2.x is required for timed power pulses: {0}")]
+    UnsupportedVersion(String),
 }
 
 #[derive(Clone)]
@@ -87,6 +89,11 @@ async fn power_worker(
     status: std::sync::Arc<RwLock<PowerStatus>>,
 ) {
     while let Some(command) = rx.recv().await {
+        if let Err(error) = verify_gpioset_version(&command.config.program).await {
+            status.write().await.last_error = Some(error.to_string());
+            let _ = command.reply.send(Err(error));
+            continue;
+        }
         let duration_ms = match command.press {
             PowerPress::Short => command.config.short_press_ms,
             PowerPress::Long => command.config.long_press_ms,
@@ -134,5 +141,41 @@ async fn power_worker(
         }
         status.write().await.running = false;
         tokio::time::sleep(Duration::from_millis(command.config.cooldown_ms)).await;
+    }
+}
+
+async fn verify_gpioset_version(program: &std::path::Path) -> Result<(), PowerError> {
+    let output = tokio::process::Command::new(program)
+        .arg("--version")
+        .output()
+        .await
+        .map_err(PowerError::Spawn)?;
+    let version = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let is_v2 = output.status.success() && is_gpioset_v2(&version);
+    if is_v2 {
+        Ok(())
+    } else {
+        Err(PowerError::UnsupportedVersion(version.trim().to_string()))
+    }
+}
+
+fn is_gpioset_v2(version: &str) -> bool {
+    version
+        .split_whitespace()
+        .any(|part| part.trim_start_matches('v').starts_with("2."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_gpioset_v2;
+
+    #[test]
+    fn recognizes_libgpiod_two_cli() {
+        assert!(is_gpioset_v2("gpioset (libgpiod) v2.1.3"));
+        assert!(!is_gpioset_v2("gpioset (libgpiod) v1.6.4"));
     }
 }

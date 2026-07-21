@@ -76,6 +76,7 @@ pub struct MouseClickRequest {
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct MouseScrollRequest {
+    #[serde(alias = "wheel")]
     pub delta: i16,
 }
 
@@ -280,9 +281,20 @@ async fn mouse_worker(mut rx: mpsc::Receiver<MouseCommand>) {
 }
 
 async fn send_key(path: &Path, request: &KeyRequest) -> Result<(), HidError> {
-    let keycode =
-        keycode(&request.key).ok_or_else(|| HidError::UnsupportedKey(request.key.to_string()))?;
-    let modifier = u8::from(request.ctrl)
+    let key_modifier = match request.key.as_str() {
+        "Control" | "ControlLeft" | "ControlRight" => 0x01,
+        "Shift" | "ShiftLeft" | "ShiftRight" => 0x02,
+        "Alt" | "AltLeft" | "AltRight" => 0x04,
+        "Meta" | "MetaLeft" | "MetaRight" => 0x08,
+        _ => 0,
+    };
+    let keycode = if key_modifier == 0 {
+        keycode(&request.key).ok_or_else(|| HidError::UnsupportedKey(request.key.to_string()))?
+    } else {
+        0
+    };
+    let modifier = key_modifier
+        | u8::from(request.ctrl)
         | (u8::from(request.shift) << 1)
         | (u8::from(request.alt) << 2)
         | (u8::from(request.meta) << 3);
@@ -422,18 +434,18 @@ pub fn keycode(code: &str) -> Option<u8> {
         "Escape" | "Esc" => 0x29,
         "Backspace" => 0x2a,
         "Tab" => 0x2b,
-        "Space" | " " => 0x2c,
-        "Minus" => 0x2d,
-        "Equal" => 0x2e,
-        "BracketLeft" => 0x2f,
-        "BracketRight" => 0x30,
-        "Backslash" => 0x31,
-        "Semicolon" => 0x33,
-        "Quote" => 0x34,
-        "Backquote" => 0x35,
-        "Comma" => 0x36,
-        "Period" => 0x37,
-        "Slash" => 0x38,
+        "Space" | "Spacebar" | " " => 0x2c,
+        "Minus" | "-" => 0x2d,
+        "Equal" | "=" => 0x2e,
+        "BracketLeft" | "[" => 0x2f,
+        "BracketRight" | "]" => 0x30,
+        "Backslash" | "\\" => 0x31,
+        "Semicolon" | ";" => 0x33,
+        "Quote" | "'" => 0x34,
+        "Backquote" | "`" => 0x35,
+        "Comma" | "," => 0x36,
+        "Period" | "." => 0x37,
+        "Slash" | "/" => 0x38,
         "CapsLock" => 0x39,
         "F1" => 0x3a,
         "F2" => 0x3b,
@@ -474,6 +486,8 @@ mod tests {
         assert_eq!(keycode("KeyA"), Some(0x04));
         assert_eq!(keycode("F12"), Some(0x45));
         assert_eq!(keycode("Delete"), Some(0x4c));
+        assert_eq!(keycode("Spacebar"), Some(0x2c));
+        assert_eq!(keycode(";"), Some(0x33));
         assert_eq!(keycode("Unknown"), None);
     }
 }
