@@ -146,6 +146,8 @@ pub struct HidConfig {
     pub auto_detect: bool,
     pub keyboard_device: Option<PathBuf>,
     pub mouse_device: Option<PathBuf>,
+    pub absolute_pointer_device: Option<PathBuf>,
+    pub pointer_mode: PointerMode,
     pub write_timeout_ms: u64,
     pub retry_interval_ms: u64,
 }
@@ -156,10 +158,21 @@ impl Default for HidConfig {
             auto_detect: true,
             keyboard_device: None,
             mouse_device: None,
+            absolute_pointer_device: None,
+            pointer_mode: PointerMode::Auto,
             write_timeout_ms: 500,
             retry_interval_ms: 10,
         }
     }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PointerMode {
+    #[default]
+    Auto,
+    Absolute,
+    Relative,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -354,6 +367,8 @@ mod tests {
         assert_eq!(config.video.device, None);
         assert_eq!(config.hid.keyboard_device, None);
         assert_eq!(config.hid.mouse_device, None);
+        assert_eq!(config.hid.absolute_pointer_device, None);
+        assert_eq!(config.hid.pointer_mode, PointerMode::Auto);
         assert_eq!(config.power.gpio_chip, None);
         assert_eq!(config.power.gpio_line, None);
         assert_eq!(config.media.lun_path, None);
@@ -371,6 +386,35 @@ mod tests {
         expected.save_atomic(&path).unwrap();
         assert_eq!(Config::load(&path).unwrap(), expected);
         assert!(fs::read_to_string(path).unwrap().ends_with('\n'));
+    }
+
+    #[test]
+    fn legacy_hid_configuration_defaults_to_automatic_pointer_mode() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "version": CONFIG_VERSION,
+            "hid": {
+                "auto_detect": false,
+                "keyboard_device": "/dev/hidg0",
+                "mouse_device": "/dev/hidg1"
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(config.hid.pointer_mode, PointerMode::Auto);
+        assert_eq!(config.hid.absolute_pointer_device, None);
+        assert_eq!(config.hid.mouse_device, Some(PathBuf::from("/dev/hidg1")));
+    }
+
+    #[test]
+    fn pointer_mode_uses_stable_snake_case_values() {
+        assert_eq!(
+            serde_json::to_string(&PointerMode::Absolute).unwrap(),
+            "\"absolute\""
+        );
+        assert_eq!(
+            serde_json::from_str::<PointerMode>("\"relative\"").unwrap(),
+            PointerMode::Relative
+        );
     }
 
     #[test]

@@ -20,18 +20,18 @@ use axum::{
     routing::{get, post},
 };
 use bytes::Bytes;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use tokio::{fs, io::AsyncWriteExt, sync::RwLock};
 
 use crate::{
     auth::{AuthError, AuthStore, SessionStore},
-    config::{self, CONFIG_VERSION, Config, VideoEncoding},
+    config::{self, CONFIG_VERSION, Config, HidConfig, PointerMode, VideoEncoding},
     devices::{
         discovery,
         hid::{
-            HidError, HidManager, KeyRequest, MouseClickRequest, MouseMoveRequest,
-            MouseScrollRequest,
+            AbsolutePointerRequest, HidError, HidManager, KeyRequest, MouseClickRequest,
+            MouseMoveRequest, MouseScrollRequest,
         },
         media::{MediaConfigSnapshot, MediaError, MediaManager, sanitize_upload_name},
         power::{PowerConfigSnapshot, PowerError, PowerManager, PowerPress},
@@ -116,6 +116,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/logout", post(logout))
         .route("/api/key", post(key))
         .route("/api/mouse/move", post(mouse_move))
+        .route("/api/mouse/absolute", post(mouse_absolute))
         .route("/api/mouse/click", post(mouse_click))
         .route("/api/mouse/scroll", post(mouse_scroll))
         .route("/api/input/release-all", post(release_all))
@@ -166,6 +167,9 @@ struct Capabilities {
     video: bool,
     keyboard: bool,
     mouse: bool,
+    mouse_relative: bool,
+    mouse_absolute: bool,
+    pointer_mode: PointerMode,
     gpio_power: bool,
     mass_storage: bool,
     video_passthrough: bool,
@@ -205,6 +209,10 @@ struct SetupRequest {
     #[serde(default)]
     mouse_device: Option<String>,
     #[serde(default)]
+    absolute_pointer_device: Option<String>,
+    #[serde(default)]
+    pointer_mode: Option<PointerMode>,
+    #[serde(default)]
     gpio_chip: Option<String>,
     #[serde(default)]
     gpio_line: Option<u32>,
@@ -239,8 +247,11 @@ async fn setup(
     new_config.video.auto_detect = new_config.video.device.is_none();
     new_config.hid.keyboard_device = optional_path(request.keyboard_device);
     new_config.hid.mouse_device = optional_path(request.mouse_device);
-    new_config.hid.auto_detect =
-        new_config.hid.keyboard_device.is_none() || new_config.hid.mouse_device.is_none();
+    new_config.hid.absolute_pointer_device = optional_path(request.absolute_pointer_device);
+    new_config.hid.pointer_mode = request.pointer_mode.unwrap_or_default();
+    new_config.hid.auto_detect = new_config.hid.keyboard_device.is_none()
+        || (new_config.hid.mouse_device.is_none()
+            && new_config.hid.absolute_pointer_device.is_none());
     new_config.power.gpio_chip = optional_string(request.gpio_chip);
     new_config.power.gpio_line = request.gpio_line;
     new_config.power.enabled =
@@ -392,8 +403,21 @@ struct VideoPatch {
 
 #[derive(Deserialize)]
 struct HidPatch {
-    keyboard_device: Option<PathBuf>,
-    mouse_device: Option<PathBuf>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    keyboard_device: Option<Option<PathBuf>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    mouse_device: Option<Option<PathBuf>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    absolute_pointer_device: Option<Option<PathBuf>>,
+    pointer_mode: Option<PointerMode>,
+}
+
+fn deserialize_optional_field<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize)]
@@ -431,10 +455,7 @@ async fn patch_config(
         }
     }
     if let Some(hid) = patch.hid {
-        config.hid.keyboard_device = hid.keyboard_device;
-        config.hid.mouse_device = hid.mouse_device;
-        config.hid.auto_detect =
-            config.hid.keyboard_device.is_none() || config.hid.mouse_device.is_none();
+        apply_hid_patch(&mut config.hid, hid);
     }
     if let Some(power) = patch.power {
         if let Some(enabled) = power.enabled {
@@ -466,6 +487,23 @@ async fn patch_config(
     Ok(no_store(Json(config)))
 }
 
+fn apply_hid_patch(config: &mut HidConfig, patch: HidPatch) {
+    if let Some(path) = patch.keyboard_device {
+        config.keyboard_device = path;
+    }
+    if let Some(path) = patch.mouse_device {
+        config.mouse_device = path;
+    }
+    if let Some(path) = patch.absolute_pointer_device {
+        config.absolute_pointer_device = path;
+    }
+    if let Some(mode) = patch.pointer_mode {
+        config.pointer_mode = mode;
+    }
+    config.auto_detect = config.keyboard_device.is_none()
+        || (config.mouse_device.is_none() && config.absolute_pointer_device.is_none());
+}
+
 async fn key(
     State(state): State<AppState>,
     Json(request): Json<KeyRequest>,
@@ -479,10 +517,30 @@ async fn mouse_move(
     State(state): State<AppState>,
     Json(request): Json<MouseMoveRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let path = state.config.read().await.hid.mouse_device.clone();
+    let config = state.config.read().await.hid.clone();
+    let path = relative_mouse_path(&config)?;
     state
         .hid
         .mouse_move(path, request)
+        .await
+        .map_err(map_hid_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn mouse_absolute(
+    State(state): State<AppState>,
+    Json(request): Json<AbsolutePointerRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let config = state.config.read().await.hid.clone();
+    if resolved_pointer_mode(&config) != PointerMode::Absolute {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "当前配置未启用绝对指针模式",
+        ));
+    }
+    state
+        .hid
+        .mouse_absolute(config.absolute_pointer_device, request)
         .await
         .map_err(map_hid_error)?;
     Ok(StatusCode::NO_CONTENT)
@@ -492,7 +550,8 @@ async fn mouse_click(
     State(state): State<AppState>,
     Json(request): Json<MouseClickRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let path = state.config.read().await.hid.mouse_device.clone();
+    let config = state.config.read().await.hid.clone();
+    let path = relative_mouse_path(&config)?;
     state
         .hid
         .mouse_click(path, request)
@@ -505,7 +564,8 @@ async fn mouse_scroll(
     State(state): State<AppState>,
     Json(request): Json<MouseScrollRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let path = state.config.read().await.hid.mouse_device.clone();
+    let config = state.config.read().await.hid.clone();
+    let path = relative_mouse_path(&config)?;
     state
         .hid
         .mouse_scroll(path, request)
@@ -518,7 +578,11 @@ async fn release_all(State(state): State<AppState>) -> Result<impl IntoResponse,
     let config = state.config.read().await.hid.clone();
     state
         .hid
-        .release_all(config.keyboard_device, config.mouse_device)
+        .release_all(
+            config.keyboard_device,
+            config.mouse_device,
+            config.absolute_pointer_device,
+        )
         .await
         .map_err(map_hid_error)?;
     Ok(StatusCode::NO_CONTENT)
@@ -787,10 +851,19 @@ fn origin_matches_host(headers: &HeaderMap) -> bool {
 }
 
 fn capabilities(config: &Config) -> Capabilities {
+    let pointer_mode = resolved_pointer_mode(&config.hid);
+    let mouse_relative = config.hid.mouse_device.is_some();
+    let mouse_absolute = config.hid.absolute_pointer_device.is_some();
     Capabilities {
         video: config.video.device.is_some(),
         keyboard: config.hid.keyboard_device.is_some(),
-        mouse: config.hid.mouse_device.is_some(),
+        mouse: match pointer_mode {
+            PointerMode::Absolute => mouse_absolute,
+            PointerMode::Auto | PointerMode::Relative => mouse_relative,
+        },
+        mouse_relative,
+        mouse_absolute,
+        pointer_mode,
         gpio_power: config.power.enabled
             && config.power.gpio_chip.is_some()
             && config.power.gpio_line.is_some(),
@@ -798,6 +871,24 @@ fn capabilities(config: &Config) -> Capabilities {
         video_passthrough: true,
         video_transcode: true,
     }
+}
+
+fn resolved_pointer_mode(config: &HidConfig) -> PointerMode {
+    match config.pointer_mode {
+        PointerMode::Auto if config.absolute_pointer_device.is_some() => PointerMode::Absolute,
+        PointerMode::Auto => PointerMode::Relative,
+        mode => mode,
+    }
+}
+
+fn relative_mouse_path(config: &HidConfig) -> Result<Option<PathBuf>, ApiError> {
+    if resolved_pointer_mode(config) != PointerMode::Relative {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "当前配置未启用相对鼠标模式",
+        ));
+    }
+    Ok(config.mouse_device.clone())
 }
 
 async fn media_snapshot(state: &AppState) -> Option<MediaConfigSnapshot> {
@@ -843,6 +934,7 @@ fn validate_config(config: &Config) -> Result<(), ApiError> {
         config.video.device.as_ref(),
         config.hid.keyboard_device.as_ref(),
         config.hid.mouse_device.as_ref(),
+        config.hid.absolute_pointer_device.as_ref(),
         config.media.image_directory.as_ref(),
         config.media.lun_path.as_ref(),
     ]
@@ -851,6 +943,24 @@ fn validate_config(config: &Config) -> Result<(), ApiError> {
     {
         if !path.is_absolute() {
             return Err(ApiError::bad_request("设备和存储路径必须是绝对路径"));
+        }
+    }
+    if config.hid.pointer_mode == PointerMode::Absolute
+        && config.hid.absolute_pointer_device.is_none()
+    {
+        return Err(ApiError::bad_request("绝对指针模式需要配置绝对指针设备"));
+    }
+    if config.hid.pointer_mode == PointerMode::Relative && config.hid.mouse_device.is_none() {
+        return Err(ApiError::bad_request("相对指针模式需要配置相对鼠标设备"));
+    }
+    let hid_paths = [
+        config.hid.keyboard_device.as_ref(),
+        config.hid.mouse_device.as_ref(),
+        config.hid.absolute_pointer_device.as_ref(),
+    ];
+    for (index, path) in hid_paths.iter().enumerate() {
+        if path.is_some() && hid_paths[index + 1..].contains(path) {
+            return Err(ApiError::bad_request("每个 HID 功能必须使用不同的设备路径"));
         }
     }
     Ok(())
@@ -918,9 +1028,9 @@ fn map_hid_error(error: HidError) -> ApiError {
     let status = match error {
         HidError::QueueFull => StatusCode::TOO_MANY_REQUESTS,
         HidError::Timeout { .. } => StatusCode::GATEWAY_TIMEOUT,
-        HidError::UnsupportedKey(_) | HidError::InvalidButton(_) => {
-            StatusCode::UNPROCESSABLE_ENTITY
-        }
+        HidError::UnsupportedKey(_)
+        | HidError::InvalidButton(_)
+        | HidError::InvalidAbsoluteCoordinates { .. } => StatusCode::UNPROCESSABLE_ENTITY,
         HidError::NotConfigured | HidError::Io { .. } | HidError::ShortWrite { .. } => {
             StatusCode::SERVICE_UNAVAILABLE
         }
@@ -1033,6 +1143,96 @@ mod tests {
         let mut config = Config::default();
         config.hid.keyboard_device = Some(PathBuf::from("dev/hidg0"));
         assert!(validate_config(&config).is_err());
+
+        let mut config = Config::default();
+        config.hid.pointer_mode = PointerMode::Absolute;
+        assert!(validate_config(&config).is_err());
+
+        let mut config = Config::default();
+        config.hid.pointer_mode = PointerMode::Relative;
+        assert!(validate_config(&config).is_err());
+
+        let mut config = Config::default();
+        config.hid.keyboard_device = Some(PathBuf::from("/dev/hidg0"));
+        config.hid.absolute_pointer_device = Some(PathBuf::from("/dev/hidg0"));
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn hid_patch_distinguishes_omitted_fields_from_null() {
+        let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
+            "hid": {
+                "absolute_pointer_device": "/dev/hidg2",
+                "pointer_mode": "absolute"
+            }
+        }))
+        .unwrap();
+        let mut config = HidConfig {
+            keyboard_device: Some(PathBuf::from("/dev/hidg0")),
+            mouse_device: Some(PathBuf::from("/dev/hidg1")),
+            ..HidConfig::default()
+        };
+        apply_hid_patch(&mut config, patch.hid.unwrap());
+
+        assert_eq!(config.keyboard_device, Some(PathBuf::from("/dev/hidg0")));
+        assert_eq!(config.mouse_device, Some(PathBuf::from("/dev/hidg1")));
+        assert_eq!(
+            config.absolute_pointer_device,
+            Some(PathBuf::from("/dev/hidg2"))
+        );
+        assert_eq!(config.pointer_mode, PointerMode::Absolute);
+
+        let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
+            "hid": { "absolute_pointer_device": null }
+        }))
+        .unwrap();
+        apply_hid_patch(&mut config, patch.hid.unwrap());
+        assert_eq!(config.absolute_pointer_device, None);
+        assert_eq!(config.keyboard_device, Some(PathBuf::from("/dev/hidg0")));
+    }
+
+    #[test]
+    fn capabilities_resolve_automatic_pointer_mode() {
+        let mut config = Config::default();
+        config.hid.mouse_device = Some(PathBuf::from("/dev/hidg1"));
+        let relative = capabilities(&config);
+        assert!(relative.mouse);
+        assert!(relative.mouse_relative);
+        assert!(!relative.mouse_absolute);
+        assert_eq!(relative.pointer_mode, PointerMode::Relative);
+
+        config.hid.absolute_pointer_device = Some(PathBuf::from("/dev/hidg2"));
+        let absolute = capabilities(&config);
+        assert!(absolute.mouse);
+        assert!(absolute.mouse_relative);
+        assert!(absolute.mouse_absolute);
+        assert_eq!(absolute.pointer_mode, PointerMode::Absolute);
+    }
+
+    #[test]
+    fn absolute_pointer_api_payloads_use_an_explicit_action_tag() {
+        let request: AbsolutePointerRequest = serde_json::from_value(serde_json::json!({
+            "action": "click",
+            "x": 32767,
+            "y": 0,
+            "button": 1
+        }))
+        .unwrap();
+        assert_eq!(
+            request,
+            AbsolutePointerRequest::Click {
+                x: 32767,
+                y: 0,
+                button: 1
+            }
+        );
+        assert!(
+            serde_json::from_value::<AbsolutePointerRequest>(serde_json::json!({
+                "x": 1,
+                "y": 2
+            }))
+            .is_err()
+        );
     }
 
     #[test]
