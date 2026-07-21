@@ -3,6 +3,8 @@ use std::net::SocketAddr;
 use anyhow::Context;
 use axum::{Router, routing::get};
 
+mod auth;
+mod config;
 mod devices;
 
 #[tokio::main]
