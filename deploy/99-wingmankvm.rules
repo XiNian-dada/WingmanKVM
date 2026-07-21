@@ -1,0 +1,4 @@
+# Tighten these matches to the actual capture card and Gadget nodes in production.
+SUBSYSTEM=="video4linux", GROUP="wingmankvm-hw", MODE="0660"
+KERNEL=="hidg*", GROUP="wingmankvm-hw", MODE="0660"
+SUBSYSTEM=="gpio", KERNEL=="gpiochip*", GROUP="wingmankvm-hw", MODE="0660"

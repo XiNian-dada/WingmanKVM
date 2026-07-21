@@ -1,0 +1,23 @@
+[Unit]
+Description=WingmanKVM lightweight ARM KVM service
+After=network-online.target usb-gadget.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wingmankvm
+Group=wingmankvm
+SupplementaryGroups=wingmankvm-hw
+Environment=WINGMANKVM_STATE_DIR=/var/lib/wingmankvm
+Environment=RUST_LOG=wingmankvm=info
+ExecStart=/usr/local/bin/wingmankvm
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/wingmankvm -/sys/kernel/config/usb_gadget
+
+[Install]
+WantedBy=multi-user.target
