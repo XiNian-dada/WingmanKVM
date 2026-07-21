@@ -1,0 +1,32 @@
+[package]
+name = "wingmankvm"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A lightweight, configurable ARM KVM service"
+
+[dependencies]
+anyhow = "1"
+async-stream = "0.3"
+argon2 = "0.5"
+axum = { version = "0.8", features = ["form", "json", "multipart"] }
+base64 = "0.22"
+bytes = "1"
+getrandom = "0.3"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+v4l = "0.14"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
