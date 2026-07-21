@@ -3,6 +3,8 @@ use std::net::SocketAddr;
 use anyhow::Context;
 use axum::{Router, routing::get};
 
+mod devices;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
