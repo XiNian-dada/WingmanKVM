@@ -201,7 +201,8 @@ impl Default for PowerConfig {
 pub struct MediaConfig {
     pub enabled: bool,
     pub auto_detect: bool,
-    pub lun_file: Option<PathBuf>,
+    #[serde(alias = "lun_file")]
+    pub lun_path: Option<PathBuf>,
     pub image_directory: Option<PathBuf>,
     pub max_upload_bytes: u64,
     pub read_only_by_default: bool,
@@ -212,7 +213,7 @@ impl Default for MediaConfig {
         Self {
             enabled: false,
             auto_detect: true,
-            lun_file: None,
+            lun_path: None,
             image_directory: None,
             max_upload_bytes: 16 * 1024 * 1024 * 1024,
             read_only_by_default: true,
@@ -363,7 +364,7 @@ mod tests {
         assert_eq!(config.hid.mouse_device, None);
         assert_eq!(config.power.gpio_chip, None);
         assert_eq!(config.power.gpio_line, None);
-        assert_eq!(config.media.lun_file, None);
+        assert_eq!(config.media.lun_path, None);
     }
 
     #[test]
