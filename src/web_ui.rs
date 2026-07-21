@@ -159,7 +159,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       try { await request('/api/login',{method:'POST',body:JSON.stringify({username:value(loginForm,'username'),password:rawValue(loginForm,'password')})}); bootstrap = await request('/api/bootstrap'); showState(bootstrap.authenticated?'main':'login'); }
       catch (e) { error.textContent = e.message; } finally { button.disabled = false; button.textContent=label; loginForm.setAttribute('aria-busy','false'); }
     });
-    $('#logout').addEventListener('click', async () => { stopInput(); try { await request('/api/logout',{method:'POST'}); } finally { bootstrap.authenticated=false; showState('login'); } });
+    $('#logout').addEventListener('click', async () => { await stopInput(); try { await request('/api/logout',{method:'POST'}); } finally { bootstrap.authenticated=false; showState('login'); } });
 
     function unwrapConfig(source) { return source?.config || source || {}; }
     function applyBootstrap() {
@@ -218,8 +218,8 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     document.addEventListener('keydown',event=>{if(!inputEnabled()||interactiveTarget(event.target)||event.repeat)return;const key=normalizeKey(event);if(!key)return;event.preventDefault();sendKey(key,event).catch(e=>toast(e.message,true));});
     function normalizeKey(event){const code=event.code;if(/^Key[A-Z]$/.test(code)||/^Digit[0-9]$/.test(code)||/^F(?:[1-9]|1[0-2])$/.test(code)||['Escape','Delete','Enter','Tab','Backspace','Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Home','End','PageUp','PageDown','Insert','Minus','Equal','BracketLeft','BracketRight','Backslash','Semicolon','Quote','Backquote','Comma','Period','Slash','CapsLock'].includes(code))return code;return null;}
     $$('.key-strip [data-key]').forEach(button=>button.addEventListener('click',()=>sendKey(button.dataset.key).catch(e=>toast(e.message,true))));
-    function releaseAll(){ mouseX=mouseY=0; if(app.classList.contains('hidden')||bootstrap.authenticated===false)return; request('/api/input/release-all',{method:'POST',keepalive:true}).catch(()=>{}); }
-    function stopInput(){pageActive=false;remoteWanted=false;$$('#remote-input,.remote-input-mirror').forEach(input=>input.checked=false);viewport.classList.remove('remote');$('#input-state').classList.remove('active');$('#input-state').textContent='输入已暂停';releaseAll();}
+    function releaseAll(){ mouseX=mouseY=0; if(app.classList.contains('hidden')||bootstrap.authenticated===false)return Promise.resolve(); return request('/api/input/release-all',{method:'POST',keepalive:true}).catch(()=>{}); }
+    function stopInput(){pageActive=false;remoteWanted=false;$$('#remote-input,.remote-input-mirror').forEach(input=>input.checked=false);viewport.classList.remove('remote');$('#input-state').classList.remove('active');$('#input-state').textContent='输入已暂停';return releaseAll();}
     function resumeInput(){pageActive=!document.hidden;viewport.classList.remove('remote');$('#input-state').classList.remove('active');$('#input-state').textContent='输入已暂停';}
     document.addEventListener('visibilitychange',()=>document.hidden?stopInput():resumeInput());window.addEventListener('blur',stopInput);window.addEventListener('focus',resumeInput);window.addEventListener('pagehide',stopInput);
 
