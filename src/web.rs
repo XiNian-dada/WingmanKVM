@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     convert::Infallible,
+    io::Read,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -10,6 +11,7 @@ use std::{
 use axum::{
     Json, Router,
     body::Body,
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
     extract::{ConnectInfo, DefaultBodyLimit, Form, Multipart, Request, State},
     http::{
         HeaderMap, HeaderValue, Method, StatusCode,
@@ -20,8 +22,10 @@ use axum::{
     routing::{get, post},
 };
 use bytes::Bytes;
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
+use tokio::sync::mpsc;
 use tokio::{fs, io::AsyncWriteExt, sync::RwLock};
 
 use crate::{
@@ -120,6 +124,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mouse/click", post(mouse_click))
         .route("/api/mouse/scroll", post(mouse_scroll))
         .route("/api/input/release-all", post(release_all))
+        .route("/api/terminal/ws", get(terminal_ws))
         .route("/power", post(power))
         .route("/api/media", get(list_media))
         .route(
@@ -142,6 +147,88 @@ pub fn router(state: AppState) -> Router {
         .route("/api/login", post(login))
         .merge(protected)
         .with_state(state)
+}
+
+/// Authenticated interactive shell on the RK3399. The PTY is intentionally
+/// short-lived and is torn down as soon as the browser disconnects.
+async fn terminal_ws(ws: WebSocketUpgrade) -> impl IntoResponse {
+    ws.on_upgrade(handle_terminal)
+}
+
+async fn handle_terminal(mut socket: WebSocket) {
+    let pty = native_pty_system();
+    let pair = match pty.openpty(PtySize {
+        rows: 32,
+        cols: 120,
+        pixel_width: 0,
+        pixel_height: 0,
+    }) {
+        Ok(pair) => pair,
+        Err(err) => {
+            let _ = socket
+                .send(Message::Text(format!("\r\nPTY error: {err}\r\n").into()))
+                .await;
+            return;
+        }
+    };
+    let mut cmd = if std::path::Path::new("/usr/bin/sudo").exists() {
+        let mut c = CommandBuilder::new("sudo");
+        c.args(["-n", "-u", "wingman", "/bin/bash", "-l"]);
+        c
+    } else {
+        CommandBuilder::new("/bin/bash")
+    };
+    cmd.env("TERM", "xterm-256color");
+    let mut child = match pair.slave.spawn_command(cmd) {
+        Ok(c) => c,
+        Err(err) => {
+            let _ = socket
+                .send(Message::Text(format!("\r\nspawn error: {err}\r\n").into()))
+                .await;
+            return;
+        }
+    };
+    drop(pair.slave);
+    let mut reader = match pair.master.try_clone_reader() {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let mut writer = match pair.master.take_writer() {
+        Ok(w) => w,
+        Err(_) => return,
+    };
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(32);
+    tokio::task::spawn_blocking(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx.blocking_send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    loop {
+        tokio::select! {
+            Some(data) = rx.recv() => { if socket.send(Message::Text(String::from_utf8_lossy(&data).into_owned().into())).await.is_err() { break; } }
+            incoming = socket.recv() => match incoming {
+                Some(Ok(Message::Text(text))) => {
+                    let text = text.to_string();
+                    let data = serde_json::from_str::<serde_json::Value>(&text)
+                        .ok().and_then(|value| value.get("data").and_then(|data| data.as_str()).map(str::to_owned))
+                        .unwrap_or(text);
+                    let _ = std::io::Write::write_all(&mut writer, data.as_bytes());
+                }
+                Some(Ok(Message::Binary(data))) => { let _ = std::io::Write::write_all(&mut writer, &data); }
+                Some(Ok(Message::Close(_))) | None => break,
+                _ => {}
+            }
+        }
+    }
+    let _ = child.kill();
 }
 
 async fn index() -> impl IntoResponse {
@@ -261,11 +348,16 @@ async fn setup(
         optional_path(request.image_directory).or_else(|| Some(config::state_dir().join("images")));
     new_config.media.enabled = new_config.media.lun_path.is_some();
     validate_config(&new_config)?;
+    let username = request.username;
+    let password = request.password;
+
+    // Keep the local maintenance account in sync with the web administrator.
+    // The account is deliberately fixed to `wingman`; never interpolate a
+    // user-supplied name into a shell command.
+    sync_system_password(&password).await?;
 
     persist_config(state.config_path.as_ref(), &new_config).await?;
     let auth = state.auth.clone();
-    let username = request.username;
-    let password = request.password;
     tokio::task::spawn_blocking(move || auth.initialize(username, &password))
         .await
         .map_err(ApiError::internal)?
@@ -286,6 +378,32 @@ async fn setup(
         Json(json!({"ok": true})).into_response(),
         &session,
     ))
+}
+
+async fn sync_system_password(password: &str) -> Result<(), ApiError> {
+    if password.is_empty() || password.bytes().any(|b| b == b'\n' || b == b'\r' || b == 0) {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "密码格式不正确"));
+    }
+    let password = password.to_owned();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let mut child = std::process::Command::new("sudo")
+            .args(["-n", "/usr/local/sbin/wingmankvm-set-wingman-password"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .expect("piped stdin")
+            .write_all(format!("{password}\n").as_bytes())?;
+        if !child.wait()?.success() {
+            anyhow::bail!("无法更新 wingman 密码");
+        }
+        Ok(())
+    })
+    .await
+    .map_err(ApiError::internal)?
+    .map_err(ApiError::internal)
 }
 
 #[derive(Deserialize)]

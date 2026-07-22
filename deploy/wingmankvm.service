@@ -13,7 +13,6 @@ Environment=RUST_LOG=wingmankvm=info
 ExecStart=/usr/local/bin/wingmankvm
 Restart=on-failure
 RestartSec=2s
-NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
