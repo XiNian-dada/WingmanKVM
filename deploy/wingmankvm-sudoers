@@ -1,0 +1,5 @@
+# Keep the web service unprivileged while allowing setup to synchronize the
+# local console account.  The helper accepts only a password on stdin and
+# always targets the fixed `wingman` account.
+wingmankvm ALL=(root) NOPASSWD: /usr/local/sbin/wingmankvm-set-wingman-password
+wingmankvm ALL=(wingman) NOPASSWD: /bin/bash -l

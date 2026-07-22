@@ -21,6 +21,15 @@ sudo apt install build-essential pkg-config clang libclang-dev linux-libc-dev li
 ```bash
 sudo useradd --system --home /var/lib/wingmankvm --create-home --shell /usr/sbin/nologin wingmankvm
 sudo install -d -o wingmankvm -g wingmankvm -m 0700 /var/lib/wingmankvm
+
+# 创建用于网页终端登录的本机用户。密码会在首次网页初始化时同步，
+# 不要在命令行或 unit 文件中写入密码。
+sudo useradd --create-home --shell /bin/bash wingman
+sudo install -o root -g root -m 0755 deploy/wingmankvm-set-wingman-password \
+  /usr/local/sbin/wingmankvm-set-wingman-password
+sudo install -o root -g root -m 0440 deploy/wingmankvm-sudoers \
+  /etc/sudoers.d/wingmankvm
+sudo visudo -cf /etc/sudoers.d/wingmankvm
 ```
 
 安装示例 unit：
