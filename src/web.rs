@@ -206,6 +206,8 @@ async fn handle_terminal(mut socket: WebSocket) {
         CommandBuilder::new("/bin/bash")
     };
     cmd.env("TERM", "xterm-256color");
+    cmd.env("HOME", "/home/wingman");
+    cmd.cwd("/home/wingman");
     let mut child = match pair.slave.spawn_command(cmd) {
         Ok(c) => c,
         Err(err) => {
