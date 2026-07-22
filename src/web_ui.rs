@@ -241,7 +241,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     $('#mode-button').addEventListener('click',()=>{consoleBox.classList.remove(modes[modeIndex][0]);modeIndex=(modeIndex+1)%modes.length;consoleBox.classList.add(modes[modeIndex][0]);$('#mode-button').textContent=modes[modeIndex][1];});
     $('#fullscreen').addEventListener('click',async()=>{try{if(document.fullscreenElement)await document.exitFullscreen();else await consoleBox.requestFullscreen();}catch(e){toast(e.message,true);}});
 
-    let drag=null; $('#console-head').addEventListener('pointerdown',event=>{if(event.button!==0||matchMedia('(max-width:900px)').matches)return;const r=consoleBox.getBoundingClientRect(),w=$('#workspace').getBoundingClientRect();drag={x:event.clientX-r.left,y:event.clientY-r.top,wx:w.left,wy:w.top};event.currentTarget.setPointerCapture(event.pointerId);});
+    let drag=null; $('#console-head').addEventListener('pointerdown',event=>{if(event.button!==0||event.target.closest('button,input,select,a')||matchMedia('(max-width:900px)').matches)return;const r=consoleBox.getBoundingClientRect(),w=$('#workspace').getBoundingClientRect();drag={x:event.clientX-r.left,y:event.clientY-r.top,wx:w.left,wy:w.top};event.currentTarget.setPointerCapture(event.pointerId);});
     $('#console-head').addEventListener('pointermove',event=>{if(!drag)return;const area=$('#workspace').getBoundingClientRect();const left=Math.max(0,Math.min(event.clientX-area.left-drag.x,area.width-consoleBox.offsetWidth));const top=Math.max(0,Math.min(event.clientY-area.top-drag.y,area.height-consoleBox.offsetHeight));consoleBox.style.left=`${left}px`;consoleBox.style.top=`${top}px`;});
     $('#console-head').addEventListener('pointerup',()=>drag=null); $('#console-head').addEventListener('pointercancel',()=>drag=null);
 
@@ -277,7 +277,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
 
     const rows=[['Escape','F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12','Delete'],['`','1','2','3','4','5','6','7','8','9','0','-','=','Backspace'],['Tab','Q','W','E','R','T','Y','U','I','O','P','[',']','\\'],['CapsLock','A','S','D','F','G','H','J','K','L',';','\'','Enter'],['Shift','Z','X','C','V','B','N','M',',','.','/','Shift'],['Control','Meta','Alt','Spacebar','Alt','Meta','Control']];
     const vk=$('#virtual-keyboard');rows.forEach(row=>{const line=document.createElement('div');line.className='keyboard-row';row.forEach(key=>{const b=document.createElement('button');b.type='button';b.textContent=key==='Spacebar'?'空格':key;b.dataset.key=key;if(key==='Spacebar')b.className='grow';b.addEventListener('click',()=>sendKey(key).catch(e=>toast(e.message,true)));line.append(b);});vk.append(line);});
-    let terminalSocket=null,terminal=null,terminalFit=null,terminalFitFrame=0;
+    let terminalSocket=null,terminal=null,terminalFit=null,terminalFitFrame=0,terminalLastSize='';
     const terminalEncoder=new TextEncoder();
     function ensureTerminal(){
       if(terminal)return;
@@ -289,11 +289,11 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       document.fonts?.ready.then(scheduleTerminalFit);
     }
     function scheduleTerminalFit(){if(terminalFitFrame||$('#terminal-window').hidden)return;terminalFitFrame=requestAnimationFrame(()=>{terminalFitFrame=0;terminalFit?.fit();});}
-    function terminalResize(cols,rows){if(terminalSocket?.readyState===WebSocket.OPEN)terminalSocket.send(JSON.stringify({type:'resize',cols,rows}));}
+    function terminalResize(cols,rows){const size=`${cols}x${rows}`;if(terminalSocket?.readyState===WebSocket.OPEN&&size!==terminalLastSize){terminalLastSize=size;terminalSocket.send(JSON.stringify({type:'resize',cols,rows}));}}
     function terminalConnect(){
       ensureTerminal();
       if(terminalSocket&&terminalSocket.readyState<=WebSocket.OPEN)return;
-      const scheme=location.protocol==='https:'?'wss':'ws';const socket=new WebSocket(`${scheme}://${location.host}/api/terminal/ws`);terminalSocket=socket;socket.binaryType='arraybuffer';
+      const scheme=location.protocol==='https:'?'wss':'ws';const socket=new WebSocket(`${scheme}://${location.host}/api/terminal/ws`);terminalSocket=socket;terminalLastSize='';socket.binaryType='arraybuffer';
       socket.onopen=()=>{if(terminalSocket!==socket)return;$('#terminal-connect').textContent='断开';scheduleTerminalFit();requestAnimationFrame(()=>{terminalResize(terminal.cols,terminal.rows);terminal.focus();});};
       socket.onmessage=event=>terminal.write(typeof event.data==='string'?event.data:new Uint8Array(event.data));
       socket.onerror=()=>terminal.writeln('\r\n\x1b[31m终端连接失败\x1b[0m');

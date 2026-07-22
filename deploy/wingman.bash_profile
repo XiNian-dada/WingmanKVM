@@ -4,3 +4,5 @@ if [ -r /run/motd.dynamic ]; then
 elif [ -r /etc/motd ]; then
     cat /etc/motd
 fi
+
+cd "$HOME"
