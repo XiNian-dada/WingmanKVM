@@ -1,7 +1,5 @@
 # WingmanKVM
 
-![WingmanKVM banner](docs/assets/wingmankvm-banner.svg)
-
 一个轻量、开放配置的网页 KVM。它运行在 Linux 主机或开发板上，把 USB HDMI 采集卡、USB HID Gadget、GPIO 继电器和可选的 USB Mass Storage Gadget 组合起来，让你在浏览器中完成：
 
 - 查看被控机画面；
@@ -96,7 +94,9 @@ WINGMANKVM_STATE_DIR=./wingmankvm-state \
   ./target/release/wingmankvm
 ```
 
-默认监听 `0.0.0.0:8080`。打开 `http://设备地址:8080/`，首次进入时按向导创建管理员并选择硬件。初始化令牌只会在日志中显示一次，创建管理员后立即失效。
+默认监听 `0.0.0.0:8080`。打开 `http://设备地址:8080/`，首次进入时按向导创建管理员并选择硬件。初始化令牌会写入启动日志；创建管理员后立即失效。
+
+构建机不必和目标板同架构。在 Apple Silicon Mac 上可以用 Linux ARM64 容器构建，再把 `target/release/wingmankvm` 复制到 ARM 板；目标板只需要运行二进制，不需要安装 Rust 工具链。交叉编译的 sysroot 和 bindgen 注意事项见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)。
 
 生产环境建议使用 systemd 用户、udev 权限和持久化状态目录。完整安装示例见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)。
 
