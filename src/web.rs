@@ -25,8 +25,8 @@ use bytes::Bytes;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
-use tokio::sync::mpsc;
-use tokio::{fs, io::AsyncWriteExt, sync::RwLock};
+use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc};
+use tokio::{fs, io::AsyncWriteExt};
 
 use crate::{
     auth::{AuthError, AuthStore, SessionStore},
@@ -60,6 +60,7 @@ pub struct AppState {
     hid: HidManager,
     power: PowerManager,
     media: Arc<MediaManager>,
+    media_upload: Arc<AsyncMutex<()>>,
     video: VideoManager,
 }
 
@@ -101,6 +102,7 @@ impl AppState {
             hid: HidManager::new(),
             power: PowerManager::new(),
             media: Arc::new(MediaManager::default()),
+            media_upload: Arc::new(AsyncMutex::new(())),
             video,
         })
     }
@@ -820,6 +822,7 @@ async fn upload_media(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, ApiError> {
+    let _upload_guard = state.media_upload.lock().await;
     let config = state.config.read().await.media.clone();
     if !config.enabled {
         return Err(ApiError::new(
