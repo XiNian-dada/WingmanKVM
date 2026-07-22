@@ -189,6 +189,17 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     $('#video-config').elements.resolution_preset.addEventListener('change',syncVideoPresets);
     $('#video-config').elements.fps_preset.addEventListener('change',syncVideoPresets);
     $('#video-config').elements.jpeg_quality.addEventListener('input', event => $('#quality-value').textContent = event.target.value);
+    $$('.power-row form').forEach(form=>form.addEventListener('submit',async event=>{
+      event.preventDefault();
+      const button=$('button[type=submit]',form), label=button.textContent;
+      button.disabled=true; button.textContent='执行中…';
+      try {
+        const response=await fetch(form.action,{method:'POST',body:new URLSearchParams(new FormData(form)),credentials:'same-origin'});
+        if(!response.ok) throw new Error((await response.text())||'电源操作失败');
+        toast('电源操作已执行');
+      } catch(error) { toast(error.message||'电源操作失败',true); }
+      finally { button.disabled=false; button.textContent=label; }
+    }));
     $('#video-config').addEventListener('submit', async event => {
       event.preventDefault(); const f=event.currentTarget, payload={video:{device:value(f,'device')||null,width:optionalNumber(value(f,'width')),height:optionalNumber(value(f,'height')),frames_per_second:optionalNumber(value(f,'frames_per_second')),encoding:value(f,'encoding'),jpeg_quality:Number(value(f,'jpeg_quality'))}};
       try { await request('/api/config',{method:'POST',body:JSON.stringify(payload)}); toast('视频设置已应用'); connectVideo(true); } catch(e){ toast(e.message,true); }
