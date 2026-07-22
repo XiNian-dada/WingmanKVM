@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 520" role="img" aria-labelledby="title desc">
+  <title id="title">WingmanKVM</title>
+  <desc id="desc">A lightweight open KVM controller for ARM boards and x86 Linux hosts.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#080b13"/>
+      <stop offset="0.55" stop-color="#111a2d"/>
+      <stop offset="1" stop-color="#142d3e"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="78%" cy="20%" r="65%">
+      <stop offset="0" stop-color="#4de1d2" stop-opacity=".35"/>
+      <stop offset=".45" stop-color="#2677bd" stop-opacity=".12"/>
+      <stop offset="1" stop-color="#08101b" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="accent" x1="0" x2="1">
+      <stop stop-color="#5ff4d9"/>
+      <stop offset="1" stop-color="#6ca8ff"/>
+    </linearGradient>
+    <filter id="blur"><feGaussianBlur stdDeviation="28"/></filter>
+    <pattern id="grid" width="44" height="44" patternUnits="userSpaceOnUse">
+      <path d="M44 0H0V44" fill="none" stroke="#b9e8ff" stroke-opacity=".06"/>
+    </pattern>
+  </defs>
+  <rect width="1600" height="520" rx="28" fill="url(#bg)"/>
+  <rect width="1600" height="520" rx="28" fill="url(#glow)"/>
+  <rect x="24" y="24" width="1552" height="472" rx="20" fill="url(#grid)"/>
+  <circle cx="1280" cy="100" r="120" fill="#4de1d2" opacity=".12" filter="url(#blur)"/>
+  <circle cx="1430" cy="390" r="150" fill="#558cff" opacity=".12" filter="url(#blur)"/>
+  <g fill="none" stroke="url(#accent)" stroke-linecap="round" stroke-width="2" opacity=".58">
+    <path d="M930 72h120l42 42h146"/>
+    <path d="M1080 450h132l52-52h190"/>
+    <path d="M1370 146v74l-38 38v80"/>
+    <path d="M890 356h112l38-38v-88"/>
+  </g>
+  <g fill="#63f1d9">
+    <circle cx="930" cy="72" r="5"/><circle cx="1238" cy="114" r="5"/>
+    <circle cx="1080" cy="450" r="5"/><circle cx="1564" cy="318" r="5"/>
+    <circle cx="890" cy="356" r="5"/>
+  </g>
+  <g transform="translate(112 126)">
+    <circle cx="72" cy="72" r="72" fill="#f5fbff"/>
+    <path d="M34 108 52 40l20 40 20-40 18 68H92l-20-36-20 36z" fill="#0b1624"/>
+    <circle cx="72" cy="72" r="84" fill="none" stroke="#62efd8" stroke-opacity=".55" stroke-width="2"/>
+  </g>
+  <text x="112" y="302" fill="#f4fbff" font-family="Inter, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="72" font-weight="700" letter-spacing="-2">WingmanKVM</text>
+  <text x="116" y="356" fill="#a9c4d4" font-family="Inter, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="25" letter-spacing="3">OPEN · LIGHTWEIGHT · CONFIGURABLE KVM</text>
+  <text x="116" y="422" fill="#72efda" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="19">x86_64  /  aarch64  ·  V4L2  ·  USB OTG  ·  HID  ·  GPIO</text>
+  <rect x="116" y="452" width="260" height="3" rx="2" fill="url(#accent)"/>
+</svg>
