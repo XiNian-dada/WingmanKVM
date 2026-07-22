@@ -7,6 +7,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
   <meta http-equiv="Cache-Control" content="no-store, max-age=0">
   <meta http-equiv="Pragma" content="no-cache">
   <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/assets/xterm.css">
   <title>WingmanKVM</title>
   <style>
     :root{font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;color:#171717;background:#fafafa;line-height:1.45;font-feature-settings:"ss01","ss02";--ink:#171717;--body:#4d4d4d;--muted:#888;--line:#ebebeb;--line-strong:#d4d4d4;--canvas:#fff;--soft:#fafafa;--soft-2:#f5f5f5;--blue:#0070f3;--red:#ee0000;--red-soft:#fff1f1;--amber:#ab570a;--shadow-2:0 1px 1px #00000005,0 2px 2px #0000000a,0 0 0 1px #0000000d;--shadow-4:0 2px 2px #00000008,0 8px 16px -4px #0000000d,0 0 0 1px #00000012;--shadow-5:0 1px 1px #00000005,0 8px 16px -4px #0000000a,0 24px 32px -8px #00000016,0 0 0 1px #00000012}
@@ -29,7 +30,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     h2[tabindex="-1"]:focus{outline:0;box-shadow:none}
     @media(max-width:720px){.auth-shell{max-height:none}.auth-panel{max-height:none;overflow:visible}}
     @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
-    .inspector-tabs{grid-template-columns:repeat(5,1fr)}.workspace-tabs{display:flex;gap:3px;padding:3px;border-radius:7px;background:var(--soft-2)}.workspace-tab{min-height:28px;padding:0 10px;border:0;border-radius:5px;background:transparent;color:var(--muted);font-size:11px}.workspace-tab.active{color:var(--ink);background:#fff;box-shadow:0 1px 2px #0001}.terminal-output{height:100%;overflow:auto;padding:18px;color:#e5e5e5;font:13px/1.5 "Geist Mono",ui-monospace,monospace;white-space:pre-wrap}.terminal-actions{display:flex;gap:8px;margin-top:10px}.terminal-window{position:absolute;inset:46px 0 0;background:#111;color:#fff;outline:0;cursor:text}.terminal-window:focus{box-shadow:inset 0 0 0 1px #333}.terminal-window[hidden]{display:none}
+    .inspector-tabs{grid-template-columns:repeat(5,1fr)}.workspace-tabs{display:flex;gap:3px;padding:3px;border-radius:7px;background:var(--soft-2)}.workspace-tab{min-height:28px;padding:0 10px;border:0;border-radius:5px;background:transparent;color:var(--muted);font-size:11px}.workspace-tab.active{color:var(--ink);background:#fff;box-shadow:0 1px 2px #0001}.terminal-actions{display:flex;gap:8px;margin-top:10px}.terminal-window{position:absolute;inset:46px 0 0;overflow:hidden;background:#111;outline:0;cursor:text}.terminal-window[hidden]{display:none}.terminal-host{width:100%;height:100%;overflow:hidden}.terminal-host .xterm{height:100%;padding:14px}.terminal-host .xterm-viewport{scrollbar-color:#555 #111}.terminal-host .xterm-screen{outline:none}
   </style>
 </head>
 <body>
@@ -91,7 +92,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
           <div id="video-viewport" tabindex="0" aria-label="远程视频与鼠标控制区域">
             <img id="video-feed" alt="远程设备视频" draggable="false"><span id="video-message" class="video-message">正在连接视频…</span>
           </div>
-          <div id="terminal-window" class="terminal-window" tabindex="0" role="textbox" aria-label="终端输入" hidden><div id="terminal-output" class="terminal-output" role="log" aria-live="polite"></div></div>
+          <div id="terminal-window" class="terminal-window" hidden><div id="terminal-host" class="terminal-host" aria-label="RK3399 终端"></div></div>
         </div>
       </section>
       <aside id="inspector" class="inspector">
@@ -111,6 +112,8 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
   </main>
 
   <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/assets/xterm.js"></script>
+  <script src="/assets/xterm-fit.js"></script>
   <script>
   (() => {
     'use strict';
@@ -274,17 +277,34 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
 
     const rows=[['Escape','F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12','Delete'],['`','1','2','3','4','5','6','7','8','9','0','-','=','Backspace'],['Tab','Q','W','E','R','T','Y','U','I','O','P','[',']','\\'],['CapsLock','A','S','D','F','G','H','J','K','L',';','\'','Enter'],['Shift','Z','X','C','V','B','N','M',',','.','/','Shift'],['Control','Meta','Alt','Spacebar','Alt','Meta','Control']];
     const vk=$('#virtual-keyboard');rows.forEach(row=>{const line=document.createElement('div');line.className='keyboard-row';row.forEach(key=>{const b=document.createElement('button');b.type='button';b.textContent=key==='Spacebar'?'空格':key;b.dataset.key=key;if(key==='Spacebar')b.className='grow';b.addEventListener('click',()=>sendKey(key).catch(e=>toast(e.message,true)));line.append(b);});vk.append(line);});
-    let terminalSocket = null;
-    function terminalWrite(text){const clean=text.replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g,'').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g,'').replace(/\r/g,'');const out=$('#terminal-output');out.textContent += clean;out.scrollTop=out.scrollHeight;}
-    function terminalConnect(){if(terminalSocket&&terminalSocket.readyState===WebSocket.OPEN)return; const scheme=location.protocol==='https:'?'wss':'ws'; terminalSocket=new WebSocket(`${scheme}://${location.host}/api/terminal/ws`); terminalSocket.onopen=()=>{terminalWrite('\n[connected]\n');$('#terminal-connect').textContent='断开';$('#terminal-window').focus();}; terminalSocket.onmessage=event=>{try{const msg=JSON.parse(event.data);terminalWrite(msg.data??msg.output??event.data);}catch(_){terminalWrite(event.data);}}; terminalSocket.onerror=()=>terminalWrite('\n[connection error]\n'); terminalSocket.onclose=()=>{$('#terminal-connect').textContent='连接';terminalSocket=null;};}
-    function terminalDisconnect(){if(terminalSocket){terminalSocket.close();terminalSocket=null;}$('#terminal-connect').textContent='连接';}
-    function terminalSend(data){if(terminalSocket?.readyState===WebSocket.OPEN)terminalSocket.send(JSON.stringify({type:'input',data}));}
-    $('#terminal-connect').addEventListener('click',()=>terminalSocket?terminalDisconnect():terminalConnect()); $('#terminal-clear').addEventListener('click',()=>$('#terminal-output').textContent='');
-    $('#terminal-window').addEventListener('pointerdown',event=>event.currentTarget.focus());
-    $('#terminal-window').addEventListener('keydown',event=>{if(event.isComposing)return;let data='';if(event.key==='Enter')data='\r';else if(event.key==='Backspace')data='\x7f';else if(event.key==='Tab')data='\t';else if(event.key==='Escape')data='\x1b';else if(event.key==='ArrowUp')data='\x1b[A';else if(event.key==='ArrowDown')data='\x1b[B';else if(event.key==='ArrowRight')data='\x1b[C';else if(event.key==='ArrowLeft')data='\x1b[D';else if(event.key==='Delete')data='\x1b[3~';else if(event.ctrlKey&&event.key.length===1)data=String.fromCharCode(event.key.toUpperCase().charCodeAt(0)-64);else if(event.key.length===1&&!event.metaKey)data=event.key;if(data){event.preventDefault();terminalSend(data);}});
+    let terminalSocket=null,terminal=null,terminalFit=null,terminalFitFrame=0;
+    const terminalEncoder=new TextEncoder();
+    function ensureTerminal(){
+      if(terminal)return;
+      terminal=new Terminal({cursorBlink:true,cursorStyle:'block',fontFamily:'"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Monaco,monospace',fontSize:13,lineHeight:1.25,scrollback:5000,convertEol:false,macOptionIsMeta:true,theme:{background:'#111111',foreground:'#e8e8e8',cursor:'#f5f5f5',cursorAccent:'#111111',selectionBackground:'#ffffff38',black:'#1d1f21',red:'#ff5f56',green:'#27c93f',yellow:'#ffbd2e',blue:'#5aa9ff',magenta:'#c792ea',cyan:'#66d9ef',white:'#e8e8e8',brightBlack:'#666666',brightRed:'#ff6e67',brightGreen:'#5af78e',brightYellow:'#f4f99d',brightBlue:'#7aa2f7',brightMagenta:'#d2a8ff',brightCyan:'#9aedfe',brightWhite:'#ffffff'}});
+      terminalFit=new FitAddon.FitAddon();terminal.loadAddon(terminalFit);terminal.open($('#terminal-host'));
+      terminal.onData(data=>{if(terminalSocket?.readyState===WebSocket.OPEN)terminalSocket.send(terminalEncoder.encode(data));});
+      terminal.onResize(size=>terminalResize(size.cols,size.rows));
+      new ResizeObserver(scheduleTerminalFit).observe($('#terminal-window'));
+      document.fonts?.ready.then(scheduleTerminalFit);
+    }
+    function scheduleTerminalFit(){if(terminalFitFrame||$('#terminal-window').hidden)return;terminalFitFrame=requestAnimationFrame(()=>{terminalFitFrame=0;terminalFit?.fit();});}
+    function terminalResize(cols,rows){if(terminalSocket?.readyState===WebSocket.OPEN)terminalSocket.send(JSON.stringify({type:'resize',cols,rows}));}
+    function terminalConnect(){
+      ensureTerminal();
+      if(terminalSocket&&terminalSocket.readyState<=WebSocket.OPEN)return;
+      const scheme=location.protocol==='https:'?'wss':'ws';const socket=new WebSocket(`${scheme}://${location.host}/api/terminal/ws`);terminalSocket=socket;socket.binaryType='arraybuffer';
+      socket.onopen=()=>{if(terminalSocket!==socket)return;$('#terminal-connect').textContent='断开';scheduleTerminalFit();requestAnimationFrame(()=>{terminalResize(terminal.cols,terminal.rows);terminal.focus();});};
+      socket.onmessage=event=>terminal.write(typeof event.data==='string'?event.data:new Uint8Array(event.data));
+      socket.onerror=()=>terminal.writeln('\r\n\x1b[31m终端连接失败\x1b[0m');
+      socket.onclose=()=>{if(terminalSocket!==socket)return;terminalSocket=null;$('#terminal-connect').textContent='连接';};
+    }
+    function terminalDisconnect(){if(terminalSocket){const socket=terminalSocket;terminalSocket=null;socket.close();}$('#terminal-connect').textContent='连接';}
+    $('#terminal-connect').addEventListener('click',()=>terminalSocket?terminalDisconnect():terminalConnect());
+    $('#terminal-clear').addEventListener('click',()=>terminal?.clear());
     const keyboardDialog=$('#keyboard-dialog');$$('#keyboard-toggle,#keyboard-toggle-mobile').forEach(button=>button.addEventListener('click',()=>{if(keyboardDialog.open)keyboardDialog.close();else keyboardDialog.show();}));$('[data-close]',keyboardDialog).addEventListener('click',()=>keyboardDialog.close());
 
-    function setWorkspaceMode(mode){const terminal=mode==='terminal';$('#terminal-window').hidden=!terminal;$('#video-viewport').hidden=terminal;$$('[data-workspace]').forEach(tab=>tab.classList.toggle('active',tab.dataset.workspace===mode));if(terminal){terminalConnect();$('#terminal-window').focus();}}
+    function setWorkspaceMode(mode){const terminalMode=mode==='terminal';$('#terminal-window').hidden=!terminalMode;$('#video-viewport').hidden=terminalMode;$$('[data-workspace]').forEach(tab=>tab.classList.toggle('active',tab.dataset.workspace===mode));if(terminalMode){terminalConnect();scheduleTerminalFit();requestAnimationFrame(()=>terminal?.focus());}}
     $$('[data-workspace]').forEach(tab=>tab.addEventListener('click',()=>setWorkspaceMode(tab.dataset.workspace)));
     $$('.tab-button').forEach(button=>button.addEventListener('click',()=>{const mode=button.dataset.panelTarget;$$('.tab-button').forEach(item=>item.classList.toggle('active',item===button));$$('[data-panel]').forEach(panel=>panel.hidden=panel.dataset.panel!==mode);setWorkspaceMode(mode);}));
     const inspectorToggle=$('#inspector-toggle');

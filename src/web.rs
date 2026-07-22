@@ -45,6 +45,9 @@ use crate::{
 };
 
 const SESSION_COOKIE: &str = "wingman_session";
+const XTERM_JS: &str = include_str!("../web/vendor/xterm/xterm.js");
+const XTERM_FIT_JS: &str = include_str!("../web/vendor/xterm/addon-fit.js");
+const XTERM_CSS: &str = include_str!("../web/vendor/xterm/xterm.css");
 
 #[derive(Clone)]
 pub struct AppState {
@@ -138,6 +141,9 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/healthz", get(health))
+        .route("/assets/xterm.js", get(xterm_js))
+        .route("/assets/xterm-fit.js", get(xterm_fit_js))
+        .route("/assets/xterm.css", get(xterm_css))
         .route("/api/bootstrap", get(bootstrap))
         .route(
             "/api/setup/devices",
@@ -149,10 +155,31 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
+async fn xterm_js() -> impl IntoResponse {
+    ([(CONTENT_TYPE, "text/javascript; charset=utf-8")], XTERM_JS)
+}
+
+async fn xterm_fit_js() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        XTERM_FIT_JS,
+    )
+}
+
+async fn xterm_css() -> impl IntoResponse {
+    ([(CONTENT_TYPE, "text/css; charset=utf-8")], XTERM_CSS)
+}
+
 /// Authenticated interactive shell on the RK3399. The PTY is intentionally
 /// short-lived and is torn down as soon as the browser disconnects.
 async fn terminal_ws(ws: WebSocketUpgrade) -> impl IntoResponse {
     ws.on_upgrade(handle_terminal)
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum TerminalClientMessage {
+    Resize { cols: u16, rows: u16 },
 }
 
 async fn handle_terminal(mut socket: WebSocket) {
@@ -213,16 +240,27 @@ async fn handle_terminal(mut socket: WebSocket) {
     });
     loop {
         tokio::select! {
-            Some(data) = rx.recv() => { if socket.send(Message::Text(String::from_utf8_lossy(&data).into_owned().into())).await.is_err() { break; } }
+            Some(data) = rx.recv() => { if socket.send(Message::Binary(data.into())).await.is_err() { break; } }
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Text(text))) => {
-                    let text = text.to_string();
-                    let data = serde_json::from_str::<serde_json::Value>(&text)
-                        .ok().and_then(|value| value.get("data").and_then(|data| data.as_str()).map(str::to_owned))
-                        .unwrap_or(text);
-                    let _ = std::io::Write::write_all(&mut writer, data.as_bytes());
+                    if let Ok(TerminalClientMessage::Resize { cols, rows }) =
+                        serde_json::from_str(text.as_str())
+                        && (2..=1000).contains(&cols)
+                        && (1..=500).contains(&rows)
+                    {
+                        let _ = pair.master.resize(PtySize {
+                            rows,
+                            cols,
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        });
+                    }
                 }
-                Some(Ok(Message::Binary(data))) => { let _ = std::io::Write::write_all(&mut writer, &data); }
+                Some(Ok(Message::Binary(data))) => {
+                    if std::io::Write::write_all(&mut writer, &data).is_err() {
+                        break;
+                    }
+                }
                 Some(Ok(Message::Close(_))) | None => break,
                 _ => {}
             }
