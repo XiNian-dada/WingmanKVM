@@ -589,8 +589,10 @@ struct PowerPatch {
 #[derive(Deserialize)]
 struct MediaPatch {
     enabled: Option<bool>,
-    lun_path: Option<PathBuf>,
-    image_directory: Option<PathBuf>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    lun_path: Option<Option<PathBuf>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    image_directory: Option<Option<PathBuf>>,
     read_only_by_default: Option<bool>,
 }
 
@@ -626,14 +628,7 @@ async fn patch_config(
         }
     }
     if let Some(media) = patch.media {
-        if let Some(enabled) = media.enabled {
-            config.media.enabled = enabled;
-        }
-        config.media.lun_path = media.lun_path;
-        config.media.image_directory = media.image_directory;
-        if let Some(read_only) = media.read_only_by_default {
-            config.media.read_only_by_default = read_only;
-        }
+        apply_media_patch(&mut config.media, media);
     }
     validate_config(&config)?;
     persist_config(state.config_path.as_ref(), &config).await?;
@@ -660,6 +655,21 @@ fn apply_hid_patch(config: &mut HidConfig, patch: HidPatch) {
     }
     config.auto_detect = config.keyboard_device.is_none()
         || (config.mouse_device.is_none() && config.absolute_pointer_device.is_none());
+}
+
+fn apply_media_patch(config: &mut config::MediaConfig, patch: MediaPatch) {
+    if let Some(enabled) = patch.enabled {
+        config.enabled = enabled;
+    }
+    if let Some(path) = patch.lun_path {
+        config.lun_path = path;
+    }
+    if let Some(path) = patch.image_directory {
+        config.image_directory = path;
+    }
+    if let Some(read_only) = patch.read_only_by_default {
+        config.read_only_by_default = read_only;
+    }
 }
 
 async fn key(
@@ -1347,6 +1357,34 @@ mod tests {
         apply_hid_patch(&mut config, patch.hid.unwrap());
         assert_eq!(config.absolute_pointer_device, None);
         assert_eq!(config.keyboard_device, Some(PathBuf::from("/dev/hidg0")));
+    }
+
+    #[test]
+    fn media_patch_preserves_omitted_paths_and_accepts_explicit_null() {
+        let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
+            "media": { "read_only_by_default": false }
+        }))
+        .unwrap();
+        let mut config = config::MediaConfig {
+            enabled: true,
+            lun_path: Some(PathBuf::from("/sys/kernel/config/usb_gadget/wingman/functions/mass_storage.0/lun.0")),
+            image_directory: Some(PathBuf::from("/var/lib/wingmankvm/images")),
+            ..config::MediaConfig::default()
+        };
+        apply_media_patch(&mut config, patch.media.unwrap());
+
+        assert!(config.enabled);
+        assert!(config.lun_path.is_some());
+        assert!(config.image_directory.is_some());
+        assert!(!config.read_only_by_default);
+
+        let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
+            "media": { "lun_path": null }
+        }))
+        .unwrap();
+        apply_media_patch(&mut config, patch.media.unwrap());
+        assert_eq!(config.lun_path, None);
+        assert!(config.image_directory.is_some());
     }
 
     #[test]
