@@ -37,7 +37,7 @@ use crate::{
             AbsolutePointerRequest, HidError, HidManager, KeyRequest, MouseClickRequest,
             MouseMoveRequest, MouseScrollRequest,
         },
-        media::{MediaConfigSnapshot, MediaError, MediaManager, sanitize_upload_name},
+        media::{MediaConfigSnapshot, MediaError, MediaManager, MediaType, sanitize_upload_name},
         power::{PowerConfigSnapshot, PowerError, PowerManager, PowerPress},
         video::VideoManager,
     },
@@ -896,28 +896,27 @@ async fn upload_media(
 #[derive(Deserialize)]
 struct AttachMediaRequest {
     name: String,
-    #[serde(default = "default_true")]
-    read_only: bool,
-}
-
-fn default_true() -> bool {
-    true
+    #[serde(default)]
+    media_type: MediaType,
+    read_only: Option<bool>,
 }
 
 async fn attach_media(
     State(state): State<AppState>,
     Json(request): Json<AttachMediaRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let default_read_only = state.config.read().await.media.read_only_by_default;
     let status = state
         .media
         .attach(
             media_snapshot(&state).await,
             &request.name,
-            request.read_only,
+            request.media_type,
+            request.read_only.unwrap_or(default_read_only),
         )
         .await
         .map_err(map_media_error)?;
-    Ok(Json(status))
+    Ok(no_store(Json(status)))
 }
 
 #[derive(Deserialize)]
@@ -935,7 +934,7 @@ async fn detach_media(
         .detach(media_snapshot(&state).await, request.force)
         .await
         .map_err(map_media_error)?;
-    Ok(Json(status))
+    Ok(no_store(Json(status)))
 }
 
 async fn video_feed(State(state): State<AppState>) -> Response {
@@ -1035,7 +1034,9 @@ fn capabilities(config: &Config) -> Capabilities {
         gpio_power: config.power.enabled
             && config.power.gpio_chip.is_some()
             && config.power.gpio_line.is_some(),
-        mass_storage: config.media.enabled && config.media.lun_path.is_some(),
+        mass_storage: config.media.enabled
+            && config.media.lun_path.is_some()
+            && config.media.image_directory.is_some(),
         video_passthrough: true,
         video_transcode: true,
     }
@@ -1120,6 +1121,16 @@ fn validate_config(config: &Config) -> Result<(), ApiError> {
     }
     if config.hid.pointer_mode == PointerMode::Relative && config.hid.mouse_device.is_none() {
         return Err(ApiError::bad_request("相对指针模式需要配置相对鼠标设备"));
+    }
+    if config.media.enabled
+        && (config.media.lun_path.is_none() || config.media.image_directory.is_none())
+    {
+        return Err(ApiError::bad_request(
+            "启用虚拟介质前必须配置 LUN 和镜像目录",
+        ));
+    }
+    if config.media.max_upload_bytes == 0 {
+        return Err(ApiError::bad_request("镜像上传大小上限必须大于零"));
     }
     let hid_paths = [
         config.hid.keyboard_device.as_ref(),
@@ -1219,8 +1230,18 @@ fn map_power_error(error: PowerError) -> ApiError {
 fn map_media_error(error: MediaError) -> ApiError {
     let status = match error {
         MediaError::NotConfigured => StatusCode::SERVICE_UNAVAILABLE,
-        MediaError::InvalidName | MediaError::OutsideStorage | MediaError::UnsupportedType => {
-            StatusCode::UNPROCESSABLE_ENTITY
+        MediaError::InvalidName
+        | MediaError::OutsideStorage
+        | MediaError::UnsupportedType
+        | MediaError::NotRegularFile
+        | MediaError::EmptyImage => StatusCode::UNPROCESSABLE_ENTITY,
+        MediaError::ImageNotFound => StatusCode::NOT_FOUND,
+        MediaError::ForceEjectUnsupported
+        | MediaError::AlreadyAttached(_)
+        | MediaError::ReadOnlyFallback => StatusCode::CONFLICT,
+        MediaError::IoTimedOut(_) | MediaError::StateTimedOut(_) => StatusCode::GATEWAY_TIMEOUT,
+        MediaError::MissingLunAttribute(_) | MediaError::LunAttributeRejected(_) => {
+            StatusCode::SERVICE_UNAVAILABLE
         }
         MediaError::Io(_) => StatusCode::SERVICE_UNAVAILABLE,
     };
@@ -1324,6 +1345,17 @@ mod tests {
         config.hid.keyboard_device = Some(PathBuf::from("/dev/hidg0"));
         config.hid.absolute_pointer_device = Some(PathBuf::from("/dev/hidg0"));
         assert!(validate_config(&config).is_err());
+
+        let mut config = Config::default();
+        config.media.enabled = true;
+        config.media.lun_path = Some(PathBuf::from(
+            "/sys/kernel/config/usb_gadget/wingman/functions/mass_storage.0/lun.0",
+        ));
+        assert!(validate_config(&config).is_err());
+
+        let mut config = Config::default();
+        config.media.max_upload_bytes = 0;
+        assert!(validate_config(&config).is_err());
     }
 
     #[test]
@@ -1367,7 +1399,9 @@ mod tests {
         .unwrap();
         let mut config = config::MediaConfig {
             enabled: true,
-            lun_path: Some(PathBuf::from("/sys/kernel/config/usb_gadget/wingman/functions/mass_storage.0/lun.0")),
+            lun_path: Some(PathBuf::from(
+                "/sys/kernel/config/usb_gadget/wingman/functions/mass_storage.0/lun.0",
+            )),
             image_directory: Some(PathBuf::from("/var/lib/wingmankvm/images")),
             ..config::MediaConfig::default()
         };
@@ -1388,6 +1422,38 @@ mod tests {
     }
 
     #[test]
+    fn virtual_media_attach_payload_supports_writable_disks() {
+        let request: AttachMediaRequest = serde_json::from_value(serde_json::json!({
+            "name": "storage.img",
+            "media_type": "disk",
+            "read_only": false
+        }))
+        .unwrap();
+        assert_eq!(request.name, "storage.img");
+        assert_eq!(request.media_type, MediaType::Disk);
+        assert_eq!(request.read_only, Some(false));
+
+        let request: AttachMediaRequest = serde_json::from_value(serde_json::json!({
+            "name": "installer.iso"
+        }))
+        .unwrap();
+        assert_eq!(request.media_type, MediaType::Auto);
+        assert_eq!(request.read_only, None);
+    }
+
+    #[test]
+    fn virtual_media_timeouts_map_to_gateway_timeout() {
+        assert_eq!(
+            map_media_error(MediaError::StateTimedOut("detached")).status,
+            StatusCode::GATEWAY_TIMEOUT
+        );
+        assert_eq!(
+            map_media_error(MediaError::ForceEjectUnsupported).status,
+            StatusCode::CONFLICT
+        );
+    }
+
+    #[test]
     fn capabilities_resolve_automatic_pointer_mode() {
         let mut config = Config::default();
         config.hid.mouse_device = Some(PathBuf::from("/dev/hidg1"));
@@ -1403,6 +1469,14 @@ mod tests {
         assert!(absolute.mouse_relative);
         assert!(absolute.mouse_absolute);
         assert_eq!(absolute.pointer_mode, PointerMode::Absolute);
+
+        config.media.enabled = true;
+        config.media.lun_path = Some(PathBuf::from(
+            "/sys/kernel/config/usb_gadget/wingman/functions/mass_storage.0/lun.0",
+        ));
+        assert!(!capabilities(&config).mass_storage);
+        config.media.image_directory = Some(PathBuf::from("/var/lib/wingmankvm/images"));
+        assert!(capabilities(&config).mass_storage);
     }
 
     #[test]
