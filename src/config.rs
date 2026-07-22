@@ -221,7 +221,7 @@ impl Default for MediaConfig {
             lun_path: None,
             image_directory: None,
             max_upload_bytes: 16 * 1024 * 1024 * 1024,
-            read_only_by_default: true,
+            read_only_by_default: false,
         }
     }
 }
@@ -372,6 +372,7 @@ mod tests {
         assert_eq!(config.power.gpio_chip, None);
         assert_eq!(config.power.gpio_line, None);
         assert_eq!(config.media.lun_path, None);
+        assert!(!config.media.read_only_by_default);
     }
 
     #[test]
