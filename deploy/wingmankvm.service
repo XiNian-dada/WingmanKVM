@@ -14,7 +14,6 @@ ExecStart=/usr/local/bin/wingmankvm
 Restart=on-failure
 RestartSec=2s
 PrivateTmp=true
-ProtectHome=true
 ProtectSystem=strict
 ReadWritePaths=/var/lib/wingmankvm -/sys/kernel/config/usb_gadget
 
