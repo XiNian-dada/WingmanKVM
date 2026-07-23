@@ -226,6 +226,57 @@ start_services() {
     systemctl is-active --quiet wingmankvm.service || die "WingmanKVM did not remain active"
 }
 
+show_first_run_access() {
+    local service_log=
+    local setup_token=
+    local listen_address=
+    local port=8080
+    local host=127.0.0.1
+    local candidate
+    local value
+
+    if command -v journalctl >/dev/null 2>&1; then
+        service_log=$(journalctl --unit wingmankvm.service --boot --no-pager \
+            --output cat --lines 100 2>/dev/null || true)
+        while IFS= read -r value; do
+            if [[ $value == *setup_token=* ]]; then
+                candidate=${value#*setup_token=}
+                setup_token=${candidate%% *}
+            fi
+            if [[ $value == *address=* ]]; then
+                candidate=${value#*address=}
+                listen_address=${candidate%% *}
+            fi
+        done <<<"$service_log"
+    fi
+
+    if [[ $listen_address =~ :([0-9]+)$ ]]; then
+        port=${BASH_REMATCH[1]}
+    fi
+    if command -v hostname >/dev/null 2>&1; then
+        for candidate in $(hostname -I 2>/dev/null || true); do
+            case $candidate in
+                127.* | ::1 | *:*) ;;
+                *)
+                    host=$candidate
+                    break
+                    ;;
+            esac
+        done
+    fi
+
+    log "open WingmanKVM: http://$host:$port/"
+    if [[ -s /var/lib/wingmankvm/auth.json ]]; then
+        log "existing administrator configuration was preserved"
+        return
+    fi
+    if [[ -n $setup_token ]]; then
+        log "first-run setup token: $setup_token"
+    else
+        log "get the first-run token with: journalctl -u wingmankvm.service -b | grep setup_token"
+    fi
+}
+
 while (($# > 0)); do
     case $1 in
         --binary)
@@ -350,4 +401,5 @@ if $NO_START; then
 else
     start_services
     log "installation complete; WingmanKVM is running"
+    show_first_run_access
 fi
