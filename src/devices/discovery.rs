@@ -90,6 +90,13 @@ struct DeviceNumber {
 struct HidDeviceNode {
     candidate: DeviceCandidate,
     device_number: Option<DeviceNumber>,
+    stable_aliases: Vec<StableHidAlias>,
+}
+
+#[derive(Debug, Clone)]
+struct StableHidAlias {
+    role: HidRole,
+    path: PathBuf,
 }
 
 #[derive(Default)]
@@ -105,6 +112,12 @@ enum HidRole {
     Mouse,
     AbsolutePointer,
 }
+
+const STABLE_HID_LINKS: [(HidRole, &str); 3] = [
+    (HidRole::Keyboard, "wingmankvm-keyboard"),
+    (HidRole::Mouse, "wingmankvm-mouse"),
+    (HidRole::AbsolutePointer, "wingmankvm-absolute"),
+];
 
 impl HidRole {
     fn kind(self) -> &'static str {
@@ -281,10 +294,71 @@ async fn scan_hid_nodes(root: &Path) -> Vec<HidDeviceNode> {
         nodes.push(HidDeviceNode {
             candidate,
             device_number,
+            stable_aliases: Vec::new(),
         });
     }
     nodes.sort_by(|a, b| a.candidate.path.cmp(&b.candidate.path));
+    attach_stable_hid_aliases(root, &mut nodes);
     nodes
+}
+
+#[cfg(unix)]
+fn attach_stable_hid_aliases(root: &Path, nodes: &mut [HidDeviceNode]) {
+    use std::os::unix::fs::FileTypeExt;
+
+    for (role, name) in STABLE_HID_LINKS {
+        let alias_path = root.join(name);
+        let Ok(alias_link_metadata) = std::fs::symlink_metadata(&alias_path) else {
+            continue;
+        };
+        if !alias_link_metadata.file_type().is_symlink() {
+            continue;
+        }
+        let Ok(alias_metadata) = std::fs::metadata(&alias_path) else {
+            continue;
+        };
+        if !alias_metadata.file_type().is_char_device() {
+            continue;
+        }
+        let Some(alias_device_number) = device_number_from_metadata(&alias_metadata) else {
+            continue;
+        };
+        let Ok(alias_target) = std::fs::canonicalize(&alias_path) else {
+            continue;
+        };
+
+        let Some(node) = nodes.iter_mut().find(|node| {
+            if node.device_number != Some(alias_device_number)
+                || !is_numbered_hid_node(&node.candidate.path)
+            {
+                return false;
+            }
+            let Ok(node_metadata) = std::fs::symlink_metadata(&node.candidate.path) else {
+                return false;
+            };
+            node_metadata.file_type().is_char_device()
+                && std::fs::canonicalize(&node.candidate.path).ok().as_ref() == Some(&alias_target)
+        }) else {
+            continue;
+        };
+
+        node.stable_aliases.push(StableHidAlias {
+            role,
+            path: alias_path,
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn attach_stable_hid_aliases(_root: &Path, _nodes: &mut [HidDeviceNode]) {}
+
+fn is_numbered_hid_node(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("hidg"))
+        .is_some_and(|suffix| {
+            !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 #[cfg(unix)]
@@ -350,12 +424,19 @@ fn classify_hid_functions(root: &Path, nodes: &[HidDeviceNode]) -> HidRoles {
                 .iter()
                 .filter(|node| node.device_number == Some(device_number))
             {
-                if !seen.insert((role, node.candidate.path.clone())) {
+                let stable_path = node
+                    .stable_aliases
+                    .iter()
+                    .find(|alias| alias.role == role)
+                    .map(|alias| alias.path.clone());
+                let candidate_path = stable_path.unwrap_or_else(|| node.candidate.path.clone());
+                if !seen.insert((role, candidate_path.clone())) {
                     continue;
                 }
                 let mut candidate = node.candidate.clone();
+                candidate.path = candidate_path;
                 candidate.kind = role.kind().into();
-                candidate.label = format!("{} ({})", role.label(), node.candidate.label);
+                candidate.label = format!("{} ({})", role.label(), file_name(&candidate.path));
                 candidate.warnings.clear();
                 if !function_linked {
                     candidate
@@ -606,7 +687,15 @@ mod tests {
         HidDeviceNode {
             candidate,
             device_number: Some(DeviceNumber { major, minor }),
+            stable_aliases: Vec::new(),
         }
+    }
+
+    fn add_stable_alias(node: &mut HidDeviceNode, role: HidRole, path: &str) {
+        node.stable_aliases.push(StableHidAlias {
+            role,
+            path: PathBuf::from(path),
+        });
     }
 
     #[cfg(unix)]
@@ -699,6 +788,91 @@ mod tests {
         assert!(roles.keyboard.is_empty());
         assert!(roles.mouse.is_empty());
         assert!(roles.absolute_pointer.is_empty());
+    }
+
+    #[test]
+    fn matching_stable_alias_replaces_numbered_hid_path() {
+        let tree = TestTree::new();
+        let gadget = tree.path().join("wingman");
+        let function = gadget.join("functions/hid.keyboard");
+        fs::create_dir_all(gadget.join("configs/c.1")).unwrap();
+        fs::write(gadget.join("UDC"), "fe800000.usb\n").unwrap();
+        write_hid_function(
+            &function,
+            1,
+            1,
+            8,
+            DeviceNumber {
+                major: 240,
+                minor: 0,
+            },
+        );
+
+        let mut node = hid_node("/dev/hidg0", 240, 0);
+        add_stable_alias(&mut node, HidRole::Keyboard, "/dev/wingmankvm-keyboard");
+        let roles = classify_hid_functions(tree.path(), &[node]);
+
+        assert_eq!(roles.keyboard.len(), 1);
+        assert_eq!(
+            roles.keyboard[0].path,
+            Path::new("/dev/wingmankvm-keyboard")
+        );
+        assert_eq!(
+            roles.keyboard[0].label,
+            "Boot Keyboard (wingmankvm-keyboard)"
+        );
+    }
+
+    #[test]
+    fn stable_alias_for_another_role_does_not_misclassify_node() {
+        let tree = TestTree::new();
+        let gadget = tree.path().join("wingman");
+        let function = gadget.join("functions/hid.mouse");
+        fs::create_dir_all(gadget.join("configs/c.1")).unwrap();
+        fs::write(gadget.join("UDC"), "fe800000.usb\n").unwrap();
+        write_hid_function(
+            &function,
+            1,
+            2,
+            4,
+            DeviceNumber {
+                major: 240,
+                minor: 1,
+            },
+        );
+
+        let mut node = hid_node("/dev/hidg1", 240, 1);
+        add_stable_alias(&mut node, HidRole::Keyboard, "/dev/wingmankvm-keyboard");
+        let roles = classify_hid_functions(tree.path(), &[node]);
+
+        assert!(roles.keyboard.is_empty());
+        assert_eq!(roles.mouse.len(), 1);
+        assert_eq!(roles.mouse[0].path, Path::new("/dev/hidg1"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stable_alias_requires_a_real_character_device_target() {
+        use std::os::unix::fs::symlink;
+
+        let tree = TestTree::new();
+        let raw_path = tree.path().join("hidg0");
+        fs::write(&raw_path, "not a HID gadget device").unwrap();
+        symlink(&raw_path, tree.path().join("wingmankvm-keyboard")).unwrap();
+        let mut nodes = vec![hid_node(raw_path.to_str().unwrap(), 240, 0)];
+
+        attach_stable_hid_aliases(tree.path(), &mut nodes);
+
+        assert!(nodes[0].stable_aliases.is_empty());
+    }
+
+    #[test]
+    fn stable_alias_only_targets_numbered_hid_nodes() {
+        assert!(is_numbered_hid_node(Path::new("/dev/hidg0")));
+        assert!(is_numbered_hid_node(Path::new("/dev/hidg42")));
+        assert!(!is_numbered_hid_node(Path::new("/dev/hidg")));
+        assert!(!is_numbered_hid_node(Path::new("/dev/hidg-mouse")));
+        assert!(!is_numbered_hid_node(Path::new("/dev/wingmankvm-keyboard")));
     }
 
     fn write_lun(path: &Path, attributes: &[&str]) {
