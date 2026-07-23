@@ -377,22 +377,24 @@ async fn setup(
 
     let discovered = discovery::scan().await;
     let mut new_config = Config::default();
-    new_config.video.device = optional_path(request.video_device).or_else(|| {
-        discovered
-            .video
-            .iter()
-            .find(|candidate| {
-                candidate.video_capture != Some(false) && candidate.supports_mjpeg != Some(false)
-            })
-            .map(|candidate| candidate.path.clone())
-    });
+    new_config.video.device =
+        resolve_setup_video(optional_path(request.video_device), &discovered.video)?;
     new_config.video.auto_detect = new_config.video.device.is_none();
-    new_config.hid.keyboard_device = optional_path(request.keyboard_device)
-        .or_else(|| unique_ready_device(&discovered.keyboard));
-    new_config.hid.mouse_device =
-        optional_path(request.mouse_device).or_else(|| unique_ready_device(&discovered.mouse));
-    new_config.hid.absolute_pointer_device = optional_path(request.absolute_pointer_device)
-        .or_else(|| unique_ready_device(&discovered.absolute_pointer));
+    new_config.hid.keyboard_device = resolve_setup_hid(
+        optional_path(request.keyboard_device),
+        SetupHidRole::Keyboard,
+        &discovered,
+    )?;
+    new_config.hid.mouse_device = resolve_setup_hid(
+        optional_path(request.mouse_device),
+        SetupHidRole::Mouse,
+        &discovered,
+    )?;
+    new_config.hid.absolute_pointer_device = resolve_setup_hid(
+        optional_path(request.absolute_pointer_device),
+        SetupHidRole::AbsolutePointer,
+        &discovered,
+    )?;
     new_config.hid.pointer_mode = request.pointer_mode.unwrap_or_default();
     new_config.hid.auto_detect = new_config.hid.keyboard_device.is_none()
         || (new_config.hid.mouse_device.is_none()
@@ -402,30 +404,10 @@ async fn setup(
     new_config.power.enabled = request
         .power_enabled
         .unwrap_or(new_config.power.gpio_chip.is_some() && new_config.power.gpio_line.is_some());
-    new_config.media.lun_path = optional_path(request.lun_path);
-    let media_enabled = request
-        .media_enabled
-        .unwrap_or(new_config.media.lun_path.is_some());
-    if media_enabled && new_config.media.lun_path.is_none() {
-        let ready: Vec<_> = discovered
-            .mass_storage_luns
-            .iter()
-            .filter(|candidate| candidate_is_ready(candidate))
-            .collect();
-        new_config.media.lun_path = match ready.as_slice() {
-            [candidate] => Some(candidate.path.clone()),
-            [] => {
-                return Err(ApiError::bad_request(
-                    "未发现可用的 USB 虚拟介质，请先运行安装程序",
-                ));
-            }
-            _ => {
-                return Err(ApiError::bad_request(
-                    "检测到多个 USB 虚拟介质，请在高级设置中选择",
-                ));
-            }
-        };
-    }
+    let requested_lun = optional_path(request.lun_path);
+    let media_enabled = request.media_enabled.unwrap_or(requested_lun.is_some());
+    new_config.media.lun_path =
+        resolve_setup_lun(requested_lun, media_enabled, &discovered.mass_storage_luns)?;
     new_config.media.image_directory =
         optional_path(request.image_directory).or_else(|| Some(config::state_dir().join("images")));
     new_config.media.enabled = media_enabled;
@@ -463,17 +445,257 @@ async fn setup(
 }
 
 fn candidate_is_ready(candidate: &discovery::DeviceCandidate) -> bool {
-    candidate.compatible != Some(false)
-        && candidate.gadget_bound != Some(false)
-        && candidate.function_linked != Some(false)
+    candidate.compatible == Some(true)
+        && candidate.gadget_bound == Some(true)
+        && candidate.function_linked == Some(true)
 }
 
-fn unique_ready_device(candidates: &[discovery::DeviceCandidate]) -> Option<PathBuf> {
-    let mut ready = candidates
+fn resolve_setup_video(
+    requested: Option<PathBuf>,
+    candidates: &[discovery::DeviceCandidate],
+) -> Result<Option<PathBuf>, ApiError> {
+    if let Some(path) = requested {
+        let candidate = find_candidate(&path, candidates).ok_or_else(|| {
+            ApiError::bad_request("所选视频设备不在本次扫描结果中，请重新扫描后再试")
+        })?;
+        validate_video_candidate(candidate)?;
+        return Ok(Some(path));
+    }
+
+    unique_usable_candidate(
+        candidates,
+        video_candidate_is_usable,
+        "检测到多个可用的 MJPEG 视频设备，请在设备列表中选择一个",
+    )
+}
+
+fn validate_video_candidate(candidate: &discovery::DeviceCandidate) -> Result<(), ApiError> {
+    if candidate.video_capture == Some(false) {
+        return Err(ApiError::bad_request("所选视频设备不支持 V4L2 视频采集"));
+    }
+    if candidate.supports_mjpeg == Some(false) {
+        return Err(ApiError::bad_request(
+            "所选视频设备不支持 MJPEG，无法用于当前视频流",
+        ));
+    }
+    if !video_candidate_is_usable(candidate) {
+        return Err(ApiError::bad_request(
+            "无法确认所选视频设备的采集与 MJPEG 能力，请检查设备权限后重新扫描",
+        ));
+    }
+    Ok(())
+}
+
+fn video_candidate_is_usable(candidate: &discovery::DeviceCandidate) -> bool {
+    video_candidate_is_usable_with_probe_requirement(candidate, cfg!(target_os = "linux"))
+}
+
+fn video_candidate_is_usable_with_probe_requirement(
+    candidate: &discovery::DeviceCandidate,
+    require_verified_probe: bool,
+) -> bool {
+    if require_verified_probe {
+        candidate.video_capture == Some(true) && candidate.supports_mjpeg == Some(true)
+    } else {
+        candidate.video_capture != Some(false) && candidate.supports_mjpeg != Some(false)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SetupHidRole {
+    Keyboard,
+    Mouse,
+    AbsolutePointer,
+}
+
+impl SetupHidRole {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Keyboard => "键盘设备",
+            Self::Mouse => "相对鼠标设备",
+            Self::AbsolutePointer => "绝对指针设备",
+        }
+    }
+
+    fn audit_name(self) -> &'static str {
+        match self {
+            Self::Keyboard => "keyboard",
+            Self::Mouse => "relative_mouse",
+            Self::AbsolutePointer => "absolute_pointer",
+        }
+    }
+
+    fn candidates(self, discovered: &discovery::DeviceDiscovery) -> &[discovery::DeviceCandidate] {
+        match self {
+            Self::Keyboard => &discovered.keyboard,
+            Self::Mouse => &discovered.mouse,
+            Self::AbsolutePointer => &discovered.absolute_pointer,
+        }
+    }
+}
+
+fn resolve_setup_hid(
+    requested: Option<PathBuf>,
+    role: SetupHidRole,
+    discovered: &discovery::DeviceDiscovery,
+) -> Result<Option<PathBuf>, ApiError> {
+    let candidates = role.candidates(discovered);
+    let Some(path) = requested else {
+        return unique_usable_candidate(
+            candidates,
+            candidate_is_ready,
+            format!("检测到多个可用的{}，请在设备列表中选择一个", role.label()),
+        );
+    };
+
+    if let Some(candidate) = find_candidate(&path, candidates) {
+        validate_gadget_candidate(role.label(), candidate)?;
+        return Ok(Some(path));
+    }
+
+    if let Some(actual_role) = recognized_hid_role(&path, discovered) {
+        return Err(ApiError::bad_request(format!(
+            "所选{}实际被识别为{}，请重新选择",
+            role.label(),
+            actual_role.label()
+        )));
+    }
+
+    // Some kernels do not expose the configfs `dev` attribute needed to map
+    // hidg nodes back to functions. An explicit advanced choice may use a
+    // node found by the generic HID scan, but it is never selected
+    // automatically and the unverified role mapping is always audited.
+    if find_candidate(&path, &discovered.hid).is_some() {
+        tracing::warn!(
+            path = %path.display(),
+            requested_role = role.audit_name(),
+            "首次设置采用无法从 configfs 验证角色的 HID 高级配置"
+        );
+        return Ok(Some(path));
+    }
+
+    Err(ApiError::bad_request(format!(
+        "所选{}不在本次 HID 扫描结果中，请重新扫描后再试",
+        role.label()
+    )))
+}
+
+fn recognized_hid_role(
+    path: &Path,
+    discovered: &discovery::DeviceDiscovery,
+) -> Option<SetupHidRole> {
+    [
+        SetupHidRole::Keyboard,
+        SetupHidRole::Mouse,
+        SetupHidRole::AbsolutePointer,
+    ]
+    .into_iter()
+    .find(|role| find_candidate(path, role.candidates(discovered)).is_some())
+}
+
+fn resolve_setup_lun(
+    requested: Option<PathBuf>,
+    enabled: bool,
+    candidates: &[discovery::DeviceCandidate],
+) -> Result<Option<PathBuf>, ApiError> {
+    if let Some(path) = requested {
+        let candidate = find_candidate(&path, candidates).ok_or_else(|| {
+            ApiError::bad_request("所选虚拟介质 LUN 不在本次扫描结果中，请重新扫描后再试")
+        })?;
+        validate_gadget_candidate("虚拟介质 LUN", candidate)?;
+        return Ok(Some(path));
+    }
+    if !enabled {
+        return Ok(None);
+    }
+
+    unique_usable_candidate(
+        candidates,
+        candidate_is_ready,
+        "检测到多个可用的 USB 虚拟介质，请在设备列表中选择一个",
+    )?
+    .ok_or_else(|| ApiError::bad_request("未发现可用的 USB 虚拟介质，请先运行安装程序"))
+    .map(Some)
+}
+
+fn validate_gadget_candidate(
+    label: &str,
+    candidate: &discovery::DeviceCandidate,
+) -> Result<(), ApiError> {
+    match candidate.compatible {
+        Some(true) => {}
+        Some(false) => {
+            return Err(ApiError::bad_request(format!(
+                "所选{label}与 WingmanKVM 所需的 USB 描述符不兼容"
+            )));
+        }
+        None => {
+            return Err(ApiError::bad_request(format!(
+                "无法确认所选{label}的 USB 描述符，请重新扫描"
+            )));
+        }
+    }
+    match candidate.function_linked {
+        Some(true) => {}
+        Some(false) => {
+            return Err(ApiError::bad_request(format!(
+                "所选{label}尚未链接到 USB Gadget 配置"
+            )));
+        }
+        None => {
+            return Err(ApiError::bad_request(format!(
+                "无法确认所选{label}是否已链接到 USB Gadget 配置，请重新扫描"
+            )));
+        }
+    }
+    match candidate.gadget_bound {
+        Some(true) => {}
+        Some(false) => {
+            return Err(ApiError::bad_request(format!(
+                "所选{label}所属 Gadget 尚未绑定 UDC"
+            )));
+        }
+        None => {
+            return Err(ApiError::bad_request(format!(
+                "无法确认所选{label}所属 Gadget 的 UDC 状态，请重新扫描"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn unique_usable_candidate(
+    candidates: &[discovery::DeviceCandidate],
+    usable: impl Fn(&discovery::DeviceCandidate) -> bool,
+    multiple_message: impl Into<String>,
+) -> Result<Option<PathBuf>, ApiError> {
+    let mut usable = candidates.iter().filter(|candidate| usable(candidate));
+    let Some(candidate) = usable.next() else {
+        return Ok(None);
+    };
+    if usable.next().is_some() {
+        return Err(ApiError::bad_request(multiple_message));
+    }
+    Ok(Some(candidate.path.clone()))
+}
+
+fn find_candidate<'a>(
+    requested: &Path,
+    candidates: &'a [discovery::DeviceCandidate],
+) -> Option<&'a discovery::DeviceCandidate> {
+    candidates
         .iter()
-        .filter(|candidate| candidate_is_ready(candidate));
-    let candidate = ready.next()?;
-    ready.next().is_none().then(|| candidate.path.clone())
+        .find(|candidate| paths_refer_to_same_node(requested, &candidate.path))
+}
+
+fn paths_refer_to_same_node(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 async fn sync_system_password(password: &str) -> Result<(), ApiError> {
@@ -1380,11 +1602,233 @@ impl LoginLimiter {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    use std::{
+        fs,
+        os::unix::fs::symlink,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    #[cfg(unix)]
+    static TEST_PATH_ID: AtomicU64 = AtomicU64::new(0);
+
+    fn candidate(path: &str, kind: &str) -> discovery::DeviceCandidate {
+        discovery::DeviceCandidate {
+            path: PathBuf::from(path),
+            label: path.to_owned(),
+            kind: kind.to_owned(),
+            warnings: Vec::new(),
+            gadget: None,
+            function: None,
+            udc: None,
+            gadget_bound: None,
+            function_linked: None,
+            compatible: None,
+            device_major: None,
+            device_minor: None,
+            subclass: None,
+            protocol: None,
+            report_length: None,
+            card: None,
+            driver: None,
+            video_capture: None,
+            supports_mjpeg: None,
+        }
+    }
+
+    fn ready_gadget_candidate(path: &str, kind: &str) -> discovery::DeviceCandidate {
+        let mut candidate = candidate(path, kind);
+        candidate.compatible = Some(true);
+        candidate.function_linked = Some(true);
+        candidate.gadget_bound = Some(true);
+        candidate
+    }
+
+    fn empty_discovery() -> discovery::DeviceDiscovery {
+        discovery::DeviceDiscovery {
+            video: Vec::new(),
+            hid: Vec::new(),
+            keyboard: Vec::new(),
+            mouse: Vec::new(),
+            absolute_pointer: Vec::new(),
+            gpio: Vec::new(),
+            mass_storage_luns: Vec::new(),
+        }
+    }
+
     #[test]
     fn setup_token_comparison_checks_length_and_contents() {
         assert!(constant_time_eq("correct-token", "correct-token"));
         assert!(!constant_time_eq("correct-token", "wrong-token"));
         assert!(!constant_time_eq("correct-token", "correct-token-extra"));
+    }
+
+    #[test]
+    fn automatic_gadget_selection_requires_verified_ready_state() {
+        let mut unknown = candidate("/dev/hidg0", "keyboard");
+        assert!(!candidate_is_ready(&unknown));
+
+        unknown.compatible = Some(true);
+        unknown.function_linked = Some(true);
+        unknown.gadget_bound = Some(false);
+        assert!(!candidate_is_ready(&unknown));
+
+        unknown.gadget_bound = Some(true);
+        assert!(candidate_is_ready(&unknown));
+    }
+
+    #[test]
+    fn automatic_video_selection_uses_only_unique_mjpeg_capture_device() {
+        let mut raw = candidate("/dev/video0", "video");
+        raw.video_capture = Some(true);
+        raw.supports_mjpeg = Some(false);
+        let mut mjpeg = candidate("/dev/video1", "video");
+        mjpeg.video_capture = Some(true);
+        mjpeg.supports_mjpeg = Some(true);
+
+        let selected = unique_usable_candidate(
+            &[raw, mjpeg.clone()],
+            |candidate| video_candidate_is_usable_with_probe_requirement(candidate, true),
+            "multiple",
+        )
+        .unwrap();
+        assert_eq!(selected, Some(PathBuf::from("/dev/video1")));
+
+        let error = unique_usable_candidate(
+            &[mjpeg.clone(), {
+                let mut second = mjpeg;
+                second.path = PathBuf::from("/dev/video2");
+                second
+            }],
+            |candidate| video_candidate_is_usable_with_probe_requirement(candidate, true),
+            "检测到多个可用视频设备",
+        )
+        .unwrap_err();
+        assert_eq!(error.message, "检测到多个可用视频设备");
+    }
+
+    #[test]
+    fn linux_video_probe_must_confirm_capture_and_mjpeg() {
+        let unprobed = candidate("/dev/video0", "video");
+        assert!(!video_candidate_is_usable_with_probe_requirement(
+            &unprobed, true
+        ));
+        assert!(video_candidate_is_usable_with_probe_requirement(
+            &unprobed, false
+        ));
+
+        let mut capture = unprobed;
+        capture.video_capture = Some(true);
+        capture.supports_mjpeg = Some(true);
+        assert!(video_candidate_is_usable_with_probe_requirement(
+            &capture, true
+        ));
+    }
+
+    #[test]
+    fn explicit_video_must_come_from_the_latest_scan() {
+        let error = resolve_setup_video(Some(PathBuf::from("/dev/video9")), &[]).unwrap_err();
+        assert!(error.message.contains("不在本次扫描结果"));
+
+        let mut raw = candidate("/dev/video0", "video");
+        raw.video_capture = Some(true);
+        raw.supports_mjpeg = Some(false);
+        let error = resolve_setup_video(Some(raw.path.clone()), &[raw]).unwrap_err();
+        assert!(error.message.contains("不支持 MJPEG"));
+    }
+
+    #[test]
+    fn explicit_hid_rejects_a_known_different_role() {
+        let mouse = ready_gadget_candidate("/dev/hidg1", "mouse");
+        let mut discovered = empty_discovery();
+        discovered.hid.push(candidate("/dev/hidg1", "hid_gadget"));
+        discovered.mouse.push(mouse);
+
+        let error = resolve_setup_hid(
+            Some(PathBuf::from("/dev/hidg1")),
+            SetupHidRole::Keyboard,
+            &discovered,
+        )
+        .unwrap_err();
+        assert!(error.message.contains("实际被识别为相对鼠标设备"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_stable_symlink_matches_the_scanned_device_node() {
+        let id = TEST_PATH_ID.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "wingmankvm-web-device-match-{}-{id}",
+            std::process::id()
+        ));
+        let node = root.join("hidg0");
+        let stable = root.join("wingmankvm-keyboard");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&node, []).unwrap();
+        symlink(&node, &stable).unwrap();
+
+        let scanned = ready_gadget_candidate(node.to_str().unwrap(), "keyboard");
+        assert!(find_candidate(&stable, &[scanned]).is_some());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_unclassified_hid_is_the_only_manual_role_escape_hatch() {
+        let mut discovered = empty_discovery();
+        discovered.hid.push(candidate("/dev/hidg0", "hid_gadget"));
+
+        let selected = resolve_setup_hid(
+            Some(PathBuf::from("/dev/hidg0")),
+            SetupHidRole::Keyboard,
+            &discovered,
+        )
+        .unwrap();
+        assert_eq!(selected, Some(PathBuf::from("/dev/hidg0")));
+
+        assert_eq!(
+            resolve_setup_hid(None, SetupHidRole::Keyboard, &discovered).unwrap(),
+            None
+        );
+        let error = resolve_setup_hid(
+            Some(PathBuf::from("/dev/not-a-hid-node")),
+            SetupHidRole::Keyboard,
+            &discovered,
+        )
+        .unwrap_err();
+        assert!(error.message.contains("不在本次 HID 扫描结果"));
+    }
+
+    #[test]
+    fn explicit_and_automatic_luns_require_bound_linked_compatible_candidates() {
+        let path = "/sys/kernel/config/usb_gadget/kvm/functions/mass_storage.0/lun.0";
+
+        let mut incompatible = ready_gadget_candidate(path, "mass_storage_lun");
+        incompatible.compatible = Some(false);
+        let error =
+            resolve_setup_lun(Some(incompatible.path.clone()), true, &[incompatible]).unwrap_err();
+        assert!(error.message.contains("描述符不兼容"));
+
+        let mut unlinked = ready_gadget_candidate(path, "mass_storage_lun");
+        unlinked.function_linked = Some(false);
+        let error = resolve_setup_lun(Some(unlinked.path.clone()), true, &[unlinked]).unwrap_err();
+        assert!(error.message.contains("尚未链接"));
+
+        let mut unbound = ready_gadget_candidate(path, "mass_storage_lun");
+        unbound.gadget_bound = Some(false);
+        let error = resolve_setup_lun(Some(unbound.path.clone()), true, &[unbound]).unwrap_err();
+        assert!(error.message.contains("尚未绑定 UDC"));
+
+        let first = ready_gadget_candidate(
+            "/sys/kernel/config/usb_gadget/kvm/functions/mass_storage.0/lun.0",
+            "mass_storage_lun",
+        );
+        let second = ready_gadget_candidate(
+            "/sys/kernel/config/usb_gadget/kvm/functions/mass_storage.1/lun.0",
+            "mass_storage_lun",
+        );
+        let error = resolve_setup_lun(None, true, &[first, second]).unwrap_err();
+        assert!(error.message.contains("多个可用的 USB 虚拟介质"));
     }
 
     #[test]
