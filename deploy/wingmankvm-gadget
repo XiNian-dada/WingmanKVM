@@ -257,10 +257,13 @@ rebuild_gadget() {
 
     # Link order keeps the usual hidg numbering intuitive. Stable /dev links
     # below remain authoritative when another Gadget changes global numbering.
-    ln -s "../../functions/hid.keyboard" "$CONFIG/hid.keyboard"
-    ln -s "../../functions/hid.mouse" "$CONFIG/hid.mouse"
-    ln -s "../../functions/hid.absolute" "$CONFIG/hid.absolute"
-    ln -s "../../functions/mass_storage.0" "$CONFIG/mass_storage.0"
+    # Some configfs implementations reject relative symlink sources even when
+    # they resolve to the same function. Absolute sources are normalized by
+    # configfs and work on both those kernels and the common upstream layout.
+    ln -s "$KEYBOARD_FUNCTION" "$CONFIG/hid.keyboard"
+    ln -s "$MOUSE_FUNCTION" "$CONFIG/hid.mouse"
+    ln -s "$ABSOLUTE_FUNCTION" "$CONFIG/hid.absolute"
+    ln -s "$MASS_STORAGE_FUNCTION" "$CONFIG/mass_storage.0"
 }
 
 lun_has_backing_file() {
