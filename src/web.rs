@@ -342,9 +342,13 @@ struct SetupRequest {
     #[serde(default)]
     pointer_mode: Option<PointerMode>,
     #[serde(default)]
+    power_enabled: Option<bool>,
+    #[serde(default)]
     gpio_chip: Option<String>,
     #[serde(default)]
     gpio_line: Option<u32>,
+    #[serde(default)]
+    media_enabled: Option<bool>,
     #[serde(default)]
     lun_path: Option<String>,
     #[serde(default)]
@@ -371,24 +375,60 @@ async fn setup(
         return Err(ApiError::new(StatusCode::UNAUTHORIZED, "初始化令牌不正确"));
     }
 
+    let discovered = discovery::scan().await;
     let mut new_config = Config::default();
-    new_config.video.device = optional_path(request.video_device);
+    new_config.video.device = optional_path(request.video_device).or_else(|| {
+        discovered
+            .video
+            .iter()
+            .find(|candidate| {
+                candidate.video_capture != Some(false) && candidate.supports_mjpeg != Some(false)
+            })
+            .map(|candidate| candidate.path.clone())
+    });
     new_config.video.auto_detect = new_config.video.device.is_none();
-    new_config.hid.keyboard_device = optional_path(request.keyboard_device);
-    new_config.hid.mouse_device = optional_path(request.mouse_device);
-    new_config.hid.absolute_pointer_device = optional_path(request.absolute_pointer_device);
+    new_config.hid.keyboard_device = optional_path(request.keyboard_device)
+        .or_else(|| unique_ready_device(&discovered.keyboard));
+    new_config.hid.mouse_device =
+        optional_path(request.mouse_device).or_else(|| unique_ready_device(&discovered.mouse));
+    new_config.hid.absolute_pointer_device = optional_path(request.absolute_pointer_device)
+        .or_else(|| unique_ready_device(&discovered.absolute_pointer));
     new_config.hid.pointer_mode = request.pointer_mode.unwrap_or_default();
     new_config.hid.auto_detect = new_config.hid.keyboard_device.is_none()
         || (new_config.hid.mouse_device.is_none()
             && new_config.hid.absolute_pointer_device.is_none());
     new_config.power.gpio_chip = optional_string(request.gpio_chip);
     new_config.power.gpio_line = request.gpio_line;
-    new_config.power.enabled =
-        new_config.power.gpio_chip.is_some() && new_config.power.gpio_line.is_some();
+    new_config.power.enabled = request
+        .power_enabled
+        .unwrap_or(new_config.power.gpio_chip.is_some() && new_config.power.gpio_line.is_some());
     new_config.media.lun_path = optional_path(request.lun_path);
+    let media_enabled = request
+        .media_enabled
+        .unwrap_or(new_config.media.lun_path.is_some());
+    if media_enabled && new_config.media.lun_path.is_none() {
+        let ready: Vec<_> = discovered
+            .mass_storage_luns
+            .iter()
+            .filter(|candidate| candidate_is_ready(candidate))
+            .collect();
+        new_config.media.lun_path = match ready.as_slice() {
+            [candidate] => Some(candidate.path.clone()),
+            [] => {
+                return Err(ApiError::bad_request(
+                    "未发现可用的 USB 虚拟介质，请先运行安装程序",
+                ));
+            }
+            _ => {
+                return Err(ApiError::bad_request(
+                    "检测到多个 USB 虚拟介质，请在高级设置中选择",
+                ));
+            }
+        };
+    }
     new_config.media.image_directory =
         optional_path(request.image_directory).or_else(|| Some(config::state_dir().join("images")));
-    new_config.media.enabled = new_config.media.lun_path.is_some();
+    new_config.media.enabled = media_enabled;
     validate_config(&new_config)?;
     let username = request.username;
     let password = request.password;
@@ -420,6 +460,20 @@ async fn setup(
         Json(json!({"ok": true})).into_response(),
         &session,
     ))
+}
+
+fn candidate_is_ready(candidate: &discovery::DeviceCandidate) -> bool {
+    candidate.compatible != Some(false)
+        && candidate.gadget_bound != Some(false)
+        && candidate.function_linked != Some(false)
+}
+
+fn unique_ready_device(candidates: &[discovery::DeviceCandidate]) -> Option<PathBuf> {
+    let mut ready = candidates
+        .iter()
+        .filter(|candidate| candidate_is_ready(candidate));
+    let candidate = ready.next()?;
+    ready.next().is_none().then(|| candidate.path.clone())
 }
 
 async fn sync_system_password(password: &str) -> Result<(), ApiError> {
@@ -1125,6 +1179,13 @@ fn validate_config(config: &Config) -> Result<(), ApiError> {
     if config.hid.pointer_mode == PointerMode::Relative && config.hid.mouse_device.is_none() {
         return Err(ApiError::bad_request("相对指针模式需要配置相对鼠标设备"));
     }
+    if config.power.enabled
+        && (config.power.gpio_chip.is_none() || config.power.gpio_line.is_none())
+    {
+        return Err(ApiError::bad_request(
+            "启用电源控制前必须配置 GPIO 芯片和线路",
+        ));
+    }
     if config.media.enabled
         && (config.media.lun_path.is_none() || config.media.image_directory.is_none())
     {
@@ -1345,6 +1406,10 @@ mod tests {
         assert!(validate_config(&config).is_err());
 
         let mut config = Config::default();
+        config.power.enabled = true;
+        assert!(validate_config(&config).is_err());
+
+        let mut config = Config::default();
         config.hid.keyboard_device = Some(PathBuf::from("/dev/hidg0"));
         config.hid.absolute_pointer_device = Some(PathBuf::from("/dev/hidg0"));
         assert!(validate_config(&config).is_err());
@@ -1422,6 +1487,25 @@ mod tests {
         apply_media_patch(&mut config, patch.media.unwrap());
         assert_eq!(config.lun_path, None);
         assert!(config.image_directory.is_some());
+    }
+
+    #[test]
+    fn setup_payload_keeps_explicit_capability_choices() {
+        let request: SetupRequest = serde_json::from_value(serde_json::json!({
+            "username": "admin",
+            "password": "Strong-password-123",
+            "setup_token": "token",
+            "power_enabled": true,
+            "gpio_chip": "gpiochip1",
+            "gpio_line": 7,
+            "media_enabled": true
+        }))
+        .unwrap();
+
+        assert_eq!(request.power_enabled, Some(true));
+        assert_eq!(request.media_enabled, Some(true));
+        assert_eq!(request.gpio_chip.as_deref(), Some("gpiochip1"));
+        assert_eq!(request.gpio_line, Some(7));
     }
 
     #[test]
