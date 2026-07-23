@@ -138,6 +138,14 @@ sudo journalctl -u wingmankvm -b --no-pager
 
 普通用户通常只需确认检测结果并选择是否启用电源控制、虚拟介质。自定义 Gadget 的 HID 角色自动判定依赖 configfs 中的 `subclass`、`protocol`、`report_length` 以及 function `dev` 到 `/dev/hidg*` 的设备号映射；旧内核缺少 `dev` 属性时，需要在“高级设置”中人工指定路径。GPIO 扫描无法判断继电器实际接线，因此仍需结合开发板原理图确认线路，并在网页选择高电平或低电平触发。
 
+初始化只有“管理员”和“检查连接”两步。每个硬件区域旁边的 `?` 会把左侧介绍区切换成对应的精简 Guide，不会挤占右侧表单。
+
+| 创建管理员 | 自动检查连接 |
+| --- | --- |
+| [![创建管理员](docs/images/setup-account.png)](docs/images/setup-account.png) | [![自动检查连接](docs/images/setup-detection.png)](docs/images/setup-detection.png) |
+
+[![初始化硬件 Guide](docs/images/setup-guide.png)](docs/images/setup-guide.png)
+
 创建管理员后 setup token 立即失效，网页密码也会同步给本机终端用户 `wingman`。不要把密码写进命令行或 systemd unit。
 
 ## 如何找到并配置硬件
