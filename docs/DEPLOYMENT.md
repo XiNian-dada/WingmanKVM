@@ -150,11 +150,10 @@ systemctl --no-pager --full status wingmankvm-gadget.service
 sudo journalctl -u wingmankvm -b --no-pager
 ```
 
-打开 `http://KVM主机地址:8080/`，然后按三步向导完成设置：
+打开 `http://KVM主机地址:8080/`，然后按两步向导完成设置：
 
 1. 创建管理员账号；一次性地址会自动填入 setup token，密码至少 12 位，并包含大写字母、小写字母、数字和符号；
-2. 进入“硬件”步骤，等待页面自动扫描；
-3. 查看视频与 USB 控制能力，并选择是否启用虚拟介质和电源控制。
+2. 在“检查连接”中确认自动检测结果，选择是否启用虚拟介质；GPIO 电源控制可以跳过并在之后配置。
 
 自动检测会：
 

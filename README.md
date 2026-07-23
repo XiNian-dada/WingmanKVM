@@ -129,7 +129,7 @@ install.sh: the first-run link contains the one-time setup token
 sudo journalctl -u wingmankvm -b --no-pager
 ```
 
-设置管理员账号和强密码；密码至少 12 位，并包含大写字母、小写字母、数字和符号。进入“硬件”步骤时页面会自动扫描：
+设置管理员账号和强密码；密码至少 12 位，并包含大写字母、小写字母、数字和符号。页面会在后台扫描硬件，进入“检查连接”后直接显示推荐结果：
 
 - 优先选择支持 MJPEG 的 V4L2 采集节点；
 - 优先使用官方 Gadget service 创建的稳定 HID 路径；
