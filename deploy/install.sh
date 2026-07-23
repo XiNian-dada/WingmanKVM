@@ -231,8 +231,14 @@ show_first_run_access() {
     local setup_token=
     local listen_address=
     local port=8080
-    local host=127.0.0.1
+    local -a access_hosts=()
+    local -a octets=()
     local candidate
+    local duplicate
+    local existing
+    local first_octet
+    local index
+    local valid
     local value
 
     if command -v journalctl >/dev/null 2>&1; then
@@ -253,19 +259,64 @@ show_first_run_access() {
     if [[ $listen_address =~ :([0-9]+)$ ]]; then
         port=${BASH_REMATCH[1]}
     fi
-    if command -v hostname >/dev/null 2>&1; then
-        for candidate in $(hostname -I 2>/dev/null || true); do
-            case $candidate in
-                127.* | ::1 | *:*) ;;
-                *)
-                    host=$candidate
-                    break
-                    ;;
-            esac
-        done
-    fi
 
-    log "open WingmanKVM: http://$host:$port/"
+    # The route lookup yields the source address the host would normally use
+    # first. The remaining sources make bridge, VLAN, and secondary addresses
+    # visible without letting one of them accidentally become the primary URL.
+    while IFS= read -r candidate; do
+        [[ $candidate =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+        IFS=. read -r -a octets <<<"$candidate"
+        ((${#octets[@]} == 4)) || continue
+
+        valid=true
+        for value in "${octets[@]}"; do
+            if [[ ! $value =~ ^[0-9]{1,3}$ ]] || ((10#$value > 255)); then
+                valid=false
+                break
+            fi
+        done
+        $valid || continue
+
+        first_octet=$((10#${octets[0]}))
+        ((first_octet > 0 && first_octet < 224 && first_octet != 127)) || continue
+
+        duplicate=false
+        for existing in "${access_hosts[@]}"; do
+            if [[ $existing == "$candidate" ]]; then
+                duplicate=true
+                break
+            fi
+        done
+        $duplicate || access_hosts+=("$candidate")
+    done < <(
+        if command -v ip >/dev/null 2>&1; then
+            ip -4 route get 1.1.1.1 2>/dev/null \
+                | awk '{ for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1) }' \
+                || true
+        fi
+        if command -v hostname >/dev/null 2>&1; then
+            hostname -I 2>/dev/null \
+                | awk '{ for (i = 1; i <= NF; i++) print $i }' \
+                || true
+        fi
+        if command -v ip >/dev/null 2>&1; then
+            ip -o -4 address show scope global 2>/dev/null \
+                | awk '{ split($4, address, "/"); print address[1] }' \
+                || true
+        fi
+    )
+
+    if ((${#access_hosts[@]} == 0)); then
+        access_hosts+=(127.0.0.1)
+    fi
+    for index in "${!access_hosts[@]}"; do
+        if ((index == 0)); then
+            log "open WingmanKVM: http://${access_hosts[$index]}:$port/"
+        else
+            log "also detected: http://${access_hosts[$index]}:$port/"
+        fi
+    done
+
     if [[ -s /var/lib/wingmankvm/auth.json ]]; then
         log "existing administrator configuration was preserved"
         return
