@@ -29,7 +29,7 @@ use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc};
 use tokio::{fs, io::AsyncWriteExt};
 
 use crate::{
-    auth::{AuthError, AuthStore, SessionStore},
+    auth::{AuthError, AuthRecord, AuthStore, PasswordPolicyError, SessionStore},
     config::{self, CONFIG_VERSION, Config, HidConfig, PointerMode, VideoEncoding},
     devices::{
         discovery,
@@ -55,6 +55,7 @@ pub struct AppState {
     config_path: Arc<PathBuf>,
     auth: AuthStore,
     sessions: SessionStore,
+    setup: Arc<AsyncMutex<()>>,
     setup_token: Arc<Mutex<Option<String>>>,
     login_limiter: LoginLimiter,
     hid: HidManager,
@@ -97,6 +98,7 @@ impl AppState {
             config_path: Arc::new(config_path),
             auth,
             sessions,
+            setup: Arc::new(AsyncMutex::new(())),
             setup_token: Arc::new(Mutex::new(setup_token)),
             login_limiter: LoginLimiter::default(),
             hid: HidManager::new(),
@@ -359,6 +361,7 @@ async fn setup(
     State(state): State<AppState>,
     Json(request): Json<SetupRequest>,
 ) -> Result<Response, ApiError> {
+    let _setup_guard = state.setup.lock().await;
     if state.auth.is_initialized().map_err(ApiError::internal)? {
         return Err(ApiError::new(StatusCode::CONFLICT, "管理员已经初始化"));
     }
@@ -415,14 +418,25 @@ async fn setup(
     let username = request.username;
     let password = request.password;
 
+    // Validate the username, enforce the complete password policy and finish
+    // the expensive hash before changing the local maintenance account.
+    let auth_record = {
+        let password = password.clone();
+        tokio::task::spawn_blocking(move || AuthRecord::new(username, &password))
+            .await
+            .map_err(ApiError::internal)?
+            .map_err(map_auth_error)?
+    };
+
+    persist_config(state.config_path.as_ref(), &new_config).await?;
+
     // Keep the local maintenance account in sync with the web administrator.
     // The account is deliberately fixed to `wingman`; never interpolate a
     // user-supplied name into a shell command.
     sync_system_password(&password).await?;
 
-    persist_config(state.config_path.as_ref(), &new_config).await?;
     let auth = state.auth.clone();
-    tokio::task::spawn_blocking(move || auth.initialize(username, &password))
+    tokio::task::spawn_blocking(move || auth.initialize_record(auth_record))
         .await
         .map_err(ApiError::internal)?
         .map_err(map_auth_error)?;
@@ -1481,11 +1495,30 @@ fn no_store<T: IntoResponse>(value: T) -> Response {
 
 fn map_auth_error(error: AuthError) -> ApiError {
     match error {
-        AuthError::WeakPassword(_) | AuthError::InvalidUsername => {
-            ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, error.to_string())
-        }
+        AuthError::WeakPassword(policy) => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            password_policy_message(policy),
+        ),
+        AuthError::InvalidUsername => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "账号需为 3–64 位，仅使用英文字母、数字、点、下划线或连字符",
+        ),
         AuthError::AlreadyInitialized => ApiError::new(StatusCode::CONFLICT, error.to_string()),
         _ => ApiError::internal(error),
+    }
+}
+
+fn password_policy_message(error: PasswordPolicyError) -> &'static str {
+    match error {
+        PasswordPolicyError::TooShort { .. }
+        | PasswordPolicyError::MissingUppercase
+        | PasswordPolicyError::MissingLowercase
+        | PasswordPolicyError::MissingNumber
+        | PasswordPolicyError::MissingSymbol => {
+            "密码至少 12 位，并包含大写字母、小写字母、数字和符号"
+        }
+        PasswordPolicyError::TooLong { .. } => "密码过长",
+        PasswordPolicyError::ControlCharacter => "密码不能包含控制字符",
     }
 }
 

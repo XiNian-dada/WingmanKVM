@@ -305,11 +305,17 @@ impl AuthStore {
         atomic_write(&self.path, &contents)
     }
 
+    #[allow(dead_code)]
     pub fn initialize(
         &self,
         username: impl Into<String>,
         password: &str,
     ) -> Result<AuthRecord, AuthError> {
+        let record = AuthRecord::new(username, password)?;
+        self.initialize_record(record)
+    }
+
+    pub fn initialize_record(&self, record: AuthRecord) -> Result<AuthRecord, AuthError> {
         let _guard = self
             .write_lock
             .lock()
@@ -317,7 +323,6 @@ impl AuthStore {
         if self.is_initialized()? {
             return Err(AuthError::AlreadyInitialized);
         }
-        let record = AuthRecord::new(username, password)?;
         self.save_unlocked(&record)?;
         Ok(record)
     }

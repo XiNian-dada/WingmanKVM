@@ -55,7 +55,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
             <div class="form-heading"><h2 tabindex="-1">初始化</h2></div>
             <div class="setup-progress" aria-label="初始化进度"><div class="progress-step active" data-progress="0">01 / 管理员</div><div class="progress-step" data-progress="1">02 / 硬件</div><div class="progress-step" data-progress="2">03 / 启用</div></div>
             <section class="setup-step active" data-setup-step="0">
-              <h3>管理员</h3><p class="setup-step-copy">密码至少 12 位。</p>
+              <h3>管理员</h3><p class="setup-step-copy">密码至少 12 位，包含大小写字母、数字和符号。</p>
               <div class="grid"><label class="field wide"><span>初始化令牌</span><input name="setup_token" type="password" autocomplete="off" required><span class="hint">安装完成时会直接显示。</span></label><label class="field"><span>管理员账号</span><input name="username" autocomplete="username" required></label><label class="field"><span>强密码</span><input name="password" type="password" autocomplete="new-password" minlength="12" required></label><label class="field wide"><span>确认密码</span><input name="confirm_password" type="password" autocomplete="new-password" minlength="12" required></label></div>
               <div class="form-actions"><button class="primary" type="button" data-setup-next>继续连接硬件</button></div>
             </section>
@@ -148,9 +148,10 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     }
     let setupStep = 0, setupScanStarted = false;
     function setSetupStep(next) { setupStep=Math.max(0,Math.min(2,next)); $$('.setup-step',setupForm).forEach((step,index)=>step.classList.toggle('active',index===setupStep)); $$('.progress-step',setupForm).forEach((step,index)=>{step.classList.toggle('active',index===setupStep);step.classList.toggle('done',index<setupStep);}); $('.auth-panel').scrollTop=0;if(setupStep===1&&!setupScanStarted){setupScanStarted=true;scanDevices($('#setup-device-results'));}if(setupStep===2)updateSetupCapabilities(); }
-    function validateSetupAccount() { const password=rawValue(setupForm,'password'),confirm=rawValue(setupForm,'confirm_password'),confirmInput=setupForm.elements.confirm_password; confirmInput.setCustomValidity(password===confirm?'':'两次输入的密码不一致'); const valid=[setupForm.elements.setup_token,setupForm.elements.username,setupForm.elements.password,confirmInput].every(input=>input.reportValidity()); if(!valid)confirmInput.setCustomValidity(password===confirm?'':'两次输入的密码不一致'); return valid; }
+    function validateSetupAccount() { const password=rawValue(setupForm,'password'),confirm=rawValue(setupForm,'confirm_password'),passwordInput=setupForm.elements.password,confirmInput=setupForm.elements.confirm_password,strong=[...password].length>=12&&/\p{Lu}/u.test(password)&&/\p{Ll}/u.test(password)&&/\p{N}/u.test(password)&&/[^\p{L}\p{N}\s]/u.test(password); passwordInput.setCustomValidity(strong?'':'密码至少 12 位，并包含大写字母、小写字母、数字和符号'); confirmInput.setCustomValidity(password===confirm?'':'两次输入的密码不一致'); const valid=[setupForm.elements.setup_token,setupForm.elements.username,passwordInput,confirmInput].every(input=>input.reportValidity()); return valid; }
     $$('[data-setup-next]',setupForm).forEach(button=>button.addEventListener('click',()=>{if(setupStep===0&&!validateSetupAccount())return;setSetupStep(setupStep+1);}));
     $$('[data-setup-prev]',setupForm).forEach(button=>button.addEventListener('click',()=>setSetupStep(setupStep-1)));
+    setupForm.elements.password.addEventListener('input',()=>setupForm.elements.password.setCustomValidity(''));
     setupForm.elements.confirm_password.addEventListener('input',()=>setupForm.elements.confirm_password.setCustomValidity(''));
     setupForm.addEventListener('submit', async event => {
       event.preventDefault(); if(!validateSetupAccount()){setSetupStep(0);return;} const button = $('button[type=submit]', setupForm), error = $('#setup-error'), label=button.textContent; button.disabled = true; button.textContent='正在初始化…'; setupForm.setAttribute('aria-busy','true'); error.textContent = '';
