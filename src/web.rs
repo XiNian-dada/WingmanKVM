@@ -350,6 +350,8 @@ struct SetupRequest {
     #[serde(default)]
     gpio_line: Option<u32>,
     #[serde(default)]
+    active_high: Option<bool>,
+    #[serde(default)]
     media_enabled: Option<bool>,
     #[serde(default)]
     lun_path: Option<String>,
@@ -404,6 +406,7 @@ async fn setup(
             && new_config.hid.absolute_pointer_device.is_none());
     new_config.power.gpio_chip = optional_string(request.gpio_chip);
     new_config.power.gpio_line = request.gpio_line;
+    new_config.power.active_high = request.active_high.unwrap_or(new_config.power.active_high);
     new_config.power.enabled = request
         .power_enabled
         .unwrap_or(new_config.power.gpio_chip.is_some() && new_config.power.gpio_line.is_some());
@@ -1975,6 +1978,7 @@ mod tests {
             "power_enabled": true,
             "gpio_chip": "gpiochip1",
             "gpio_line": 7,
+            "active_high": false,
             "media_enabled": true
         }))
         .unwrap();
@@ -1983,6 +1987,7 @@ mod tests {
         assert_eq!(request.media_enabled, Some(true));
         assert_eq!(request.gpio_chip.as_deref(), Some("gpiochip1"));
         assert_eq!(request.gpio_line, Some(7));
+        assert_eq!(request.active_high, Some(false));
     }
 
     #[test]
