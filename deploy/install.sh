@@ -238,6 +238,7 @@ show_first_run_access() {
     local existing
     local first_octet
     local index
+    local setup_fragment=
     local valid
     local value
 
@@ -309,11 +310,14 @@ show_first_run_access() {
     if ((${#access_hosts[@]} == 0)); then
         access_hosts+=(127.0.0.1)
     fi
+    if [[ ! -s /var/lib/wingmankvm/auth.json && -n $setup_token ]]; then
+        setup_fragment="#setup=$setup_token"
+    fi
     for index in "${!access_hosts[@]}"; do
         if ((index == 0)); then
-            log "open WingmanKVM: http://${access_hosts[$index]}:$port/"
+            log "open WingmanKVM: http://${access_hosts[$index]}:$port/$setup_fragment"
         else
-            log "also detected: http://${access_hosts[$index]}:$port/"
+            log "also detected: http://${access_hosts[$index]}:$port/$setup_fragment"
         fi
     done
 
@@ -322,7 +326,7 @@ show_first_run_access() {
         return
     fi
     if [[ -n $setup_token ]]; then
-        log "first-run setup token: $setup_token"
+        log "the first-run link contains the one-time setup token"
     else
         log "get the first-run token with: journalctl -u wingmankvm.service -b | grep setup_token"
     fi

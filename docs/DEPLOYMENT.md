@@ -85,7 +85,7 @@ sudo ./deploy/install.sh --binary ./target/release/wingmankvm
 - 在内核提供 HID function 设备号映射时创建 `/dev/wingmankvm-keyboard`、`/dev/wingmankvm-mouse`、`/dev/wingmankvm-absolute` 稳定链接；
 - 安装、启用并启动 `wingmankvm.service`。
 
-安装完成后默认监听 `0.0.0.0:8080`。安装器会直接打印可访问的网页地址和首次 setup token；无需先查日志。安装器不会把密码写进命令行或 unit 文件；首次网页初始化时，管理员密码会通过受限 helper 同步给本机终端用户 `wingman`。
+安装完成后默认监听 `0.0.0.0:8080`。安装器会直接打印带一次性令牌的首次设置地址；页面读取令牌后会立即从地址栏清除，无需手工复制或先查日志。安装器不会把密码写进命令行或 unit 文件；首次网页初始化时，管理员密码会通过受限 helper 同步给本机终端用户 `wingman`。
 
 重复运行同一命令可用于升级。安装器会更新二进制和托管的部署文件，但保留：
 
@@ -144,7 +144,7 @@ systemctl --no-pager --full status wingmankvm-gadget.service
 
 ## 5. 首次网页设置
 
-正常安装完成后，直接使用安装器最后显示的网页地址和 setup token。若终端输出已经丢失，再从日志取得仅在创建管理员前有效的 token：
+正常安装完成后，直接打开安装器最后显示的一次性设置地址。若终端输出已经丢失，再从日志取得仅在创建管理员前有效的地址或 token：
 
 ```bash
 sudo journalctl -u wingmankvm -b --no-pager
@@ -152,7 +152,7 @@ sudo journalctl -u wingmankvm -b --no-pager
 
 打开 `http://KVM主机地址:8080/`，然后按三步向导完成设置：
 
-1. 输入 setup token，创建管理员账号；密码至少 12 位，并包含大写字母、小写字母、数字和符号；
+1. 创建管理员账号；一次性地址会自动填入 setup token，密码至少 12 位，并包含大写字母、小写字母、数字和符号；
 2. 进入“硬件”步骤，等待页面自动扫描；
 3. 查看视频与 USB 控制能力，并选择是否启用虚拟介质和电源控制。
 

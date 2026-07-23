@@ -116,14 +116,14 @@ sudo systemctl enable --now wingmankvm-gadget.service wingmankvm.service
 
 ### 3. 打开首次设置向导
 
-安装完成时，安装器会把默认路由使用的源 IPv4 放在第一位，并列出检测到的其他非回环 IPv4 地址，同时显示仅首次初始化有效的 setup token，例如：
+安装完成时，安装器会把默认路由使用的源 IPv4 放在第一位，并列出检测到的其他非回环 IPv4 地址。首次安装的地址会带上仅初始化时有效的一次性令牌，例如：
 
 ```text
-install.sh: open WingmanKVM: http://192.168.1.20:8080/
-install.sh: first-run setup token: ...
+install.sh: open WingmanKVM: http://192.168.1.20:8080/#setup=...
+install.sh: the first-run link contains the one-time setup token
 ```
 
-直接打开显示的地址即可。如果终端输出已经丢失，再从日志找回令牌：
+直接打开显示的一次性地址即可；页面会自动读取令牌并立即从地址栏清除，不需要手工复制。如果终端输出已经丢失，再从日志找回地址或令牌：
 
 ```bash
 sudo journalctl -u wingmankvm -b --no-pager
