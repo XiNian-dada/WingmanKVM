@@ -846,10 +846,14 @@ struct ConfigPatch {
 
 #[derive(Deserialize)]
 struct VideoPatch {
-    device: Option<PathBuf>,
-    width: Option<u32>,
-    height: Option<u32>,
-    frames_per_second: Option<u32>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    device: Option<Option<PathBuf>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    width: Option<Option<u32>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    height: Option<Option<u32>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    frames_per_second: Option<Option<u32>>,
     encoding: Option<VideoEncoding>,
     jpeg_quality: Option<u8>,
 }
@@ -876,8 +880,10 @@ where
 #[derive(Deserialize)]
 struct PowerPatch {
     enabled: Option<bool>,
-    gpio_chip: Option<String>,
-    gpio_line: Option<u32>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    gpio_chip: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    gpio_line: Option<Option<u32>>,
     active_high: Option<bool>,
 }
 
@@ -897,30 +903,13 @@ async fn patch_config(
 ) -> Result<impl IntoResponse, ApiError> {
     let mut config = state.config.read().await.clone();
     if let Some(video) = patch.video {
-        config.video.device = video.device;
-        config.video.auto_detect = config.video.device.is_none();
-        config.video.width = video.width;
-        config.video.height = video.height;
-        config.video.frames_per_second = video.frames_per_second;
-        if let Some(encoding) = video.encoding {
-            config.video.encoding = encoding;
-        }
-        if let Some(quality) = video.jpeg_quality {
-            config.video.jpeg_quality = quality;
-        }
+        apply_video_patch(&mut config.video, video);
     }
     if let Some(hid) = patch.hid {
         apply_hid_patch(&mut config.hid, hid);
     }
     if let Some(power) = patch.power {
-        if let Some(enabled) = power.enabled {
-            config.power.enabled = enabled;
-        }
-        config.power.gpio_chip = power.gpio_chip;
-        config.power.gpio_line = power.gpio_line;
-        if let Some(active_high) = power.active_high {
-            config.power.active_high = active_high;
-        }
+        apply_power_patch(&mut config.power, power);
     }
     if let Some(media) = patch.media {
         apply_media_patch(&mut config.media, media);
@@ -933,6 +922,28 @@ async fn patch_config(
         .map_err(ApiError::internal)?;
     *state.config.write().await = config.clone();
     Ok(no_store(Json(config)))
+}
+
+fn apply_video_patch(config: &mut config::VideoConfig, patch: VideoPatch) {
+    if let Some(device) = patch.device {
+        config.device = device;
+    }
+    if let Some(width) = patch.width {
+        config.width = width;
+    }
+    if let Some(height) = patch.height {
+        config.height = height;
+    }
+    if let Some(frames_per_second) = patch.frames_per_second {
+        config.frames_per_second = frames_per_second;
+    }
+    if let Some(encoding) = patch.encoding {
+        config.encoding = encoding;
+    }
+    if let Some(quality) = patch.jpeg_quality {
+        config.jpeg_quality = quality;
+    }
+    config.auto_detect = config.device.is_none();
 }
 
 fn apply_hid_patch(config: &mut HidConfig, patch: HidPatch) {
@@ -950,6 +961,21 @@ fn apply_hid_patch(config: &mut HidConfig, patch: HidPatch) {
     }
     config.auto_detect = config.keyboard_device.is_none()
         || (config.mouse_device.is_none() && config.absolute_pointer_device.is_none());
+}
+
+fn apply_power_patch(config: &mut config::PowerConfig, patch: PowerPatch) {
+    if let Some(enabled) = patch.enabled {
+        config.enabled = enabled;
+    }
+    if let Some(gpio_chip) = patch.gpio_chip {
+        config.gpio_chip = gpio_chip;
+    }
+    if let Some(gpio_line) = patch.gpio_line {
+        config.gpio_line = gpio_line;
+    }
+    if let Some(active_high) = patch.active_high {
+        config.active_high = active_high;
+    }
 }
 
 fn apply_media_patch(config: &mut config::MediaConfig, patch: MediaPatch) {
@@ -1937,6 +1963,56 @@ mod tests {
         apply_hid_patch(&mut config, patch.hid.unwrap());
         assert_eq!(config.absolute_pointer_device, None);
         assert_eq!(config.keyboard_device, Some(PathBuf::from("/dev/hidg0")));
+    }
+
+    #[test]
+    fn video_and_power_patches_preserve_omitted_fields_and_accept_null() {
+        let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
+            "video": { "jpeg_quality": 72 },
+            "power": { "active_high": false }
+        }))
+        .unwrap();
+        let mut video = config::VideoConfig {
+            auto_detect: false,
+            device: Some(PathBuf::from("/dev/video5")),
+            width: Some(1920),
+            height: Some(1080),
+            frames_per_second: Some(30),
+            ..config::VideoConfig::default()
+        };
+        let mut power = config::PowerConfig {
+            enabled: true,
+            gpio_chip: Some("gpiochip1".to_owned()),
+            gpio_line: Some(7),
+            ..config::PowerConfig::default()
+        };
+        apply_video_patch(&mut video, patch.video.unwrap());
+        apply_power_patch(&mut power, patch.power.unwrap());
+
+        assert_eq!(video.device, Some(PathBuf::from("/dev/video5")));
+        assert_eq!(video.width, Some(1920));
+        assert_eq!(video.height, Some(1080));
+        assert_eq!(video.frames_per_second, Some(30));
+        assert_eq!(video.jpeg_quality, 72);
+        assert_eq!(power.gpio_chip.as_deref(), Some("gpiochip1"));
+        assert_eq!(power.gpio_line, Some(7));
+        assert!(!power.active_high);
+
+        let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
+            "video": { "device": null, "width": null },
+            "power": { "gpio_chip": null, "gpio_line": null }
+        }))
+        .unwrap();
+        apply_video_patch(&mut video, patch.video.unwrap());
+        apply_power_patch(&mut power, patch.power.unwrap());
+
+        assert_eq!(video.device, None);
+        assert_eq!(video.width, None);
+        assert_eq!(video.height, Some(1080));
+        assert!(video.auto_detect);
+        assert_eq!(power.gpio_chip, None);
+        assert_eq!(power.gpio_line, None);
+        assert!(power.enabled);
     }
 
     #[test]
