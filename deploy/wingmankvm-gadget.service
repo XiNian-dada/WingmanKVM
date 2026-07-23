@@ -1,0 +1,19 @@
+[Unit]
+Description=WingmanKVM USB Gadget
+Documentation=https://github.com/XiNian-dada/WingmanKVM
+After=systemd-modules-load.service local-fs.target
+Before=wingmankvm.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-/etc/wingmankvm/gadget.env
+ExecStart=/usr/local/sbin/wingmankvm-gadget start
+ExecReload=/usr/local/sbin/wingmankvm-gadget start
+ExecStop=/usr/local/sbin/wingmankvm-gadget stop
+TimeoutStartSec=30s
+TimeoutStopSec=10s
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target

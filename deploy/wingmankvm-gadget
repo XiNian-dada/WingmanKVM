@@ -1,0 +1,488 @@
+#!/bin/sh
+set -eu
+
+PROGRAM=${0##*/}
+
+log() {
+    printf '%s: %s\n' "$PROGRAM" "$*"
+}
+
+warn() {
+    printf '%s: warning: %s\n' "$PROGRAM" "$*" >&2
+}
+
+die() {
+    printf '%s: error: %s\n' "$PROGRAM" "$*" >&2
+    exit 1
+}
+
+read_text() {
+    if [ -r "$1" ]; then
+        tr -d '\000\r\n' <"$1"
+    fi
+}
+
+write_text() {
+    path=$1
+    value=$2
+    current=$(read_text "$path")
+    if [ "$current" != "$value" ]; then
+        printf '%s' "$value" >"$path"
+    fi
+}
+
+text_is() {
+    [ -r "$1" ] && [ "$(read_text "$1")" = "$2" ]
+}
+
+descriptor_hex() {
+    od -An -tx1 -v "$1" 2>/dev/null | tr -d ' \n'
+}
+
+descriptor_is() {
+    [ -r "$1" ] && [ "$(descriptor_hex "$1")" = "$2" ]
+}
+
+write_descriptor() {
+    # POSIX printf %b accepts the portable \0ooo byte notation used below.
+    printf '%b' "$2" >"$1"
+}
+
+valid_component() {
+    case $1 in
+        '' | *[!A-Za-z0-9._-]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+group_exists() {
+    if command -v getent >/dev/null 2>&1; then
+        getent group "$1" >/dev/null 2>&1
+    else
+        awk -F: -v group="$1" '$1 == group { found = 1 } END { exit !found }' /etc/group
+    fi
+}
+
+mount_configfs() {
+    if [ -d "$GADGETS_ROOT" ]; then
+        return
+    fi
+
+    if command -v modprobe >/dev/null 2>&1; then
+        modprobe libcomposite 2>/dev/null || true
+    fi
+
+    mkdir -p "$CONFIGFS_ROOT"
+    if [ ! -d "$GADGETS_ROOT" ]; then
+        mount -t configfs configfs "$CONFIGFS_ROOT"
+    fi
+    [ -d "$GADGETS_ROOT" ] || die "USB Gadget configfs is unavailable at $GADGETS_ROOT"
+}
+
+other_gadget_using_udc() {
+    requested=$1
+    for udc_file in "$GADGETS_ROOT"/*/UDC; do
+        [ -r "$udc_file" ] || continue
+        [ "$udc_file" = "$GADGET/UDC" ] && continue
+        if [ "$(read_text "$udc_file")" = "$requested" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+find_free_udc() {
+    for candidate_path in "$UDC_CLASS_ROOT"/*; do
+        [ -e "$candidate_path" ] || continue
+        candidate=${candidate_path##*/}
+        if ! other_gadget_using_udc "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+select_udc() {
+    current=$(read_text "$GADGET/UDC")
+    if [ -n "$UDC_NAME" ]; then
+        [ -e "$UDC_CLASS_ROOT/$UDC_NAME" ] || return 1
+        if other_gadget_using_udc "$UDC_NAME"; then
+            die "UDC $UDC_NAME is already bound to another Gadget"
+        fi
+        printf '%s\n' "$UDC_NAME"
+        return 0
+    fi
+    if [ -n "$current" ] && [ -e "$UDC_CLASS_ROOT/$current" ]; then
+        printf '%s\n' "$current"
+        return 0
+    fi
+    find_free_udc
+}
+
+wait_for_udc() {
+    attempts=$((UDC_WAIT_SECONDS * 5 + 1))
+    while [ "$attempts" -gt 0 ]; do
+        if selected=$(select_udc); then
+            printf '%s\n' "$selected"
+            return 0
+        fi
+        attempts=$((attempts - 1))
+        [ "$attempts" -gt 0 ] && sleep 0.2
+    done
+    return 1
+}
+
+link_points_to_function() {
+    link=$CONFIG/$1
+    [ -L "$link" ] || return 1
+    link_target=$(readlink "$link")
+    [ "${link_target##*/}" = "$1" ]
+}
+
+gadget_is_complete() {
+    [ -d "$GADGET" ] || return 1
+    text_is "$GADGET/idVendor" "$ID_VENDOR" || return 1
+    text_is "$GADGET/idProduct" "$ID_PRODUCT" || return 1
+    text_is "$GADGET/bcdDevice" "$BCD_DEVICE" || return 1
+    text_is "$GADGET/bcdUSB" "$BCD_USB" || return 1
+    text_is "$GADGET/strings/$LANGUAGE/manufacturer" "$MANUFACTURER" || return 1
+    text_is "$GADGET/strings/$LANGUAGE/product" "$PRODUCT" || return 1
+    text_is "$GADGET/strings/$LANGUAGE/serialnumber" "$SERIAL" || return 1
+    text_is "$CONFIG/MaxPower" "$MAX_POWER" || return 1
+    text_is "$CONFIG/bmAttributes" "$BM_ATTRIBUTES" || return 1
+    text_is "$CONFIG/strings/$LANGUAGE/configuration" "$CONFIGURATION" || return 1
+
+    text_is "$KEYBOARD_FUNCTION/subclass" 1 || return 1
+    text_is "$KEYBOARD_FUNCTION/protocol" 1 || return 1
+    text_is "$KEYBOARD_FUNCTION/report_length" 8 || return 1
+    descriptor_is "$KEYBOARD_FUNCTION/report_desc" "$KEYBOARD_HEX" || return 1
+
+    text_is "$MOUSE_FUNCTION/subclass" 1 || return 1
+    text_is "$MOUSE_FUNCTION/protocol" 2 || return 1
+    text_is "$MOUSE_FUNCTION/report_length" 4 || return 1
+    descriptor_is "$MOUSE_FUNCTION/report_desc" "$MOUSE_HEX" || return 1
+
+    text_is "$ABSOLUTE_FUNCTION/subclass" 0 || return 1
+    text_is "$ABSOLUTE_FUNCTION/protocol" 0 || return 1
+    text_is "$ABSOLUTE_FUNCTION/report_length" 6 || return 1
+    descriptor_is "$ABSOLUTE_FUNCTION/report_desc" "$ABSOLUTE_HEX" || return 1
+
+    [ -d "$LUN" ] || return 1
+    text_is "$LUN/removable" 1 || return 1
+    link_points_to_function hid.keyboard || return 1
+    link_points_to_function hid.mouse || return 1
+    link_points_to_function hid.absolute || return 1
+    link_points_to_function mass_storage.0 || return 1
+}
+
+remove_managed_link() {
+    link=$CONFIG/$1
+    if [ -L "$link" ]; then
+        rm -f "$link"
+    elif [ -e "$link" ]; then
+        die "$link exists but is not a symbolic link"
+    fi
+}
+
+remove_managed_function() {
+    function_path=$FUNCTIONS/$1
+    if [ -d "$function_path" ]; then
+        rmdir "$function_path" || die "cannot replace managed function $function_path"
+    elif [ -e "$function_path" ]; then
+        die "$function_path exists but is not a Gadget function directory"
+    fi
+}
+
+create_hid_function() {
+    function_path=$1
+    subclass=$2
+    protocol=$3
+    report_length=$4
+    report_descriptor=$5
+
+    mkdir "$function_path"
+    write_text "$function_path/subclass" "$subclass"
+    write_text "$function_path/protocol" "$protocol"
+    write_text "$function_path/report_length" "$report_length"
+    write_descriptor "$function_path/report_desc" "$report_descriptor"
+}
+
+rebuild_gadget() {
+    if lun_has_backing_file; then
+        die "Gadget configuration changed while virtual media is attached; eject it before restarting this service"
+    fi
+
+    if [ -r "$GADGET/UDC" ] && [ -n "$(read_text "$GADGET/UDC")" ]; then
+        log "temporarily unbinding the managed Gadget"
+        printf '%s' '' >"$GADGET/UDC"
+    fi
+
+    mkdir -p "$GADGET"
+    mkdir -p "$GADGET/strings/$LANGUAGE"
+    mkdir -p "$CONFIG/strings/$LANGUAGE"
+    mkdir -p "$FUNCTIONS"
+
+    remove_managed_link hid.keyboard
+    remove_managed_link hid.mouse
+    remove_managed_link hid.absolute
+    remove_managed_link mass_storage.0
+    remove_managed_function hid.keyboard
+    remove_managed_function hid.mouse
+    remove_managed_function hid.absolute
+    remove_managed_function mass_storage.0
+
+    write_text "$GADGET/idVendor" "$ID_VENDOR"
+    write_text "$GADGET/idProduct" "$ID_PRODUCT"
+    write_text "$GADGET/bcdDevice" "$BCD_DEVICE"
+    write_text "$GADGET/bcdUSB" "$BCD_USB"
+    write_text "$GADGET/strings/$LANGUAGE/manufacturer" "$MANUFACTURER"
+    write_text "$GADGET/strings/$LANGUAGE/product" "$PRODUCT"
+    write_text "$GADGET/strings/$LANGUAGE/serialnumber" "$SERIAL"
+    write_text "$CONFIG/MaxPower" "$MAX_POWER"
+    write_text "$CONFIG/bmAttributes" "$BM_ATTRIBUTES"
+    write_text "$CONFIG/strings/$LANGUAGE/configuration" "$CONFIGURATION"
+
+    create_hid_function "$KEYBOARD_FUNCTION" 1 1 8 "$KEYBOARD_DESCRIPTOR"
+    create_hid_function "$MOUSE_FUNCTION" 1 2 4 "$MOUSE_DESCRIPTOR"
+    create_hid_function "$ABSOLUTE_FUNCTION" 0 0 6 "$ABSOLUTE_DESCRIPTOR"
+
+    mkdir "$MASS_STORAGE_FUNCTION"
+    [ -d "$LUN" ] || mkdir "$LUN"
+    [ -e "$LUN/file" ] || die "the kernel did not expose $LUN/file"
+    [ -z "$(read_text "$LUN/file")" ] || die "new Mass Storage LUN unexpectedly has a backing file"
+    write_text "$LUN/removable" 1
+    write_text "$LUN/cdrom" 0
+    write_text "$LUN/ro" 0
+
+    # Link order keeps the usual hidg numbering intuitive. Stable /dev links
+    # below remain authoritative when another Gadget changes global numbering.
+    ln -s "../../functions/hid.keyboard" "$CONFIG/hid.keyboard"
+    ln -s "../../functions/hid.mouse" "$CONFIG/hid.mouse"
+    ln -s "../../functions/hid.absolute" "$CONFIG/hid.absolute"
+    ln -s "../../functions/mass_storage.0" "$CONFIG/mass_storage.0"
+}
+
+lun_has_backing_file() {
+    [ -r "$LUN/file" ] && [ -n "$(read_text "$LUN/file")" ]
+}
+
+authorize_lun() {
+    for attribute in file ro cdrom removable forced_eject; do
+        path=$LUN/$attribute
+        [ -e "$path" ] || continue
+        chgrp "$HW_GROUP" "$path"
+        chmod g+rw,o-rw "$path"
+    done
+}
+
+find_hid_node() {
+    function_path=$1
+    [ -r "$function_path/dev" ] || return 1
+    device_number=$(read_text "$function_path/dev")
+    [ -n "$device_number" ] || return 1
+
+    for class_device in "$HID_CLASS_ROOT"/* "$MISC_CLASS_ROOT"/hidg*; do
+        [ -r "$class_device/dev" ] || continue
+        if [ "$(read_text "$class_device/dev")" = "$device_number" ]; then
+            node=$DEV_ROOT/${class_device##*/}
+            [ -e "$node" ] || return 1
+            printf '%s\n' "$node"
+            return 0
+        fi
+    done
+    return 1
+}
+
+install_device_link() {
+    node=$1
+    link_name=$2
+    link_path=$DEV_ROOT/$link_name
+
+    chgrp "$HW_GROUP" "$node"
+    chmod g+rw,o-rw "$node"
+    if [ -e "$link_path" ] && [ ! -L "$link_path" ]; then
+        die "refusing to replace non-symlink device path $link_path"
+    fi
+    ln -sfn "${node##*/}" "$link_path"
+}
+
+install_hid_links() {
+    # Newer kernels expose the final major:minor as each HID function's `dev`
+    # attribute. Mapping that number through /sys/class/hidg avoids assuming
+    # that this Gadget always owns hidg0, hidg1, and hidg2.
+    attempts=51
+    keyboard_node=
+    mouse_node=
+    absolute_node=
+    while [ "$attempts" -gt 0 ]; do
+        keyboard_node=$(find_hid_node "$KEYBOARD_FUNCTION" || true)
+        mouse_node=$(find_hid_node "$MOUSE_FUNCTION" || true)
+        absolute_node=$(find_hid_node "$ABSOLUTE_FUNCTION" || true)
+        if [ -n "$keyboard_node" ] && [ -n "$mouse_node" ] && [ -n "$absolute_node" ]; then
+            install_device_link "$keyboard_node" "$KEYBOARD_LINK"
+            install_device_link "$mouse_node" "$MOUSE_LINK"
+            install_device_link "$absolute_node" "$ABSOLUTE_LINK"
+            return 0
+        fi
+        attempts=$((attempts - 1))
+        [ "$attempts" -gt 0 ] && sleep 0.1
+    done
+
+    if [ ! -r "$KEYBOARD_FUNCTION/dev" ] || [ ! -r "$MOUSE_FUNCTION/dev" ] || [ ! -r "$ABSOLUTE_FUNCTION/dev" ]; then
+        warn "HID function dev attributes are unavailable; this kernel cannot provide stable WingmanKVM device links"
+    else
+        warn "udev did not create every HID device node; /dev/hidg* permissions will still be handled by the udev rule"
+    fi
+}
+
+remove_device_link() {
+    link_path=$DEV_ROOT/$1
+    if [ -L "$link_path" ]; then
+        rm -f "$link_path"
+    elif [ -e "$link_path" ]; then
+        warn "leaving non-symlink device path $link_path untouched"
+    fi
+}
+
+configure_usb_role() {
+    [ -n "$USB_ROLE_PATH" ] || return 0
+    case $USB_ROLE_PATH in
+        /*) ;;
+        *) die "USB role path must be absolute: $USB_ROLE_PATH" ;;
+    esac
+    [ -e "$USB_ROLE_PATH" ] || die "configured USB role path does not exist: $USB_ROLE_PATH"
+    if [ "$(read_text "$USB_ROLE_PATH")" != "$USB_ROLE_VALUE" ]; then
+        if [ -r "$GADGET/UDC" ] && [ -n "$(read_text "$GADGET/UDC")" ] && lun_has_backing_file; then
+            die "refusing to change the USB controller role while virtual media is attached"
+        fi
+        printf '%s' "$USB_ROLE_VALUE" >"$USB_ROLE_PATH"
+        log "set USB controller role to $USB_ROLE_VALUE through $USB_ROLE_PATH"
+    fi
+}
+
+start_gadget() {
+    [ "$(id -u)" -eq 0 ] || die "must run as root"
+    group_exists "$HW_GROUP" || die "hardware group $HW_GROUP does not exist"
+    mount_configfs
+    configure_usb_role
+
+    if gadget_is_complete; then
+        log "Gadget configuration is already current"
+    else
+        log "creating Gadget configuration at $GADGET"
+        rebuild_gadget
+    fi
+
+    authorize_lun
+    selected_udc=$(wait_for_udc) || die "no free USB Device Controller appeared within ${UDC_WAIT_SECONDS}s"
+    current_udc=$(read_text "$GADGET/UDC")
+    if [ "$current_udc" != "$selected_udc" ]; then
+        if [ -n "$current_udc" ]; then
+            if lun_has_backing_file; then
+                die "refusing to switch UDC while virtual media is attached"
+            fi
+            printf '%s' '' >"$GADGET/UDC"
+        fi
+        printf '%s' "$selected_udc" >"$GADGET/UDC"
+        log "bound $GADGET_NAME to UDC $selected_udc"
+    else
+        log "$GADGET_NAME is already bound to UDC $selected_udc"
+    fi
+    install_hid_links
+}
+
+stop_gadget() {
+    [ "$(id -u)" -eq 0 ] || die "must run as root"
+    if [ -r "$GADGET/UDC" ] && [ -n "$(read_text "$GADGET/UDC")" ]; then
+        if lun_has_backing_file; then
+            die "refusing to unbind the Gadget while virtual media is attached; eject it first"
+        fi
+        printf '%s' '' >"$GADGET/UDC"
+        log "unbound $GADGET_NAME"
+    fi
+    remove_device_link "$KEYBOARD_LINK"
+    remove_device_link "$MOUSE_LINK"
+    remove_device_link "$ABSOLUTE_LINK"
+}
+
+show_status() {
+    if [ ! -d "$GADGET" ]; then
+        printf 'configured=no\n'
+        exit 3
+    fi
+    printf 'configured=yes\n'
+    printf 'udc=%s\n' "$(read_text "$GADGET/UDC")"
+    printf 'lun=%s\n' "$LUN"
+    printf 'keyboard=%s/%s\n' "$DEV_ROOT" "$KEYBOARD_LINK"
+    printf 'mouse=%s/%s\n' "$DEV_ROOT" "$MOUSE_LINK"
+    printf 'absolute_pointer=%s/%s\n' "$DEV_ROOT" "$ABSOLUTE_LINK"
+}
+
+CONFIGFS_ROOT=${WINGMANKVM_CONFIGFS_ROOT:-/sys/kernel/config}
+UDC_CLASS_ROOT=${WINGMANKVM_UDC_CLASS_ROOT:-/sys/class/udc}
+HID_CLASS_ROOT=${WINGMANKVM_HID_CLASS_ROOT:-/sys/class/hidg}
+MISC_CLASS_ROOT=${WINGMANKVM_MISC_CLASS_ROOT:-/sys/class/misc}
+DEV_ROOT=${WINGMANKVM_DEV_ROOT:-/dev}
+GADGET_NAME=${WINGMANKVM_GADGET_NAME:-wingmankvm}
+UDC_NAME=${WINGMANKVM_GADGET_UDC:-}
+UDC_WAIT_SECONDS=${WINGMANKVM_GADGET_UDC_WAIT_SECONDS:-15}
+ID_VENDOR=${WINGMANKVM_GADGET_ID_VENDOR:-0x1d6b}
+ID_PRODUCT=${WINGMANKVM_GADGET_ID_PRODUCT:-0x0104}
+BCD_DEVICE=${WINGMANKVM_GADGET_BCD_DEVICE:-0x0100}
+BCD_USB=${WINGMANKVM_GADGET_BCD_USB:-0x0200}
+MANUFACTURER=${WINGMANKVM_GADGET_MANUFACTURER:-WingmanKVM}
+PRODUCT=${WINGMANKVM_GADGET_PRODUCT:-WingmanKVM USB KVM}
+SERIAL=${WINGMANKVM_GADGET_SERIAL:-}
+CONFIGURATION=${WINGMANKVM_GADGET_CONFIGURATION:-Keyboard, pointers and virtual media}
+MAX_POWER=${WINGMANKVM_GADGET_MAX_POWER:-250}
+BM_ATTRIBUTES=${WINGMANKVM_GADGET_BM_ATTRIBUTES:-0x80}
+HW_GROUP=${WINGMANKVM_GADGET_HW_GROUP:-wingmankvm-hw}
+KEYBOARD_LINK=${WINGMANKVM_GADGET_KEYBOARD_LINK:-wingmankvm-keyboard}
+MOUSE_LINK=${WINGMANKVM_GADGET_MOUSE_LINK:-wingmankvm-mouse}
+ABSOLUTE_LINK=${WINGMANKVM_GADGET_ABSOLUTE_LINK:-wingmankvm-absolute}
+USB_ROLE_PATH=${WINGMANKVM_USB_ROLE_PATH:-}
+USB_ROLE_VALUE=${WINGMANKVM_USB_ROLE_VALUE:-device}
+
+valid_component "$GADGET_NAME" || die "invalid Gadget name: $GADGET_NAME"
+valid_component "$KEYBOARD_LINK" || die "invalid keyboard link name: $KEYBOARD_LINK"
+valid_component "$MOUSE_LINK" || die "invalid mouse link name: $MOUSE_LINK"
+valid_component "$ABSOLUTE_LINK" || die "invalid absolute pointer link name: $ABSOLUTE_LINK"
+[ -z "$UDC_NAME" ] || valid_component "$UDC_NAME" || die "invalid UDC name: $UDC_NAME"
+[ -n "$USB_ROLE_VALUE" ] || die "USB role value must not be empty"
+case $UDC_WAIT_SECONDS in
+    '' | *[!0-9]*) die "UDC wait time must be a non-negative integer" ;;
+esac
+
+if [ -z "$SERIAL" ]; then
+    if [ -r /etc/machine-id ]; then
+        SERIAL=$(tr -cd 'A-Za-z0-9._-' </etc/machine-id)
+    fi
+    [ -n "$SERIAL" ] || SERIAL=$(hostname | tr -cd 'A-Za-z0-9._-')
+    [ -n "$SERIAL" ] || SERIAL=wingmankvm
+fi
+
+GADGETS_ROOT=$CONFIGFS_ROOT/usb_gadget
+GADGET=$GADGETS_ROOT/$GADGET_NAME
+LANGUAGE=0x409
+CONFIG=$GADGET/configs/c.1
+FUNCTIONS=$GADGET/functions
+KEYBOARD_FUNCTION=$FUNCTIONS/hid.keyboard
+MOUSE_FUNCTION=$FUNCTIONS/hid.mouse
+ABSOLUTE_FUNCTION=$FUNCTIONS/hid.absolute
+MASS_STORAGE_FUNCTION=$FUNCTIONS/mass_storage.0
+LUN=$MASS_STORAGE_FUNCTION/lun.0
+
+KEYBOARD_DESCRIPTOR='\0005\0001\0011\0006\0241\0001\0005\0007\0031\0340\0051\0347\0025\0000\0045\0001\0165\0001\0225\0010\0201\0002\0225\0001\0165\0010\0201\0001\0225\0005\0165\0001\0005\0010\0031\0001\0051\0005\0221\0002\0225\0001\0165\0003\0221\0001\0225\0006\0165\0010\0025\0000\0045\0145\0005\0007\0031\0000\0051\0145\0201\0000\0300'
+KEYBOARD_HEX=05010906a101050719e029e71500250175019508810295017508810195057501050819012905910295017503910195067508150025650507190029658100c0
+MOUSE_DESCRIPTOR='\0005\0001\0011\0002\0241\0001\0011\0001\0241\0000\0005\0011\0031\0001\0051\0003\0025\0000\0045\0001\0225\0003\0165\0001\0201\0002\0225\0001\0165\0005\0201\0001\0005\0001\0011\0060\0011\0061\0011\0070\0025\0201\0045\0177\0165\0010\0225\0003\0201\0006\0300\0300'
+MOUSE_HEX=05010902a1010901a1000509190129031500250195037501810295017505810105010930093109381581257f750895038106c0c0
+ABSOLUTE_DESCRIPTOR='\0005\0001\0011\0002\0241\0001\0011\0001\0241\0000\0005\0011\0031\0001\0051\0003\0025\0000\0045\0001\0225\0003\0165\0001\0201\0002\0225\0001\0165\0005\0201\0003\0005\0001\0011\0060\0011\0061\0026\0000\0000\0046\0377\0177\0165\0020\0225\0002\0201\0002\0011\0070\0025\0201\0045\0177\0165\0010\0225\0001\0201\0006\0300\0300'
+ABSOLUTE_HEX=05010902a1010901a1000509190129031500250195037501810295017505810305010930093116000026ff7f75109502810209381581257f750895018106c0c0
+
+case ${1:-start} in
+    start) start_gadget ;;
+    stop) stop_gadget ;;
+    status) show_status ;;
+    *) die "usage: $PROGRAM [start|stop|status]" ;;
+esac

@@ -1,7 +1,7 @@
 [Unit]
 Description=WingmanKVM lightweight ARM KVM service
-After=network-online.target usb-gadget.target
-Wants=network-online.target
+After=network-online.target wingmankvm-gadget.service
+Wants=network-online.target wingmankvm-gadget.service
 
 [Service]
 Type=simple
