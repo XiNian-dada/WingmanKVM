@@ -214,6 +214,60 @@ pub enum PointerMode {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct GpioPulseConfig {
+    pub gpio_chip: Option<String>,
+    pub gpio_line: Option<u32>,
+    pub active_high: bool,
+    pub pulse_ms: u64,
+}
+
+impl Default for GpioPulseConfig {
+    fn default() -> Self {
+        Self {
+            gpio_chip: None,
+            gpio_line: None,
+            active_high: true,
+            pulse_ms: 500,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GpioBias {
+    AsIs,
+    Disabled,
+    PullDown,
+    #[default]
+    PullUp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GpioInputConfig {
+    pub gpio_chip: Option<String>,
+    pub gpio_line: Option<u32>,
+    pub active_low: bool,
+    pub bias: GpioBias,
+    pub poll_interval_ms: u64,
+    pub debounce_ms: u64,
+}
+
+impl Default for GpioInputConfig {
+    fn default() -> Self {
+        Self {
+            gpio_chip: None,
+            gpio_line: None,
+            active_low: true,
+            bias: GpioBias::PullUp,
+            poll_interval_ms: 1_000,
+            debounce_ms: 50,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PowerConfig {
     pub enabled: bool,
     pub auto_detect: bool,
@@ -222,6 +276,12 @@ pub struct PowerConfig {
     pub active_high: bool,
     pub short_press_ms: u64,
     pub long_press_ms: u64,
+    /// Optional reset-switch output. `None` leaves the reset switch unconfigured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_switch: Option<GpioPulseConfig>,
+    /// Optional power-LED sense input. `None` leaves power-state sensing disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_led: Option<GpioInputConfig>,
 }
 
 impl Default for PowerConfig {
@@ -234,6 +294,8 @@ impl Default for PowerConfig {
             active_high: true,
             short_press_ms: 500,
             long_press_ms: 5_000,
+            reset_switch: None,
+            power_led: None,
         }
     }
 }
@@ -408,6 +470,8 @@ mod tests {
         assert_eq!(config.hid.pointer_mode, PointerMode::Auto);
         assert_eq!(config.power.gpio_chip, None);
         assert_eq!(config.power.gpio_line, None);
+        assert_eq!(config.power.reset_switch, None);
+        assert_eq!(config.power.power_led, None);
         assert_eq!(config.media.lun_path, None);
         assert!(!config.media.read_only_by_default);
     }
@@ -458,6 +522,80 @@ mod tests {
         assert_eq!(config.video.h264.encoder, H264Encoder::Auto);
         assert!(!config.video.h264.allow_software);
         assert_eq!(config.video.h264.max_sessions, 1);
+    }
+
+    #[test]
+    fn legacy_power_configuration_keeps_auxiliary_gpio_disabled() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "version": CONFIG_VERSION,
+            "power": {
+                "enabled": true,
+                "gpio_chip": "gpiochip1",
+                "gpio_line": 7,
+                "active_high": true
+            }
+        }))
+        .unwrap();
+
+        assert!(config.power.enabled);
+        assert_eq!(config.power.gpio_line, Some(7));
+        assert_eq!(config.power.reset_switch, None);
+        assert_eq!(config.power.power_led, None);
+    }
+
+    #[test]
+    fn gpio_auxiliary_configuration_uses_stable_defaults() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "version": CONFIG_VERSION,
+            "power": {
+                "reset_switch": {
+                    "gpio_chip": "gpiochip1",
+                    "gpio_line": 10
+                },
+                "power_led": {
+                    "gpio_chip": "gpiochip1",
+                    "gpio_line": 12
+                }
+            }
+        }))
+        .unwrap();
+
+        let reset = config.power.reset_switch.as_ref().unwrap();
+        assert_eq!(reset.gpio_chip.as_deref(), Some("gpiochip1"));
+        assert_eq!(reset.gpio_line, Some(10));
+        assert!(reset.active_high);
+        assert_eq!(reset.pulse_ms, 500);
+
+        let power_led = config.power.power_led.as_ref().unwrap();
+        assert_eq!(power_led.gpio_chip.as_deref(), Some("gpiochip1"));
+        assert_eq!(power_led.gpio_line, Some(12));
+        assert!(power_led.active_low);
+        assert_eq!(power_led.bias, GpioBias::PullUp);
+        assert_eq!(power_led.poll_interval_ms, 1_000);
+        assert_eq!(power_led.debounce_ms, 50);
+    }
+
+    #[test]
+    fn unset_auxiliary_gpio_is_omitted_when_serializing() {
+        let value = serde_json::to_value(Config::default()).unwrap();
+        let power = value.get("power").unwrap();
+        assert!(power.get("reset_switch").is_none());
+        assert!(power.get("power_led").is_none());
+    }
+
+    #[test]
+    fn explicit_null_clears_auxiliary_gpio_configuration() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "version": CONFIG_VERSION,
+            "power": {
+                "reset_switch": null,
+                "power_led": null
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(config.power.reset_switch, None);
+        assert_eq!(config.power.power_led, None);
     }
 
     #[test]
