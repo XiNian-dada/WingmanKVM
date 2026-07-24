@@ -426,26 +426,33 @@ async fn setup(
         SetupHidRole::Keyboard,
         &discovered,
     )?;
-    let pointer_mode = request.pointer_mode.unwrap_or(PointerMode::Absolute);
+    // New clients always send an explicit mode. If an older client omits it,
+    // infer the legacy choice from the path it supplied, otherwise prefer the
+    // new absolute-pointer default.
+    let pointer_mode = request.pointer_mode.unwrap_or_else(|| {
+        if request.absolute_pointer_device.is_some() {
+            PointerMode::Absolute
+        } else if request.mouse_device.is_some() {
+            PointerMode::Relative
+        } else {
+            PointerMode::Absolute
+        }
+    });
     let requested_mouse = optional_path(request.mouse_device);
     let requested_absolute = optional_path(request.absolute_pointer_device);
-    new_config.hid.mouse_device = if requested_mouse.is_some()
-        || matches!(pointer_mode, PointerMode::Relative | PointerMode::Auto)
-    {
-        resolve_setup_hid(requested_mouse, SetupHidRole::Mouse, &discovered)?
-    } else {
-        None
+    new_config.hid.mouse_device = match pointer_mode {
+        PointerMode::Relative | PointerMode::Auto => {
+            resolve_setup_hid(requested_mouse, SetupHidRole::Mouse, &discovered)?
+        }
+        PointerMode::Absolute => None,
     };
-    new_config.hid.absolute_pointer_device = if requested_absolute.is_some()
-        || matches!(pointer_mode, PointerMode::Absolute | PointerMode::Auto)
-    {
-        resolve_setup_hid(
+    new_config.hid.absolute_pointer_device = match pointer_mode {
+        PointerMode::Absolute | PointerMode::Auto => resolve_setup_hid(
             requested_absolute,
             SetupHidRole::AbsolutePointer,
             &discovered,
-        )?
-    } else {
-        None
+        )?,
+        PointerMode::Relative => None,
     };
     new_config.hid.pointer_mode = pointer_mode;
     new_config.hid.auto_detect = new_config.hid.keyboard_device.is_none()
