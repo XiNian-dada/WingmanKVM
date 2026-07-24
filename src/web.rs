@@ -30,7 +30,10 @@ use tokio::{fs, io::AsyncWriteExt};
 
 use crate::{
     auth::{AuthError, AuthRecord, AuthStore, PasswordPolicyError, SessionStore},
-    config::{self, CONFIG_VERSION, Config, H264Encoder, HidConfig, PointerMode, VideoEncoding},
+    config::{
+        self, CONFIG_VERSION, Config, GpioBias, GpioInputConfig, GpioPulseConfig, H264Encoder,
+        HidConfig, PointerMode, VideoEncoding,
+    },
     devices::{
         discovery,
         hid::{
@@ -38,7 +41,10 @@ use crate::{
             MouseMoveRequest, MouseScrollRequest,
         },
         media::{MediaConfigSnapshot, MediaError, MediaManager, MediaType, sanitize_upload_name},
-        power::{PowerConfigSnapshot, PowerError, PowerManager, PowerPress},
+        power::{
+            GpioPulseConfigSnapshot, PowerConfigSnapshot, PowerError, PowerLedConfigSnapshot,
+            PowerManager, PowerPress,
+        },
         video::VideoManager,
         webrtc::{WebRtcError, WebRtcManager, WebRtcOfferRequest, WebRtcStatus},
     },
@@ -49,6 +55,7 @@ const SESSION_COOKIE: &str = "wingman_session";
 const XTERM_JS: &str = include_str!("../web/vendor/xterm/xterm.js");
 const XTERM_FIT_JS: &str = include_str!("../web/vendor/xterm/addon-fit.js");
 const XTERM_CSS: &str = include_str!("../web/vendor/xterm/xterm.css");
+const GPIO_TEST_PULSE_MS: u64 = 150;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -86,6 +93,12 @@ impl AppState {
         };
         let video = VideoManager::new(config.video.clone());
         let webrtc = WebRtcManager::new(video.clone(), config.video.h264.clone());
+        let power = PowerManager::new();
+        let power_led = power_led_snapshot(&config.power);
+        let power_for_led = power.clone();
+        tokio::spawn(async move {
+            power_for_led.set_power_led_config(power_led).await;
+        });
         let sessions = SessionStore::default();
         let session_cleanup = sessions.clone();
         tokio::spawn(async move {
@@ -105,7 +118,7 @@ impl AppState {
             setup_token: Arc::new(Mutex::new(setup_token)),
             login_limiter: LoginLimiter::default(),
             hid: HidManager::new(),
-            power: PowerManager::new(),
+            power,
             media: Arc::new(MediaManager::default()),
             media_upload: Arc::new(AsyncMutex::new(())),
             video,
@@ -135,6 +148,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mouse/click", post(mouse_click))
         .route("/api/mouse/scroll", post(mouse_scroll))
         .route("/api/input/release-all", post(release_all))
+        .route("/api/gpio/test", post(gpio_test))
+        .route("/api/power/test", post(gpio_test))
         .route(
             "/api/webrtc/offer",
             post(webrtc_offer).layer(DefaultBodyLimit::max(64 * 1024)),
@@ -142,6 +157,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/webrtc/close", post(webrtc_close))
         .route("/api/terminal/ws", get(terminal_ws))
         .route("/power", post(power))
+        .route("/reset", post(reset))
         .route("/api/media", get(list_media))
         .route(
             "/api/media/upload",
@@ -312,6 +328,8 @@ struct Capabilities {
     mouse_absolute: bool,
     pointer_mode: PointerMode,
     gpio_power: bool,
+    gpio_reset: bool,
+    gpio_power_led: bool,
     mass_storage: bool,
     video_passthrough: bool,
     video_transcode: bool,
@@ -468,6 +486,10 @@ async fn setup(
         .reconfigure(new_config.video.clone())
         .map_err(ApiError::internal)?;
     state.webrtc.reconfigure(new_config.video.h264).await;
+    state
+        .power
+        .set_power_led_config(power_led_snapshot(&new_config.power))
+        .await;
     state
         .setup_token
         .lock()
@@ -854,7 +876,9 @@ async fn update_config(
         .reconfigure(config.video.clone())
         .map_err(ApiError::internal)?;
     state.webrtc.reconfigure(config.video.h264.clone()).await;
+    let power_led = power_led_snapshot(&config.power);
     *state.config.write().await = config.clone();
+    state.power.set_power_led_config(power_led).await;
     Ok(no_store(Json(config)))
 }
 
@@ -918,6 +942,34 @@ struct PowerPatch {
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     gpio_line: Option<Option<u32>>,
     active_high: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    reset_switch: Option<Option<GpioPulsePatch>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    power_led: Option<Option<GpioInputPatch>>,
+    short_press_ms: Option<u64>,
+    long_press_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct GpioPulsePatch {
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    gpio_chip: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    gpio_line: Option<Option<u32>>,
+    active_high: Option<bool>,
+    pulse_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct GpioInputPatch {
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    gpio_chip: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    gpio_line: Option<Option<u32>>,
+    active_low: Option<bool>,
+    bias: Option<GpioBias>,
+    poll_interval_ms: Option<u64>,
+    debounce_ms: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -954,7 +1006,9 @@ async fn patch_config(
         .reconfigure(config.video.clone())
         .map_err(ApiError::internal)?;
     state.webrtc.reconfigure(config.video.h264.clone()).await;
+    let power_led = power_led_snapshot(&config.power);
     *state.config.write().await = config.clone();
+    state.power.set_power_led_config(power_led).await;
     Ok(no_store(Json(config)))
 }
 
@@ -1026,6 +1080,58 @@ fn apply_power_patch(config: &mut config::PowerConfig, patch: PowerPatch) {
     }
     if let Some(active_high) = patch.active_high {
         config.active_high = active_high;
+    }
+    if let Some(short_press_ms) = patch.short_press_ms {
+        config.short_press_ms = short_press_ms;
+    }
+    if let Some(long_press_ms) = patch.long_press_ms {
+        config.long_press_ms = long_press_ms;
+    }
+    if let Some(reset_switch) = patch.reset_switch {
+        if let Some(patch) = reset_switch {
+            let mut value = config.reset_switch.clone().unwrap_or_default();
+            if let Some(gpio_chip) = patch.gpio_chip {
+                value.gpio_chip = optional_string(gpio_chip);
+            }
+            if let Some(gpio_line) = patch.gpio_line {
+                value.gpio_line = gpio_line;
+            }
+            if let Some(active_high) = patch.active_high {
+                value.active_high = active_high;
+            }
+            if let Some(pulse_ms) = patch.pulse_ms {
+                value.pulse_ms = pulse_ms;
+            }
+            config.reset_switch = Some(value);
+        } else {
+            config.reset_switch = None;
+        }
+    }
+    if let Some(power_led) = patch.power_led {
+        if let Some(patch) = power_led {
+            let mut value = config.power_led.clone().unwrap_or_default();
+            if let Some(gpio_chip) = patch.gpio_chip {
+                value.gpio_chip = optional_string(gpio_chip);
+            }
+            if let Some(gpio_line) = patch.gpio_line {
+                value.gpio_line = gpio_line;
+            }
+            if let Some(active_low) = patch.active_low {
+                value.active_low = active_low;
+            }
+            if let Some(bias) = patch.bias {
+                value.bias = bias;
+            }
+            if let Some(poll_interval_ms) = patch.poll_interval_ms {
+                value.poll_interval_ms = poll_interval_ms;
+            }
+            if let Some(debounce_ms) = patch.debounce_ms {
+                value.debounce_ms = debounce_ms;
+            }
+            config.power_led = Some(value);
+        } else {
+            config.power_led = None;
+        }
     }
 }
 
@@ -1138,15 +1244,6 @@ async fn power(
     Form(form): Form<PowerForm>,
 ) -> Result<Response, ApiError> {
     let config = state.config.read().await.power.clone();
-    let (chip, line) = match (config.enabled, config.gpio_chip, config.gpio_line) {
-        (true, Some(chip), Some(line)) => (chip, line),
-        _ => {
-            return Err(ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "GPIO 电源控制尚未配置",
-            ));
-        }
-    };
     let press = if (form.duration - 0.5).abs() < 0.01 {
         PowerPress::Short
     } else if (form.duration - 5.0).abs() < 0.01 {
@@ -1156,6 +1253,15 @@ async fn power(
             StatusCode::UNPROCESSABLE_ENTITY,
             "只允许短按或长按电源键",
         ));
+    };
+    let (chip, line) = match (config.enabled, config.gpio_chip, config.gpio_line) {
+        (true, Some(chip), Some(line)) => (chip, line),
+        _ => {
+            return Err(ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "GPIO 电源控制尚未配置",
+            ));
+        }
     };
     let pid = state
         .power
@@ -1180,6 +1286,79 @@ async fn power(
         HeaderValue::from_str(&location).map_err(ApiError::internal)?,
     );
     Ok(response)
+}
+
+#[derive(Deserialize, Default)]
+struct ResetForm {
+    duration: Option<f64>,
+}
+
+async fn reset(
+    State(state): State<AppState>,
+    Form(form): Form<ResetForm>,
+) -> Result<Response, ApiError> {
+    if let Some(duration) = form.duration
+        && (duration - 0.5).abs() >= 0.01
+        && (duration - 5.0).abs() >= 0.01
+    {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "只允许短按或长按重启键",
+        ));
+    }
+    let config = state.config.read().await.power.clone();
+    let snapshot = reset_pulse_snapshot(&config, None)
+        .ok_or_else(|| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "GPIO 重启控制尚未配置"))?;
+    let pid = state.power.pulse(snapshot).await.map_err(map_power_error)?;
+    let duration = form.duration.unwrap_or(0.5);
+    let location = format!("/?reset_duration={duration:.2}&reset_pid={pid}");
+    let mut response = StatusCode::SEE_OTHER.into_response();
+    response.headers_mut().insert(
+        LOCATION,
+        HeaderValue::from_str(&location).map_err(ApiError::internal)?,
+    );
+    Ok(response)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum GpioTestTarget {
+    Power,
+    Reset,
+}
+
+#[derive(Debug, Deserialize)]
+struct GpioTestRequest {
+    target: GpioTestTarget,
+    duration_ms: Option<u64>,
+}
+
+async fn gpio_test(
+    State(state): State<AppState>,
+    Json(request): Json<GpioTestRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let duration_ms = request.duration_ms.unwrap_or(GPIO_TEST_PULSE_MS);
+    if !(50..=2_000).contains(&duration_ms) {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "测试脉冲必须在 50 到 2000 毫秒之间",
+        ));
+    }
+    let config = state.config.read().await.power.clone();
+    let snapshot = match request.target {
+        GpioTestTarget::Power => {
+            power_pulse_snapshot(&config, Some(duration_ms)).ok_or_else(|| {
+                ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "GPIO 电源控制尚未配置")
+            })?
+        }
+        GpioTestTarget::Reset => {
+            reset_pulse_snapshot(&config, Some(duration_ms)).ok_or_else(|| {
+                ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "GPIO 重启控制尚未配置")
+            })?
+        }
+    };
+    let pid = state.power.pulse(snapshot).await.map_err(map_power_error)?;
+    Ok(no_store(Json(json!({ "ok": true, "pid": pid }))))
 }
 
 async fn list_media(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
@@ -1441,6 +1620,16 @@ fn capabilities_with_webrtc(config: &Config, video_webrtc_h264: bool) -> Capabil
         gpio_power: config.power.enabled
             && config.power.gpio_chip.is_some()
             && config.power.gpio_line.is_some(),
+        gpio_reset: config
+            .power
+            .reset_switch
+            .as_ref()
+            .is_some_and(gpio_pulse_is_configured),
+        gpio_power_led: config
+            .power
+            .power_led
+            .as_ref()
+            .is_some_and(gpio_input_is_configured),
         mass_storage: config.media.enabled
             && config.media.lun_path.is_some()
             && config.media.image_directory.is_some(),
@@ -1476,6 +1665,59 @@ async fn media_snapshot(state: &AppState) -> Option<MediaConfigSnapshot> {
     Some(MediaConfigSnapshot {
         image_dir: config.image_directory?,
         lun_path: config.lun_path?,
+    })
+}
+
+fn gpio_pulse_is_configured(config: &GpioPulseConfig) -> bool {
+    config.gpio_chip.is_some() && config.gpio_line.is_some()
+}
+
+fn gpio_input_is_configured(config: &GpioInputConfig) -> bool {
+    config.gpio_chip.is_some() && config.gpio_line.is_some()
+}
+
+fn power_pulse_snapshot(
+    config: &config::PowerConfig,
+    duration_override_ms: Option<u64>,
+) -> Option<GpioPulseConfigSnapshot> {
+    let (chip, line) = (config.gpio_chip.clone()?, config.gpio_line?);
+    Some(GpioPulseConfigSnapshot {
+        program: PathBuf::from("gpioset"),
+        chip,
+        line,
+        active_high: config.active_high,
+        pulse_ms: duration_override_ms.unwrap_or(config.short_press_ms),
+        cooldown_ms: 1_000,
+    })
+}
+
+fn reset_pulse_snapshot(
+    config: &config::PowerConfig,
+    duration_override_ms: Option<u64>,
+) -> Option<GpioPulseConfigSnapshot> {
+    let reset = config.reset_switch.as_ref()?;
+    let (chip, line) = (reset.gpio_chip.clone()?, reset.gpio_line?);
+    Some(GpioPulseConfigSnapshot {
+        program: PathBuf::from("gpioset"),
+        chip,
+        line,
+        active_high: reset.active_high,
+        pulse_ms: duration_override_ms.unwrap_or(reset.pulse_ms),
+        cooldown_ms: 250,
+    })
+}
+
+fn power_led_snapshot(config: &config::PowerConfig) -> Option<PowerLedConfigSnapshot> {
+    let led = config.power_led.as_ref()?;
+    let (chip, line) = (led.gpio_chip.clone()?, led.gpio_line?);
+    Some(PowerLedConfigSnapshot {
+        program: PathBuf::from("gpioget"),
+        chip,
+        line,
+        active_low: led.active_low,
+        bias: led.bias,
+        poll_interval_ms: led.poll_interval_ms,
+        debounce_ms: led.debounce_ms,
     })
 }
 
@@ -1546,6 +1788,83 @@ fn validate_config(config: &Config) -> Result<(), ApiError> {
             "启用电源控制前必须配置 GPIO 芯片和线路",
         ));
     }
+    if config.power.gpio_chip.is_some() != config.power.gpio_line.is_some() {
+        return Err(ApiError::bad_request("电源 GPIO 芯片和线路必须同时配置"));
+    }
+    if !(50..=2_000).contains(&config.power.short_press_ms) {
+        return Err(ApiError::bad_request(
+            "电源短按时长必须在 50 到 2000 毫秒之间",
+        ));
+    }
+    if !(1_000..=15_000).contains(&config.power.long_press_ms)
+        || config.power.long_press_ms < config.power.short_press_ms
+    {
+        return Err(ApiError::bad_request(
+            "电源长按时长必须在 1000 到 15000 毫秒之间且不短于短按",
+        ));
+    }
+    if let Some(reset) = &config.power.reset_switch {
+        if reset.gpio_chip.is_some() != reset.gpio_line.is_some() {
+            return Err(ApiError::bad_request("重启 GPIO 芯片和线路必须同时配置"));
+        }
+        if !gpio_pulse_is_configured(reset) {
+            return Err(ApiError::bad_request(
+                "重启 GPIO 配置必须同时包含芯片和线路",
+            ));
+        }
+        if !(50..=2_000).contains(&reset.pulse_ms) {
+            return Err(ApiError::bad_request(
+                "重启脉冲时长必须在 50 到 2000 毫秒之间",
+            ));
+        }
+    }
+    if let Some(power_led) = &config.power.power_led {
+        if power_led.gpio_chip.is_some() != power_led.gpio_line.is_some() {
+            return Err(ApiError::bad_request("PWR LED GPIO 芯片和线路必须同时配置"));
+        }
+        if !gpio_input_is_configured(power_led) {
+            return Err(ApiError::bad_request(
+                "PWR LED GPIO 配置必须同时包含芯片和线路",
+            ));
+        }
+        if !(100..=5_000).contains(&power_led.poll_interval_ms) {
+            return Err(ApiError::bad_request(
+                "PWR LED 轮询间隔必须在 100 到 5000 毫秒之间",
+            ));
+        }
+        if power_led.debounce_ms > 5_000 {
+            return Err(ApiError::bad_request(
+                "PWR LED 去抖时长必须在 0 到 5000 毫秒之间",
+            ));
+        }
+    }
+    let mut gpio_lines: HashMap<(String, u32), &str> = HashMap::new();
+    let mut check_gpio = |label: &'static str, chip: Option<&String>, line: Option<u32>| {
+        if let (Some(chip), Some(line)) = (chip, line) {
+            let key = (normalize_gpio_chip(chip), line);
+            if gpio_lines.insert(key, label).is_some() {
+                return Err(ApiError::bad_request(
+                    "电源、重启和 PWR LED 不能共用同一个 GPIO 线路",
+                ));
+            }
+        }
+        Ok(())
+    };
+    check_gpio(
+        "power",
+        config.power.gpio_chip.as_ref(),
+        config.power.gpio_line,
+    )?;
+    if let Some(reset) = &config.power.reset_switch {
+        check_gpio("reset", reset.gpio_chip.as_ref(), reset.gpio_line)?;
+    }
+    if let Some(power_led) = &config.power.power_led {
+        check_gpio(
+            "power_led",
+            power_led.gpio_chip.as_ref(),
+            power_led.gpio_line,
+        )?;
+    }
     if config.media.enabled
         && (config.media.lun_path.is_none() || config.media.image_directory.is_none())
     {
@@ -1567,6 +1886,15 @@ fn validate_config(config: &Config) -> Result<(), ApiError> {
         }
     }
     Ok(())
+}
+
+fn normalize_gpio_chip(chip: &str) -> String {
+    let chip = chip.trim();
+    Path::new(chip)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(chip)
+        .to_ascii_lowercase()
 }
 
 fn optional_string(value: Option<String>) -> Option<String> {
@@ -1663,9 +1991,10 @@ fn map_hid_error(error: HidError) -> ApiError {
 
 fn map_power_error(error: PowerError) -> ApiError {
     let status = match error {
-        PowerError::QueueFull => StatusCode::TOO_MANY_REQUESTS,
+        PowerError::Busy => StatusCode::CONFLICT,
+        PowerError::Timeout => StatusCode::GATEWAY_TIMEOUT,
+        PowerError::Read(_) => StatusCode::SERVICE_UNAVAILABLE,
         PowerError::Spawn(_) | PowerError::UnsupportedVersion(_) => StatusCode::SERVICE_UNAVAILABLE,
-        PowerError::WorkerStopped => StatusCode::INTERNAL_SERVER_ERROR,
     };
     ApiError::new(status, error.to_string())
 }
@@ -2049,6 +2378,54 @@ mod tests {
     }
 
     #[test]
+    fn gpio_validation_rejects_duplicate_lines_and_unsafe_timing() {
+        let mut config = Config::default();
+        config.power.gpio_chip = Some("/dev/gpiochip1".to_owned());
+        config.power.gpio_line = Some(7);
+        config.power.reset_switch = Some(GpioPulseConfig {
+            gpio_chip: Some("gpiochip1".to_owned()),
+            gpio_line: Some(7),
+            ..GpioPulseConfig::default()
+        });
+        assert!(validate_config(&config).is_err());
+
+        let mut config = Config::default();
+        config.power.short_press_ms = 49;
+        assert!(validate_config(&config).is_err());
+
+        let mut config = Config::default();
+        config.power.long_press_ms = 999;
+        assert!(validate_config(&config).is_err());
+
+        let mut config = Config::default();
+        config.power.reset_switch = Some(GpioPulseConfig {
+            gpio_chip: Some("gpiochip1".to_owned()),
+            gpio_line: Some(10),
+            pulse_ms: 2_001,
+            ..GpioPulseConfig::default()
+        });
+        assert!(validate_config(&config).is_err());
+
+        let mut config = Config::default();
+        config.power.power_led = Some(GpioInputConfig {
+            gpio_chip: Some("gpiochip1".to_owned()),
+            gpio_line: Some(12),
+            poll_interval_ms: 99,
+            ..GpioInputConfig::default()
+        });
+        assert!(validate_config(&config).is_err());
+
+        let mut config = Config::default();
+        config.power.power_led = Some(GpioInputConfig {
+            gpio_chip: Some("gpiochip1".to_owned()),
+            gpio_line: Some(12),
+            debounce_ms: 5_001,
+            ..GpioInputConfig::default()
+        });
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
     fn hid_patch_distinguishes_omitted_fields_from_null() {
         let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
             "hid": {
@@ -2132,6 +2509,76 @@ mod tests {
         assert_eq!(power.gpio_chip, None);
         assert_eq!(power.gpio_line, None);
         assert!(power.enabled);
+    }
+
+    #[test]
+    fn auxiliary_gpio_patches_preserve_nested_fields_and_accept_null() {
+        let mut power = config::PowerConfig {
+            reset_switch: Some(GpioPulseConfig {
+                gpio_chip: Some("gpiochip1".to_owned()),
+                gpio_line: Some(10),
+                active_high: true,
+                pulse_ms: 500,
+            }),
+            power_led: Some(GpioInputConfig {
+                gpio_chip: Some("gpiochip1".to_owned()),
+                gpio_line: Some(12),
+                active_low: true,
+                bias: GpioBias::PullUp,
+                poll_interval_ms: 1_000,
+                debounce_ms: 50,
+            }),
+            ..config::PowerConfig::default()
+        };
+        let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
+            "power": {
+                "reset_switch": { "pulse_ms": 700 },
+                "power_led": { "debounce_ms": 100 }
+            }
+        }))
+        .unwrap();
+        apply_power_patch(&mut power, patch.power.unwrap());
+
+        let reset = power.reset_switch.as_ref().unwrap();
+        assert_eq!(reset.gpio_chip.as_deref(), Some("gpiochip1"));
+        assert_eq!(reset.gpio_line, Some(10));
+        assert_eq!(reset.pulse_ms, 700);
+        let power_led = power.power_led.as_ref().unwrap();
+        assert_eq!(power_led.gpio_line, Some(12));
+        assert_eq!(power_led.poll_interval_ms, 1_000);
+        assert_eq!(power_led.debounce_ms, 100);
+
+        let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
+            "power": { "reset_switch": null, "power_led": null }
+        }))
+        .unwrap();
+        apply_power_patch(&mut power, patch.power.unwrap());
+        assert!(power.reset_switch.is_none());
+        assert!(power.power_led.is_none());
+    }
+
+    #[test]
+    fn gpio_test_target_uses_explicit_power_or_reset_values() {
+        let power: GpioTestRequest = serde_json::from_value(serde_json::json!({
+            "target": "power"
+        }))
+        .unwrap();
+        assert!(matches!(power.target, GpioTestTarget::Power));
+        assert_eq!(power.duration_ms, None);
+
+        let reset: GpioTestRequest = serde_json::from_value(serde_json::json!({
+            "target": "reset",
+            "duration_ms": 150
+        }))
+        .unwrap();
+        assert!(matches!(reset.target, GpioTestTarget::Reset));
+        assert_eq!(reset.duration_ms, Some(150));
+        assert!(
+            serde_json::from_value::<GpioTestRequest>(serde_json::json!({
+                "target": "power_led"
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -2241,6 +2688,22 @@ mod tests {
         assert!(!capabilities(&config).mass_storage);
         config.media.image_directory = Some(PathBuf::from("/var/lib/wingmankvm/images"));
         assert!(capabilities(&config).mass_storage);
+
+        assert!(!capabilities(&config).gpio_reset);
+        assert!(!capabilities(&config).gpio_power_led);
+        config.power.reset_switch = Some(GpioPulseConfig {
+            gpio_chip: Some("gpiochip1".to_owned()),
+            gpio_line: Some(10),
+            ..GpioPulseConfig::default()
+        });
+        config.power.power_led = Some(GpioInputConfig {
+            gpio_chip: Some("gpiochip1".to_owned()),
+            gpio_line: Some(12),
+            ..GpioInputConfig::default()
+        });
+        let gpio = capabilities(&config);
+        assert!(gpio.gpio_reset);
+        assert!(gpio.gpio_power_led);
     }
 
     #[test]
