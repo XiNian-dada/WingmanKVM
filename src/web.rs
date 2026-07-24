@@ -455,9 +455,7 @@ async fn setup(
         PointerMode::Relative => None,
     };
     new_config.hid.pointer_mode = pointer_mode;
-    new_config.hid.auto_detect = new_config.hid.keyboard_device.is_none()
-        || (new_config.hid.mouse_device.is_none()
-            && new_config.hid.absolute_pointer_device.is_none());
+    new_config.hid.auto_detect = hid_needs_auto_detection(&new_config.hid);
     new_config.power.gpio_chip = optional_string(request.gpio_chip);
     new_config.power.gpio_line = request.gpio_line;
     new_config.power.active_high = request.active_high.unwrap_or(new_config.power.active_high);
@@ -1082,8 +1080,18 @@ fn apply_hid_patch(config: &mut HidConfig, patch: HidPatch) {
     if let Some(mode) = patch.pointer_mode {
         config.pointer_mode = mode;
     }
-    config.auto_detect = config.keyboard_device.is_none()
-        || (config.mouse_device.is_none() && config.absolute_pointer_device.is_none());
+    config.auto_detect = hid_needs_auto_detection(config);
+}
+
+fn hid_needs_auto_detection(config: &HidConfig) -> bool {
+    config.keyboard_device.is_none()
+        || match config.pointer_mode {
+            PointerMode::Absolute => config.absolute_pointer_device.is_none(),
+            PointerMode::Relative => config.mouse_device.is_none(),
+            PointerMode::Auto => {
+                config.mouse_device.is_none() && config.absolute_pointer_device.is_none()
+            }
+        }
 }
 
 fn apply_power_patch(config: &mut config::PowerConfig, patch: PowerPatch) {
@@ -1798,10 +1806,14 @@ fn validate_config(config: &Config) -> Result<(), ApiError> {
     }
     if config.hid.pointer_mode == PointerMode::Absolute
         && config.hid.absolute_pointer_device.is_none()
+        && !config.hid.auto_detect
     {
         return Err(ApiError::bad_request("绝对指针模式需要配置绝对指针设备"));
     }
-    if config.hid.pointer_mode == PointerMode::Relative && config.hid.mouse_device.is_none() {
+    if config.hid.pointer_mode == PointerMode::Relative
+        && config.hid.mouse_device.is_none()
+        && !config.hid.auto_detect
+    {
         return Err(ApiError::bad_request("相对指针模式需要配置相对鼠标设备"));
     }
     if config.power.enabled
@@ -2374,11 +2386,21 @@ mod tests {
 
         let mut config = Config::default();
         config.hid.pointer_mode = PointerMode::Absolute;
+        config.hid.auto_detect = false;
         assert!(validate_config(&config).is_err());
 
         let mut config = Config::default();
         config.hid.pointer_mode = PointerMode::Relative;
+        config.hid.auto_detect = false;
         assert!(validate_config(&config).is_err());
+
+        let mut config = Config::default();
+        config.hid.pointer_mode = PointerMode::Absolute;
+        assert!(validate_config(&config).is_ok());
+
+        let mut config = Config::default();
+        config.hid.pointer_mode = PointerMode::Relative;
+        assert!(validate_config(&config).is_ok());
 
         let mut config = Config::default();
         config.video.h264.bitrate_kbps = 0;
@@ -2763,6 +2785,24 @@ mod tests {
         let gpio = capabilities(&config);
         assert!(gpio.gpio_reset);
         assert!(gpio.gpio_power_led);
+    }
+
+    #[test]
+    fn hid_auto_detection_follows_the_selected_pointer_mode() {
+        let mut config = HidConfig {
+            keyboard_device: Some(PathBuf::from("/dev/hidg0")),
+            pointer_mode: PointerMode::Absolute,
+            ..HidConfig::default()
+        };
+        assert!(hid_needs_auto_detection(&config));
+
+        config.absolute_pointer_device = Some(PathBuf::from("/dev/hidg2"));
+        assert!(!hid_needs_auto_detection(&config));
+
+        config.pointer_mode = PointerMode::Relative;
+        assert!(hid_needs_auto_detection(&config));
+        config.mouse_device = Some(PathBuf::from("/dev/hidg1"));
+        assert!(!hid_needs_auto_detection(&config));
     }
 
     #[test]
