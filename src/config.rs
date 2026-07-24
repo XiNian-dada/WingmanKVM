@@ -114,19 +114,14 @@ pub enum VideoEncoding {
     TranscodeJpeg,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum H264Encoder {
+    #[default]
     Auto,
     RockchipMpp,
     V4l2M2m,
     Software,
-}
-
-impl Default for H264Encoder {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -446,6 +441,23 @@ mod tests {
         assert_eq!(config.hid.pointer_mode, PointerMode::Auto);
         assert_eq!(config.hid.absolute_pointer_device, None);
         assert_eq!(config.hid.mouse_device, Some(PathBuf::from("/dev/hidg1")));
+    }
+
+    #[test]
+    fn legacy_video_configuration_defaults_to_safe_h264_settings() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "version": CONFIG_VERSION,
+            "video": {
+                "device": "/dev/video5",
+                "encoding": "mjpeg_passthrough"
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(config.video.h264.bitrate_kbps, 4_000);
+        assert_eq!(config.video.h264.encoder, H264Encoder::Auto);
+        assert!(!config.video.h264.allow_software);
+        assert_eq!(config.video.h264.max_sessions, 1);
     }
 
     #[test]

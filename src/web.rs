@@ -30,7 +30,7 @@ use tokio::{fs, io::AsyncWriteExt};
 
 use crate::{
     auth::{AuthError, AuthRecord, AuthStore, PasswordPolicyError, SessionStore},
-    config::{self, CONFIG_VERSION, Config, HidConfig, PointerMode, VideoEncoding},
+    config::{self, CONFIG_VERSION, Config, H264Encoder, HidConfig, PointerMode, VideoEncoding},
     devices::{
         discovery,
         hid::{
@@ -40,6 +40,7 @@ use crate::{
         media::{MediaConfigSnapshot, MediaError, MediaManager, MediaType, sanitize_upload_name},
         power::{PowerConfigSnapshot, PowerError, PowerManager, PowerPress},
         video::VideoManager,
+        webrtc::{WebRtcError, WebRtcManager, WebRtcOfferRequest, WebRtcStatus},
     },
     web_ui::INDEX_HTML,
 };
@@ -63,6 +64,7 @@ pub struct AppState {
     media: Arc<MediaManager>,
     media_upload: Arc<AsyncMutex<()>>,
     video: VideoManager,
+    webrtc: WebRtcManager,
 }
 
 impl AppState {
@@ -83,6 +85,7 @@ impl AppState {
             Some(token)
         };
         let video = VideoManager::new(config.video.clone());
+        let webrtc = WebRtcManager::new(video.clone(), config.video.h264.clone());
         let sessions = SessionStore::default();
         let session_cleanup = sessions.clone();
         tokio::spawn(async move {
@@ -106,6 +109,7 @@ impl AppState {
             media: Arc::new(MediaManager::default()),
             media_upload: Arc::new(AsyncMutex::new(())),
             video,
+            webrtc,
         })
     }
 
@@ -131,6 +135,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mouse/click", post(mouse_click))
         .route("/api/mouse/scroll", post(mouse_scroll))
         .route("/api/input/release-all", post(release_all))
+        .route(
+            "/api/webrtc/offer",
+            post(webrtc_offer).layer(DefaultBodyLimit::max(64 * 1024)),
+        )
+        .route("/api/webrtc/close", post(webrtc_close))
         .route("/api/terminal/ws", get(terminal_ws))
         .route("/power", post(power))
         .route("/api/media", get(list_media))
@@ -290,6 +299,7 @@ struct BootstrapResponse {
     authenticated: bool,
     config: Option<Config>,
     video: Option<crate::devices::video::VideoStatus>,
+    webrtc: Option<WebRtcStatus>,
     capabilities: Option<Capabilities>,
 }
 
@@ -305,17 +315,24 @@ struct Capabilities {
     mass_storage: bool,
     video_passthrough: bool,
     video_transcode: bool,
+    video_webrtc_h264: bool,
 }
 
 async fn bootstrap(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let setup_required = !state.auth.is_initialized().unwrap_or(false);
     let authenticated = !setup_required && is_authenticated(&state, &headers);
-    let (config, video, capabilities) = if authenticated {
+    let (config, video, webrtc, capabilities) = if authenticated {
         let config = state.config.read().await.clone();
-        let capabilities = capabilities(&config);
-        (Some(config), Some(state.video.status()), Some(capabilities))
+        let webrtc = state.webrtc.status();
+        let capabilities = capabilities_with_webrtc(&config, webrtc.available);
+        (
+            Some(config),
+            Some(state.video.status()),
+            Some(webrtc),
+            Some(capabilities),
+        )
     } else {
-        (None, None, None)
+        (None, None, None, None)
     };
     no_store(Json(BootstrapResponse {
         setup_required,
@@ -323,6 +340,7 @@ async fn bootstrap(State(state): State<AppState>, headers: HeaderMap) -> Respons
         authenticated,
         config,
         video,
+        webrtc,
         capabilities,
     }))
     .into_response()
@@ -447,8 +465,9 @@ async fn setup(
     *state.config.write().await = new_config.clone();
     state
         .video
-        .reconfigure(new_config.video)
+        .reconfigure(new_config.video.clone())
         .map_err(ApiError::internal)?;
+    state.webrtc.reconfigure(new_config.video.h264).await;
     state
         .setup_token
         .lock()
@@ -800,10 +819,12 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
 
 async fn status(State(state): State<AppState>) -> impl IntoResponse {
     let config = state.config.read().await.clone();
+    let webrtc = state.webrtc.status();
     no_store(Json(json!({
         "video": state.video.status(),
         "power": state.power.status().await,
-        "capabilities": capabilities(&config),
+        "webrtc": webrtc,
+        "capabilities": capabilities_with_webrtc(&config, webrtc.available),
     })))
 }
 
@@ -832,6 +853,7 @@ async fn update_config(
         .video
         .reconfigure(config.video.clone())
         .map_err(ApiError::internal)?;
+    state.webrtc.reconfigure(config.video.h264.clone()).await;
     *state.config.write().await = config.clone();
     Ok(no_store(Json(config)))
 }
@@ -856,6 +878,17 @@ struct VideoPatch {
     frames_per_second: Option<Option<u32>>,
     encoding: Option<VideoEncoding>,
     jpeg_quality: Option<u8>,
+    h264: Option<H264Patch>,
+}
+
+#[derive(Deserialize)]
+struct H264Patch {
+    bitrate_kbps: Option<u32>,
+    encoder: Option<H264Encoder>,
+    allow_software: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    ffmpeg_path: Option<Option<PathBuf>>,
+    max_sessions: Option<u8>,
 }
 
 #[derive(Deserialize)]
@@ -920,6 +953,7 @@ async fn patch_config(
         .video
         .reconfigure(config.video.clone())
         .map_err(ApiError::internal)?;
+    state.webrtc.reconfigure(config.video.h264.clone()).await;
     *state.config.write().await = config.clone();
     Ok(no_store(Json(config)))
 }
@@ -942,6 +976,23 @@ fn apply_video_patch(config: &mut config::VideoConfig, patch: VideoPatch) {
     }
     if let Some(quality) = patch.jpeg_quality {
         config.jpeg_quality = quality;
+    }
+    if let Some(h264) = patch.h264 {
+        if let Some(bitrate_kbps) = h264.bitrate_kbps {
+            config.h264.bitrate_kbps = bitrate_kbps;
+        }
+        if let Some(encoder) = h264.encoder {
+            config.h264.encoder = encoder;
+        }
+        if let Some(allow_software) = h264.allow_software {
+            config.h264.allow_software = allow_software;
+        }
+        if let Some(ffmpeg_path) = h264.ffmpeg_path {
+            config.h264.ffmpeg_path = ffmpeg_path;
+        }
+        if let Some(max_sessions) = h264.max_sessions {
+            config.h264.max_sessions = max_sessions;
+        }
     }
     config.auto_detect = config.device.is_none();
 }
@@ -1290,6 +1341,35 @@ async fn video_feed(State(state): State<AppState>) -> Response {
     response
 }
 
+async fn webrtc_offer(
+    State(state): State<AppState>,
+    Json(request): Json<WebRtcOfferRequest>,
+) -> Result<Response, ApiError> {
+    let response = state
+        .webrtc
+        .offer(request)
+        .await
+        .map_err(map_webrtc_error)?;
+    Ok(no_store(Json(response)).into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct WebRtcCloseRequest {
+    session_id: String,
+}
+
+async fn webrtc_close(
+    State(state): State<AppState>,
+    Json(request): Json<WebRtcCloseRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    if request.session_id.len() > 128 || request.session_id.is_empty() {
+        return Err(ApiError::bad_request("WebRTC 会话标识不正确"));
+    }
+    Ok(no_store(Json(json!({
+        "closed": state.webrtc.close(&request.session_id).await,
+    }))))
+}
+
 async fn require_auth(State(state): State<AppState>, request: Request, next: Next) -> Response {
     if !is_authenticated(&state, request.headers()) {
         return ApiError::new(StatusCode::UNAUTHORIZED, "需要登录").into_response();
@@ -1339,7 +1419,12 @@ fn origin_matches_host(headers: &HeaderMap) -> bool {
         .is_some_and(|host| origin_authority.as_str().eq_ignore_ascii_case(host))
 }
 
+#[allow(dead_code)]
 fn capabilities(config: &Config) -> Capabilities {
+    capabilities_with_webrtc(config, false)
+}
+
+fn capabilities_with_webrtc(config: &Config, video_webrtc_h264: bool) -> Capabilities {
     let pointer_mode = resolved_pointer_mode(&config.hid);
     let mouse_relative = config.hid.mouse_device.is_some();
     let mouse_absolute = config.hid.absolute_pointer_device.is_some();
@@ -1361,6 +1446,7 @@ fn capabilities(config: &Config) -> Capabilities {
             && config.media.image_directory.is_some(),
         video_passthrough: true,
         video_transcode: true,
+        video_webrtc_h264,
     }
 }
 
@@ -1421,8 +1507,17 @@ fn validate_config(config: &Config) -> Result<(), ApiError> {
     if !(1..=100).contains(&config.video.jpeg_quality) {
         return Err(ApiError::bad_request("JPEG 质量必须在 1 到 100 之间"));
     }
+    if !(256..=50_000).contains(&config.video.h264.bitrate_kbps) {
+        return Err(ApiError::bad_request(
+            "H.264 码率必须在 256 到 50000 Kbps 之间",
+        ));
+    }
+    if !(1..=4).contains(&config.video.h264.max_sessions) {
+        return Err(ApiError::bad_request("H.264 同时会话数必须在 1 到 4 之间"));
+    }
     for path in [
         config.video.device.as_ref(),
+        config.video.h264.ffmpeg_path.as_ref(),
         config.hid.keyboard_device.as_ref(),
         config.hid.mouse_device.as_ref(),
         config.hid.absolute_pointer_device.as_ref(),
@@ -1593,6 +1688,19 @@ fn map_media_error(error: MediaError) -> ApiError {
         }
         MediaError::Io(_) => StatusCode::SERVICE_UNAVAILABLE,
     };
+    ApiError::new(status, error.to_string())
+}
+
+fn map_webrtc_error(error: WebRtcError) -> ApiError {
+    let status = match &error {
+        WebRtcError::InvalidOffer(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        WebRtcError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        WebRtcError::Capacity => StatusCode::TOO_MANY_REQUESTS,
+        WebRtcError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    if matches!(&error, WebRtcError::Internal(_)) {
+        tracing::error!(%error, "WebRTC request failed");
+    }
     ApiError::new(status, error.to_string())
 }
 
@@ -1912,6 +2020,14 @@ mod tests {
         assert!(validate_config(&config).is_err());
 
         let mut config = Config::default();
+        config.video.h264.bitrate_kbps = 0;
+        assert!(validate_config(&config).is_err());
+
+        let mut config = Config::default();
+        config.video.h264.max_sessions = 0;
+        assert!(validate_config(&config).is_err());
+
+        let mut config = Config::default();
         config.power.enabled = true;
         assert!(validate_config(&config).is_err());
 
@@ -1968,7 +2084,7 @@ mod tests {
     #[test]
     fn video_and_power_patches_preserve_omitted_fields_and_accept_null() {
         let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
-            "video": { "jpeg_quality": 72 },
+            "video": { "jpeg_quality": 72, "h264": { "bitrate_kbps": 2000 } },
             "power": { "active_high": false }
         }))
         .unwrap();
@@ -1994,6 +2110,9 @@ mod tests {
         assert_eq!(video.height, Some(1080));
         assert_eq!(video.frames_per_second, Some(30));
         assert_eq!(video.jpeg_quality, 72);
+        assert_eq!(video.h264.bitrate_kbps, 2_000);
+        assert_eq!(video.h264.encoder, H264Encoder::Auto);
+        assert!(!video.h264.allow_software);
         assert_eq!(power.gpio_chip.as_deref(), Some("gpiochip1"));
         assert_eq!(power.gpio_line, Some(7));
         assert!(!power.active_high);
