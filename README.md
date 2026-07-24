@@ -230,7 +230,7 @@ cat /sys/class/udc/*/uevent 2>/dev/null
 | Boot Relative Mouse | `1` | `2` | `4` |
 | Absolute Pointer | `0` | `0` | `6` |
 
-官方 Gadget 服务会按这些参数和匹配的 report descriptor 创建接口，并通过 function `dev` 的 major:minor 映射提供 `/dev/wingmankvm-keyboard`、`/dev/wingmankvm-mouse` 和 `/dev/wingmankvm-absolute` 三个稳定链接。首次向导优先使用这些稳定路径。自定义 Gadget 只有在 configfs 参数和设备号映射完整时才能自动确认角色；部分旧内核不提供 function `dev`，此时应在高级设置中核对并填写实际 `/dev/hidgN`。默认指针模式为“自动”：有绝对接口时优先使用绝对坐标，没有时回退到相对鼠标。BIOS/UEFI 通常需要保留 Boot Keyboard 和 Boot Relative Mouse。
+官方 Gadget 服务会按这些参数和匹配的 report descriptor 创建接口，并通过 function `dev` 的 major:minor 映射提供 `/dev/wingmankvm-keyboard`、`/dev/wingmankvm-mouse` 和 `/dev/wingmankvm-absolute` 三个稳定链接。首次向导优先使用这些稳定路径。自定义 Gadget 只有在 configfs 参数和设备号映射完整时才能自动确认角色；部分旧内核不提供 function `dev`，此时应在高级设置中核对并填写实际 `/dev/hidgN`。网页只提供“绝对”和“相对”两种指针模式，新安装优先选择绝对坐标；部分 BIOS/UEFI 不支持绝对指针时可切换到 Boot Relative Mouse。旧配置中的 `auto` 会继续兼容读取。
 
 如果没有任何 `/dev/hidg*`，先检查内核是否启用了 USB Gadget/configfs，以及 Gadget 是否已经绑定到 UDC：
 
