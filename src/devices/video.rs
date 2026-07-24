@@ -26,6 +26,7 @@ pub enum VideoState {
     Starting,
     Ready,
     Offline,
+    #[cfg(not(target_os = "linux"))]
     Unsupported,
 }
 
