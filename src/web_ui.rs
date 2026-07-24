@@ -32,6 +32,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     @media(max-width:720px){.auth-shell{max-height:none}.auth-panel{max-height:none;overflow:visible}}
     @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
     .inspector-tabs{grid-template-columns:repeat(5,1fr)}.workspace-tabs{display:flex;gap:3px;padding:3px;border-radius:7px;background:var(--soft-2)}.workspace-tab{min-height:28px;padding:0 10px;border:0;border-radius:5px;background:transparent;color:var(--muted);font-size:11px}.workspace-tab.active{color:var(--ink);background:#fff;box-shadow:0 1px 2px #0001}.terminal-actions{display:flex;gap:8px;margin-top:10px}.terminal-window{position:absolute;inset:46px 0 0;overflow:hidden;background:#111;outline:0;cursor:text}.terminal-window[hidden]{display:none}.terminal-host{width:100%;height:100%;overflow:hidden}.terminal-host .xterm{height:100%;padding:14px}.terminal-host .xterm-viewport{scrollbar-color:#555 #111}.terminal-host .xterm-screen{outline:none}
+    .gpio-test-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.gpio-test-row button{min-height:34px;padding:0 10px;border-radius:6px;font:600 11px/16px "Geist Mono",ui-monospace,monospace;letter-spacing:.04em}.gpio-led-row{display:flex;align-items:center;gap:8px;margin-top:10px;min-height:32px;padding:0 2px;color:var(--body);font-size:12px}.gpio-led-row .status-dot{margin-right:1px}.gpio-led-label{font:11px/16px "Geist Mono",ui-monospace,monospace;color:var(--ink)}.gpio-led-state{min-width:0;flex:1;color:var(--muted);font-size:11px}.gpio-led-row .ghost{min-height:28px;padding:0 7px;font-size:11px}.gpio-led-row .status-dot.online{background:var(--blue)}.gpio-led-row .status-dot.warning{background:var(--amber)}.gpio-led-row .status-dot.error{background:var(--red)}
   </style>
   <style>
     #webrtc-feed{display:block;width:100%;height:100%;max-width:100%;max-height:100%;object-fit:contain;user-select:none;-webkit-user-drag:none;background:#050505}
@@ -43,6 +44,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     #video-transport-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     @media(max-width:720px){.window-dots{display:none}.console-meta{display:inline;max-width:64px;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
     @media(max-width:420px){.console-meta{max-width:50px}}
+    .gpio-config-block{grid-column:1/-1;margin-top:5px;padding-top:14px;border-top:1px solid var(--line)}.gpio-config-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;color:var(--ink);font:600 11px/16px "Geist Mono",ui-monospace,monospace;letter-spacing:.04em}.gpio-inline-test{min-height:26px;padding:0 8px;font-size:10px;letter-spacing:0}.gpio-config-status{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:10px;font-weight:400;letter-spacing:0}.gpio-config-status .status-dot{width:6px;height:6px}.gpio-config-fields{gap:10px}.gpio-config-fields .field{font-size:11px}.gpio-config-fields .field input,.gpio-config-fields .field select{height:36px;font-size:12px}
   </style>
 </head>
 <body>
@@ -106,7 +108,20 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         <header class="inspector-head"><div><h2>控制面板</h2></div></header>
         <nav class="inspector-tabs" aria-label="控制面板"><button class="tab-button active" type="button" data-panel-target="control">控制</button><button class="tab-button" type="button" data-panel-target="video">视频</button><button class="tab-button" type="button" data-panel-target="devices">设备</button><button class="tab-button" type="button" data-panel-target="media">介质</button><button class="tab-button" type="button" data-panel-target="terminal">终端</button></nav>
         <div class="inspector-body">
-          <section class="inspector-panel" data-panel="control"><h3 class="panel-title">远程控制</h3><div class="panel-section"><div class="control-card"><div><strong>转发键鼠</strong></div><label class="switch"><input id="remote-input" type="checkbox" aria-label="转发键盘和鼠标"><i></i></label></div></div><div class="panel-section"><div class="key-strip inspector-keys" aria-label="特殊按键"><button type="button" data-key="Escape">Esc</button><button type="button" data-key="Delete">Del</button><button type="button" data-key="F1">F1</button><button type="button" data-key="F2">F2</button><button type="button" data-key="F3">F3</button><button type="button" data-key="F4">F4</button><button type="button" data-key="F5">F5</button><button type="button" data-key="F6">F6</button><button type="button" data-key="F7">F7</button><button type="button" data-key="F8">F8</button><button type="button" data-key="F9">F9</button><button type="button" data-key="F10">F10</button><button type="button" data-key="F11">F11</button><button type="button" data-key="F12">F12</button></div></div><div class="panel-section"><div class="power-row"><form method="post" action="/power"><input type="hidden" name="duration" value="0.5"><button class="primary" type="submit">短按电源</button></form><form method="post" action="/power" onsubmit="return confirm('确定长按电源 5 秒吗？这可能强制关机。')"><input type="hidden" name="duration" value="5"><button class="danger power-danger" type="submit">强制关机</button></form></div></div></section>
+          <section class="inspector-panel" data-panel="control">
+            <h3 class="panel-title">远程控制</h3>
+            <div class="panel-section"><div class="control-card"><div><strong>转发键鼠</strong></div><label class="switch"><input id="remote-input" type="checkbox" aria-label="转发键盘和鼠标"><i></i></label></div></div>
+            <div class="panel-section"><div class="key-strip inspector-keys" aria-label="特殊按键"><button type="button" data-key="Escape">Esc</button><button type="button" data-key="Delete">Del</button><button type="button" data-key="F1">F1</button><button type="button" data-key="F2">F2</button><button type="button" data-key="F3">F3</button><button type="button" data-key="F4">F4</button><button type="button" data-key="F5">F5</button><button type="button" data-key="F6">F6</button><button type="button" data-key="F7">F7</button><button type="button" data-key="F8">F8</button><button type="button" data-key="F9">F9</button><button type="button" data-key="F10">F10</button><button type="button" data-key="F11">F11</button><button type="button" data-key="F12">F12</button></div></div>
+            <div class="panel-section">
+              <div class="power-row">
+                <form method="post" action="/power"><input type="hidden" name="duration" value="0.5"><button class="primary" type="submit">短按电源</button></form>
+                <form method="post" action="/reset" onsubmit="return confirm('确定复位吗？')"><input type="hidden" name="duration" value="0.5"><button class="secondary" type="submit">复位</button></form>
+                <form method="post" action="/power" onsubmit="return confirm('确定长按电源 5 秒吗？这可能强制关机。')"><input type="hidden" name="duration" value="5"><button class="danger power-danger" type="submit">强制关机</button></form>
+              </div>
+              <div class="gpio-test-row"><button id="gpio-test-power" data-gpio-test="power" class="secondary" type="button">POWER 测试</button><button id="gpio-test-reset" data-gpio-test="reset" class="secondary" type="button">RESET 测试</button></div>
+              <div class="gpio-led-row" role="status" aria-live="polite"><span id="power-led-dot" data-power-led-dot class="status-dot"></span><span class="gpio-led-label">PWR LED</span><span id="power-led-state" data-power-led-state class="gpio-led-state">读取中…</span><button id="power-led-refresh" data-power-led-refresh class="ghost" type="button">刷新</button></div>
+            </div>
+          </section>
           <section class="inspector-panel" data-panel="video" hidden>
             <h3 class="panel-title">视频</h3>
             <form id="video-config" class="side-grid">
@@ -127,7 +142,47 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
               <div class="side-actions wide"><button class="primary" type="submit">应用</button></div>
             </form>
           </section>
-          <section class="inspector-panel" data-panel="devices" hidden><h3 class="panel-title">设备</h3><div id="device-results" class="setup-detection-grid device-overview" role="status"><div class="capability"><span class="status-dot"></span><strong>等待检测</strong></div></div><div class="side-actions"><button id="scan-devices" class="secondary" type="button">重新检测</button></div><details class="side-advanced"><summary>手动配置</summary><form id="device-config" class="side-grid"><label class="field wide"><span>键盘</span><input name="keyboard_device" class="mono"></label><label class="field wide"><span>相对鼠标</span><input name="mouse_device" class="mono"></label><label class="field wide"><span>绝对指针</span><input name="absolute_pointer_device" class="mono"></label><label class="field wide"><span>指针模式</span><select name="pointer_mode"><option value="auto">自动</option><option value="absolute">绝对</option><option value="relative">相对</option></select></label><label class="check wide"><input name="power_enabled" type="checkbox">电源控制</label><label class="field"><span>GPIO 芯片</span><input name="gpio_chip" class="mono"></label><label class="field"><span>GPIO 线路</span><input name="gpio_line" type="number" min="0"></label><label class="field wide"><span>继电器触发</span><select name="active_high"><option value="true">高电平</option><option value="false">低电平</option></select></label><div class="side-actions wide"><button class="primary" type="submit">保存</button></div></form></details><details class="side-advanced"><summary>诊断信息</summary><pre id="device-diagnostics" class="device-results">尚未扫描</pre></details></section>
+          <section class="inspector-panel" data-panel="devices" hidden>
+            <h3 class="panel-title">设备</h3>
+            <div id="device-results" class="setup-detection-grid device-overview" role="status"><div class="capability"><span class="status-dot"></span><strong>等待检测</strong></div></div>
+            <div class="side-actions"><button id="scan-devices" class="secondary" type="button">重新检测</button></div>
+            <details class="side-advanced">
+              <summary>手动配置</summary>
+              <form id="device-config" class="side-grid">
+                <label class="field wide"><span>键盘</span><input name="keyboard_device" class="mono"></label>
+                <label class="field wide"><span>相对鼠标</span><input name="mouse_device" class="mono"></label>
+                <label class="field wide"><span>绝对指针</span><input name="absolute_pointer_device" class="mono"></label>
+                <label class="field wide"><span>指针模式</span><select name="pointer_mode"><option value="auto">自动</option><option value="absolute">绝对</option><option value="relative">相对</option></select></label>
+                <label class="check wide"><input name="power_enabled" type="checkbox">电源控制</label>
+                <div class="gpio-config-title wide">POWER SW <button class="ghost gpio-inline-test" data-gpio-test="power" type="button">测试</button></div>
+                <label class="field"><span>GPIO 芯片</span><input name="gpio_chip" class="mono"></label>
+                <label class="field"><span>GPIO 线路</span><input name="gpio_line" type="number" min="0"></label>
+                <label class="field wide"><span>继电器触发</span><select name="active_high"><option value="true">高电平</option><option value="false">低电平</option></select></label>
+                <div class="gpio-config-block">
+                  <div class="gpio-config-title">RESET SW <button class="ghost gpio-inline-test" data-gpio-test="reset" type="button">测试</button></div>
+                  <div class="side-grid gpio-config-fields">
+                    <label class="field"><span>GPIO 芯片</span><input name="reset_gpio_chip" class="mono"></label>
+                    <label class="field"><span>线路</span><input name="reset_gpio_line" type="number" min="0"></label>
+                    <label class="field"><span>极性</span><select name="reset_active_high"><option value="true">高电平</option><option value="false">低电平</option></select></label>
+                    <label class="field"><span>脉冲 · ms</span><input name="reset_pulse_ms" type="number" min="50" max="2000" placeholder="500"></label>
+                  </div>
+                </div>
+                <div class="gpio-config-block">
+                  <div class="gpio-config-title"><span>PWR LED</span><span class="gpio-config-status"><span data-power-led-dot class="status-dot"></span><span data-power-led-state>读取中…</span><button class="ghost gpio-inline-test" data-power-led-refresh type="button">刷新</button></span></div>
+                  <div class="side-grid gpio-config-fields">
+                    <label class="field"><span>GPIO 芯片</span><input name="power_led_gpio_chip" class="mono"></label>
+                    <label class="field"><span>线路</span><input name="power_led_gpio_line" type="number" min="0"></label>
+                    <label class="field"><span>极性</span><select name="power_led_active_low"><option value="true">低电平有效</option><option value="false">高电平有效</option></select></label>
+                    <label class="field"><span>偏置</span><select name="power_led_bias"><option value="pull_up">上拉</option><option value="pull_down">下拉</option><option value="disabled">关闭</option><option value="as_is">默认</option></select></label>
+                    <label class="field"><span>轮询 · ms</span><input name="power_led_poll_interval_ms" type="number" min="100" max="5000" placeholder="1000"></label>
+                    <label class="field"><span>去抖 · ms</span><input name="power_led_debounce_ms" type="number" min="0" max="5000" placeholder="50"></label>
+                  </div>
+                </div>
+                <div class="side-actions wide"><button class="primary" type="submit">保存</button></div>
+              </form>
+            </details>
+            <details class="side-advanced"><summary>诊断信息</summary><pre id="device-diagnostics" class="device-results">尚未扫描</pre></details>
+          </section>
           <section class="inspector-panel" data-panel="media" hidden><h3 class="panel-title">虚拟介质</h3><div class="panel-section"><div id="media-status" class="media-status" role="status"><span class="status-dot"></span><span class="media-status-copy"><strong>正在读取…</strong></span></div><form id="media-upload" class="upload-zone"><label class="field"><span>上传 ISO / IMG</span><input name="file" type="file" accept=".iso,.img" required></label><div class="side-actions"><button class="primary" type="submit">上传</button><button id="media-refresh" class="secondary" type="button">刷新</button></div><div class="upload-progress" role="progressbar" aria-label="上传进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="upload-bar"></i></div></form><div id="media-list" class="media-list">正在读取…</div></div><details class="side-advanced"><summary>存储设置</summary><form id="media-config" class="side-grid"><label class="check wide"><input name="enabled" type="checkbox">启用虚拟介质</label><label class="field wide"><span>LUN 目录</span><input name="lun_path" class="mono" placeholder="/sys/kernel/config/usb_gadget/…/lun.0"></label><label class="field wide"><span>镜像目录</span><input name="image_directory" class="mono" placeholder="/var/lib/wingmankvm/images"></label><div class="side-actions wide"><button id="media-scan" class="secondary" type="button">自动检测</button><button class="primary" type="submit">保存</button></div></form></details></section>
           <section class="inspector-panel" data-panel="terminal" hidden><h3 class="panel-title">终端</h3><div class="panel-section"><div class="terminal-actions"><button id="terminal-connect" class="primary" type="button">连接</button><button id="terminal-clear" class="secondary" type="button">清空</button></div></div></section>
         </div>
@@ -149,8 +204,8 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     const viewport = $('#video-viewport'), feed = $('#video-feed'), webrtcFeed = $('#webrtc-feed'), consoleBox = $('#console');
     let bootstrap = {}, remoteWanted = false, pageActive = !document.hidden, reconnectTimer = 0, reconnectDelay = 500;
     let videoGeneration = 0, videoWorkspace = 'video', videoPreference = 'auto', activeVideoTransport = 'none', videoUiState = 'paused', videoFallback = false;
-    let webrtcPeer = null, webrtcSessionId = null, webrtcAbort = null, videoFirstFrameTimer = 0, statusTimer = 0, latestVideoStatus = null, videoConfigRequestId = 0;
-    let toastTimer = 0, mouseX = 0, mouseY = 0, absolutePending = null, mouseBusy = false, mouseTimer = 0, lastMouseSend = 0;
+    let webrtcPeer = null, webrtcSessionId = null, webrtcAbort = null, videoFirstFrameTimer = 0, statusTimer = 0, latestVideoStatus = null, latestPowerStatus = null, videoConfigRequestId = 0;
+    let toastTimer = 0, mouseX = 0, mouseY = 0, absolutePending = null, mouseBusy = false, mouseTimer = 0, lastMouseSend = 0, gpioTestBusy = false;
     const setupGuides={account:{kicker:'01 / 管理员',title:'账号只设置一次',items:[['网页与终端','管理员密码也会同步给本机终端用户 wingman。'],['强密码','至少 12 位，并包含大小写字母、数字和符号。'],['一次性链接','初始化令牌会从地址中自动读取并立即清除。']]},devices:{kicker:'02 / 连接',title:'先自动检测',items:[['唯一候选','验证通过且只有一个设备时直接采用。'],['多个设备','只在存在多个可用候选时让你选择。'],['手动配置','设备路径只留给自定义 Gadget 和特殊板卡。']]},video:{kicker:'视频采集',title:'认准视频节点',items:[['插在 Host 口','采集卡是输入设备，不要接到 OTG Device 口。'],['检查能力','选择同时支持 Video Capture 和 MJPG 的 USB 节点。'],['排除 metadata','只有 Metadata Capture 的 /dev/videoN 不会输出画面。']]},input:{kicker:'USB 控制',title:'优先精准同步',items:[['OTG Device 口','键盘、鼠标和虚拟 U 盘从这里连接被控机。'],['绝对指针','网页位置会直接映射到远端位置，默认优先使用。'],['相对鼠标','保留给只支持 Boot Mouse 的 BIOS 或 UEFI。']]},media:{kicker:'虚拟介质',title:'镜像就是一只 U 盘',items:[['ISO','始终按只读光驱挂载。'],['IMG','可作为读写 U 盘，但弹出前先在被控机卸载。'],['避免双写','同一镜像不要同时被 RK3399 和被控机写入。']]},power:{kicker:'GPIO 电源',title:'接线必须人工确认',items:[['使用继电器','用干接点并联被控机电源按钮，不要让 GPIO 直接承受外部电压。'],['线路与极性','软件能发现 gpiochip，但不能猜出 line 和高低电平。'],['可以跳过','先完成 KVM，确认原理图和接线后再启用电源控制。']]}};
 
     let setupGuideTrigger=null;
@@ -259,10 +314,30 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       selectH264Preset(h264);
       for (const name of ['keyboard_device','mouse_device','absolute_pointer_device']) df.elements[name].value = hid[name] || '';
       df.elements.pointer_mode.value = hid.pointer_mode || 'auto';
-      df.elements.power_enabled.checked = !!power.enabled; if (power.gpio_chip != null) df.elements.gpio_chip.value = power.gpio_chip; if (power.gpio_line != null) df.elements.gpio_line.value = power.gpio_line; df.elements.active_high.value = power.active_high === false ? 'false' : 'true';
+      df.elements.power_enabled.checked = !!power.enabled; df.elements.gpio_chip.value = power.gpio_chip ?? ''; df.elements.gpio_line.value = power.gpio_line ?? ''; df.elements.active_high.value = power.active_high === false ? 'false' : 'true';
+      const reset=power.reset_switch||{},led=power.power_led||{}; df.elements.reset_gpio_chip.value=reset.gpio_chip??''; df.elements.reset_gpio_line.value=reset.gpio_line??''; df.elements.reset_active_high.value=reset.active_high===false?'false':'true'; df.elements.reset_pulse_ms.value=reset.pulse_ms??''; df.elements.power_led_gpio_chip.value=led.gpio_chip??''; df.elements.power_led_gpio_line.value=led.gpio_line??''; df.elements.power_led_active_low.value=led.active_low===false?'false':'true'; df.elements.power_led_bias.value=led.bias||'pull_up'; df.elements.power_led_poll_interval_ms.value=led.poll_interval_ms??''; df.elements.power_led_debounce_ms.value=led.debounce_ms??'';
       mf.elements.enabled.checked = !!media.enabled; if (media.lun_path != null) mf.elements.lun_path.value = media.lun_path; if (media.lun_file != null && !media.lun_path) mf.elements.lun_path.value = media.lun_file; if (media.image_directory != null) mf.elements.image_directory.value = media.image_directory;
-      $$('.power-row button').forEach(button=>button.disabled=bootstrap.capabilities?.gpio_power===false);
-      $('#quality-value').textContent = vf.elements.jpeg_quality.value; $('#session-user').textContent = bootstrap.username || bootstrap.user?.username || '管理员'; syncTransportControl();
+      $$('.power-row form[action="/power"] button').forEach(button=>button.disabled=bootstrap.capabilities?.gpio_power!==true);
+      $$('.power-row form[action="/reset"] button').forEach(button=>button.disabled=bootstrap.capabilities?.gpio_reset!==true);
+      $('#quality-value').textContent = vf.elements.jpeg_quality.value; $('#session-user').textContent = bootstrap.username || bootstrap.user?.username || '管理员'; syncTransportControl(); syncGpioControls(); renderPowerLed(latestPowerStatus);
+    }
+    function syncGpioControls() {
+      const caps=bootstrap.capabilities||{};
+      $$('[data-gpio-test="power"]').forEach(button=>button.disabled=gpioTestBusy||caps.gpio_power!==true);
+      $$('[data-gpio-test="reset"]').forEach(button=>button.disabled=gpioTestBusy||caps.gpio_reset!==true);
+      $$('[data-power-led-refresh]').forEach(button=>button.disabled=caps.gpio_power_led!==true);
+    }
+    function renderPowerLed(powerStatus) {
+      const led=powerStatus?.power_led||{},dots=$$('[data-power-led-dot]'),states=$$('[data-power-led-state]');
+      if(!dots.length||!states.length)return;
+      dots.forEach(dot=>dot.classList.remove('online','warning','error'));
+      const show=(label,tone='')=>{states.forEach(state=>state.textContent=label);if(tone)dots.forEach(dot=>dot.classList.add(tone));};
+      if(led.configured===false){show('未配置');return;}
+      if(led.sense_error){show('读取失败','error');return;}
+      const ledState=led.state||(led.active===true?'on':led.active===false?'off':'unknown');
+      if(ledState==='on'){show('亮','online');return;}
+      if(ledState==='off'){show('灭');return;}
+      show('未知','warning');
     }
     $('#video-config').elements.resolution_preset.addEventListener('change',syncVideoPresets);
     $('#video-config').elements.fps_preset.addEventListener('change',syncVideoPresets);
@@ -275,16 +350,26 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     setVideoRendering(readVideoUiPreference('rendering','pixelated'));
     syncTransportControl();
     $$('.power-row form').forEach(form=>form.addEventListener('submit',async event=>{
+      if(event.defaultPrevented)return;
       event.preventDefault();
-      const button=$('button[type=submit]',form), label=button.textContent;
+      const button=$('button[type=submit]',form), label=button.textContent, resetAction=new URL(form.action).pathname==='/reset', actionLabel=resetAction?'复位':'电源';
       button.disabled=true; button.textContent='执行中…';
       try {
         const response=await fetch(form.action,{method:'POST',body:new URLSearchParams(new FormData(form)),credentials:'same-origin'});
-        if(!response.ok) throw new Error((await response.text())||'电源操作失败');
-        toast('电源操作已执行');
-      } catch(error) { toast(error.message||'电源操作失败',true); }
-      finally { button.disabled=false; button.textContent=label; }
+        if(!response.ok) throw new Error((await response.text())||`${actionLabel}操作失败`);
+        toast(`${actionLabel}操作已执行`);
+      } catch(error) { toast(error.message||`${actionLabel}操作失败`,true); }
+      finally { button.textContent=label;button.disabled=resetAction?bootstrap.capabilities?.gpio_reset!==true:bootstrap.capabilities?.gpio_power!==true; }
     }));
+    async function runGpioTest(target,button){
+      if(gpioTestBusy||button.disabled)return;
+      gpioTestBusy=true;const label=button.textContent;button.disabled=true;button.textContent='…';syncGpioControls();
+      try { await request('/api/gpio/test',{method:'POST',body:JSON.stringify({target})});toast(`${target==='reset'?'RESET':'POWER'} 已执行`);await refreshStatus(); }
+      catch(error){toast(error.message||'GPIO 操作失败',true);}
+      finally {button.textContent=label;gpioTestBusy=false;syncGpioControls();}
+    }
+    $$('[data-gpio-test]').forEach(button=>button.addEventListener('click',()=>runGpioTest(button.dataset.gpioTest,button)));
+    $$('[data-power-led-refresh]').forEach(button=>button.addEventListener('click',async event=>{const current=event.currentTarget;if(current.disabled)return;const label=current.textContent;current.disabled=true;current.textContent='…';try{await refreshStatus();}finally{current.textContent=label;syncGpioControls();}}));
     $('#video-config').addEventListener('submit', async event => {
       event.preventDefault(); const f=event.currentTarget,button=$('button[type=submit]',f);if(button.disabled)return;const requestId=++videoConfigRequestId,label=button.textContent,payload={video:{device:value(f,'device')||null,width:optionalNumber(value(f,'width')),height:optionalNumber(value(f,'height')),frames_per_second:optionalNumber(value(f,'frames_per_second')),encoding:value(f,'encoding'),jpeg_quality:Number(value(f,'jpeg_quality')),h264:{bitrate_kbps:Number(value(f,'h264_bitrate_kbps')),encoder:value(f,'h264_encoder'),allow_software:f.elements.h264_allow_software.checked,max_sessions:Number(value(f,'h264_max_sessions'))}}};
       button.disabled=true;button.textContent='应用中…';stopVideo();
@@ -292,9 +377,11 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       catch(e){if(requestId===videoConfigRequestId)toast(e.message,true);}
       finally {if(requestId===videoConfigRequestId){button.disabled=false;button.textContent=label;if(shouldVideoRun())startVideo(true);}}
     });
+    function gpioPulseFrom(form){const chip=value(form,'reset_gpio_chip'),rawLine=value(form,'reset_gpio_line');if(!chip&&!rawLine)return null;if(!chip||!rawLine)throw new Error('RESET SW 需要芯片和线路');return {gpio_chip:chip,gpio_line:Number(rawLine),active_high:value(form,'reset_active_high')!=='false',pulse_ms:optionalNumber(value(form,'reset_pulse_ms'))??500};}
+    function gpioInputFrom(form){const chip=value(form,'power_led_gpio_chip'),rawLine=value(form,'power_led_gpio_line');if(!chip&&!rawLine)return null;if(!chip||!rawLine)throw new Error('PWR LED 需要芯片和线路');return {gpio_chip:chip,gpio_line:Number(rawLine),active_low:value(form,'power_led_active_low')!=='false',bias:value(form,'power_led_bias')||'pull_up',poll_interval_ms:optionalNumber(value(form,'power_led_poll_interval_ms'))??1000,debounce_ms:optionalNumber(value(form,'power_led_debounce_ms'))??50};}
     $('#device-config').addEventListener('submit', async event => {
-      event.preventDefault(); const f=event.currentTarget, payload={hid:{keyboard_device:value(f,'keyboard_device')||null,mouse_device:value(f,'mouse_device')||null,absolute_pointer_device:value(f,'absolute_pointer_device')||null,pointer_mode:value(f,'pointer_mode')},power:{enabled:f.elements.power_enabled.checked,gpio_chip:value(f,'gpio_chip')||null,gpio_line:optionalNumber(value(f,'gpio_line')),active_high:value(f,'active_high')!=='false'}};
-      try { await request('/api/config',{method:'POST',body:JSON.stringify(payload)}); bootstrap=await request('/api/bootstrap');applyBootstrap();toast('已保存'); } catch(e){toast(e.message,true);}
+      event.preventDefault(); const f=event.currentTarget;
+      try { const payload={hid:{keyboard_device:value(f,'keyboard_device')||null,mouse_device:value(f,'mouse_device')||null,absolute_pointer_device:value(f,'absolute_pointer_device')||null,pointer_mode:value(f,'pointer_mode')},power:{enabled:f.elements.power_enabled.checked,gpio_chip:value(f,'gpio_chip')||null,gpio_line:optionalNumber(value(f,'gpio_line')),active_high:value(f,'active_high')!=='false',reset_switch:gpioPulseFrom(f),power_led:gpioInputFrom(f)}}; await request('/api/config',{method:'POST',body:JSON.stringify(payload)}); bootstrap=await request('/api/bootstrap');applyBootstrap();toast('已保存'); } catch(e){toast(e.message,true);}
     });
     $('#media-config').addEventListener('submit', async event => {
       event.preventDefault(); const f=event.currentTarget, payload={media:{enabled:f.elements.enabled.checked,lun_path:value(f,'lun_path')||null,image_directory:value(f,'image_directory')||null}};
@@ -456,7 +543,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     function setInspectorOpen(open){app.classList.toggle('inspector-open',open);inspectorToggle.setAttribute('aria-expanded',String(open));inspectorToggle.textContent=open?'收起面板':'控制面板';}
     inspectorToggle.addEventListener('click',()=>setInspectorOpen(!app.classList.contains('inspector-open')));
 
-    async function refreshStatus(){if(statusTimer===-1)return;if(statusTimer>0)clearTimeout(statusTimer);if(app.classList.contains('hidden')||document.hidden){statusTimer=0;renderVideoUi();return;}statusTimer=-1;try{const status=await request('/api/status');latestVideoStatus=status.video||null;renderVideoUi();}catch{latestVideoStatus={state:'offline',message:'连接失败'};renderVideoUi();}finally{statusTimer=app.classList.contains('hidden')||document.hidden?0:setTimeout(()=>{statusTimer=0;refreshStatus();},3000);}}
+    async function refreshStatus(){if(statusTimer===-1)return;if(statusTimer>0)clearTimeout(statusTimer);if(app.classList.contains('hidden')||document.hidden){statusTimer=0;renderVideoUi();return;}statusTimer=-1;try{const status=await request('/api/status');latestVideoStatus=status.video||null;latestPowerStatus=status.power||null;renderPowerLed(latestPowerStatus);renderVideoUi();}catch{latestVideoStatus={state:'offline',message:'连接失败'};latestPowerStatus={power_led:{configured:true,state:'unknown',sense_error:'连接失败'}};renderPowerLed(latestPowerStatus);renderVideoUi();}finally{statusTimer=app.classList.contains('hidden')||document.hidden?0:setTimeout(()=>{statusTimer=0;refreshStatus();},3000);}}
     const mediaChoices=new Map();let mediaBusy=false,mediaServerBusy=false,mediaStatus={};
     function mediaItems(data){return Array.isArray(data)?data:(data?.items||data?.images||[]);}
     function mediaTypeLabel(type){return type==='cdrom'?'光驱':type==='disk'?'U 盘':'自动';}
