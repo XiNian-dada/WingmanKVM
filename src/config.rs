@@ -114,6 +114,46 @@ pub enum VideoEncoding {
     TranscodeJpeg,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum H264Encoder {
+    Auto,
+    RockchipMpp,
+    V4l2M2m,
+    Software,
+}
+
+impl Default for H264Encoder {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct H264Config {
+    /// Target bitrate for the optional WebRTC transport.
+    pub bitrate_kbps: u32,
+    /// Encoder preference. `Auto` only selects a detected hardware encoder;
+    /// software encoding remains opt-in through `allow_software`.
+    pub encoder: H264Encoder,
+    pub allow_software: bool,
+    pub ffmpeg_path: Option<PathBuf>,
+    pub max_sessions: u8,
+}
+
+impl Default for H264Config {
+    fn default() -> Self {
+        Self {
+            bitrate_kbps: 4_000,
+            encoder: H264Encoder::Auto,
+            allow_software: false,
+            ffmpeg_path: None,
+            max_sessions: 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VideoConfig {
@@ -124,6 +164,7 @@ pub struct VideoConfig {
     pub frames_per_second: Option<u32>,
     pub encoding: VideoEncoding,
     pub jpeg_quality: u8,
+    pub h264: H264Config,
 }
 
 impl Default for VideoConfig {
@@ -136,6 +177,7 @@ impl Default for VideoConfig {
             frames_per_second: None,
             encoding: VideoEncoding::MjpegPassthrough,
             jpeg_quality: 80,
+            h264: H264Config::default(),
         }
     }
 }
