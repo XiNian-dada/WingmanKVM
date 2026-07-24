@@ -255,9 +255,110 @@ Mass Storage LUN 也由安装器创建。ISO 始终应只读；IMG 默认可以�
 
 GPIO 可以先跳过。软件只能列出 `gpiochipN`，无法知道继电器接到了哪一条 line，也无法判断高电平还是低电平触发。
 
-进入控制台后，在视频设置中选择 `1080p`、`30 FPS` 和 `MJPEG 直通`。只有需要减少网络带宽时再使用 JPEG 重编码和质量压缩。
+进入控制台后，在视频设置中选择 `1080p`、`30 FPS` 和 `MJPEG 直通`。MJPEG 直通仍是默认的局域网方案；需要控制家庭宽带上行占用时，再启用下面的 WebRTC / H.264 传输。
 
-## 8. GPIO 电源按钮：必须按接线确认
+## 8. WebRTC / H.264 低带宽模式
+
+WingmanKVM 始终先从采集卡接收 MJPEG。两种播放方式的区别发生在 RK3399 到浏览器这一段：
+
+| 播放方式 | RK3399 上的处理 | 适用场景 |
+| --- | --- | --- |
+| MJPEG | JPEG 帧直接发送，不解码、不重新编码 | 局域网、CPU 和延迟优先 |
+| WebRTC / H.264 | FFmpeg 把最新的 MJPEG 帧转换为 H.264，再通过 WebRTC 发送 | 家庭宽带上行有限、跨网访问 |
+
+H.264 可以把带宽稳定在设定的目标码率附近，但编码不是零成本。默认目标码率是 `4000 Kbps`，默认最多同时建立 `1` 个 H.264 会话；每增加一个会话，通常都会再启动一份编码任务。建议先从 `2 Mbps` 或 `4 Mbps` 开始，根据文字清晰度和网络状况逐步调整。MJPEG 仍可随时作为兼容回退。
+
+网页中的“自动”模式只有在检测到可用 H.264 编码器时才会尝试 WebRTC；编码器不可用、协商失败或没有收到首帧时，会自动返回 MJPEG。视频设置中的编码器顺序为：
+
+1. `Rockchip MPP`：FFmpeg 编码器名为 `h264_rkmpp`；
+2. `V4L2 M2M`：FFmpeg 编码器名为 `h264_v4l2m2m`；
+3. `软件编码`：FFmpeg 编码器名为 `libx264`，必须人工允许。
+
+“自动”默认只选择硬件编码器，不会在后台偷偷启用 `libx264`。只有同时勾选“允许软件编码”后，自动模式或软件编码选项才可能使用 CPU 编码。
+
+### 8.1 检查 FFmpeg 和编码器
+
+先确认系统能找到 FFmpeg：
+
+```bash
+command -v ffmpeg
+ffmpeg -version
+```
+
+没有安装时，可以先安装发行版提供的软件包：
+
+```bash
+sudo apt update
+sudo apt install -y ffmpeg
+```
+
+然后检查 WingmanKVM 识别的三个编码器名：
+
+```bash
+ffmpeg -hide_banner -encoders 2>&1 \
+  | grep -E 'h264_rkmpp|h264_v4l2m2m|libx264'
+```
+
+发行版自带 FFmpeg 通常不包含 `h264_rkmpp`；只有带 Rockchip MPP 补丁、插件和对应用户态库的构建才会列出它。`h264_v4l2m2m` 出现在列表中也只说明 FFmpeg 编译了这个接口，不代表当前内核一定暴露了可用的 H.264 编码设备。最终仍要结合设备节点和实际拉流结果判断。
+
+检查 Rockchip MPP / VPU / RGA 设备以及 V4L2 节点：
+
+```bash
+ls -l /dev/mpp_service /dev/vpu_service /dev/rga 2>/dev/null || true
+v4l2-ctl --list-devices
+media-ctl -p
+```
+
+对疑似编解码器的 `/dev/videoN` 继续检查：
+
+```bash
+v4l2-ctl -d /dev/videoN --all
+v4l2-ctl -d /dev/videoN --list-formats
+v4l2-ctl -d /dev/videoN --list-formats-out
+```
+
+硬件 H.264 编码节点通常应表现为 V4L2 Memory-to-Memory 设备，并在编码输出一侧提供 `H264`。不要把采集卡的 `Video Capture` 节点，也不要把只提供 H.264 解码的节点误当成编码器。保存视频设置后可通过服务日志确认探测和运行结果：
+
+```bash
+journalctl -u wingmankvm -b --no-pager \
+  | grep -E 'H\.264|WebRTC|FFmpeg'
+```
+
+### 8.2 这台 RK3399 实例的探测结论
+
+本教程使用的实例机当前没有安装 FFmpeg、GStreamer 或 Rockchip MPP 用户态库，也没有 `/dev/mpp_service`、`/dev/vpu_service`、`/dev/rga`。内核暴露的 Hantro VPU 节点只提供 JPEG 编码和 H.264 解码，没有可供 FFmpeg 使用的 H.264 硬件编码能力。
+
+因此，这台实例机按当前内核和用户态环境运行时会明确显示 H.264 不可用，并继续使用 MJPEG；程序不会自动改用软件编码占满 RK3399 的 CPU。这是对本实例当前软件栈的结论，不代表所有 RK3399 BSP 或第三方 FFmpeg 构建都不支持 H.264 硬编码。更换内核、MPP 用户态库或 FFmpeg 后，应重新执行上面的探测。
+
+### 8.3 软件编码风险
+
+`libx264` 可以在没有硬件编码器时提供 H.264，但 1080p 30 FPS 的解码、色彩转换和编码会持续占用多个 CPU 核心，可能导致温度升高、降频、视频延迟增加，并影响 HID、终端和网页响应。RK3399 上不建议把它作为长期默认方案。
+
+如果确实需要临时测试，先选择较低分辨率、帧率和码率，只允许一个会话，同时监控：
+
+```bash
+top
+cat /sys/class/thermal/thermal_zone0/temp
+journalctl -u wingmankvm -f
+```
+
+温度值通常以千分之一摄氏度表示，例如 `75000` 约为 `75°C`；具体 thermal zone 含义以板卡内核为准。出现持续满载、降频或控制延迟时，应立即关闭软件编码并切回 MJPEG。
+
+### 8.4 家庭网络、UDP、VPN 和 TURN
+
+WebRTC 的 offer/answer 信令仍通过 WingmanKVM 的 HTTP 服务完成，但视频媒体通常通过 ICE 协商后的 UDP 路径传输。只把 TCP `8080` 放到 Nginx、Caddy 或其他反向代理后面，并不等于 WebRTC 视频也能穿过公网。
+
+家庭网络建议按以下顺序选择：
+
+1. 优先让浏览器和 RK3399 通过 WireGuard 等 VPN 进入同一可路由网络，最容易保留 UDP 直连；
+2. 能控制两端防火墙和 NAT 时，可配合明确的 UDP 放行、端口映射和可达 ICE 候选直连；
+3. 无法建立直连时使用 TURN 中继，但 TURN 服务器本身也需要足够的公网出口带宽。
+
+当前版本默认只使用本机 ICE 候选，没有内置 TURN 配置。仅部署一个 TURN 服务不会自动生效，还需要在 WingmanKVM 中配置对应的 ICE server 后才能使用。公网开放前还应启用 HTTPS、限制访问来源，并优先把管理页面放在 VPN 内，不要直接裸露到互联网。
+
+目标码率决定的主要是 RK3399 一侧的上行占用：`2 Mbps` 约等于每小时 `0.9 GB`，`4 Mbps` 约等于每小时 `1.8 GB`，实际还会包含 WebRTC、RTP、重传和网络协议开销。TURN 中继解决的是连通性，不会进一步压低视频本身的码率。
+
+## 9. GPIO 电源按钮：必须按接线确认
 
 先列出控制器：
 
@@ -287,7 +388,7 @@ gpioset --version
 
 这些值 **只属于本实例**。新用户应先断开被控机电源，按原理图和万用表确认线路，再在网页中启用电源控制。不要靠连续试点未知 GPIO 的方式猜线路；选错可能影响电源、存储或其他板载设备。
 
-## 9. 安装完成后的验证
+## 10. 安装完成后的验证
 
 检查服务：
 
@@ -353,7 +454,7 @@ curl -fsS http://127.0.0.1:8080/healthz
 4. GPIO 接线确认无误后再测试短按；
 5. 虚拟介质先用可丢弃的测试镜像验证，并始终执行安全弹出。
 
-## 10. 常见故障
+## 11. 常见故障
 
 ### 插入采集卡后没有新增节点
 
