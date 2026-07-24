@@ -356,7 +356,8 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       button.disabled=true; button.textContent='执行中…';
       try {
         const response=await fetch(form.action,{method:'POST',body:new URLSearchParams(new FormData(form)),credentials:'same-origin'});
-        if(!response.ok) throw new Error((await response.text())||`${actionLabel}操作失败`);
+        const type=response.headers.get('content-type')||'';const data=type.includes('json')?await response.json():await response.text();
+        if(!response.ok) throw new Error((data&&data.error)||data||`${actionLabel}操作失败`);
         toast(`${actionLabel}操作已执行`);
       } catch(error) { toast(error.message||`${actionLabel}操作失败`,true); }
       finally { button.textContent=label;button.disabled=resetAction?bootstrap.capabilities?.gpio_reset!==true:bootstrap.capabilities?.gpio_power!==true; }
