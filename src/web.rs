@@ -1254,15 +1254,11 @@ async fn power(
             "只允许短按或长按电源键",
         ));
     };
-    let (chip, line) = match (config.enabled, config.gpio_chip, config.gpio_line) {
-        (true, Some(chip), Some(line)) => (chip, line),
-        _ => {
-            return Err(ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "GPIO 电源控制尚未配置",
-            ));
-        }
-    };
+    let (chip, line) = config
+        .enabled
+        .then(|| configured_gpio(config.gpio_chip.as_ref(), config.gpio_line))
+        .flatten()
+        .ok_or_else(|| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "GPIO 电源控制尚未配置"))?;
     let pid = state
         .power
         .press(
@@ -1297,20 +1293,20 @@ async fn reset(
     State(state): State<AppState>,
     Form(form): Form<ResetForm>,
 ) -> Result<Response, ApiError> {
-    if let Some(duration) = form.duration
-        && (duration - 0.5).abs() >= 0.01
-        && (duration - 5.0).abs() >= 0.01
+    if form
+        .duration
+        .is_some_and(|duration| (duration - 0.5).abs() >= 0.01)
     {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "只允许短按或长按重启键",
+            "只允许短按重启键",
         ));
     }
     let config = state.config.read().await.power.clone();
     let snapshot = reset_pulse_snapshot(&config, None)
         .ok_or_else(|| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "GPIO 重启控制尚未配置"))?;
+    let duration = snapshot.pulse_ms as f64 / 1_000.0;
     let pid = state.power.pulse(snapshot).await.map_err(map_power_error)?;
-    let duration = form.duration.unwrap_or(0.5);
     let location = format!("/?reset_duration={duration:.2}&reset_pid={pid}");
     let mut response = StatusCode::SEE_OTHER.into_response();
     response.headers_mut().insert(
@@ -1669,18 +1665,27 @@ async fn media_snapshot(state: &AppState) -> Option<MediaConfigSnapshot> {
 }
 
 fn gpio_pulse_is_configured(config: &GpioPulseConfig) -> bool {
-    config.gpio_chip.is_some() && config.gpio_line.is_some()
+    configured_gpio(config.gpio_chip.as_ref(), config.gpio_line).is_some()
 }
 
 fn gpio_input_is_configured(config: &GpioInputConfig) -> bool {
-    config.gpio_chip.is_some() && config.gpio_line.is_some()
+    configured_gpio(config.gpio_chip.as_ref(), config.gpio_line).is_some()
+}
+
+fn configured_gpio(chip: Option<&String>, line: Option<u32>) -> Option<(String, u32)> {
+    let chip = chip?.trim();
+    let line = line?;
+    (!chip.is_empty()).then(|| (chip.to_owned(), line))
 }
 
 fn power_pulse_snapshot(
     config: &config::PowerConfig,
     duration_override_ms: Option<u64>,
 ) -> Option<GpioPulseConfigSnapshot> {
-    let (chip, line) = (config.gpio_chip.clone()?, config.gpio_line?);
+    if !config.enabled {
+        return None;
+    }
+    let (chip, line) = configured_gpio(config.gpio_chip.as_ref(), config.gpio_line)?;
     Some(GpioPulseConfigSnapshot {
         program: PathBuf::from("gpioset"),
         chip,
@@ -1696,7 +1701,7 @@ fn reset_pulse_snapshot(
     duration_override_ms: Option<u64>,
 ) -> Option<GpioPulseConfigSnapshot> {
     let reset = config.reset_switch.as_ref()?;
-    let (chip, line) = (reset.gpio_chip.clone()?, reset.gpio_line?);
+    let (chip, line) = configured_gpio(reset.gpio_chip.as_ref(), reset.gpio_line)?;
     Some(GpioPulseConfigSnapshot {
         program: PathBuf::from("gpioset"),
         chip,
@@ -1709,7 +1714,7 @@ fn reset_pulse_snapshot(
 
 fn power_led_snapshot(config: &config::PowerConfig) -> Option<PowerLedConfigSnapshot> {
     let led = config.power_led.as_ref()?;
-    let (chip, line) = (led.gpio_chip.clone()?, led.gpio_line?);
+    let (chip, line) = configured_gpio(led.gpio_chip.as_ref(), led.gpio_line)?;
     Some(PowerLedConfigSnapshot {
         program: PathBuf::from("gpioget"),
         chip,
@@ -1782,7 +1787,7 @@ fn validate_config(config: &Config) -> Result<(), ApiError> {
         return Err(ApiError::bad_request("相对指针模式需要配置相对鼠标设备"));
     }
     if config.power.enabled
-        && (config.power.gpio_chip.is_none() || config.power.gpio_line.is_none())
+        && configured_gpio(config.power.gpio_chip.as_ref(), config.power.gpio_line).is_none()
     {
         return Err(ApiError::bad_request(
             "启用电源控制前必须配置 GPIO 芯片和线路",
@@ -1790,6 +1795,14 @@ fn validate_config(config: &Config) -> Result<(), ApiError> {
     }
     if config.power.gpio_chip.is_some() != config.power.gpio_line.is_some() {
         return Err(ApiError::bad_request("电源 GPIO 芯片和线路必须同时配置"));
+    }
+    if config
+        .power
+        .gpio_chip
+        .as_deref()
+        .is_some_and(|chip| chip.trim().is_empty())
+    {
+        return Err(ApiError::bad_request("电源 GPIO 芯片不能为空"));
     }
     if !(50..=2_000).contains(&config.power.short_press_ms) {
         return Err(ApiError::bad_request(
@@ -1995,6 +2008,7 @@ fn map_power_error(error: PowerError) -> ApiError {
         PowerError::Timeout => StatusCode::GATEWAY_TIMEOUT,
         PowerError::Read(_) => StatusCode::SERVICE_UNAVAILABLE,
         PowerError::Spawn(_) | PowerError::UnsupportedVersion(_) => StatusCode::SERVICE_UNAVAILABLE,
+        PowerError::WorkerStopped => StatusCode::INTERNAL_SERVER_ERROR,
     };
     ApiError::new(status, error.to_string())
 }
@@ -2380,6 +2394,12 @@ mod tests {
     #[test]
     fn gpio_validation_rejects_duplicate_lines_and_unsafe_timing() {
         let mut config = Config::default();
+        config.power.enabled = true;
+        config.power.gpio_chip = Some("   ".to_owned());
+        config.power.gpio_line = Some(7);
+        assert!(validate_config(&config).is_err());
+
+        let mut config = Config::default();
         config.power.gpio_chip = Some("/dev/gpiochip1".to_owned());
         config.power.gpio_line = Some(7);
         config.power.reset_switch = Some(GpioPulseConfig {
@@ -2579,6 +2599,27 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn power_test_snapshot_requires_enabled_nonempty_configuration() {
+        let mut config = config::PowerConfig {
+            gpio_chip: Some("gpiochip1".to_owned()),
+            gpio_line: Some(7),
+            ..config::PowerConfig::default()
+        };
+        assert!(power_pulse_snapshot(&config, Some(150)).is_none());
+
+        config.enabled = true;
+        assert_eq!(
+            power_pulse_snapshot(&config, Some(150))
+                .expect("enabled power GPIO")
+                .pulse_ms,
+            150
+        );
+
+        config.gpio_chip = Some(" ".to_owned());
+        assert!(power_pulse_snapshot(&config, Some(150)).is_none());
     }
 
     #[test]

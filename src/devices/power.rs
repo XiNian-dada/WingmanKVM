@@ -10,7 +10,7 @@ use thiserror::Error;
 use tokio::{
     io::AsyncReadExt,
     process::Child,
-    sync::{Mutex, RwLock},
+    sync::{Mutex, RwLock, oneshot},
     time::timeout,
 };
 
@@ -97,6 +97,8 @@ pub enum PowerError {
     Timeout,
     #[error("GPIO read failed: {0}")]
     Read(String),
+    #[error("GPIO worker stopped before reporting the result")]
+    WorkerStopped,
 }
 
 #[derive(Clone)]
@@ -177,23 +179,30 @@ impl PowerManager {
         }
 
         let status = self.status.clone();
+        let (reply, result) = oneshot::channel();
         tokio::spawn(async move {
             let _gate = gate;
-            let result = wait_for_gpio_command(&mut child, stderr, config.pulse_ms).await;
+            let pulse_result = wait_for_gpio_command(&mut child, stderr, config.pulse_ms).await;
             let mut current = status.write().await;
             current.running = false;
-            if let Err(error) = result {
-                current.last_error = Some(error.to_string());
-            } else {
-                current.last_error = None;
-            }
+            let response = match pulse_result {
+                Ok(()) => {
+                    current.last_error = None;
+                    Ok(pid)
+                }
+                Err(error) => {
+                    current.last_error = Some(error.to_string());
+                    Err(error)
+                }
+            };
             drop(current);
             if config.cooldown_ms > 0 {
                 tokio::time::sleep(Duration::from_millis(config.cooldown_ms)).await;
             }
+            let _ = reply.send(response);
         });
 
-        Ok(pid)
+        result.await.map_err(|_| PowerError::WorkerStopped)?
     }
 
     pub async fn set_power_led_config(&self, config: Option<PowerLedConfigSnapshot>) {
@@ -436,12 +445,22 @@ fn is_gpioset_v2(version: &str) -> bool {
 mod tests {
     use std::path::PathBuf;
 
+    #[cfg(unix)]
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
     use crate::config::GpioBias;
 
     use super::{
-        GpioPulseConfigSnapshot, PowerLedConfigSnapshot, PowerStatus, gpioget_args, gpioset_args,
-        is_gpioset_v2, parse_gpio_value,
+        GpioPulseConfigSnapshot, PowerError, PowerLedConfigSnapshot, PowerManager, PowerStatus,
+        gpioget_args, gpioset_args, is_gpioset_v2, parse_gpio_value,
     };
+
+    #[cfg(unix)]
+    static TEST_SCRIPT_ID: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn recognizes_libgpiod_two_cli() {
@@ -510,5 +529,48 @@ mod tests {
         assert_eq!(status["power_led"]["state"], "unknown");
         assert!(status["power_led"]["active"].is_null());
         assert!(status["power_led"]["sense_error"].is_null());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pulse_returns_the_gpio_command_failure() {
+        let id = TEST_SCRIPT_ID.fetch_add(1, Ordering::Relaxed);
+        let script = std::env::temp_dir().join(format!(
+            "wingmankvm-fake-gpioset-{}-{id}",
+            std::process::id()
+        ));
+        fs::write(
+            &script,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo 'gpioset (libgpiod) v2.1.0'\n  exit 0\nfi\necho 'GPIO line is busy' >&2\nexit 1\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).unwrap();
+
+        let manager = PowerManager::new();
+        let error = manager
+            .pulse(GpioPulseConfigSnapshot {
+                program: script.clone(),
+                chip: "gpiochip1".to_owned(),
+                line: 7,
+                active_high: true,
+                pulse_ms: 50,
+                cooldown_ms: 0,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, PowerError::Read(_)));
+        assert!(error.to_string().contains("GPIO line is busy"));
+        let status = manager.status().await;
+        assert!(!status.running);
+        assert!(
+            status
+                .last_error
+                .as_deref()
+                .is_some_and(|message| message.contains("GPIO line is busy"))
+        );
+        fs::remove_file(script).unwrap();
     }
 }
