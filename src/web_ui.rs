@@ -44,7 +44,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     #video-transport-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     @media(max-width:720px){.window-dots{display:none}.console-meta{display:inline;max-width:64px;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
     @media(max-width:420px){.console-meta{max-width:50px}}
-    .gpio-config-block{grid-column:1/-1;margin-top:5px;padding-top:14px;border-top:1px solid var(--line)}.gpio-config-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;color:var(--ink);font:600 11px/16px "Geist Mono",ui-monospace,monospace;letter-spacing:.04em}.gpio-inline-test{min-height:26px;padding:0 8px;font-size:10px;letter-spacing:0}.gpio-config-status{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:10px;font-weight:400;letter-spacing:0}.gpio-config-status .status-dot{width:6px;height:6px}.gpio-config-fields{gap:10px}.gpio-config-fields .field{font-size:11px}.gpio-config-fields .field input,.gpio-config-fields .field select{height:36px;font-size:12px}
+    .gpio-config-block{grid-column:1/-1;margin-top:5px;padding-top:14px;border-top:1px solid var(--line)}.gpio-config-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;color:var(--ink);font:600 11px/16px "Geist Mono",ui-monospace,monospace;letter-spacing:.04em}.gpio-inline-test{min-height:26px;padding:0 8px;font-size:10px;letter-spacing:0}.gpio-config-status{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:10px;font-weight:400;letter-spacing:0}.gpio-config-status .status-dot{width:6px;height:6px}.gpio-config-fields{gap:10px}.gpio-config-fields .field{font-size:11px}.gpio-config-fields .field input,.gpio-config-fields .field select{height:36px;font-size:12px}.field-help{display:inline-grid;place-items:center;width:16px;height:16px;margin-left:4px;padding:0;border:1px solid var(--line-strong);border-radius:50%;color:var(--muted);background:var(--canvas);font:600 10px/1 "Geist Mono",ui-monospace,monospace;vertical-align:1px;cursor:help;transition:color 160ms,border-color 160ms,background-color 160ms}.field-help:hover,.field-help:focus-visible{color:var(--ink);border-color:var(--ink);background:var(--soft-2)}.field-help:focus-visible{outline:0;box-shadow:0 0 0 2px #fff,0 0 0 4px var(--blue)}#field-tooltip{position:fixed;z-index:120;max-width:min(280px,calc(100vw - 24px));padding:8px 10px;border:1px solid #383838;border-radius:8px;color:#fff;background:#1d1d1d;box-shadow:0 8px 20px #0003;font-size:11px;line-height:17px;overflow-wrap:anywhere;pointer-events:none;opacity:0;translate:0 4px;transition:opacity 140ms,translate 140ms}#field-tooltip.visible{opacity:1;translate:0 0}#field-tooltip[hidden]{display:none}
   </style>
 </head>
 <body>
@@ -124,20 +124,20 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
           <section class="inspector-panel" data-panel="video" hidden>
             <h3 class="panel-title">视频</h3>
             <form id="video-config" class="side-grid">
-              <label class="field wide"><span>播放方式</span><select name="transport"><option value="auto">自动</option><option value="webrtc_h264">低延迟 H.264</option><option value="mjpeg">兼容 MJPEG</option></select></label>
-              <label class="field wide"><span>H.264 码率</span><select name="h264_bitrate_preset"><option value="2000">2 Mbps</option><option value="4000">4 Mbps</option><option value="8000">8 Mbps</option><option value="12000">12 Mbps</option><option value="custom">自定义</option></select></label>
-              <label class="field wide h264-bitrate-custom hidden"><span>自定义码率 · Kbps</span><input name="h264_bitrate_kbps" type="number" min="256" max="50000"></label>
-              <label class="field wide"><span>采集分辨率</span><select name="resolution_preset"><option value="auto">设备默认</option><option value="3840x2160">4K · 3840 × 2160</option><option value="2560x1440">1440p · 2560 × 1440</option><option value="1920x1080">1080p · 1920 × 1080</option><option value="1280x720">720p · 1280 × 720</option><option value="720x480">480p · 720 × 480</option><option value="custom">自定义</option></select></label>
-              <label class="field resolution-custom"><span>宽度</span><input name="width" type="number" min="160" max="7680"></label>
-              <label class="field resolution-custom"><span>高度</span><input name="height" type="number" min="120" max="4320"></label>
-              <label class="field wide"><span>帧率</span><select name="fps_preset"><option value="auto">设备默认</option><option value="60">60 FPS</option><option value="30">30 FPS</option><option value="25">25 FPS</option><option value="24">24 FPS</option><option value="15">15 FPS</option><option value="custom">自定义</option></select></label>
-              <label class="field wide fps-custom"><span>自定义帧率</span><input name="frames_per_second" type="number" min="1" max="120"></label>
-              <label class="field wide"><span>显示缩放</span><select name="display_scale"><option value="fit">适应窗口</option><option value="native">原始像素</option><option value="fill">拉伸填满</option></select></label>
-              <label class="field wide"><span>显示插值</span><select name="rendering"><option value="pixelated">像素锐利</option><option value="smooth">平滑</option></select></label>
-              <label class="field wide"><span>MJPEG 处理</span><select name="encoding"><option value="mjpeg_passthrough">直通</option><option value="transcode_jpeg">JPEG 压缩</option></select></label>
-              <label class="field wide"><span>JPEG 质量 · <output id="quality-value">80</output></span><input name="jpeg_quality" type="range" min="20" max="100" value="80"></label>
-              <details class="side-advanced wide"><summary>H.264 编码</summary><div class="side-grid"><label class="field wide"><span>编码器</span><select name="h264_encoder"><option value="auto">自动</option><option value="rockchip_mpp">Rockchip MPP</option><option value="v4l2_m2m">V4L2 M2M</option><option value="software">软件编码</option></select></label><label class="field wide"><span>同时连接</span><select name="h264_max_sessions"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label><label class="check wide"><input name="h264_allow_software" type="checkbox">允许软件编码</label></div></details>
-              <details class="side-advanced wide"><summary>采集设备</summary><label class="field wide"><span>设备路径</span><input name="device" class="mono" placeholder="/dev/video0"></label></details>
+              <label class="field wide"><span>播放方式 <button class="field-help" type="button" data-help="自动优先尝试 WebRTC H.264；不可用时回退到 MJPEG。H.264 延迟和带宽通常更低，MJPEG 兼容性更好。" aria-label="播放方式说明">?</button></span><select name="transport"><option value="auto">自动</option><option value="webrtc_h264">低延迟 H.264</option><option value="mjpeg">兼容 MJPEG</option></select></label>
+              <label class="field wide"><span>H.264 码率 <button class="field-help" type="button" data-help="H.264 的目标码率。数值越高画质越好、占用带宽越大；数值越低更省带宽，但画面可能出现块状失真。" aria-label="H.264 码率说明">?</button></span><select name="h264_bitrate_preset"><option value="2000">2 Mbps</option><option value="4000">4 Mbps</option><option value="8000">8 Mbps</option><option value="12000">12 Mbps</option><option value="custom">自定义</option></select></label>
+              <label class="field wide h264-bitrate-custom hidden"><span>自定义码率 · Kbps <button class="field-help" type="button" data-help="单位是 Kbps，允许范围为 256–50000。" aria-label="自定义码率说明">?</button></span><input name="h264_bitrate_kbps" type="number" min="256" max="50000"></label>
+              <label class="field wide"><span>采集分辨率 <button class="field-help" type="button" data-help="改变采集卡实际输出分辨率，不是网页缩放；分辨率越高，细节、带宽和处理负载越高，设备必须支持该档位。" aria-label="采集分辨率说明">?</button></span><select name="resolution_preset"><option value="auto">设备默认</option><option value="3840x2160">4K · 3840 × 2160</option><option value="2560x1440">1440p · 2560 × 1440</option><option value="1920x1080">1080p · 1920 × 1080</option><option value="1280x720">720p · 1280 × 720</option><option value="720x480">480p · 720 × 480</option><option value="custom">自定义</option></select></label>
+              <label class="field resolution-custom"><span>宽度 <button class="field-help" type="button" data-help="与高度共同决定采集分辨率，建议保持源设备支持的宽高比。" aria-label="宽度说明">?</button></span><input name="width" type="number" min="160" max="7680"></label>
+              <label class="field resolution-custom"><span>高度 <button class="field-help" type="button" data-help="与宽度共同决定采集分辨率，建议保持源设备支持的宽高比。" aria-label="高度说明">?</button></span><input name="height" type="number" min="120" max="4320"></label>
+              <label class="field wide"><span>帧率 <button class="field-help" type="button" data-help="采集帧率。越高动作越流畅，也会增加采集、编码和带宽负载；设备不支持时可能无法应用。" aria-label="帧率说明">?</button></span><select name="fps_preset"><option value="auto">设备默认</option><option value="60">60 FPS</option><option value="30">30 FPS</option><option value="25">25 FPS</option><option value="24">24 FPS</option><option value="15">15 FPS</option><option value="custom">自定义</option></select></label>
+              <label class="field wide fps-custom"><span>自定义帧率 <button class="field-help" type="button" data-help="自定义采集帧率，范围为 1–120 FPS；实际值仍受采集卡能力限制。" aria-label="自定义帧率说明">?</button></span><input name="frames_per_second" type="number" min="1" max="120"></label>
+              <label class="field wide"><span>显示缩放 <button class="field-help" type="button" data-help="只改变网页中的显示方式，不改变采集数据：适应窗口保持比例；原始像素按 1:1 显示；拉伸填满会铺满窗口但可能变形。" aria-label="显示缩放说明">?</button></span><select name="display_scale"><option value="fit">适应窗口</option><option value="native">原始像素</option><option value="fill">拉伸填满</option></select></label>
+              <label class="field wide"><span>显示插值 <button class="field-help" type="button" data-help="放大或缩小时的像素处理：像素锐利保留边缘，适合 BIOS 和文字；平滑画面更柔和，但细字可能变糊。" aria-label="显示插值说明">?</button></span><select name="rendering"><option value="pixelated">像素锐利</option><option value="smooth">平滑</option></select></label>
+              <label class="field wide"><span>MJPEG 处理 <button class="field-help" type="button" data-help="直通直接转发采集卡 JPEG，CPU 和延迟最低；JPEG 压缩会重新编码，可降低带宽但增加 CPU，且可能损失画质。" aria-label="MJPEG 处理说明">?</button></span><select name="encoding"><option value="mjpeg_passthrough">直通</option><option value="transcode_jpeg">JPEG 压缩</option></select></label>
+              <label class="field wide"><span>JPEG 质量 · <output id="quality-value">80</output> <button class="field-help" type="button" data-help="仅在选择“JPEG 压缩”时生效。数值越高画质和带宽越高；数值越低文件更小，但压缩痕迹更明显。" aria-label="JPEG 质量说明">?</button></span><input name="jpeg_quality" type="range" min="20" max="100" value="80"></label>
+              <details class="side-advanced wide"><summary>H.264 编码 <button class="field-help" type="button" data-help="这里控制 H.264 的硬件编码器和并发上限。RK3399 建议优先使用硬件编码，软件编码只作为后备。" aria-label="H.264 编码说明">?</button></summary><div class="side-grid"><label class="field wide"><span>编码器 <button class="field-help" type="button" data-help="自动按 Rockchip MPP → V4L2 M2M 选择硬件编码器；硬件不可用时不会默认占用 CPU。手动选择需对应 FFmpeg 编码器存在。" aria-label="编码器说明">?</button></span><select name="h264_encoder"><option value="auto">自动</option><option value="rockchip_mpp">Rockchip MPP</option><option value="v4l2_m2m">V4L2 M2M</option><option value="software">软件编码</option></select></label><label class="field wide"><span>同时连接 <button class="field-help" type="button" data-help="允许同时建立的 H.264/WebRTC 会话数，不是按键连接数；每个会话都会增加 CPU 和内存占用。MJPEG 不受此上限影响。" aria-label="同时连接说明">?</button></span><select name="h264_max_sessions"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label><label class="check wide"><input name="h264_allow_software" type="checkbox"><span>允许软件编码 <button class="field-help" type="button" data-help="允许使用 libx264 作为后备或指定编码器。兼容性更好，但 CPU 占用明显更高；RK3399 建议优先硬件编码。" aria-label="允许软件编码说明">?</button></span></label></div></details>
+              <details class="side-advanced wide"><summary>采集设备 <button class="field-help" type="button" data-help="留空使用自动检测；手动填写采集卡的 /dev/videoN，需确认它支持 Video Capture 和 MJPG。" aria-label="采集设备说明">?</button></summary><label class="field wide"><span>设备路径</span><input name="device" class="mono" placeholder="/dev/video0"></label></details>
               <div class="side-actions wide"><button class="primary" type="submit">应用</button></div>
             </form>
           </section>
@@ -148,33 +148,33 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
             <details class="side-advanced">
               <summary>手动配置</summary>
               <form id="device-config" class="side-grid">
-                <label class="field wide"><span>键盘</span><input name="keyboard_device" class="mono"></label>
-                <label class="field wide"><span>相对鼠标</span><input name="mouse_device" class="mono"></label>
-                <label class="field wide"><span>绝对指针</span><input name="absolute_pointer_device" class="mono"></label>
-                <label class="field wide"><span>指针模式</span><select name="pointer_mode"><option value="auto">自动</option><option value="absolute">绝对</option><option value="relative">相对</option></select></label>
-                <label class="check wide"><input name="power_enabled" type="checkbox">电源控制</label>
-                <div class="gpio-config-title wide">POWER SW <button class="ghost gpio-inline-test" data-gpio-test="power" type="button">测试</button></div>
-                <label class="field"><span>GPIO 芯片</span><input name="gpio_chip" class="mono"></label>
-                <label class="field"><span>GPIO 线路</span><input name="gpio_line" type="number" min="0"></label>
-                <label class="field wide"><span>继电器触发</span><select name="active_high"><option value="true">高电平</option><option value="false">低电平</option></select></label>
+                <label class="field wide"><span>键盘 <button class="field-help" type="button" data-help="填写对应的键盘设备路径，例如 /dev/hidg0。自动检测优先，手动值只用于多个 Gadget 或特殊板卡。" aria-label="键盘设备说明">?</button></span><input name="keyboard_device" class="mono"></label>
+                <label class="field wide"><span>相对鼠标 <button class="field-help" type="button" data-help="填写 Boot Mouse 的设备路径，例如 /dev/hidg1。相对模式发送位移，适合只支持传统鼠标的 BIOS/UEFI。" aria-label="相对鼠标说明">?</button></span><input name="mouse_device" class="mono"></label>
+                <label class="field wide"><span>绝对指针 <button class="field-help" type="button" data-help="填写绝对指针设备路径。绝对模式会把网页坐标映射到远端，鼠标位置反馈更一致。" aria-label="绝对指针说明">?</button></span><input name="absolute_pointer_device" class="mono"></label>
+                <label class="field wide"><span>指针模式 <button class="field-help" type="button" data-help="自动会优先使用绝对指针；绝对模式同步网页坐标；相对模式发送位移，适合只支持 Boot Mouse 的 BIOS/UEFI。" aria-label="指针模式说明">?</button></span><select name="pointer_mode"><option value="auto">自动</option><option value="absolute">绝对</option><option value="relative">相对</option></select></label>
+                <label class="check wide"><input name="power_enabled" type="checkbox"><span>电源控制 <button class="field-help" type="button" data-help="启用后，POWER SW GPIO 才会出现在控制面板并可执行短按、长按和测试脉冲。" aria-label="电源控制说明">?</button></span></label>
+                <div class="gpio-config-title wide"><span>POWER SW <button class="field-help" type="button" data-help="这是输出线路，连接电源继电器或按键模拟电路。保存配置后可用测试按钮发送短脉冲。" aria-label="POWER SW 说明">?</button></span><button class="ghost gpio-inline-test" data-gpio-test="power" type="button">测试</button></div>
+                <label class="field"><span>GPIO 芯片 <button class="field-help" type="button" data-help="填写实际连接的 gpiochip 名称，例如 gpiochip1；自动扫描只能发现芯片，不能判断物理接线。" aria-label="GPIO 芯片说明">?</button></span><input name="gpio_chip" class="mono"></label>
+                <label class="field"><span>GPIO 线路 <button class="field-help" type="button" data-help="这是 GPIO chip 内的 line offset，不是排针上的物理脚号；请按原理图确认。" aria-label="GPIO 线路说明">?</button></span><input name="gpio_line" type="number" min="0"></label>
+                <label class="field wide"><span>继电器触发 <button class="field-help" type="button" data-help="选择继电器实际的触发电平。高电平表示输出 1 时导通，低电平表示输出 0 时导通。" aria-label="继电器触发说明">?</button></span><select name="active_high"><option value="true">高电平</option><option value="false">低电平</option></select></label>
                 <div class="gpio-config-block">
-                  <div class="gpio-config-title">RESET SW <button class="ghost gpio-inline-test" data-gpio-test="reset" type="button">测试</button></div>
+                  <div class="gpio-config-title"><span>RESET SW <button class="field-help" type="button" data-help="这是输出线路，连接复位继电器或按键模拟电路。保存配置后可用测试按钮发送短脉冲。" aria-label="RESET SW 说明">?</button></span><button class="ghost gpio-inline-test" data-gpio-test="reset" type="button">测试</button></div>
                   <div class="side-grid gpio-config-fields">
                     <label class="field"><span>GPIO 芯片</span><input name="reset_gpio_chip" class="mono"></label>
                     <label class="field"><span>线路</span><input name="reset_gpio_line" type="number" min="0"></label>
-                    <label class="field"><span>极性</span><select name="reset_active_high"><option value="true">高电平</option><option value="false">低电平</option></select></label>
-                    <label class="field"><span>脉冲 · ms</span><input name="reset_pulse_ms" type="number" min="50" max="2000" placeholder="500"></label>
+                    <label class="field"><span>极性 <button class="field-help" type="button" data-help="选择复位继电器实际的触发电平；高/低电平必须按电路确认。" aria-label="复位极性说明">?</button></span><select name="reset_active_high"><option value="true">高电平</option><option value="false">低电平</option></select></label>
+                    <label class="field"><span>脉冲 · ms <button class="field-help" type="button" data-help="复位输出保持有效的时间，范围 50–2000 ms。" aria-label="复位脉冲说明">?</button></span><input name="reset_pulse_ms" type="number" min="50" max="2000" placeholder="500"></label>
                   </div>
                 </div>
                 <div class="gpio-config-block">
-                  <div class="gpio-config-title"><span>PWR LED</span><span class="gpio-config-status"><span data-power-led-dot class="status-dot"></span><span data-power-led-state>读取中…</span><button class="ghost gpio-inline-test" data-power-led-refresh type="button">刷新</button></span></div>
+                  <div class="gpio-config-title"><span>PWR LED <button class="field-help" type="button" data-help="这是输入线路，只读取 LED 状态，不能发送测试脉冲。低电平有效通常表示 LED 亮。" aria-label="PWR LED 说明">?</button></span><span class="gpio-config-status"><span data-power-led-dot class="status-dot"></span><span data-power-led-state>读取中…</span><button class="ghost gpio-inline-test" data-power-led-refresh type="button">刷新</button></span></div>
                   <div class="side-grid gpio-config-fields">
                     <label class="field"><span>GPIO 芯片</span><input name="power_led_gpio_chip" class="mono"></label>
                     <label class="field"><span>线路</span><input name="power_led_gpio_line" type="number" min="0"></label>
-                    <label class="field"><span>极性</span><select name="power_led_active_low"><option value="true">低电平有效</option><option value="false">高电平有效</option></select></label>
-                    <label class="field"><span>偏置</span><select name="power_led_bias"><option value="pull_up">上拉</option><option value="pull_down">下拉</option><option value="disabled">关闭</option><option value="as_is">默认</option></select></label>
-                    <label class="field"><span>轮询 · ms</span><input name="power_led_poll_interval_ms" type="number" min="100" max="5000" placeholder="1000"></label>
-                    <label class="field"><span>去抖 · ms</span><input name="power_led_debounce_ms" type="number" min="0" max="5000" placeholder="50"></label>
+                    <label class="field"><span>极性 <button class="field-help" type="button" data-help="低电平有效表示 GPIO 读到 0 时判定 LED 亮；高电平有效则相反。" aria-label="PWR LED 极性说明">?</button></span><select name="power_led_active_low"><option value="true">低电平有效</option><option value="false">高电平有效</option></select></label>
+                    <label class="field"><span>偏置 <button class="field-help" type="button" data-help="输入线路的上拉/下拉设置。没有外部偏置时通常使用上拉；具体以电路为准。" aria-label="PWR LED 偏置说明">?</button></span><select name="power_led_bias"><option value="pull_up">上拉</option><option value="pull_down">下拉</option><option value="disabled">关闭</option><option value="as_is">默认</option></select></label>
+                    <label class="field"><span>轮询 · ms <button class="field-help" type="button" data-help="读取 LED 输入的间隔；数值越小反馈越快，也会增加读取次数。" aria-label="PWR LED 轮询说明">?</button></span><input name="power_led_poll_interval_ms" type="number" min="100" max="5000" placeholder="1000"></label>
+                    <label class="field"><span>去抖 · ms <button class="field-help" type="button" data-help="要求状态稳定一段时间后才更新，避免 LED 或线路抖动造成误报。" aria-label="PWR LED 去抖说明">?</button></span><input name="power_led_debounce_ms" type="number" min="0" max="5000" placeholder="50"></label>
                   </div>
                 </div>
                 <div class="side-actions wide"><button class="primary" type="submit">保存</button></div>
@@ -182,7 +182,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
             </details>
             <details class="side-advanced"><summary>诊断信息</summary><pre id="device-diagnostics" class="device-results">尚未扫描</pre></details>
           </section>
-          <section class="inspector-panel" data-panel="media" hidden><h3 class="panel-title">虚拟介质</h3><div class="panel-section"><div id="media-status" class="media-status" role="status"><span class="status-dot"></span><span class="media-status-copy"><strong>正在读取…</strong></span></div><form id="media-upload" class="upload-zone"><label class="field"><span>上传 ISO / IMG</span><input name="file" type="file" accept=".iso,.img" required></label><div class="side-actions"><button class="primary" type="submit">上传</button><button id="media-refresh" class="secondary" type="button">刷新</button></div><div class="upload-progress" role="progressbar" aria-label="上传进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="upload-bar"></i></div></form><div id="media-list" class="media-list">正在读取…</div></div><details class="side-advanced"><summary>存储设置</summary><form id="media-config" class="side-grid"><label class="check wide"><input name="enabled" type="checkbox">启用虚拟介质</label><label class="field wide"><span>LUN 目录</span><input name="lun_path" class="mono" placeholder="/sys/kernel/config/usb_gadget/…/lun.0"></label><label class="field wide"><span>镜像目录</span><input name="image_directory" class="mono" placeholder="/var/lib/wingmankvm/images"></label><div class="side-actions wide"><button id="media-scan" class="secondary" type="button">自动检测</button><button class="primary" type="submit">保存</button></div></form></details></section>
+          <section class="inspector-panel" data-panel="media" hidden><h3 class="panel-title">虚拟介质</h3><div class="panel-section"><div id="media-status" class="media-status" role="status"><span class="status-dot"></span><span class="media-status-copy"><strong>正在读取…</strong></span></div><form id="media-upload" class="upload-zone"><label class="field"><span>上传 ISO / IMG <button class="field-help" type="button" data-help="ISO 通常以只读光驱挂载；IMG 可选择 U 盘模式，并按需读写。" aria-label="上传镜像说明">?</button></span><input name="file" type="file" accept=".iso,.img" required></label><div class="side-actions"><button class="primary" type="submit">上传</button><button id="media-refresh" class="secondary" type="button">刷新</button></div><div class="upload-progress" role="progressbar" aria-label="上传进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="upload-bar"></i></div></form><div id="media-list" class="media-list">正在读取…</div></div><details class="side-advanced"><summary>存储设置 <button class="field-help" type="button" data-help="启用虚拟介质需要一个已连接到 Gadget 的 LUN，以及一个用于保存镜像的目录。" aria-label="存储设置说明">?</button></summary><form id="media-config" class="side-grid"><label class="check wide"><input name="enabled" type="checkbox"><span>启用虚拟介质 <button class="field-help" type="button" data-help="启用后，被控机会看到一只 USB 光驱或 U 盘；启用前请确认 Gadget 已提供 Mass Storage LUN。" aria-label="启用虚拟介质说明">?</button></span></label><label class="field wide"><span>LUN 目录 <button class="field-help" type="button" data-help="指向 USB Gadget 的 mass_storage lun.0；可以使用自动检测，也可以手动填写 configfs 路径。" aria-label="LUN 目录说明">?</button></span><input name="lun_path" class="mono" placeholder="/sys/kernel/config/usb_gadget/…/lun.0"></label><label class="field wide"><span>镜像目录 <button class="field-help" type="button" data-help="上传的 ISO/IMG 文件会保存到这里。目录必须允许 WingmanKVM 服务读写。" aria-label="镜像目录说明">?</button></span><input name="image_directory" class="mono" placeholder="/var/lib/wingmankvm/images"></label><div class="side-actions wide"><button id="media-scan" class="secondary" type="button">自动检测</button><button class="primary" type="submit">保存</button></div></form></details></section>
           <section class="inspector-panel" data-panel="terminal" hidden><h3 class="panel-title">终端</h3><div class="panel-section"><div class="terminal-actions"><button id="terminal-connect" class="primary" type="button">连接</button><button id="terminal-clear" class="secondary" type="button">清空</button></div></div></section>
         </div>
         <div class="session-row"><span class="session-identity"><span class="session-avatar">WK</span><span id="session-user">管理员</span></span><button id="logout" class="ghost" type="button">退出登录</button></div>
@@ -192,6 +192,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
   </main>
 
   <div id="toast" role="status" aria-live="polite"></div>
+  <div id="field-tooltip" role="tooltip" hidden></div>
   <script src="/assets/xterm.js"></script>
   <script src="/assets/xterm-fit.js"></script>
   <script>
@@ -201,6 +202,41 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     const $$ = (s, root = document) => [...root.querySelectorAll(s)];
     const authView = $('#auth-view'), app = $('#app'), setupForm = $('#setup-form'), loginForm = $('#login-form');
     const viewport = $('#video-viewport'), feed = $('#video-feed'), webrtcFeed = $('#webrtc-feed'), consoleBox = $('#console');
+    const fieldTooltip = $('#field-tooltip');
+    let activeHelp = null, helpTimer = 0;
+    function positionFieldTooltip() {
+      if (!activeHelp || fieldTooltip.hidden) return;
+      const anchor = activeHelp.getBoundingClientRect(), tip = fieldTooltip.getBoundingClientRect(), gap = 10, pad = 12;
+      let left = anchor.right + gap;
+      if (left + tip.width > innerWidth - pad) left = anchor.left - tip.width - gap;
+      if (left < pad) left = Math.max(pad, (innerWidth - tip.width) / 2);
+      let top = anchor.top + (anchor.height - tip.height) / 2;
+      if (top < pad) top = anchor.bottom + gap;
+      if (top + tip.height > innerHeight - pad) top = anchor.top - tip.height - gap;
+      left = Math.max(pad, Math.min(left, innerWidth - tip.width - pad));
+      top = Math.max(pad, Math.min(top, innerHeight - tip.height - pad));
+      fieldTooltip.style.left = `${Math.round(left)}px`;
+      fieldTooltip.style.top = `${Math.round(top)}px`;
+    }
+    function hideFieldTooltip() {
+      clearTimeout(helpTimer); activeHelp = null; fieldTooltip.classList.remove('visible');
+      helpTimer = setTimeout(() => { if (!activeHelp) fieldTooltip.hidden = true; }, 160);
+    }
+    function showFieldTooltip(button) {
+      const text = button.dataset.help?.trim(); if (!text) return;
+      clearTimeout(helpTimer); activeHelp = button; fieldTooltip.textContent = text; fieldTooltip.hidden = false; fieldTooltip.classList.remove('visible');
+      requestAnimationFrame(() => { if (activeHelp !== button) return; positionFieldTooltip(); fieldTooltip.classList.add('visible'); });
+    }
+    $$('[data-help]').forEach(button => {
+      button.setAttribute('aria-describedby', 'field-tooltip');
+      button.addEventListener('pointerenter', () => showFieldTooltip(button));
+      button.addEventListener('pointerleave', () => { if (document.activeElement !== button) hideFieldTooltip(); });
+      button.addEventListener('focus', () => showFieldTooltip(button));
+      button.addEventListener('blur', hideFieldTooltip);
+      button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); showFieldTooltip(button); clearTimeout(helpTimer); helpTimer = setTimeout(hideFieldTooltip, 3200); });
+    });
+    addEventListener('resize', positionFieldTooltip);
+    addEventListener('scroll', positionFieldTooltip, true);
     let bootstrap = {}, remoteWanted = false, pageActive = !document.hidden, reconnectTimer = 0, reconnectDelay = 500;
     let videoGeneration = 0, videoWorkspace = 'video', videoPreference = 'auto', activeVideoTransport = 'none', videoUiState = 'paused', videoFallback = false;
     let webrtcPeer = null, webrtcSessionId = null, webrtcAbort = null, videoFirstFrameTimer = 0, statusTimer = 0, latestVideoStatus = null, latestPowerStatus = null, videoConfigRequestId = 0;
