@@ -9,7 +9,7 @@
 - 打开一个运行在 KVM 主机本机的真实交互式终端；
 - 上传 ISO/IMG 并挂载为被控机的虚拟介质。
 
-WingmanKVM 是 Rust 单二进制程序。视频默认走 V4L2 MJPEG 直通，不经过 OpenCV 解码和再次编码，尽量把 CPU 和内存留给被控机控制本身。
+WingmanKVM 是 Rust 单二进制程序。视频默认走 V4L2 MJPEG 直通，不经过 OpenCV 解码和再次编码，尽量把 CPU 和内存留给被控机控制本身。上行带宽受限时，也可以选择 FFmpeg H.264 编码并通过 WebRTC 传输；软件编码默认关闭，程序不会在缺少硬件编码器时静默占满 CPU。
 
 ## 支持范围
 
@@ -44,7 +44,7 @@ WingmanKVM 是 Rust 单二进制程序。视频默认走 V4L2 MJPEG 直通，不
 被控机 HDMI ──> USB HDMI 采集卡 ──> /dev/video*
                                       │ V4L2 mmap / MJPEG
                                       ▼
-浏览器 <── HTTP MJPEG / WebSocket 终端 ── WingmanKVM
+浏览器 <── HTTP MJPEG / WebRTC H.264 / WebSocket 终端 ── WingmanKVM
    │                                  │
    ├── 键盘/鼠标请求 ────────────────> /dev/wingmankvm-*
    ├── 电源请求 ────────────────────> GPIO / gpioset
@@ -55,7 +55,7 @@ WingmanKVM 是 Rust 单二进制程序。视频默认走 V4L2 MJPEG 直通，不
 
 ## 功能
 
-- V4L2 mmap 采集，支持 MJPEG 直通和可选 JPEG 重编码。
+- V4L2 mmap 采集，支持 MJPEG 直通、可选 JPEG 重编码，以及面向低带宽连接的 WebRTC H.264。
 - 视频采集预设：4K、1440p、1080p、720p、480p、自定义；帧率可选 60/30/25/24/15 FPS 或自定义。
 - 采集分辨率与浏览器显示缩放分离，支持适应窗口、原始像素、拉伸，以及像素锐利/平滑插值。
 - Boot Keyboard、Boot Relative Mouse 和 Absolute Pointer；HID 写入非阻塞并带有界超时。
@@ -66,6 +66,56 @@ WingmanKVM 是 Rust 单二进制程序。视频默认走 V4L2 MJPEG 直通，不
 - ISO/IMG 上传；ISO 强制只读，IMG 可作为读写或只读 U 盘；支持正常弹出和强制弹出。
 - 首次启动向导、硬件扫描、管理员认证、Argon2id 密码哈希和会话限时。
 - 所有硬件路径均可在网页中手动指定，不依赖固定的 `/dev/video5` 或 `/dev/hidg0` 编号。
+
+## 视频传输模式
+
+| 模式 | 数据路径 | 适用场景 |
+| --- | --- | --- |
+| MJPEG | 采集卡 MJPEG → HTTP，默认不解码、不重编码 | 局域网、CPU 较弱的开发板、优先保留原始采集质量 |
+| WebRTC H.264 | 采集卡 MJPEG → FFmpeg H.264 → WebRTC | 家庭宽带上行有限、跨网访问、需要控制稳定码率 |
+
+MJPEG 是基础模式和默认回退路径，不依赖 FFmpeg。网页可选择“自动”“低延迟 H.264”或“兼容 MJPEG”；只有后端与浏览器都支持 H.264 时才会建立 WebRTC，协商或连接失败会自动回退到 MJPEG。H.264 需要解码采集卡的 JPEG 再编码，因此节省的是网络带宽，并不一定节省 KVM 主机的 CPU。
+
+### H.264 编码器探测
+
+WebRTC H.264 需要目标机上存在可执行的 FFmpeg。WingmanKVM 在启动和视频配置变更时运行：
+
+```bash
+ffmpeg -hide_banner -encoders
+```
+
+`auto` 模式按以下顺序选择编码器：
+
+1. `h264_rkmpp`（Rockchip MPP）；
+2. `h264_v4l2m2m`（V4L2 M2M）；
+3. `libx264`，但仅在管理员显式允许软件编码后使用。
+
+默认只有检测到 `h264_rkmpp` 或 `h264_v4l2m2m` 时，`video_webrtc_h264` 能力才会标记为可用。缺少硬件编码器时仍可正常使用 MJPEG；WingmanKVM 不会因为系统安装了 `libx264` 就自动启用软件编码。开发板型号本身也不能保证硬件编码可用，例如 RK3399 是否能使用 `h264_rkmpp` 取决于 FFmpeg 构建、MPP 用户库、内核驱动和设备节点。
+
+`config.json` 中的 H.264 配置位于 `video.h264`：
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `bitrate_kbps` | `4000` | 目标码率，允许 `256..=50000` Kbps；网页提供 2/4/8/12 Mbps 档位和自定义值 |
+| `encoder` | `auto` | `auto`、`rockchip_mpp`、`v4l2_m2m` 或 `software` |
+| `allow_software` | `false` | 是否允许使用 `libx264`；弱 ARM 板上可能造成高 CPU 占用和明显发热 |
+| `ffmpeg_path` | `null` | 可选的 FFmpeg 绝对路径；为空时从服务的 `PATH` 查找 `ffmpeg` |
+| `max_sessions` | `1` | 同时 H.264 会话数，允许 `1..=4`；每个会话都会启动独立编码进程 |
+
+可以先在 KVM 主机上确认实际可用的编码器：
+
+```bash
+ffmpeg -hide_banner -encoders | grep -E 'h264_(rkmpp|v4l2m2m)|libx264'
+```
+
+### WebRTC 网络要求
+
+WebRTC 的 offer/answer 信令仍通过 WingmanKVM 的 HTTP 端口传输，但视频媒体由 ICE 协商并通常使用 UDP。只让 Caddy/Nginx 反向代理 TCP `8080`，并不等于已经转发 WebRTC 视频。
+
+- 最稳妥的家庭远程访问方式是让浏览器和 KVM 主机通过 WireGuard、Tailscale 或其他可信 VPN 处于可互通网络；
+- 直接做公网端口转发时，还必须让 ICE 中的 UDP 地址和端口真实可达，并配合防火墙逐项验证，不能只转发 `8080/TCP`；
+- 运营商 NAT、双重 NAT 或受限网络通常需要 STUN/TURN，必要时使用 TURN 中继；普通 HTTP 反向代理不能替代 TURN；
+- 当前版本没有固定 WebRTC 媒体端口或内置 TURN 配置界面，复杂公网环境优先使用 VPN，不要直接暴露未加密的管理端口。
 
 ## 快速开始
 
@@ -84,7 +134,9 @@ cd WingmanKVM
 cargo build --release --locked
 ```
 
-需要近期的 stable Rust（包含 `cargo`）。也可以在另一台机器上构建同架构的 Linux 二进制，再把二进制和仓库中的 `deploy/` 目录复制到 KVM 主机；目标板不需要安装 Rust。macOS ARM64 与 Linux ARM64 架构名称相同，但二进制格式不同，Apple Silicon 用户应使用 Linux ARM64 容器或交叉编译工具链。完整示例见[部署说明](docs/DEPLOYMENT.md)。
+需要近期的 stable Rust（包含 `cargo`）。MJPEG 模式不依赖 FFmpeg；启用 WebRTC H.264 时，还要在 KVM 主机安装带有相应编码器的 FFmpeg。发行版自带的 FFmpeg 不一定包含 Rockchip MPP 或 V4L2 M2M 支持，应以 `ffmpeg -encoders` 的实际输出为准。
+
+也可以在另一台机器上构建同架构的 Linux 二进制，再把二进制和仓库中的 `deploy/` 目录复制到 KVM 主机；目标板不需要安装 Rust。macOS ARM64 与 Linux ARM64 架构名称相同，但二进制格式不同，Apple Silicon 用户应使用 Linux ARM64 容器或交叉编译工具链。完整示例见[部署说明](docs/DEPLOYMENT.md)。
 
 ### 2. 一条命令安装
 
@@ -246,7 +298,7 @@ curl -i http://127.0.0.1:8080/api/bootstrap
 
 WingmanKVM 能够控制电源、键盘、鼠标并向 USB 总线提供磁盘镜像，应当按基础设施控制面来部署：
 
-- 不要把 8080 端口直接暴露到公网；优先使用可信管理网、WireGuard/Tailscale，或在 Caddy/Nginx 后终止 HTTPS。
+- 不要把 8080 端口直接暴露到公网；优先使用可信管理网或 WireGuard/Tailscale。Caddy/Nginx 可以终止 HTTPS 和代理 WebRTC 信令，但不会自动转发 WebRTC 的 UDP 媒体。
 - 首次启动后立即设置强密码；不要分享 setup token、会话 Cookie 或 systemd 日志中的敏感信息。
 - 官方安装器会创建专用 `wingmankvm` 用户和 `wingmankvm-hw` 组，并安装 udev 权限规则。生产硬件可以继续按 VID/PID 收窄 [`deploy/99-wingmankvm.rules`](deploy/99-wingmankvm.rules) 的视频设备范围。
 - GPIO 自动扫描只能列出芯片和线路，不能判断电气连接。变更线路前先确认继电器逻辑和 `active_high`。
@@ -258,7 +310,7 @@ WingmanKVM 能够控制电源、键盘、鼠标并向 USB 总线提供磁盘镜�
 当前版本有意保持简单：
 
 - 不提供网页中的任意 USB descriptor 或 Gadget 拓扑编辑器；
-- 不提供 H.264/WebRTC 视频管线；
+- WebRTC 当前只提供 H.264 视频，不包含音频、固定媒体端口或内置 TURN 配置界面；
 - 不包含多用户/细粒度 RBAC；
 - 终端字符输入按 PTY/键盘事件工作，不负责把任意 Unicode 文本转换成目标机键盘布局；
 - x86 主机若没有 USB Device/OTG 控制器，不能提供 USB HID/存储模拟。
