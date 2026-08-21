@@ -818,11 +818,12 @@ async fn login(
     let auth = state.auth.clone();
     let username = request.username;
     let password = request.password;
+    let password_for_verification = password.clone();
     let valid = tokio::task::spawn_blocking(move || {
         let Some(record) = auth.load()? else {
             return Ok(false);
         };
-        record.verify_credentials(&username, &password)
+        record.verify_credentials(&username, &password_for_verification)
     })
     .await
     .map_err(ApiError::internal)?
@@ -835,6 +836,12 @@ async fn login(
             "用户名或密码不正确",
         ));
     }
+
+    // Older deployments predate password synchronization during setup. A
+    // successful administrator login is the only safe point at which the
+    // plaintext password is available again, so repair those installations
+    // before issuing a terminal-capable session.
+    sync_system_password(&password).await?;
     state.login_limiter.clear(peer.ip());
     let session = state.sessions.create().map_err(ApiError::internal)?;
     Ok(with_session_cookie(
