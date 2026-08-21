@@ -87,6 +87,8 @@ sudo ./deploy/install.sh --binary ./target/release/wingmankvm
 
 安装完成后默认监听 `0.0.0.0:8080`。安装器会直接打印带一次性令牌的首次设置地址；页面读取令牌后会立即从地址栏清除，无需手工复制或先查日志。安装器不会把密码写进命令行或 unit 文件；首次网页初始化时，管理员密码会通过受限 helper 同步给本机终端用户 `wingman`。
 
+网页终端以 `wingman` 用户运行。该用户可使用同一密码执行 `sudo`；应用服务本身仍以独立的、无登录能力的 `wingmankvm` 用户运行。服务沙箱只对 sudo 的运行时时间戳目录 `/run/sudo` 开放写入权限。
+
 重复运行同一命令可用于升级。安装器会更新二进制和托管的部署文件，但保留：
 
 - `/var/lib/wingmankvm/config.json`；

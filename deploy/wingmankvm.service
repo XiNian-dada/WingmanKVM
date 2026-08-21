@@ -15,7 +15,10 @@ Restart=on-failure
 RestartSec=2s
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/wingmankvm -/sys/kernel/config/usb_gadget
+# sudo keeps terminal authentication timestamps under /run/sudo.  The web
+# terminal inherits this mount namespace, so keep that narrowly scoped path
+# writable while retaining ProtectSystem=strict for everything else.
+ReadWritePaths=/var/lib/wingmankvm /run/sudo -/sys/kernel/config/usb_gadget
 
 [Install]
 WantedBy=multi-user.target

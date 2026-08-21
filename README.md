@@ -198,7 +198,7 @@ sudo journalctl -u wingmankvm -b --no-pager
 
 [![初始化硬件 Guide](docs/images/setup-guide.png)](docs/images/setup-guide.png)
 
-创建管理员后 setup token 立即失效，网页密码也会同步给本机终端用户 `wingman`。不要把密码写进命令行或 systemd unit。
+创建管理员后 setup token 立即失效，网页密码也会同步给本机终端用户 `wingman`。网页终端中的 `sudo` 使用同一密码，并且 sudo 时间戳目录已在服务沙箱中单独放行。不要把密码写进命令行或 systemd unit。
 
 ## 如何找到并配置硬件
 

@@ -3,3 +3,7 @@
 # always targets the fixed `wingman` account.
 wingmankvm ALL=(root) NOPASSWD: /usr/local/sbin/wingmankvm-set-wingman-password
 wingmankvm ALL=(wingman) NOPASSWD: /bin/bash -l
+
+# The authenticated web terminal runs as this local maintenance user.  Keep
+# normal sudo password verification so the service itself remains unprivileged.
+wingman ALL=(ALL:ALL) ALL
