@@ -17,8 +17,10 @@ PrivateTmp=true
 ProtectSystem=strict
 # sudo keeps terminal authentication timestamps under /run/sudo.  The web
 # terminal inherits this mount namespace, so keep that narrowly scoped path
-# writable while retaining ProtectSystem=strict for everything else.
-ReadWritePaths=/var/lib/wingmankvm /run/sudo -/sys/kernel/config/usb_gadget
+# writable. The fixed, root-owned password helper also needs /etc for shadow
+# updates and its lock file; the unprivileged service user still has normal
+# Unix permission checks.
+ReadWritePaths=/var/lib/wingmankvm /run/sudo /etc -/sys/kernel/config/usb_gadget
 
 [Install]
 WantedBy=multi-user.target
