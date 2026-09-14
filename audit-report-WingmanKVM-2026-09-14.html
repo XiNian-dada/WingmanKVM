@@ -335,7 +335,7 @@
 
 <div class="finding severity-high" id="AUD-01">
       <div class="finding-header"><h4>AUD-01. 注销会话后，已连接的网页终端仍可接收输入</h4><span class="badge badge-high">High</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 安全 / 会话生命周期</span><span>优先级：P1</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:853</code></span><span>🎯 终端 WebSocket 与登录会话</span></div>
+      <div class="finding-meta"><span>📁 安全 / 会话生命周期</span><span>优先级：P1</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:853</code></span><span>🎯 终端 WebSocket 与登录会话</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/1">GitHub #1</a></span></div>
       <div class="problem"><p><strong>问题：</strong>HTTP 中间件只在建立 WebSocket 时验证会话。logout 从 SessionStore 删除令牌，但终端处理函数没有会话标识、撤销通知或到期检查；前端切到登录页时也未调用 terminalDisconnect。</p>
 <p style="margin-top:12px"><strong>影响：</strong>撤销会话无法撤销已经授予的终端能力，管理员看到退出页面后，原连接仍保有维护用户的执行权限。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>管理员在共享设备退出，或者同一令牌已被用于另一条终端连接；随后旧连接继续发送二进制输入。会话自然过期也走不到现有终端循环中的鉴权。</p></div>
@@ -354,7 +354,7 @@
 
 <div class="finding severity-high" id="AUD-02">
       <div class="finding-header"><h4>AUD-02. 终端 WebSocket 不校验 Origin，同站不同源页面可借用登录态</h4><span class="badge badge-high">High</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 安全 / 跨源边界</span><span>优先级：P1</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:1581</code></span><span>🎯 WebSocket 升级请求</span></div>
+      <div class="finding-meta"><span>📁 安全 / 跨源边界</span><span>优先级：P1</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:1581</code></span><span>🎯 WebSocket 升级请求</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/2">GitHub #2</a></span></div>
       <div class="problem"><p><strong>问题：</strong>Origin 校验跳过所有 GET，而 WebSocket 升级也是 GET。SameSite=Strict 以“站点”而非“源”隔离，不能阻止同一主机不同端口的页面自动携带会话 Cookie。</p>
 <p style="margin-top:12px"><strong>影响：</strong>在满足同站前提时，另一个源中的脚本可以读写维护终端，绕过网页自身的操作界面与来源限制。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>受害者已登录 KVM，并访问同主机其他端口的攻击页面；该页面通过 WebSocket 连接 KVM 终端。普通异站网站通常受到 Strict Cookie 限制，本发现不等于任意网站均可利用。</p></div>
@@ -372,7 +372,7 @@
 
 <div class="finding severity-high" id="AUD-03">
       <div class="finding-header"><h4>AUD-03. 登录限流在失败完成后记账，可被并发请求越过</h4><span class="badge badge-high">High</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 安全 / 资源保护</span><span>优先级：P1</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:807</code></span><span>🎯 登录 API 与 Argon2 工作量</span></div>
+      <div class="finding-meta"><span>📁 安全 / 资源保护</span><span>优先级：P1</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:807</code></span><span>🎯 登录 API 与 Argon2 工作量</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/3">GitHub #3</a></span></div>
       <div class="problem"><p><strong>问题：</strong>allowed 只统计已经完成的失败；请求通过后立即启动密码验证，却没有原子预占尝试额度，也没有全局哈希并发上限。</p>
 <p style="margin-top:12px"><strong>影响：</strong>每分钟 5 次的限制不能约束同时进入的请求，攻击者可让嵌入式设备并行承担大量 Argon2 运算，影响视频和控制响应。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>对已知管理员账号同时发送多个错误密码；这些请求在任一失败被记账前通过 allowed。</p></div>
@@ -389,7 +389,7 @@
 
 <div class="finding severity-high" id="AUD-04">
       <div class="finding-header"><h4>AUD-04. 并发保存不相干设置会丢失其中一次更新</h4><span class="badge badge-high">High</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 数据完整性 / 配置</span><span>优先级：P1</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:1008</code></span><span>🎯 内存配置、磁盘配置及运行时设备状态</span></div>
+      <div class="finding-meta"><span>📁 数据完整性 / 配置</span><span>优先级：P1</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:1008</code></span><span>🎯 内存配置、磁盘配置及运行时设备状态</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/4">GitHub #4</a></span></div>
       <div class="problem"><p><strong>问题：</strong>每个请求在读锁下克隆配置，随后释放锁、修改副本、落盘并覆盖内存。原子文件替换只防止文件写坏，不能避免两个读改写事务使用同一旧版本。</p>
 <p style="margin-top:12px"><strong>影响：</strong>客户端都收到成功，但一个已保存的设置被另一个请求悄悄覆盖，可能影响介质只读策略或硬件参数。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>两个管理标签页同时保存 JPEG 质量和介质默认只读；两者各自修改不同字段，却都基于旧配置构造完整副本。</p></div>
@@ -407,7 +407,7 @@
 
 <div class="finding severity-high" id="AUD-05">
       <div class="finding-header"><h4>AUD-05. 首次初始化会把预设监听地址和端口改回默认值</h4><span class="badge badge-high">High</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 配置 / 网络暴露</span><span>优先级：P1</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:419</code></span><span>🎯 首次设置与服务监听配置</span></div>
+      <div class="finding-meta"><span>📁 配置 / 网络暴露</span><span>优先级：P1</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:419</code></span><span>🎯 首次设置与服务监听配置</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/5">GitHub #5</a></span></div>
       <div class="problem"><p><strong>问题：</strong>初始化从 Config::default() 重建完整配置，而不是保留启动时已经加载的服务器配置；设置表单也没有让用户确认监听地址的变化。</p>
 <p style="margin-top:12px"><strong>影响：</strong>原本限制在回环接口或专用管理接口的服务，在下次启动时可能改为所有 IPv4 接口，并改变端口。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>部署者预先配置仅供反向代理访问的 127.0.0.1 地址，完成网页初始化后重启或升级服务。</p></div>
@@ -425,7 +425,7 @@
 
 <div class="finding severity-medium" id="AUD-06">
       <div class="finding-header"><h4>AUD-06. IMG 的页面默认值覆盖了服务端“默认只读”设置</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 前端状态 / 数据完整性</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs:595</code></span><span>🎯 虚拟介质挂载选项</span></div>
+      <div class="finding-meta"><span>📁 前端状态 / 数据完整性</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs:595</code></span><span>🎯 虚拟介质挂载选项</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/6">GitHub #6</a></span></div>
       <div class="problem"><p><strong>问题：</strong>未挂载 IMG 的只读复选框使用 saved.read_only ?? false。页面挂载请求始终显式发送这个布尔值，因此后端 read_only_by_default 只有在请求省略字段时才会生效。</p>
 <p style="margin-top:12px"><strong>影响：</strong>运维者已设置默认只读，普通挂载操作仍可能把 IMG 作为可写介质交给被控机；ISO 强制只读分支不受影响。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>将 media.read_only_by_default 设为 true，刷新页面，首次选择一个没有历史 UI 选项的 IMG，直接点击挂载。</p></div>
@@ -442,7 +442,7 @@
 
 <div class="finding severity-medium" id="AUD-07">
       <div class="finding-header"><h4>AUD-07. 网页登录被系统密码同步故障阻断，外部进程也无超时</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 稳定性 / 认证依赖</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:775</code></span><span>🎯 正确密码登录及系统维护账号同步</span></div>
+      <div class="finding-meta"><span>📁 稳定性 / 认证依赖</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:775</code></span><span>🎯 正确密码登录及系统维护账号同步</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/7">GitHub #7</a></span></div>
       <div class="problem"><p><strong>问题：</strong>每次成功验证网页密码后，程序都同步 wingman 系统密码，成功才颁发网页会话。helper 出错会拒绝整个控制台登录，child.wait() 还可能无期限等待。</p>
 <p style="margin-top:12px"><strong>影响：</strong>系统账号维护故障被扩大为 KVM 管理入口故障；仅凭 /healthz 正常无法发现用户已经无法登录。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>升级后的 sudoers / helper 不匹配、shadow 文件不可写或 chpasswd 异常，即使网页凭据记录正确也无法登录；helper 卡住时请求会一直等待。</p></div>
@@ -459,7 +459,7 @@
 
 <div class="finding severity-medium" id="AUD-08">
       <div class="finding-header"><h4>AUD-08. 非法监听地址能保存成功，下次启动才报错</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 配置 / API 校验</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:1771</code></span><span>🎯 server 配置持久化与启动解析</span></div>
+      <div class="finding-meta"><span>📁 配置 / API 校验</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:1771</code></span><span>🎯 server 配置持久化与启动解析</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/8">GitHub #8</a></span></div>
       <div class="problem"><p><strong>问题：</strong>配置校验覆盖视频、GPIO 和文件路径，但没有校验 server.listen_address。Config::load 也只校验版本，真正的 SocketAddr 解析被推迟到启动阶段。</p>
 <p style="margin-top:12px"><strong>影响：</strong>API 的成功响应不能保证配置可用于下一次启动；远程保存错误值后，可能需要本机修复文件才能恢复服务。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>管理工具通过全量 PUT 提交拼写错误的地址，当前监听继续工作；设备重启后在绑定端口之前退出。</p></div>
@@ -478,7 +478,7 @@
 
 <div class="finding severity-medium" id="AUD-09">
       <div class="finding-header"><h4>AUD-09. 退出后登录表单仍保留凭据，可直接再次进入</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 隐私 / 前端认证状态</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs:264</code></span><span>🎯 登录、初始化表单及退出界面</span></div>
+      <div class="finding-meta"><span>📁 隐私 / 前端认证状态</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs:264</code></span><span>🎯 登录、初始化表单及退出界面</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/9">GitHub #9</a></span></div>
       <div class="problem"><p><strong>问题：</strong>成功登录只隐藏表单，退出时重新显示原表单；成功与退出路径均未清空密码字段。初始化表单中的密码、确认密码和令牌也没有主动清理。</p>
 <p style="margin-top:12px"><strong>影响：</strong>用户把退出界面当成安全交接点时，下一位使用同一页面的人可以再次提交现有凭据，密码在页面中的驻留时间也被无谓延长。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>在共享维护终端输入账号密码并登录，点击退出，不刷新或关闭页面；随后直接点击“进入控制台”。</p></div>
@@ -494,7 +494,7 @@
 
 <div class="finding severity-medium" id="AUD-10">
       <div class="finding-header"><h4>AUD-10. 保存介质或 GPIO 设置也会重启视频并关闭 WebRTC</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 稳定性 / 模块耦合</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:895</code></span><span>🎯 配置应用流程与视频会话</span></div>
+      <div class="finding-meta"><span>📁 稳定性 / 模块耦合</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:895</code></span><span>🎯 配置应用流程与视频会话</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/10">GitHub #10</a></span></div>
       <div class="problem"><p><strong>问题：</strong>两个配置保存入口无条件向视频线程发送重配置，并重新探测 H.264 编码器、关闭全部 WebRTC 会话，即便视频配置完全相同。</p>
 <p style="margin-top:12px"><strong>影响：</strong>保存无关设置会中断观察画面，并可能把低带宽连接切换到 MJPEG；配置修改的影响范围超过用户所选模块。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>管理员正在观察安装进度或调试远端机器，同时只修改介质目录或 GPIO LED 轮询参数。</p></div>
@@ -513,7 +513,7 @@
 
 <div class="finding severity-medium" id="AUD-11">
       <div class="finding-header"><h4>AUD-11. 正常 WebRTC 会话也在 10 分钟后被强制关闭</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 稳定性 / 视频回退</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>webrtc.rs:43</code></span><span>🎯 持续 H.264 播放与带宽约束</span></div>
+      <div class="finding-meta"><span>📁 稳定性 / 视频回退</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>webrtc.rs:43</code></span><span>🎯 持续 H.264 播放与带宽约束</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/11">GitHub #11</a></span></div>
       <div class="problem"><p><strong>问题：</strong>会话创建后启动固定 10 分钟计时器，到期无条件关闭；没有使用活动时间或媒体状态续期。浏览器在连接断开后切回 MJPEG，当前播放流程没有定时恢复 H.264 的路径。</p>
 <p style="margin-top:12px"><strong>影响：</strong>持续维护工作会遭遇人为断流；选择 H.264 以适应低上行带宽的用户随后可能进入高带宽 MJPEG，直到手动重建播放。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>持续观看远端安装超过 10 分钟，连接及编码一直健康；TTL 仍会关闭当前会话。</p></div>
@@ -532,7 +532,7 @@
 
 <div class="finding severity-medium" id="AUD-12">
       <div class="finding-header"><h4>AUD-12. FFmpeg 编码器探测没有期限，可阻塞启动和配置保存</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 稳定性 / 外部进程</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>webrtc.rs:111</code></span><span>🎯 H.264 能力探测</span></div>
+      <div class="finding-meta"><span>📁 稳定性 / 外部进程</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>webrtc.rs:111</code></span><span>🎯 H.264 能力探测</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/12">GitHub #12</a></span></div>
       <div class="problem"><p><strong>问题：</strong>探测用同步 Command::output 等待进程退出，没有时间及输出边界；首次探测发生在 HTTP listener 建立之前。spawn_blocking 只转移执行线程，不会为重配置增加期限。</p>
 <p style="margin-top:12px"><strong>影响：</strong>损坏或阻塞的 FFmpeg 安装、包装脚本或动态加载环境，会让整个服务启动卡住；运行时则让配置保存持续等待。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>系统升级后 ffmpeg -encoders 不退出，或管理员配置的可执行包装程序挂起；即使用户主要使用 MJPEG，启动仍会探测它。</p></div>
@@ -551,7 +551,7 @@
 
 <div class="finding severity-medium" id="AUD-13">
       <div class="finding-header"><h4>AUD-13. 持续没有有效视频帧时，状态仍可保持 Ready / LIVE</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 可观测性 / 视频真实性</span><span>优先级：P2</span><span>置信度：Medium</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>video.rs:219</code></span><span>🎯 V4L2 采集状态与前端实时标识</span></div>
+      <div class="finding-meta"><span>📁 可观测性 / 视频真实性</span><span>优先级：P2</span><span>置信度：Medium</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>video.rs:219</code></span><span>🎯 V4L2 采集状态与前端实时标识</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/13">GitHub #13</a></span></div>
       <div class="problem"><p><strong>问题：</strong>采集流建立后、第一帧到来前就发布 Ready；后续超时、错误帧或空帧分支持续 continue，没有更新时间戳、清除旧帧或降低状态。</p>
 <p style="margin-top:12px"><strong>影响：</strong>失去新视频数据时可能继续显示最后一帧，并以 LIVE 或配置帧率呈现，管理员难以分辨远端静止与采集冻结。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>UVC 设备仍可打开，但断信号后驱动持续返回超时；此前已经出现过可显示的视频帧。实际驱动也可能输出黑帧，触发形式依硬件而异。</p></div>
@@ -568,7 +568,7 @@
 
 <div class="finding severity-medium" id="AUD-14">
       <div class="finding-header"><h4>AUD-14. 停滞上传长期占用全局上传锁，后续上传只能等待</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 性能 / 资源边界</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:162</code></span><span>🎯 镜像 multipart 上传</span></div>
+      <div class="finding-meta"><span>📁 性能 / 资源边界</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:162</code></span><span>🎯 镜像 multipart 上传</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/14">GitHub #14</a></span></div>
       <div class="problem"><p><strong>问题：</strong>全局上传互斥锁覆盖完整的网络读取、写盘和同步过程；请求禁用了默认体积限制，仅在文件分块中检查单文件大小，没有读取空闲期限或锁等待期限。</p>
 <p style="margin-top:12px"><strong>影响：</strong>一个仍保持 TCP 连接但停止发送数据的已认证客户端，可以占用整个镜像上传通道；其他管理员的上传无反馈地排队。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>远程上传过程中网络半断、客户端挂起，multipart 文件和结束边界尚未传完；另一标签页开始上传小镜像。</p></div>
@@ -586,7 +586,7 @@
 
 <div class="finding severity-medium" id="AUD-15">
       <div class="finding-header"><h4>AUD-15. 开启键鼠转发后，键盘用户无法从画面焦点退出</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 可访问性 / 焦点管理</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs:101</code></span><span>🎯 远程视频区域与键盘捕获</span></div>
+      <div class="finding-meta"><span>📁 可访问性 / 焦点管理</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs:101</code></span><span>🎯 远程视频区域与键盘捕获</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/15">GitHub #15</a></span></div>
       <div class="problem"><p><strong>问题：</strong>全局 keydown 将 Tab、Shift+Tab 和 Escape 都当作远端输入并 preventDefault。已聚焦视频区域时没有明确的本地退出组合键，也无法通过 Tab 回到关闭转发的开关。</p>
 <p style="margin-top:12px"><strong>影响：</strong>依赖键盘或辅助技术的用户会困在画面区域，正常退出输入转发必须改用指针或浏览器外部操作。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>开启“转发键鼠”，让焦点进入 video-viewport，在绝对指针模式下按 Tab、Shift+Tab 或 Escape。浏览器相对指针锁自身的 Esc 释放不等同于退出键盘转发。</p></div>
@@ -603,7 +603,7 @@
 
 <div class="finding severity-medium" id="AUD-16">
       <div class="finding-header"><h4>AUD-16. 服务用户可以沿密码 helper 和维护账号提升到 root</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 安全 / 部署权限边界</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>wingmankvm-sudoers:1</code></span><span>🎯 sudoers、密码同步与 systemd 沙箱</span></div>
+      <div class="finding-meta"><span>📁 安全 / 部署权限边界</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>wingmankvm-sudoers:1</code></span><span>🎯 sudoers、密码同步与 systemd 沙箱</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/16">GitHub #16</a></span></div>
       <div class="problem"><p><strong>问题：</strong>服务用户能够免密设置 wingman 的任意密码，也能免密以 wingman 启动 bash；wingman 又拥有任意 sudo 权限。因此服务进程被控制后，不需要知道原管理员密码即可建立 root 提权链。</p>
 <p style="margin-top:12px"><strong>影响：</strong>独立 nologin 服务账号不能作为对宿主 root 的隔离边界。这里指出的是攻陷后的影响范围，并非发现了未经认证的远程代码执行入口。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>某个应用或依赖漏洞先让攻击者以 wingmankvm 身份执行代码；攻击者重置维护密码，再经维护账号使用 sudo。</p></div>
@@ -622,7 +622,7 @@
 
 <div class="finding severity-medium" id="AUD-17">
       <div class="finding-header"><h4>AUD-17. 会话 Cookie 无 Secure 配置，HTTPS 部署仍需额外补救</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 安全 / 传输隐私</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:1981</code></span><span>🎯 登录及初始化会话 Cookie</span></div>
+      <div class="finding-meta"><span>📁 安全 / 传输隐私</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:1981</code></span><span>🎯 登录及初始化会话 Cookie</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/17">GitHub #17</a></span></div>
       <div class="problem"><p><strong>问题：</strong>Cookie 生成函数始终只设置 HttpOnly、SameSite=Strict、Path 和 Max-Age，没有 Secure 开关或可信 HTTPS 判断。把服务放到 HTTPS 反向代理后，应用生成的 Cookie 属性仍不变。</p>
 <p style="margin-top:12px"><strong>影响：</strong>若公开主机仍可通过 HTTP 访问且代理没有重写 Cookie 或严格传输保护，会话可能随明文请求发送；HttpOnly 和 SameSite 无法提供传输加密。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>管理员按文档部署 HTTPS，但保留 HTTP 入口，且未另行配置 Set-Cookie 重写；浏览器持有不带 Secure 的会话。</p></div>
@@ -639,7 +639,7 @@
 
 <div class="finding severity-medium" id="AUD-18">
       <div class="finding-header"><h4>AUD-18. 现有测试未覆盖 HTTP、WebSocket 与配置事务的关键边界</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 测试 / 验证有效性</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:2153</code></span><span>🎯 跨模块集成测试及浏览器回归</span></div>
+      <div class="finding-meta"><span>📁 测试 / 验证有效性</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:2153</code></span><span>🎯 跨模块集成测试及浏览器回归</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/18">GitHub #18</a></span></div>
       <div class="problem"><p><strong>问题：</strong>现有测试验证了认证存储、序列化、局部配置合并和设备辅助函数，但没有贯穿路由中间件、终端长连接、并发保存及浏览器表单的回归。前端唯一测试只匹配两个 select 字符串。</p>
 <p style="margin-top:12px"><strong>影响：</strong>92 项测试全部通过的同时，注销、跨源终端、并发更新和只读默认值仍能在实际入口复现；绿色测试不足以代表这些边界受保护。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>维护者修改会话或配置流程，运行已有测试后认为风险已覆盖，发布时仍带入跨模块状态错误。</p></div>
@@ -657,7 +657,7 @@
 
 <div class="finding severity-medium" id="AUD-19">
       <div class="finding-header"><h4>AUD-19. 升级逐个替换部署文件，失败后缺少可用版本回滚</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 发布 / 恢复能力</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>install.sh:46</code></span><span>🎯 二进制、helper、sudoers 与服务升级</span></div>
+      <div class="finding-meta"><span>📁 发布 / 恢复能力</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>install.sh:46</code></span><span>🎯 二进制、helper、sudoers 与服务升级</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/19">GitHub #19</a></span></div>
       <div class="problem"><p><strong>问题：</strong>安装器对单个文件使用临时文件加 rename，避免半文件，但多个部署文件按顺序替换，没有保存上一组可用文件或失败回滚；服务检查只有短暂的 is-active。</p>
 <p style="margin-top:12px"><strong>影响：</strong>二进制、unit 与密码 helper 可能落入不同升级状态。新版本启动后立即故障，或缺少运行库导致启动失败时，旧版本已被替换。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>更新二进制成功后，后续 sudoers 安装或服务重启失败；现场只有远程管理通道，需要恢复上一版才能继续维护。</p></div>
@@ -675,7 +675,7 @@
 
 <div class="finding severity-low" id="AUD-20">
       <div class="finding-header"><h4>AUD-20. HID 超时和重试配置可保存，但实际未使用</h4><span class="badge badge-low">Low</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 配置 / 契约一致性</span><span>优先级：P3</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>config.rs:188</code></span><span>🎯 HID 参数</span></div>
+      <div class="finding-meta"><span>📁 配置 / 契约一致性</span><span>优先级：P3</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>config.rs:188</code></span><span>🎯 HID 参数</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/20">GitHub #20</a></span></div>
       <div class="problem"><p><strong>问题：</strong>公开序列化配置包含 write_timeout_ms 和 retry_interval_ms，运行时却使用固定 500 ms 的 WRITE_TIMEOUT；两个配置字段在定义和默认值之外没有消费方。</p>
 <p style="margin-top:12px"><strong>影响：</strong>设备排障时看似保存成功的参数不会改变行为，增加定位超时与兼容性问题的成本。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>管理员通过完整配置 API 调整 HID 写入期限，然后期待不同的超时表现；实际始终使用常量。</p></div>
@@ -693,7 +693,7 @@
 
 <div class="finding severity-low" id="AUD-21">
       <div class="finding-header"><h4>AUD-21. vendored xterm 只有代码和许可证，缺少版本来源清单</h4><span class="badge badge-low">Low</span><span class="badge badge-confirmed">Confirmed</span></div>
-      <div class="finding-meta"><span>📁 供应链 / 可追溯性</span><span>优先级：P3</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>web/<wbr>vendor/<wbr>xterm/<wbr>xterm.js:1</code></span><span>🎯 浏览器终端依赖</span></div>
+      <div class="finding-meta"><span>📁 供应链 / 可追溯性</span><span>优先级：P3</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>web/<wbr>vendor/<wbr>xterm/<wbr>xterm.js:1</code></span><span>🎯 浏览器终端依赖</span><span><a href="https://github.com/XiNian-dada/WingmanKVM/issues/21">GitHub #21</a></span></div>
       <div class="problem"><p><strong>问题：</strong>仓库固定了 vendored 文件内容，也保留了两个 MIT 许可证，但没有记录 xterm 与 addon-fit 的明确版本、上游发布来源、获取方式及校验摘要。Cargo.lock 不覆盖这部分依赖。</p>
 <p style="margin-top:12px"><strong>影响：</strong>收到浏览器终端库安全公告时，维护者难以判断当前文件是否受影响，也难以复现一次可靠更新。</p>
 <p style="margin-top:12px"><strong>现实失败场景：</strong>需要升级终端库或核对某个已修复问题，只有压缩 JavaScript，无法从仓库元数据定位对应发布版本。</p></div>
@@ -1335,8 +1335,37 @@
 
 <div class="card">
 <div class="card-header">📎 GitHub 追踪与基线说明</div>
-<div class="card-body"><p>本次源码审查基于本地 <code>9bef67f33a<wbr>33e74eeb34<wbr>a0809d81aa<wbr>d3209db10d</code>。创建 issue 前远端 main 为 <code>958774f76a<wbr>d95003263f<wbr>4eb4cdabe9<wbr>ef80a000c9</code>，本地领先 24 个提交；本次报告和模板独立发布，issue 中的行号与代码行为均以审查基线为准。</p>
+<div class="card-body"><p>本次源码审查基于本地 <code>9bef67f33a<wbr>33e74eeb34<wbr>a0809d81aa<wbr>d3209db10d</code>。审查开始时远端 main 为 <code>958774f76a<wbr>d95003263f<wbr>4eb4cdabe9<wbr>ef80a000c9</code>，本地领先 24 个提交；本次报告和模板独立发布，issue 中的行号与代码行为均以审查基线为准。</p>
 <p style="margin-top:12px">P0 表示需要立即处置的严重事件；P1 表示发布或扩大暴露前优先处理；P2 表示正常迭代处理的明确风险；P3 表示低风险维护。后续可按影响范围、触发概率和缓解措施重新定级，并保留理由。</p></div>
+</div>
+
+<div class="card">
+<div class="card-header">21 项独立问题的远端追踪</div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>审查编号</th><th>优先级</th><th>GitHub issue</th></tr></thead>
+<tbody>
+<tr><td>AUD-01</td><td>P1</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/1">#1 · 注销会话后，已连接的网页终端仍可接收输入</a></td></tr>
+<tr><td>AUD-02</td><td>P1</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/2">#2 · 终端 WebSocket 不校验 Origin，同站不同源页面可借用登录态</a></td></tr>
+<tr><td>AUD-03</td><td>P1</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/3">#3 · 登录限流在失败完成后记账，可被并发请求越过</a></td></tr>
+<tr><td>AUD-04</td><td>P1</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/4">#4 · 并发保存不相干设置会丢失其中一次更新</a></td></tr>
+<tr><td>AUD-05</td><td>P1</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/5">#5 · 首次初始化会把预设监听地址和端口改回默认值</a></td></tr>
+<tr><td>AUD-06</td><td>P2</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/6">#6 · IMG 的页面默认值覆盖了服务端“默认只读”设置</a></td></tr>
+<tr><td>AUD-07</td><td>P2</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/7">#7 · 网页登录被系统密码同步故障阻断，外部进程也无超时</a></td></tr>
+<tr><td>AUD-08</td><td>P2</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/8">#8 · 非法监听地址能保存成功，下次启动才报错</a></td></tr>
+<tr><td>AUD-09</td><td>P2</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/9">#9 · 退出后登录表单仍保留凭据，可直接再次进入</a></td></tr>
+<tr><td>AUD-10</td><td>P2</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/10">#10 · 保存介质或 GPIO 设置也会重启视频并关闭 WebRTC</a></td></tr>
+<tr><td>AUD-11</td><td>P2</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/11">#11 · 正常 WebRTC 会话也在 10 分钟后被强制关闭</a></td></tr>
+<tr><td>AUD-12</td><td>P2</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/12">#12 · FFmpeg 编码器探测没有期限，可阻塞启动和配置保存</a></td></tr>
+<tr><td>AUD-13</td><td>P2</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/13">#13 · 持续没有有效视频帧时，状态仍可保持 Ready / LIVE</a></td></tr>
+<tr><td>AUD-14</td><td>P2</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/14">#14 · 停滞上传长期占用全局上传锁，后续上传只能等待</a></td></tr>
+<tr><td>AUD-15</td><td>P2</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/15">#15 · 开启键鼠转发后，键盘用户无法从画面焦点退出</a></td></tr>
+<tr><td>AUD-16</td><td>P2</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/16">#16 · 服务用户可以沿密码 helper 和维护账号提升到 root</a></td></tr>
+<tr><td>AUD-17</td><td>P2</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/17">#17 · 会话 Cookie 无 Secure 配置，HTTPS 部署仍需额外补救</a></td></tr>
+<tr><td>AUD-18</td><td>P2</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/18">#18 · 现有测试未覆盖 HTTP、WebSocket 与配置事务的关键边界</a></td></tr>
+<tr><td>AUD-19</td><td>P2</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/19">#19 · 升级逐个替换部署文件，失败后缺少可用版本回滚</a></td></tr>
+<tr><td>AUD-20</td><td>P3</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/20">#20 · HID 超时和重试配置可保存，但实际未使用</a></td></tr>
+<tr><td>AUD-21</td><td>P3</td><td><a href="https://github.com/XiNian-dada/WingmanKVM/issues/21">#21 · vendored xterm 只有代码和许可证，缺少版本来源清单</a></td></tr>
+</tbody></table></div></div>
 </div>
 
 <div class="card">
