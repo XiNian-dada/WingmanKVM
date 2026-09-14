@@ -1,0 +1,1433 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WingmanKVM 完整中文审查报告 · 2026-09-14</title>
+<style>
+  :root {
+    --sidebar-bg: #1a1f2e;
+    --sidebar-hover: #242a3d;
+    --sidebar-active: #2d3555;
+    --bg: #f0f3f7;
+    --card-bg: #ffffff;
+    --border: #e6eaef;
+    --text: #1e2233;
+    --text-secondary: #6b7394;
+    --accent: #3370ff;
+    --accent-light: #e8f0ff;
+    --success: #34c759;
+    --warning: #ff9500;
+    --danger: #ff3b30;
+    --info: #5ac8fa;
+    --badge-critical: #ff3b30;
+    --badge-high: #ff9500;
+    --badge-medium: #3370ff;
+    --badge-low: #8e8e93;
+    --badge-info: #5ac8fa;
+    --bar-bg: #e8eaed;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.8;
+    display: flex;
+    min-height: 100vh;
+    font-size: 15px;
+  }
+  .sidebar { width: 240px; background: var(--sidebar-bg); color: #fff; flex-shrink: 0; display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+  .sidebar-header { padding: 20px 20px 16px; border-bottom: 1px solid rgba(255,255,255,.06); }
+  .sidebar-header h1 { font-size: 18px; font-weight: 700; letter-spacing: .5px; }
+  .sidebar-header .sub { font-size: 12px; color: rgba(255,255,255,.4); margin-top: 4px; }
+  .sidebar-nav { padding: 8px 0; flex: 1; }
+  .sidebar-nav a { display: flex; align-items: center; gap: 12px; padding: 14px 20px; color: rgba(255,255,255,.6); text-decoration: none; font-size: 14px; transition: all .15s; border-left: 3px solid transparent; }
+  .sidebar-nav a:hover { background: var(--sidebar-hover); color: #fff; }
+  .sidebar-nav a.active { background: var(--sidebar-active); color: #fff; border-left-color: var(--accent); }
+  .sidebar-nav a .icon { width: 18px; text-align: center; font-size: 14px; }
+  .sidebar-footer { padding: 12px 20px; border-top: 1px solid rgba(255,255,255,.06); font-size: 11px; color: rgba(255,255,255,.3); }
+  .main { flex: 1; min-width: 0; padding: 32px 40px 80px; }
+  .page-header { margin-bottom: 32px; }
+  .page-header h2 { font-size: 26px; font-weight: 700; }
+  .page-header .meta { font-size: 14px; color: var(--text-secondary); margin-top: 6px; display: flex; gap: 20px; flex-wrap: wrap; }
+  .page-header .meta span { display: flex; align-items: center; gap: 4px; }
+  .card { background: var(--card-bg); border-radius: 10px; border: 1px solid var(--border); margin-bottom: 20px; overflow: hidden; }
+  .card-header { display: flex; align-items: center; justify-content: space-between; padding: 18px 24px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 15px; }
+  .card-body { padding: 24px; }
+  .score-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  .score-item { display: flex; flex-direction: column; gap: 8px; padding: 18px 20px; background: #f8fafc; border-radius: 8px; border: 1px solid var(--border); }
+  .score-item .label { font-size: 13px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .4px; }
+  .score-item .bar-row { display: flex; align-items: center; gap: 12px; }
+  .score-item .bar-track { flex: 1; height: 10px; background: var(--bar-bg); border-radius: 5px; overflow: hidden; }
+  .score-item .bar-fill { height: 100%; border-radius: 5px; transition: width .6s ease; }
+  .score-item .value { font-size: 22px; font-weight: 700; min-width: 52px; text-align: right; }
+  .score-item .grade { font-size: 15px; font-weight: 700; min-width: 22px; text-align: center; }
+  .bar-fill.s { background: linear-gradient(90deg, #34c759, #30d158); }
+  .bar-fill.a { background: linear-gradient(90deg, #3370ff, #5e8cff); }
+  .bar-fill.b { background: linear-gradient(90deg, #ff9500, #ffb340); }
+  .bar-fill.c { background: linear-gradient(90deg, #ff3b30, #ff6b61); }
+  .bar-fill.d { background: linear-gradient(90deg, #ff6b61, #ff9f91); }
+  .bar-fill.f { background: linear-gradient(90deg, #9b1d1a, #d63031); }
+  .grade-s { color: #34c759; } .grade-a { color: #3370ff; }
+  .grade-b { color: #ff9500; } .grade-c { color: #ff3b30; }
+  .grade-d { color: #ff6b61; } .grade-f { color: #9b1d1a; }
+  .overall-row { grid-column: 1 / -1; background: linear-gradient(135deg, #1a1f2e, #2d3555); border-color: transparent; }
+  .overall-row .label { color: rgba(255,255,255,.6); }
+  .overall-row .value { color: #fff; }
+  .overall-row .grade { color: #34c759; }
+  .overall-row .bar-fill { background: linear-gradient(90deg, #34c759, #30d158); }
+  .stats-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  .stat-card { flex: 1; min-width: 140px; padding: 20px 24px; background: var(--card-bg); border-radius: 10px; border: 1px solid var(--border); text-align: center; }
+  .stat-card .num { font-size: 32px; font-weight: 700; line-height: 1.3; }
+  .stat-card .desc { font-size: 13px; color: var(--text-secondary); margin-top: 4px; }
+  .finding { border-left: 4px solid var(--border); margin-bottom: 20px; padding: 20px 24px; border-radius: 0 10px 10px 0; background: #fafbfc; border: 1px solid var(--border); border-left-width: 4px; }
+  .finding.severity-critical { border-left-color: var(--badge-critical); }
+  .finding.severity-high { border-left-color: var(--badge-high); }
+  .finding.severity-medium { border-left-color: var(--badge-medium); }
+  .finding.severity-low { border-left-color: var(--badge-low); }
+  .finding.severity-info { border-left-color: var(--badge-info); }
+  .finding-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .finding-header h4 { font-size: 16px; font-weight: 600; flex: 1; }
+  .badge { display: inline-block; padding: 3px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; line-height: 1.6; }
+  .badge-critical { background: #ffeae9; color: var(--badge-critical); }
+  .badge-high { background: #fff3e0; color: var(--badge-high); }
+  .badge-medium { background: var(--accent-light); color: var(--badge-medium); }
+  .badge-low { background: #f2f2f5; color: var(--badge-low); }
+  .badge-info { background: #e4f5ff; color: #007aff; }
+  .badge-confirmed { background: #e8ffe8; color: #248a3d; }
+  .badge-suspected { background: #fff8e1; color: #b8860b; }
+  .badge-s { background: #e8ffe8; color: #248a3d; }
+  .badge-a { background: var(--accent-light); color: var(--accent); }
+  .badge-b { background: #fff3e0; color: var(--warning); }
+  .badge-c { background: #ffeae9; color: var(--danger); }
+  .finding-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--text-secondary); margin-bottom: 12px; }
+  .finding-meta span { display: flex; align-items: center; gap: 4px; }
+  .finding .evidence { margin: 12px 0; padding: 14px 18px; background: #f0f2f5; border-radius: 8px; font-family: "SF Mono","Fira Code","Consolas",monospace; font-size: 13px; line-height: 1.8; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+  .finding .problem { font-size: 14px; margin: 12px 0; color: var(--text); line-height: 1.8; }
+  .finding .fix-box { margin-top: 12px; padding: 14px 18px; background: #f0f7ff; border-radius: 8px; border: 1px solid #d6e4ff; font-size: 13px; }
+  .finding .fix-box code { display: block; margin-top: 6px; padding: 12px 16px; background: #1e2233; color: #cdd6f4; border-radius: 6px; font-family: "SF Mono","Fira Code","Consolas",monospace; font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; }
+  .fix-label { font-weight: 600; font-size: 11px; color: var(--accent); text-transform: uppercase; letter-spacing: .3px; }
+  .section-title { font-size: 20px; font-weight: 700; margin: 36px 0 20px; padding-bottom: 10px; border-bottom: 2px solid var(--border); display: flex; align-items: center; gap: 8px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; padding: 12px 16px; font-weight: 600; color: var(--text-secondary); font-size: 12px; text-transform: uppercase; letter-spacing: .4px; border-bottom: 2px solid var(--border); background: #f8fafc; }
+  td { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  .check-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 6px; }
+  .check-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-size: 14px; line-height: 1.6; }
+  .check-item .check { color: var(--success); font-weight: 700; }
+  .check-item .cross { color: var(--danger); font-weight: 700; }
+  .win-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+  .win-card { padding: 16px; background: linear-gradient(135deg, #f0f7ff, #e8f0ff); border-radius: 8px; border: 1px solid #d6e4ff; }
+  .win-card .win-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .win-card .win-meta { font-size: 11px; color: var(--text-secondary); }
+  .small { font-size: 13px; color: var(--text-secondary); }
+  .code-block { margin: 8px 0; padding: 14px 18px; background: #1e2233; color: #cdd6f4; border-radius: 6px; font-family: "SF Mono","Fira Code","Consolas",monospace; font-size: 13px; overflow-x: auto; white-space: pre; line-height: 1.7; }
+  .hl { color: #f7768e; font-weight: 600; } .cm { color: #565f89; }
+  .kw { color: #bb9af7; } .fn { color: #7aa2f7; }
+  .ty { color: #ff9e64; } .op { color: #89ddff; }
+  .str { color: #9ece6a; } .nu { color: #ff9e64; }
+  @media (max-width: 768px) { .sidebar { display: none; } .main { padding: 16px; } .score-grid { grid-template-columns: 1fr; } .stats-row { flex-direction: column; } .check-list { grid-template-columns: 1fr; } .win-grid { grid-template-columns: 1fr; } }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #c1c7d0; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #a8adb8; }
+</style>
+</head>
+<body>
+<nav class="sidebar">
+  <div class="sidebar-header"><h1>WingmanKVM</h1><div class="sub">完整审查 · 2026-09-14</div></div>
+  <div class="sidebar-nav"><a href="#summary"><span class="icon">📊</span> 评分面板</a>
+<a href="#executive-summary"><span class="icon">📝</span> 总体评估与项目地图</a>
+<a href="#coverage"><span class="icon">🧭</span> 覆盖矩阵</a>
+<a href="#top-risks"><span class="icon">⚠️</span> 全部发现一览</a>
+<a href="#findings"><span class="icon">🔍</span> 详细发现</a>
+<a href="#architecture"><span class="icon">🏗</span> 架构与模块边界</a>
+<a href="#security"><span class="icon">🔒</span> 安全</a>
+<a href="#stability"><span class="icon">⚡</span> 稳定性与错误处理</a>
+<a href="#performance"><span class="icon">🚀</span> 性能与扩展性</a>
+<a href="#testing"><span class="icon">🧪</span> 测试质量</a>
+<a href="#maintainability"><span class="icon">📐</span> 可维护性</a>
+<a href="#design"><span class="icon">📋</span> 设计原则</a>
+<a href="#release"><span class="icon">🚢</span> 发布与部署流程</a>
+<a href="#documentation"><span class="icon">📚</span> 文档准确性</a>
+<a href="#configuration"><span class="icon">⚙️</span> 配置安全</a>
+<a href="#observability"><span class="icon">🩺</span> 可观测性</a>
+<a href="#data-integrity"><span class="icon">🧱</span> 数据完整性</a>
+<a href="#privacy"><span class="icon">🛡</span> 隐私与数据治理</a>
+<a href="#accessibility"><span class="icon">⌨️</span> 可访问性与交互正确性</a>
+<a href="#supply-chain"><span class="icon">🔗</span> 供应链与可复现性</a>
+<a href="#cost"><span class="icon">💸</span> 成本与资源经济性</a>
+<a href="#ai-safety"><span class="icon">🤖</span> AI / LLM 安全</a>
+<a href="#fallback"><span class="icon">🧯</span> 回退与防御性代码</a>
+<a href="#testing-authenticity"><span class="icon">🔬</span> 测试真实性</a>
+<a href="#type-safety"><span class="icon">🧩</span> 类型安全</a>
+<a href="#frontend-state"><span class="icon">🖥</span> 前端状态管理</a>
+<a href="#backend-api"><span class="icon">🔌</span> 后端 API</a>
+<a href="#dependency-weight"><span class="icon">📦</span> 依赖体量</a>
+<a href="#code-consistency"><span class="icon">🧹</span> 代码一致性</a>
+<a href="#comment-coverage"><span class="icon">💬</span> 注释与说明覆盖</a>
+<a href="#principles"><span class="icon">📋</span> 工程原则核对</a>
+<a href="#fix-order"><span class="icon">🎯</span> 建议修复顺序</a>
+<a href="#quick-wins"><span class="icon">⚡</span> 可先落地的小改动</a></div>
+  <div class="sidebar-footer">Fuck My Shit Mountain v1.0<br>源码基线 9bef67f33a33</div>
+</nav>
+<div class="main">
+  <div class="page-header" id="summary"><h2>WingmanKVM 完整中文审查报告</h2><div class="meta"><span>📅 2026-09-14 · Asia/Singapore</span><span>🔍 full · 25 个维度</span><span>🛠 Codex · 仅审查与报告</span></div></div>
+
+<div class="card">
+<div class="card-header">📊 评分面板</div>
+<div class="card-body"><div class="score-grid">
+<div class="score-item"><div class="label">安全 · Security</div><div class="bar-row"><div class="bar-track"><div class="bar-fill b" style="width:50%"></div></div><span class="value grade-b">5.0</span><span class="grade grade-b">B</span></div><div class="small">Argon2 与路由鉴权已有基础，但会话撤销、同站跨源终端与并发限流存在已复现高风险；宿主权限未实测，覆盖 Medium。</div></div>
+<div class="score-item"><div class="label">稳定性 · Stability</div><div class="bar-row"><div class="bar-track"><div class="bar-fill b" style="width:54%"></div></div><span class="value grade-b">5.4</span><span class="grade grade-b">B</span></div><div class="small">有设备超时和错误类型，但配置丢更新、无界外部等待及视频状态失真影响关键链路；硬件故障覆盖 Medium。</div></div>
+<div class="score-item"><div class="label">性能 · Performance</div><div class="bar-row"><div class="bar-track"><div class="bar-fill b" style="width:65%"></div></div><span class="value grade-b">6.5</span><span class="grade grade-b">B</span></div><div class="small">MJPEG 直通、最新帧通道和会话上限合理，哈希准入与上传阻塞仍需修正；无 ARM 性能基准，覆盖 Medium。</div></div>
+<div class="score-item"><div class="label">测试 · Testing</div><div class="bar-row"><div class="bar-track"><div class="bar-fill b" style="width:56%"></div></div><span class="value grade-b">5.6</span><span class="grade grade-b">B</span></div><div class="small">92 项真实单元测试通过，但 HTTP/WS 及浏览器边界回归不足，Linux 目标未完成验证，覆盖 Medium。</div></div>
+<div class="score-item"><div class="label">可维护性 · Maintainability</div><div class="bar-row"><div class="bar-track"><div class="bar-fill b" style="width:64%"></div></div><span class="value grade-b">6.4</span><span class="grade grade-b">B</span></div><div class="small">设备模块与 Rust 风格较一致，但 web.rs 职责聚集、重复配置应用和巨大 UI 字符串已引发契约漂移。</div></div>
+<div class="score-item"><div class="label">设计 · Design</div><div class="bar-row"><div class="bar-track"><div class="bar-fill b" style="width:60%"></div></div><span class="value grade-b">6.0</span><span class="grade grade-b">B</span></div><div class="small">显式枚举与设备 manager 有清晰用途，事务同步、长连接能力回收和默认值所有权需要收紧。</div></div>
+<div class="score-item"><div class="label">发布 · Release</div><div class="bar-row"><div class="bar-track"><div class="bar-fill b" style="width:51%"></div></div><span class="value grade-b">5.1</span><span class="grade grade-b">B</span></div><div class="small">安装预检、锁文件和配置保留有效，但缺少升级回滚与 Linux 自动门禁；未实际部署，覆盖 Medium。</div></div>
+<div class="score-item overall-row"><div class="label">综合评分 · Overall · 10 为最好</div><div class="bar-row"><div class="bar-track" style="background:rgba(255,255,255,.12)"><div class="bar-fill" style="width:57%;background:linear-gradient(90deg,#34c759,#30d158)"></div></div><span class="value" style="color:#fff">5.7</span><span class="grade" style="color:#34c759">B</span></div><div class="small" style="color:rgba(255,255,255,.7)">7 项工程评分算术平均并保留 1 位小数；B 表示需要改进，不代表已满足稳定公开发布要求。</div></div></div></div>
+</div>
+
+<h3 class="section-title" id="executive-summary">📝 总体评估与项目地图</h3>
+
+<div class="card">
+<div class="card-header">📋 总体评估</div>
+<div class="card-body"><p><strong>项目概况：</strong>WingmanKVM 0.1.0 是基于 Rust 2024、Axum 与 Tokio 的 Linux 网页 KVM，提供 MJPEG / WebRTC 视频、USB HID、GPIO、虚拟介质和维护终端。设备模块已有合理拆分，能看到持续补齐边界校验的工程基础。</p>
+<p style="margin-top:12px"><strong>主要风险：</strong>21 项独立发现中有 5 项 High，集中在终端会话撤销、同站跨源接管、并发登录准入、配置事务及初始化监听范围。部分风险已通过真实二进制和浏览器复现，优先级高于一般代码整理。没有将受限环境中的推断描述为未经认证的远程 root 漏洞。</p>
+<p style="margin-top:12px"><strong>亮点：</strong>92 项测试、格式检查、Clippy 和本机构建通过；密码哈希、原子文件保存、HID 有界队列、ISO 强制只读和安装预检均有实现证据。RustSec 本次快照未检出已知漏洞，另有一个传递依赖停止维护提示。</p>
+<p style="margin-top:12px"><strong>优先修复：</strong>先修会话与来源边界、并发准入和配置提交，再补浏览器默认值/凭据清理、外部命令期限及发布回滚。以针对本次复现的集成测试保护改动，不需要先更换技术栈。</p>
+<p style="margin-top:12px"><strong>总评：</strong>综合 5.7 / 10，B。具备继续迭代的基础，但在扩大访问范围或承诺稳定发布前，应完成高风险修复并补做 Linux 目标与实际硬件验证。审查未修改应用源码、测试、配置或依赖。</p></div>
+</div>
+
+<div class="card">
+<div class="card-header">🗺 项目地图</div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>组件</th><th>主要文件</th><th>职责 / 状态与边界</th></tr></thead>
+<tbody>
+<tr><td>启动入口</td><td><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>main.rs</code>；<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code></td><td>main → AppState::load → 各 manager / 后台工作 → 解析地址 → HTTP 绑定；FFmpeg 能力探测发生在绑定之前。</td></tr>
+<tr><td>认证与会话</td><td><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>auth.rs</code></td><td>auth.json 保存管理员与密码哈希；随机会话在内存中，12 小时 TTL。web.rs 执行 setup/login/logout、Cookie 与中间件。</td></tr>
+<tr><td>配置与持久化</td><td><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>config.rs</code></td><td>JSON 版本 1；内存 RwLock 与原子文件保存并存，但跨请求读改写事务尚未串行。环境变量选择状态目录。</td></tr>
+<tr><td>视频与编码</td><td><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>video.rs</code>；<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>webrtc.rs</code></td><td>V4L2 → MJPEG 最新帧 watch → HTTP multipart 或每会话 FFmpeg / H.264 / WebRTC。默认 1 个 H.264 会话。</td></tr>
+<tr><td>硬件控制</td><td><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>hid.rs</code>；<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>power.rs</code>；<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>discovery.rs</code></td><td>输入进入 HID 有界队列并写设备节点；GPIO 调用 libgpiod 工具；发现逻辑扫描设备能力、稳定别名和 configfs。</td></tr>
+<tr><td>虚拟介质</td><td><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>media.rs</code>；<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code></td><td>镜像保存在文件系统，经路径约束和操作锁修改 LUN 属性；上传先写临时文件再 rename。</td></tr>
+<tr><td>网页与终端</td><td><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs</code>；<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>web/<wbr>vendor/<wbr>xterm/<wbr>xterm.js</code></td><td>原生 HTML/CSS/JS 内嵌 Rust；终端通过 WebSocket 接 PTY，再以 wingman 维护账号运行。</td></tr>
+<tr><td>部署与特权</td><td><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>install.sh</code>；<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>wingmankvm-gadget</code>；<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>wingmankvm-sudoers</code></td><td>root 安装器部署 systemd、udev、复合 Gadget 和密码 helper；服务用户的能力组合可以到达宿主 root。</td></tr>
+</tbody></table></div></div>
+</div>
+
+<div class="card">
+<div class="card-header">📍 范围、数据流与方法</div>
+<div class="card-body"><p><strong>审查基线：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM</code>，分支 main，提交 <code>9bef67f33a<wbr>33e74eeb34<wbr>a0809d81aa<wbr>d3209db10d</code>；开始时工作区干净。</p>
+<p style="margin-top:12px"><strong>文件覆盖：</strong>38 个跟踪文件，其中第一方 Rust 12 个、共 9,133 个物理行（含内嵌 UI 和测试）；29 个第一方文本文件纳入代码、部署及文档梳理，Cargo.lock 单独用于依赖检查。</p>
+<p style="margin-top:12px"><strong>数据流：</strong>浏览器 → HTTP 鉴权与请求校验 → manager / 配置事务 → 文件、设备节点或外部进程 → 状态 API 与视频/终端回传。敏感资产包括认证记录、会话、终端输出、镜像和初始化令牌；没有外部数据库或模型接口。</p>
+<p style="margin-top:12px"><strong>方法：</strong>静态调用链、现有测试/静态检查、原始二进制的隔离 HTTP/WS 探针、浏览器交互核验。临时状态均在工作目录外；sudo/chpasswd 与 FFmpeg 使用受控替身，LUN 为普通文件，没有操作真实 GPIO、USB Gadget 或系统密码。</p>
+<p style="margin-top:12px"><strong>排除：</strong>.git、target、忽略的 .playwright-cli 与 output/playwright 历史快照、3 张文档 PNG 的像素内容、压缩 xterm 内部实现及 Rust 依赖源码。vendor 的版本/许可证/交付入口仍检查；锁文件没有当作应用逻辑逐行审查。</p>
+<p style="margin-top:12px"><strong>证据口径：</strong>Confirmed 表示缺陷代码或行为已明确；每项另标置信度及未实测部分。未充分验证的编码任务泄漏、configfs 取消后 I/O 完成等候选未计入发现，不能因此推导为安全。工时是含相关回归的建议量级，可复用工作，不能简单累加。</p></div>
+</div>
+
+<div class="card">
+<div class="card-header">🧪 实际执行的验证</div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>命令 / 检查</th><th>结果</th><th>证据与限制</th></tr></thead>
+<tbody>
+<tr><td><code>cargo test --locked --offline</code></td><td>通过</td><td>92 passed；0 failed；0 ignored。macOS arm64，Rust / Cargo 1.93.1。</td></tr>
+<tr><td><code>cargo fmt --all -- --check</code></td><td>通过</td><td>无格式差异。</td></tr>
+<tr><td><code>cargo clippy --locked --offline --all-targets -- -D warnings</code></td><td>通过</td><td>本机可编译目标无警告。all-targets 不等于跨所有操作系统。</td></tr>
+<tr><td><code>cargo build --locked --offline</code></td><td>通过</td><td>生成当前源码的本机 debug 二进制，用于隔离实例；没有声称这是 Linux 发布产物。</td></tr>
+<tr><td><code>cargo check --locked --offline --target aarch64-unknown-linux-musl</code></td><td>受环境阻断</td><td>v4l2-sys-mit bindgen 找不到 linux/videodev2.h；这是本机缺少 Linux 头文件，不能据此判定项目在 Linux 构建失败。</td></tr>
+<tr><td><code>cargo audit --json</code></td><td>0 个已知漏洞</td><td>311 个锁文件依赖记录；1 项 informational / unmaintained：bincode 1.3.3，RUSTSEC-2025-0141。</td></tr>
+<tr><td><code>cargo tree --locked --offline -i bincode</code></td><td>已核对</td><td>由 webrtc → dtls 传递引入。</td></tr>
+<tr><td>ShellCheck 与脚本语法检查</td><td>有 1 条轻微警告</td><td>三个可执行部署脚本通过；Bash profile 指定 -s bash 后为 SC2164（cd 未处理失败）；不把无 shebang 的 profile 当成未知 shell 程序。</td></tr>
+<tr><td>隔离 HTTP / WS / 浏览器探针</td><td>完成</td><td>并发配置 4/4 丢更新；12 个错误登录越过限流；初始化监听被覆盖；错误地址可保存；helper 失败阻断登录；终端撤销与同站跨源问题；IMG、凭据与焦点问题；上传停滞阻塞。</td></tr>
+</tbody></table></div></div>
+</div>
+
+<div class="card">
+<div class="card-header">🔎 依赖扫描时间界限</div>
+<div class="card-body"><p>RustSec 数据库：1,245 条公告；提交 <code>37beaafdc0<wbr>0b4cdc882f<wbr>1d3526af07<wbr>f27ceaaf19</code>，更新字段为 2026-09-14T11:48:33+02:00。已知漏洞为零只适用于此快照和匹配范围。</p>
+<p style="margin-top:12px">审查没有更新依赖、运行真实系统安装、实施漏洞修复或更改运行中的用户配置。报告中不含测试 Cookie、初始化令牌或密码值。</p></div>
+</div>
+
+<h3 class="section-title" id="coverage">🧭 覆盖矩阵</h3>
+
+<div class="card">
+<div class="card-header">25 个维度 · 覆盖置信度与单项发现置信度分别评价</div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>维度</th><th>覆盖置信度</th><th>已检查证据</th><th>排除与限制</th></tr></thead>
+<tbody>
+<tr><td><a href="#architecture">架构与模块边界</a></td><td><span class="badge badge-confirmed">High</span></td><td>追踪启动、状态所有权、全部路由及设备 manager；核对配置克隆、持久化与运行时应用的顺序。</td><td>覆盖静态模块边界与可运行的 HTTP 流程；真实设备线程和宿主权限空间未在 Linux 上执行。</td></tr>
+<tr><td><a href="#security">安全</a></td><td><span class="badge badge-suspected">Medium</span></td><td>检查认证、随机令牌、Cookie、Origin、文件路径、子进程参数与部署权限；复现登录并发、终端注销和浏览器同站跨源连接。</td><td>没有对宿主执行 sudo 提权、扫描真实网络或测试反向代理；依赖内部实现未逐行审查。</td></tr>
+<tr><td><a href="#stability">稳定性与错误处理</a></td><td><span class="badge badge-suspected">Medium</span></td><td>追踪外部进程、超时、锁、重配置和连接回收；测试 helper 失败、上传停滞和并发配置。</td><td>未做长时间运行、断电、V4L2 热插拔和编码子任务回收压力验证；不能据此宣称不存在资源泄漏。</td></tr>
+<tr><td><a href="#performance">性能与扩展性</a></td><td><span class="badge badge-suspected">Medium</span></td><td>检查帧传递、编码器会话数、哈希准入和上传锁；完成 12 请求登录突发与微小镜像上传实验。</td><td>没有 ARM CPU、内存、温度、带宽、端到端延迟或 release 二进制体积基准；不以桌面结果外推 RK3399 性能。</td></tr>
+<tr><td><a href="#testing">测试质量</a></td><td><span class="badge badge-suspected">Medium</span></td><td>运行全部本机测试并检查各模块测试意图；以隔离 HTTP、WebSocket 和浏览器交互补查跨模块路径。</td><td>Linux cfg 路径未完成编译，没有覆盖率报告、完整 E2E 套件或硬件台架运行结果。</td></tr>
+<tr><td><a href="#maintainability">可维护性</a></td><td><span class="badge badge-confirmed">High</span></td><td>检查文件职责、重复保存流程、前后端默认值、配置消费点和项目文档组织；运行格式与 Clippy。</td><td>不以行数直接判定严重程度；未测量团队变更周期或人为估计圈复杂度百分比。</td></tr>
+<tr><td><a href="#design">设计原则</a></td><td><span class="badge badge-confirmed">High</span></td><td>用已复现行为核对 SRP、DRY、最少意外、共享状态同步、最小权限、失败尽早暴露与取消安全。</td><td>原则用于解释工程风险，不机械地把长函数、返回值或 bool 参数算成独立缺陷。</td></tr>
+<tr><td><a href="#release">发布与部署流程</a></td><td><span class="badge badge-suspected">Medium</span></td><td>检查安装前置验证、文件替换、systemd、Gadget 生命周期、配置保留与升级恢复；尝试 Linux 目标检查。</td><td>本机为 macOS arm64，没有运行 Linux 安装器、systemd、configfs 或目标板启动测试。</td></tr>
+<tr><td><a href="#documentation">文档准确性</a></td><td><span class="badge badge-confirmed">High</span></td><td>对照安装步骤、KVM 主机/被控机区别、HTTP 安全边界、硬件探测、WebRTC 回退和配置示例。</td><td>板级教程中的实物测量来自项目文档，本次未重新测量；DESIGN.md 是视觉规范，未将其作为系统架构保证。</td></tr>
+<tr><td><a href="#configuration">配置安全</a></td><td><span class="badge badge-confirmed">High</span></td><td>检查默认值、版本、序列化、验证、PATCH/null、持久化与生效时机；复现初始化覆盖、非法地址、并发保存和介质默认值问题。</td><td>真实设备是否支持某一分辨率、GPIO 接法或 HID report 仍依赖部署环境。</td></tr>
+<tr><td><a href="#observability">可观测性</a></td><td><span class="badge badge-suspected">Medium</span></td><td>检查 tracing、状态 API、浏览器状态标签、healthz 与部署故障排查说明；观察 helper 故障时的 HTTP 结果。</td><td>未接入真实 journald、监控或告警系统；未量化日志采样与存储成本。</td></tr>
+<tr><td><a href="#data-integrity">数据完整性</a></td><td><span class="badge badge-suspected">Medium</span></td><td>检查文件权限、原子替换、fsync、配置事务、镜像文件名与 LUN 幂等语义；并发配置和上传中断有实验。</td><td>普通文件替身不能证明 configfs 的超时取消语义；未做真实 IMG 双写、USB 拔插或断电恢复实验。</td></tr>
+<tr><td><a href="#privacy">隐私与数据治理</a></td><td><span class="badge badge-suspected">Medium</span></td><td>追踪账号/哈希、内存会话、密码同步、终端输出、浏览器本地偏好和初始化令牌的处理。</td><td>没有检查用户真实运行数据、终端历史、反向代理日志或备份；不是法规符合性评估。</td></tr>
+<tr><td><a href="#accessibility">可访问性与交互正确性</a></td><td><span class="badge badge-suspected">Medium</span></td><td>检查原生表单、标签、aria 状态、焦点转移、键盘捕获及 CSS 响应式规则；实测登录、退出、介质和画面焦点。</td><td>未完成屏幕阅读器、色彩对比和多浏览器 WCAG 审核；报告文件的窄屏预览不等于应用全部移动端流程已测。</td></tr>
+<tr><td><a href="#supply-chain">供应链与可复现性</a></td><td><span class="badge badge-suspected">Medium</span></td><td>检查锁文件、供应商文件元数据、许可证、构建参数及 cargo audit；追踪 bincode 的引入路径。</td><td>只核对本次 RustSec 数据库快照，未审查全部依赖源码或进行完整许可证、产物签名与供应方身份验证。</td></tr>
+<tr><td><a href="#cost">成本与资源经济性</a></td><td><span class="badge badge-suspected">Medium</span></td><td>检查编码会话、默认码率、上传大小、哈希资源保护和回退对带宽的影响。</td><td>没有云 API 或模型账单；未测量实际功耗、温度、流量和用户镜像增长率。</td></tr>
+<tr><td><a href="#ai-safety">AI / LLM 安全</a></td><td><span class="badge badge-info">Not assessed</span></td><td>核对依赖、路由与浏览器脚本，未见模型调用、提示词、RAG、代理工具执行或模型输出消费。</td><td>项目不存在本维度所针对的运行面，因此不评估，不计入独立分数。</td></tr>
+<tr><td><a href="#fallback">回退与防御性代码</a></td><td><span class="badge badge-suspected">Medium</span></td><td>追踪 MJPEG/H.264 回退、重连退避、配置加载和异常状态转换，区分明确降级与隐藏故障。</td><td>无真实硬件编码协商或驱动挂起试验；嵌套编码任务取消后的实际回收尚需专门验证。</td></tr>
+<tr><td><a href="#testing-authenticity">测试真实性</a></td><td><span class="badge badge-suspected">Medium</span></td><td>检查测试是否验证可观察行为、是否使用真实文件/密码算法、替身与生产调用链的差别。</td><td>没有做 mutation testing；临时普通文件与回显 PTY 不能替代真实 configfs、sudo/PAM 或 USB 硬件。</td></tr>
+<tr><td><a href="#type-safety">类型安全</a></td><td><span class="badge badge-suspected">Medium</span></td><td>检查手写 unsafe、生产 expect/unwrap、serde 边界、显式动作枚举和结构化错误；运行 all-targets Clippy。</td><td>Linux V4L2 bindgen 没有通过当前环境构建；不把 Rust 类型系统视为对 C/驱动依赖的安全证明。</td></tr>
+<tr><td><a href="#frontend-state">前端状态管理</a></td><td><span class="badge badge-suspected">Medium</span></td><td>检查 bootstrap、视频 generation、连接取消、表单忙碌状态、介质选择和认证 UI；完成关键浏览器流程。</td><td>没有对所有快速切换、并行面板请求和各浏览器视频事件顺序穷举；未审查压缩 xterm 内部状态。</td></tr>
+<tr><td><a href="#backend-api">后端 API</a></td><td><span class="badge badge-confirmed">High</span></td><td>检查全部路由、请求体限制、鉴权、中间件、配置 PUT/POST、错误映射以及终端/视频长连接入口。</td><td>硬件处理器使用替身或静态调用链；没有外部客户端契约测试，也没有验证真实网络代理行为。</td></tr>
+<tr><td><a href="#dependency-weight">依赖体量</a></td><td><span class="badge badge-suspected">Medium</span></td><td>检查依赖功能选择、webrtc 传递链和浏览器终端资源大小；对照项目实际功能。</td><td>没有在目标架构做 release 体积、RSS、链接器裁剪或冷启动基准；不声称已经识别了可安全删除的依赖。</td></tr>
+<tr><td><a href="#code-consistency">代码一致性</a></td><td><span class="badge badge-confirmed">High</span></td><td>检查命名、错误处理、默认值、格式与重复模式；运行 Rust 和 Shell 静态检查。</td><td>项目没有配置独立 JavaScript linter；不把短变量名或不同语言风格单独升级成问题。</td></tr>
+<tr><td><a href="#comment-coverage">注释与说明覆盖</a></td><td><span class="badge badge-confirmed">High</span></td><td>对照关键注释中的权限、生命周期、原子写与系统密码同步意图，核查部署说明与真实配置。</td><td>不以注释行占比作为质量指标；没有要求每个私有辅助函数补形式化注释。</td></tr>
+</tbody></table></div></div>
+</div>
+
+<div class="stats-row">
+<div class="stat-card"><div class="num">21</div><div class="desc">总发现 · 不重复计数</div></div>
+<div class="stat-card"><div class="num" style="color:var(--badge-critical)">0</div><div class="desc">严重 · Critical</div></div>
+<div class="stat-card"><div class="num" style="color:var(--badge-high)">5</div><div class="desc">高 · High</div></div>
+<div class="stat-card"><div class="num" style="color:var(--badge-medium)">14</div><div class="desc">中 · Medium</div></div>
+<div class="stat-card"><div class="num" style="color:var(--badge-low)">2</div><div class="desc">低 · Low</div></div>
+<div class="stat-card"><div class="num" style="color:var(--badge-info)">0</div><div class="desc">信息 · Info</div></div>
+</div>
+
+<div class="card">
+<div class="card-header">📌 发现统计口径</div>
+<div class="card-body"><p>21 项 Confirmed；0 项 Suspected 计入统计；严重程度分布为 Critical 0、High 5、Medium 14、Low 2、Info 0。</p>
+<p style="margin-top:12px">GitHub 优先级映射：P0＝Critical（本次 0 项）、P1＝High（5 项）、P2＝Medium（14 项）、P3＝Low（2 项）。优先级用于安排修复，置信度用于表达证据强度。</p>
+<p style="margin-top:12px">跨维度表格只引用同一 AUD 编号，不增加总数。停止维护依赖提示、ShellCheck 轻微警告和未证实风险另作说明，不混入问题数量。</p></div>
+</div>
+
+<h3 class="section-title" id="top-risks">⚠️ 全部发现一览（按严重程度排序）</h3>
+
+<div class="card">
+<div class="card-header">先定位风险，再跳转到证据与建议</div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>编号</th><th>发现</th><th>严重程度</th><th>类别</th></tr></thead>
+<tbody>
+<tr><td>AUD-01</td><td><a href="#AUD-01">AUD-01 · 注销会话后，已连接的网页终端仍可接收输入</a></td><td><span class="badge badge-high">High</span></td><td>安全 / 会话生命周期</td></tr>
+<tr><td>AUD-02</td><td><a href="#AUD-02">AUD-02 · 终端 WebSocket 不校验 Origin，同站不同源页面可借用登录态</a></td><td><span class="badge badge-high">High</span></td><td>安全 / 跨源边界</td></tr>
+<tr><td>AUD-03</td><td><a href="#AUD-03">AUD-03 · 登录限流在失败完成后记账，可被并发请求越过</a></td><td><span class="badge badge-high">High</span></td><td>安全 / 资源保护</td></tr>
+<tr><td>AUD-04</td><td><a href="#AUD-04">AUD-04 · 并发保存不相干设置会丢失其中一次更新</a></td><td><span class="badge badge-high">High</span></td><td>数据完整性 / 配置</td></tr>
+<tr><td>AUD-05</td><td><a href="#AUD-05">AUD-05 · 首次初始化会把预设监听地址和端口改回默认值</a></td><td><span class="badge badge-high">High</span></td><td>配置 / 网络暴露</td></tr>
+<tr><td>AUD-06</td><td><a href="#AUD-06">AUD-06 · IMG 的页面默认值覆盖了服务端“默认只读”设置</a></td><td><span class="badge badge-medium">Medium</span></td><td>前端状态 / 数据完整性</td></tr>
+<tr><td>AUD-07</td><td><a href="#AUD-07">AUD-07 · 网页登录被系统密码同步故障阻断，外部进程也无超时</a></td><td><span class="badge badge-medium">Medium</span></td><td>稳定性 / 认证依赖</td></tr>
+<tr><td>AUD-08</td><td><a href="#AUD-08">AUD-08 · 非法监听地址能保存成功，下次启动才报错</a></td><td><span class="badge badge-medium">Medium</span></td><td>配置 / API 校验</td></tr>
+<tr><td>AUD-09</td><td><a href="#AUD-09">AUD-09 · 退出后登录表单仍保留凭据，可直接再次进入</a></td><td><span class="badge badge-medium">Medium</span></td><td>隐私 / 前端认证状态</td></tr>
+<tr><td>AUD-10</td><td><a href="#AUD-10">AUD-10 · 保存介质或 GPIO 设置也会重启视频并关闭 WebRTC</a></td><td><span class="badge badge-medium">Medium</span></td><td>稳定性 / 模块耦合</td></tr>
+<tr><td>AUD-11</td><td><a href="#AUD-11">AUD-11 · 正常 WebRTC 会话也在 10 分钟后被强制关闭</a></td><td><span class="badge badge-medium">Medium</span></td><td>稳定性 / 视频回退</td></tr>
+<tr><td>AUD-12</td><td><a href="#AUD-12">AUD-12 · FFmpeg 编码器探测没有期限，可阻塞启动和配置保存</a></td><td><span class="badge badge-medium">Medium</span></td><td>稳定性 / 外部进程</td></tr>
+<tr><td>AUD-13</td><td><a href="#AUD-13">AUD-13 · 持续没有有效视频帧时，状态仍可保持 Ready / LIVE</a></td><td><span class="badge badge-medium">Medium</span></td><td>可观测性 / 视频真实性</td></tr>
+<tr><td>AUD-14</td><td><a href="#AUD-14">AUD-14 · 停滞上传长期占用全局上传锁，后续上传只能等待</a></td><td><span class="badge badge-medium">Medium</span></td><td>性能 / 资源边界</td></tr>
+<tr><td>AUD-15</td><td><a href="#AUD-15">AUD-15 · 开启键鼠转发后，键盘用户无法从画面焦点退出</a></td><td><span class="badge badge-medium">Medium</span></td><td>可访问性 / 焦点管理</td></tr>
+<tr><td>AUD-16</td><td><a href="#AUD-16">AUD-16 · 服务用户可以沿密码 helper 和维护账号提升到 root</a></td><td><span class="badge badge-medium">Medium</span></td><td>安全 / 部署权限边界</td></tr>
+<tr><td>AUD-17</td><td><a href="#AUD-17">AUD-17 · 会话 Cookie 无 Secure 配置，HTTPS 部署仍需额外补救</a></td><td><span class="badge badge-medium">Medium</span></td><td>安全 / 传输隐私</td></tr>
+<tr><td>AUD-18</td><td><a href="#AUD-18">AUD-18 · 现有测试未覆盖 HTTP、WebSocket 与配置事务的关键边界</a></td><td><span class="badge badge-medium">Medium</span></td><td>测试 / 验证有效性</td></tr>
+<tr><td>AUD-19</td><td><a href="#AUD-19">AUD-19 · 升级逐个替换部署文件，失败后缺少可用版本回滚</a></td><td><span class="badge badge-medium">Medium</span></td><td>发布 / 恢复能力</td></tr>
+<tr><td>AUD-20</td><td><a href="#AUD-20">AUD-20 · HID 超时和重试配置可保存，但实际未使用</a></td><td><span class="badge badge-low">Low</span></td><td>配置 / 契约一致性</td></tr>
+<tr><td>AUD-21</td><td><a href="#AUD-21">AUD-21 · vendored xterm 只有代码和许可证，缺少版本来源清单</a></td><td><span class="badge badge-low">Low</span></td><td>供应链 / 可追溯性</td></tr>
+</tbody></table></div></div>
+</div>
+
+<h3 class="section-title" id="findings">🔍 详细发现</h3>
+
+<div class="finding severity-high" id="AUD-01">
+      <div class="finding-header"><h4>AUD-01. 注销会话后，已连接的网页终端仍可接收输入</h4><span class="badge badge-high">High</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 安全 / 会话生命周期</span><span>优先级：P1</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:853</code></span><span>🎯 终端 WebSocket 与登录会话</span></div>
+      <div class="problem"><p><strong>问题：</strong>HTTP 中间件只在建立 WebSocket 时验证会话。logout 从 SessionStore 删除令牌，但终端处理函数没有会话标识、撤销通知或到期检查；前端切到登录页时也未调用 terminalDisconnect。</p>
+<p style="margin-top:12px"><strong>影响：</strong>撤销会话无法撤销已经授予的终端能力，管理员看到退出页面后，原连接仍保有维护用户的执行权限。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>管理员在共享设备退出，或者同一令牌已被用于另一条终端连接；随后旧连接继续发送二进制输入。会话自然过期也走不到现有终端循环中的鉴权。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/src/web.rs:853–855
+/Users/bernard/Code/WingmanKVM/src/web.rs:204–205
+/Users/bernard/Code/WingmanKVM/src/web.rs:272–300
+/Users/bernard/Code/WingmanKVM/src/web_ui.rs:264–291
+
+函数 / 模块：logout / terminal_ws / handle_terminal
+相关行为：logout → sessions.revoke(token)；ws.on_upgrade(handle_terminal) 不传入会话；循环持续读取 Message::Binary，直到连接关闭才 child.kill()。
+验证结果与限制：隔离实例：终端连接已建立 → logout 返回 200 → 相同 Cookie 的新 HTTP 请求返回 401 → 旧 WebSocket 仍得到 PTY 回显。PTY 为只回显的替身，没有运行系统 shell。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>为每个登录会话绑定取消信号和截止时间；终端循环同时等待撤销/到期并关闭 PTY、等待子进程退出。前端注销与过期处理同时调用 terminalDisconnect，清除终端内容。</code><p style="margin-top:12px"><strong>后续改进：</strong>让终端、MJPEG 与 WebRTC 统一登记到所属登录会话；HTTP 入口鉴权与长连接能力回收使用同一生命周期。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>1–2 人日 &nbsp;·&nbsp; <strong>回归测试建议：</strong>建立真实 WebSocket 后注销：旧连接必须关闭，后续输入不再到达 PTY；用可控时钟验证自然过期，再检查前端退出后终端对象已清理。</div>
+    </div>
+
+<div class="finding severity-high" id="AUD-02">
+      <div class="finding-header"><h4>AUD-02. 终端 WebSocket 不校验 Origin，同站不同源页面可借用登录态</h4><span class="badge badge-high">High</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 安全 / 跨源边界</span><span>优先级：P1</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:1581</code></span><span>🎯 WebSocket 升级请求</span></div>
+      <div class="problem"><p><strong>问题：</strong>Origin 校验跳过所有 GET，而 WebSocket 升级也是 GET。SameSite=Strict 以“站点”而非“源”隔离，不能阻止同一主机不同端口的页面自动携带会话 Cookie。</p>
+<p style="margin-top:12px"><strong>影响：</strong>在满足同站前提时，另一个源中的脚本可以读写维护终端，绕过网页自身的操作界面与来源限制。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>受害者已登录 KVM，并访问同主机其他端口的攻击页面；该页面通过 WebSocket 连接 KVM 终端。普通异站网站通常受到 Strict Cookie 限制，本发现不等于任意网站均可利用。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/src/web.rs:1581–1592
+/Users/bernard/Code/WingmanKVM/src/web.rs:158–168
+/Users/bernard/Code/WingmanKVM/src/web.rs:1981–1985
+
+函数 / 模块：require_auth / terminal_ws
+相关行为：require_auth 对 GET | HEAD | OPTIONS 不执行 origin_matches_host；/api/terminal/ws 注册为 get(terminal_ws)。
+验证结果与限制：浏览器实测：KVM 在 127.0.0.1:50529，验证页在 127.0.0.1:56078。页面未读取或手工传入 Cookie，却成功建立 WebSocket 并收到隔离 PTY 的输入回显；另有原始握手 101 证据。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>在 WebSocket 升级前强制核对 Origin 与配置的可信公开源（含协议、主机、端口），拒绝缺失或不匹配的浏览器来源；反向代理场景使用明确的可信配置。</code><p style="margin-top:12px"><strong>后续改进：</strong>为浏览器 HTTP 写操作与 WebSocket 建立共用来源策略；需要原生客户端时另行设计明确的认证通道。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>0.5–1 人日 &nbsp;·&nbsp; <strong>回归测试建议：</strong>用两个同站不同端口的测试服务验证：已登录浏览器从异源页面连接必须被拒绝，同源页面可连接；覆盖代理公开域名与缺失 Origin。</div>
+    </div>
+
+<div class="finding severity-high" id="AUD-03">
+      <div class="finding-header"><h4>AUD-03. 登录限流在失败完成后记账，可被并发请求越过</h4><span class="badge badge-high">High</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 安全 / 资源保护</span><span>优先级：P1</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:807</code></span><span>🎯 登录 API 与 Argon2 工作量</span></div>
+      <div class="problem"><p><strong>问题：</strong>allowed 只统计已经完成的失败；请求通过后立即启动密码验证，却没有原子预占尝试额度，也没有全局哈希并发上限。</p>
+<p style="margin-top:12px"><strong>影响：</strong>每分钟 5 次的限制不能约束同时进入的请求，攻击者可让嵌入式设备并行承担大量 Argon2 运算，影响视频和控制响应。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>对已知管理员账号同时发送多个错误密码；这些请求在任一失败被记账前通过 allowed。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/src/web.rs:807–837
+/Users/bernard/Code/WingmanKVM/src/web.rs:2122–2140
+
+函数 / 模块：login / LoginLimiter::allowed / record_failure
+相关行为：allowed(peer.ip()) → spawn_blocking(verify_credentials) → 失败后 record_failure；allowed 的锁与后续记账不是一次原子准入操作。
+验证结果与限制：12 个同步发出的错误登录请求全部返回 401，随后第 13 个请求返回 429。仅做小规模验证，没有进行耗尽内存或拒绝服务压测。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>在同一个限流临界区原子预占尝试额度，并对密码哈希设置有界并发信号量；超限尽早返回 429，避免先分配昂贵工作。</code><p style="margin-top:12px"><strong>后续改进：</strong>按可信客户端地址实施速率限制，设置有界的限流记录清理策略；代理部署需明确地址信任链。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>0.5–1 人日 &nbsp;·&nbsp; <strong>回归测试建议：</strong>用屏障同时启动超过 5 个错误登录，验证进入哈希阶段的数量受限；覆盖成功登录、时间窗口滑动和多个客户端共享全局上限。</div>
+    </div>
+
+<div class="finding severity-high" id="AUD-04">
+      <div class="finding-header"><h4>AUD-04. 并发保存不相干设置会丢失其中一次更新</h4><span class="badge badge-high">High</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 数据完整性 / 配置</span><span>优先级：P1</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:1008</code></span><span>🎯 内存配置、磁盘配置及运行时设备状态</span></div>
+      <div class="problem"><p><strong>问题：</strong>每个请求在读锁下克隆配置，随后释放锁、修改副本、落盘并覆盖内存。原子文件替换只防止文件写坏，不能避免两个读改写事务使用同一旧版本。</p>
+<p style="margin-top:12px"><strong>影响：</strong>客户端都收到成功，但一个已保存的设置被另一个请求悄悄覆盖，可能影响介质只读策略或硬件参数。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>两个管理标签页同时保存 JPEG 质量和介质默认只读；两者各自修改不同字段，却都基于旧配置构造完整副本。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/src/web.rs:1008–1035
+/Users/bernard/Code/WingmanKVM/src/web.rs:891–905
+/Users/bernard/Code/WingmanKVM/src/web.rs:1763–1768
+
+函数 / 模块：patch_config / update_config / persist_config
+相关行为：config = state.config.read().await.clone()；多次 await 后 persist_config，再 *state.config.write().await = config；两个入口均没有覆盖完整事务的写入协调。
+验证结果与限制：进行了 4 轮并发独立字段更新，每轮两个请求均返回 200，每轮均丢失一项设置。本次磁盘与内存的最终值一致，未把两者不一致列为已复现结果。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>增加配置事务锁，在锁内读取最新快照、合并、校验、持久化并提交运行时状态；PUT、局部更新和初始化走同一提交入口，并明确副作用失败时的处理。</code><p style="margin-top:12px"><strong>后续改进：</strong>加入配置 revision / If-Match，为基于旧快照的全量 PUT 返回冲突；按子配置变化执行设备重配置。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>1–2 人日 &nbsp;·&nbsp; <strong>回归测试建议：</strong>同时提交两个不相干局部更新，随后读取 API、磁盘和设备快照，三者必须包含两项修改；再注入持久化或设备重配置失败。</div>
+    </div>
+
+<div class="finding severity-high" id="AUD-05">
+      <div class="finding-header"><h4>AUD-05. 首次初始化会把预设监听地址和端口改回默认值</h4><span class="badge badge-high">High</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 配置 / 网络暴露</span><span>优先级：P1</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:419</code></span><span>🎯 首次设置与服务监听配置</span></div>
+      <div class="problem"><p><strong>问题：</strong>初始化从 Config::default() 重建完整配置，而不是保留启动时已经加载的服务器配置；设置表单也没有让用户确认监听地址的变化。</p>
+<p style="margin-top:12px"><strong>影响：</strong>原本限制在回环接口或专用管理接口的服务，在下次启动时可能改为所有 IPv4 接口，并改变端口。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>部署者预先配置仅供反向代理访问的 127.0.0.1 地址，完成网页初始化后重启或升级服务。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/src/web.rs:419–423
+/Users/bernard/Code/WingmanKVM/src/web.rs:486–499
+/Users/bernard/Code/WingmanKVM/src/web.rs:129–131
+
+函数 / 模块：setup / Config::default
+相关行为：setup：let mut new_config = Config::default()；随后 persist_config(new_config) 覆盖现有文件；正在运行的 TcpListener 不随之改变。
+验证结果与限制：隔离实例原配置为 127.0.0.1:50529；初始化返回 200 后，文件变为 0.0.0.0:8080。测试期间监听仍为原回环端口，并已在重启前还原临时配置。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>从已加载配置的克隆开始初始化，只更新此次设置负责的字段，保留 server 以及未由表单控制的部署参数。</code><p style="margin-top:12px"><strong>后续改进：</strong>区分运维配置与网页初始化数据的所有权；所有会改变监听面的操作都应明确告知需重启及其实际效果。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>2–4 小时 &nbsp;·&nbsp; <strong>回归测试建议：</strong>预置自定义监听地址、端口和上传上限后执行 setup，断言未填写的字段保持不变；重新加载配置验证下一次启动地址。</div>
+    </div>
+
+<div class="finding severity-medium" id="AUD-06">
+      <div class="finding-header"><h4>AUD-06. IMG 的页面默认值覆盖了服务端“默认只读”设置</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 前端状态 / 数据完整性</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs:595</code></span><span>🎯 虚拟介质挂载选项</span></div>
+      <div class="problem"><p><strong>问题：</strong>未挂载 IMG 的只读复选框使用 saved.read_only ?? false。页面挂载请求始终显式发送这个布尔值，因此后端 read_only_by_default 只有在请求省略字段时才会生效。</p>
+<p style="margin-top:12px"><strong>影响：</strong>运维者已设置默认只读，普通挂载操作仍可能把 IMG 作为可写介质交给被控机；ISO 强制只读分支不受影响。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>将 media.read_only_by_default 设为 true，刷新页面，首次选择一个没有历史 UI 选项的 IMG，直接点击挂载。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/src/web_ui.rs:595–596
+/Users/bernard/Code/WingmanKVM/src/web.rs:1485–1496
+
+函数 / 模块：renderMediaItem / attach_media
+相关行为：前端默认 false 并发送 read_only: readonly.checked；后端仅使用 request.read_only.unwrap_or(default_read_only)。
+验证结果与限制：在普通文件模拟的 LUN 和可丢弃 IMG 上检查页面：服务端配置为 true，新 IMG 的“只读”复选框仍未勾选。没有对真实介质做读写测试。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>未有用户显式选择时，从 bootstrap.config.media.read_only_by_default 初始化复选框；或省略 read_only 让后端应用默认，并在界面显示最终选项。</code><p style="margin-top:12px"><strong>后续改进：</strong>将默认值与枚举语义维护在一个明确的 API 契约中，减少浏览器和 Rust 分别猜测配置。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>2–4 小时 &nbsp;·&nbsp; <strong>回归测试建议：</strong>浏览器分别在 true / false 默认值下加载新 IMG，验证复选框与实际请求；覆盖 ISO、CD-ROM 和用户手工覆盖。</div>
+    </div>
+
+<div class="finding severity-medium" id="AUD-07">
+      <div class="finding-header"><h4>AUD-07. 网页登录被系统密码同步故障阻断，外部进程也无超时</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 稳定性 / 认证依赖</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:775</code></span><span>🎯 正确密码登录及系统维护账号同步</span></div>
+      <div class="problem"><p><strong>问题：</strong>每次成功验证网页密码后，程序都同步 wingman 系统密码，成功才颁发网页会话。helper 出错会拒绝整个控制台登录，child.wait() 还可能无期限等待。</p>
+<p style="margin-top:12px"><strong>影响：</strong>系统账号维护故障被扩大为 KVM 管理入口故障；仅凭 /healthz 正常无法发现用户已经无法登录。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>升级后的 sudoers / helper 不匹配、shadow 文件不可写或 chpasswd 异常，即使网页凭据记录正确也无法登录；helper 卡住时请求会一直等待。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/src/web.rs:775–798
+/Users/bernard/Code/WingmanKVM/src/web.rs:840–846
+
+函数 / 模块：login / sync_system_password
+相关行为：verify_credentials 成功 → sync_system_password(&amp;password).await? → sessions.create；同步内部 std::process::Child::wait 没有截止时间或 kill/reap 分支。
+验证结果与限制：使隔离密码 helper 返回失败，正确网页密码登录返回 500；同一实例 /healthz 仍为 200。等待无上限来自代码检查，未让真实 chpasswd 挂起。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>将同步限制到初始化、密码变更或明确的迁移状态；给 helper 设置期限并在超时后终止、回收进程。同步未完成时可以允许 KVM 登录但禁用终端，并明确显示维护状态。</code><p style="margin-top:12px"><strong>后续改进：</strong>维护账号同步状态应可诊断、可重试，避免每次登录重写系统密码；不要简单吞掉错误后仍声称终端已就绪。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>1 人日 &nbsp;·&nbsp; <strong>回归测试建议：</strong>用可控 helper 覆盖失败、永久等待、成功三种情况；断言登录行为与 terminal_ready 状态一致，超时后无遗留子进程。</div>
+    </div>
+
+<div class="finding severity-medium" id="AUD-08">
+      <div class="finding-header"><h4>AUD-08. 非法监听地址能保存成功，下次启动才报错</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 配置 / API 校验</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:1771</code></span><span>🎯 server 配置持久化与启动解析</span></div>
+      <div class="problem"><p><strong>问题：</strong>配置校验覆盖视频、GPIO 和文件路径，但没有校验 server.listen_address。Config::load 也只校验版本，真正的 SocketAddr 解析被推迟到启动阶段。</p>
+<p style="margin-top:12px"><strong>影响：</strong>API 的成功响应不能保证配置可用于下一次启动；远程保存错误值后，可能需要本机修复文件才能恢复服务。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>管理工具通过全量 PUT 提交拼写错误的地址，当前监听继续工作；设备重启后在绑定端口之前退出。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/src/web.rs:1771–1938
+/Users/bernard/Code/WingmanKVM/src/web.rs:129–131
+/Users/bernard/Code/WingmanKVM/src/config.rs:48–60
+/Users/bernard/Code/WingmanKVM/src/main.rs:18–23
+
+函数 / 模块：validate_config / Config::load / server_address
+相关行为：update_config 调用 validate_config 后保存；server_address 使用 format!(&quot;{}:{}&quot;, listen_address, port).parse()?；没有复用统一的服务器地址验证。
+验证结果与限制：PUT invalid-listen-address 返回 200，GET 和临时配置文件中都保留该值。随后已还原；下一次启动失败由启动解析代码直接确定，未把生产设备重启作为实验。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>在保存和加载时复用同一配置验证器，按明确的 IP 地址契约解析地址，并用 SocketAddr::new 组合端口；错误值返回 4xx 且保持旧配置。</code><p style="margin-top:12px"><strong>后续改进：</strong>把需要重启的配置与可热更新的配置分开呈现，返回生效状态，避免保存即生效的误解。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>2–4 小时 &nbsp;·&nbsp; <strong>回归测试建议：</strong>覆盖非法地址、IPv4、IPv6 与端口边界；验证失败请求不改磁盘及内存，合法地址保存后可被启动解析器读取。</div>
+    </div>
+
+<div class="finding severity-medium" id="AUD-09">
+      <div class="finding-header"><h4>AUD-09. 退出后登录表单仍保留凭据，可直接再次进入</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 隐私 / 前端认证状态</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs:264</code></span><span>🎯 登录、初始化表单及退出界面</span></div>
+      <div class="problem"><p><strong>问题：</strong>成功登录只隐藏表单，退出时重新显示原表单；成功与退出路径均未清空密码字段。初始化表单中的密码、确认密码和令牌也没有主动清理。</p>
+<p style="margin-top:12px"><strong>影响：</strong>用户把退出界面当成安全交接点时，下一位使用同一页面的人可以再次提交现有凭据，密码在页面中的驻留时间也被无谓延长。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>在共享维护终端输入账号密码并登录，点击退出，不刷新或关闭页面；随后直接点击“进入控制台”。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/src/web_ui.rs:264–291
+
+函数 / 模块：loginForm submit / setupForm submit / logout / showState
+相关行为：submit 成功后调用 showState；showState 使用 classList 切换显示；logout finally 回到 login，没有表单 reset 或密码清空。
+验证结果与限制：实际浏览器按上述步骤操作，退出后没有再次填写任何字段，点击“进入控制台”仍回到控制台。结论以页面操作结果和源码为依据，没有导出密码值。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>成功使用凭据后立即清空密码；退出和认证过期路径再统一清空登录密码、初始化密码/确认项/令牌。可保留账号名以便使用。</code><p style="margin-top:12px"><strong>后续改进：</strong>把认证 UI 的进入、退出和资源销毁放到集中处理函数，连同终端清理一起回归。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>1–2 小时 &nbsp;·&nbsp; <strong>回归测试建议：</strong>输入凭据登录后退出，直接点击登录应触发表单缺少密码校验，且不得发出成功登录；覆盖初始化成功与会话过期。</div>
+    </div>
+
+<div class="finding severity-medium" id="AUD-10">
+      <div class="finding-header"><h4>AUD-10. 保存介质或 GPIO 设置也会重启视频并关闭 WebRTC</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 稳定性 / 模块耦合</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:895</code></span><span>🎯 配置应用流程与视频会话</span></div>
+      <div class="problem"><p><strong>问题：</strong>两个配置保存入口无条件向视频线程发送重配置，并重新探测 H.264 编码器、关闭全部 WebRTC 会话，即便视频配置完全相同。</p>
+<p style="margin-top:12px"><strong>影响：</strong>保存无关设置会中断观察画面，并可能把低带宽连接切换到 MJPEG；配置修改的影响范围超过用户所选模块。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>管理员正在观察安装进度或调试远端机器，同时只修改介质目录或 GPIO LED 轮询参数。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/src/web.rs:895–904
+/Users/bernard/Code/WingmanKVM/src/web.rs:1025–1034
+/Users/bernard/Code/WingmanKVM/src/devices/video.rs:89–92
+/Users/bernard/Code/WingmanKVM/src/devices/webrtc.rs:168–195
+
+函数 / 模块：update_config / patch_config / VideoManager::reconfigure / WebRtcManager::reconfigure
+相关行为：所有配置写入均调用 video.reconfigure(config.video.clone()) 和 webrtc.reconfigure；后者枚举 sessions 并逐一 close。VideoManager 未做相等性短路。
+验证结果与限制：通过完整调用链确认无条件重配置与会话关闭。当前环境没有真实 V4L2 / H.264 流，不报告实际黑屏时长。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>比较新旧 video 与 h264 子配置，仅在相应内容改变时重配置；在统一配置提交函数中集中处理差异。</code><p style="margin-top:12px"><strong>后续改进：</strong>保持子系统配置所有权清晰，将受影响组件及是否中断会话作为配置响应的一部分。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>0.5–1 人日 &nbsp;·&nbsp; <strong>回归测试建议：</strong>保持一个视频会话，修改 media 或 power 后断言视频 generation、会话 ID 与编码器探测次数不变；视频参数变化时才触发重建。</div>
+    </div>
+
+<div class="finding severity-medium" id="AUD-11">
+      <div class="finding-header"><h4>AUD-11. 正常 WebRTC 会话也在 10 分钟后被强制关闭</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 稳定性 / 视频回退</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>webrtc.rs:43</code></span><span>🎯 持续 H.264 播放与带宽约束</span></div>
+      <div class="problem"><p><strong>问题：</strong>会话创建后启动固定 10 分钟计时器，到期无条件关闭；没有使用活动时间或媒体状态续期。浏览器在连接断开后切回 MJPEG，当前播放流程没有定时恢复 H.264 的路径。</p>
+<p style="margin-top:12px"><strong>影响：</strong>持续维护工作会遭遇人为断流；选择 H.264 以适应低上行带宽的用户随后可能进入高带宽 MJPEG，直到手动重建播放。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>持续观看远端安装超过 10 分钟，连接及编码一直健康；TTL 仍会关闭当前会话。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/src/devices/webrtc.rs:43
+/Users/bernard/Code/WingmanKVM/src/devices/webrtc.rs:325
+/Users/bernard/Code/WingmanKVM/src/devices/webrtc.rs:368–374
+/Users/bernard/Code/WingmanKVM/src/web_ui.rs:482–506
+
+函数 / 模块：install_session_ttl / fallbackToMjpeg
+相关行为：sleep(SESSION_TTL) 后直接 close_inner；connectionState failed/closed 或 track ended → fallbackToMjpeg → startMjpeg。
+验证结果与限制：由定时器及浏览器回退调用链确认；未在当前无 H.264 硬件环境进行超过 10 分钟的实播实验。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>将固定寿命改为有依据的闲置/断连回收，并绑定登录会话到期；若确需限制最长播放时间，应提前提示并主动续建 H.264。</code><p style="margin-top:12px"><strong>后续改进：</strong>让回退显示明确原因，按受控退避尝试恢复首选传输，同时保留手工选择 MJPEG 的行为。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>0.5–1 人日 &nbsp;·&nbsp; <strong>回归测试建议：</strong>用可控 Tokio 时钟推进 10 分钟，健康会话应保持或平滑续建；闲置和已撤销会话仍需回收，并验证 UI 不永久停在非首选模式。</div>
+    </div>
+
+<div class="finding severity-medium" id="AUD-12">
+      <div class="finding-header"><h4>AUD-12. FFmpeg 编码器探测没有期限，可阻塞启动和配置保存</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 稳定性 / 外部进程</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>webrtc.rs:111</code></span><span>🎯 H.264 能力探测</span></div>
+      <div class="problem"><p><strong>问题：</strong>探测用同步 Command::output 等待进程退出，没有时间及输出边界；首次探测发生在 HTTP listener 建立之前。spawn_blocking 只转移执行线程，不会为重配置增加期限。</p>
+<p style="margin-top:12px"><strong>影响：</strong>损坏或阻塞的 FFmpeg 安装、包装脚本或动态加载环境，会让整个服务启动卡住；运行时则让配置保存持续等待。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>系统升级后 ffmpeg -encoders 不退出，或管理员配置的可执行包装程序挂起；即使用户主要使用 MJPEG，启动仍会探测它。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/src/devices/webrtc.rs:111–112
+/Users/bernard/Code/WingmanKVM/src/devices/webrtc.rs:168–172
+/Users/bernard/Code/WingmanKVM/src/devices/webrtc.rs:397–405
+/Users/bernard/Code/WingmanKVM/src/main.rs:18–23
+
+函数 / 模块：probe_encoder / WebRtcManager::new / reconfigure
+相关行为：new 直接调用 probe_encoder；probe_encoder 内 .args([&quot;-hide_banner&quot;, &quot;-encoders&quot;]).output()；调用链中没有 timeout、kill、wait 回收策略。
+验证结果与限制：静态调用链已确认。本次隔离实例使用立即退出的 FFmpeg 替身，未复现真实 FFmpeg 卡死。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>用可取消的子进程执行探测，设置短期限与输出上限，超时后 kill 并 wait；探测失败应把 H.264 标为不可用并允许 HTTP/MJPEG 启动。</code><p style="margin-top:12px"><strong>后续改进：</strong>对相同 FFmpeg 路径缓存能力结果，必要时显式刷新；共用有明确生命周期的进程运行工具。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>0.5–1 人日 &nbsp;·&nbsp; <strong>回归测试建议：</strong>用不退出、超量输出及正常退出的替身测试探测；断言 HTTP 能在期限内就绪，子进程已回收，配置请求有明确结果。</div>
+    </div>
+
+<div class="finding severity-medium" id="AUD-13">
+      <div class="finding-header"><h4>AUD-13. 持续没有有效视频帧时，状态仍可保持 Ready / LIVE</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 可观测性 / 视频真实性</span><span>优先级：P2</span><span>置信度：Medium</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>video.rs:219</code></span><span>🎯 V4L2 采集状态与前端实时标识</span></div>
+      <div class="problem"><p><strong>问题：</strong>采集流建立后、第一帧到来前就发布 Ready；后续超时、错误帧或空帧分支持续 continue，没有更新时间戳、清除旧帧或降低状态。</p>
+<p style="margin-top:12px"><strong>影响：</strong>失去新视频数据时可能继续显示最后一帧，并以 LIVE 或配置帧率呈现，管理员难以分辨远端静止与采集冻结。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>UVC 设备仍可打开，但断信号后驱动持续返回超时；此前已经出现过可显示的视频帧。实际驱动也可能输出黑帧，触发形式依硬件而异。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/src/devices/video.rs:219–255
+/Users/bernard/Code/WingmanKVM/src/web_ui.rs:465–471
+
+函数 / 模块：capture_session / renderVideoUi
+相关行为：status_tx.send_replace(ready) 位于采集循环之前；TimedOut =&gt; continue；renderVideoUi 只检查服务 state 与播放状态，没有 last_frame_age。
+验证结果与限制：代码路径确认缺少帧新鲜度判定；Linux 目标未成功编译、无真实采集卡，因此硬件表现的置信度为 Medium。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>收到首个有效帧后才报告 Ready；记录最后一帧时间，超过容忍窗口时发布 stalled/offline 并让页面覆盖显示“画面已停止更新”。</code><p style="margin-top:12px"><strong>后续改进：</strong>在状态接口提供实际帧率、最后有效帧时间与累计超时数；将 /healthz 继续定位为进程存活检查。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>1 人日 &nbsp;·&nbsp; <strong>回归测试建议：</strong>模拟首帧前持续超时、正常帧后持续超时、随后恢复，验证状态与画面提示；再在目标 UVC 设备拔除 HDMI 信号复核。</div>
+    </div>
+
+<div class="finding severity-medium" id="AUD-14">
+      <div class="finding-header"><h4>AUD-14. 停滞上传长期占用全局上传锁，后续上传只能等待</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 性能 / 资源边界</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:162</code></span><span>🎯 镜像 multipart 上传</span></div>
+      <div class="problem"><p><strong>问题：</strong>全局上传互斥锁覆盖完整的网络读取、写盘和同步过程；请求禁用了默认体积限制，仅在文件分块中检查单文件大小，没有读取空闲期限或锁等待期限。</p>
+<p style="margin-top:12px"><strong>影响：</strong>一个仍保持 TCP 连接但停止发送数据的已认证客户端，可以占用整个镜像上传通道；其他管理员的上传无反馈地排队。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>远程上传过程中网络半断、客户端挂起，multipart 文件和结束边界尚未传完；另一标签页开始上传小镜像。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/src/web.rs:162–165
+/Users/bernard/Code/WingmanKVM/src/web.rs:1399–1419
+/Users/bernard/Code/WingmanKVM/src/web.rs:1445–1468
+
+函数 / 模块：upload_media
+相关行为：media_upload.lock().await 在函数开头取得；multipart.next_field / field.chunk 无 timeout；文件大小上限不能约束零进度等待。
+验证结果与限制：每个请求只发送 208 字节镜像内容：第二个完整请求在 1.5 秒观察期内一直等待，/healthz 正常；关闭第一条连接后第二个请求返回 200。正常断开后临时分片文件被清理，未发现该路径残留。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>增加读取空闲期限和总时长/最小进度策略；对上传锁使用有界等待或及时返回忙碌状态，并确保取消与超时清理临时文件。</code><p style="margin-top:12px"><strong>后续改进：</strong>把资源准入与最终同名文件提交分开，明确并发、磁盘配额及剩余空间策略，但无需为单用户场景引入任务系统。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>0.5–1 人日 &nbsp;·&nbsp; <strong>回归测试建议：</strong>让首个上传暂停发送，断言期限后释放上传槽位，第二个上传可完成；覆盖断开、超限与磁盘写失败后的临时文件清理。</div>
+    </div>
+
+<div class="finding severity-medium" id="AUD-15">
+      <div class="finding-header"><h4>AUD-15. 开启键鼠转发后，键盘用户无法从画面焦点退出</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 可访问性 / 焦点管理</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs:101</code></span><span>🎯 远程视频区域与键盘捕获</span></div>
+      <div class="problem"><p><strong>问题：</strong>全局 keydown 将 Tab、Shift+Tab 和 Escape 都当作远端输入并 preventDefault。已聚焦视频区域时没有明确的本地退出组合键，也无法通过 Tab 回到关闭转发的开关。</p>
+<p style="margin-top:12px"><strong>影响：</strong>依赖键盘或辅助技术的用户会困在画面区域，正常退出输入转发必须改用指针或浏览器外部操作。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>开启“转发键鼠”，让焦点进入 video-viewport，在绝对指针模式下按 Tab、Shift+Tab 或 Escape。浏览器相对指针锁自身的 Esc 释放不等同于退出键盘转发。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/src/web_ui.rs:101–103
+/Users/bernard/Code/WingmanKVM/src/web_ui.rs:515–522
+
+函数 / 模块：keydown listener / normalizeKey / setRemote
+相关行为：normalizeKey 包含 Tab / Escape；keydown 在 inputEnabled 且非表单控件时统一 preventDefault，然后 sendKey。
+验证结果与限制：浏览器实测上述三个按键后焦点均留在 video-viewport，转发开关仍开启；HID 未配置产生的 503 不影响本地焦点捕获结果。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>提供不转发给远端的退出组合键，并在捕获前说明；退出时关闭转发并将焦点恢复到开关。保留有意向远端发送 Tab 和 Esc 的能力。</code><p style="margin-top:12px"><strong>后续改进：</strong>将捕获视为显式交互模式，维护进入、退出及焦点恢复契约，覆盖原生全屏和相对指针锁的组合状态。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>2–4 小时 &nbsp;·&nbsp; <strong>回归测试建议：</strong>纯键盘完成开启转发、进入视频、发送远端 Tab、使用退出组合键、恢复页面导航的整条流程。</div>
+    </div>
+
+<div class="finding severity-medium" id="AUD-16">
+      <div class="finding-header"><h4>AUD-16. 服务用户可以沿密码 helper 和维护账号提升到 root</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 安全 / 部署权限边界</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>wingmankvm-sudoers:1</code></span><span>🎯 sudoers、密码同步与 systemd 沙箱</span></div>
+      <div class="problem"><p><strong>问题：</strong>服务用户能够免密设置 wingman 的任意密码，也能免密以 wingman 启动 bash；wingman 又拥有任意 sudo 权限。因此服务进程被控制后，不需要知道原管理员密码即可建立 root 提权链。</p>
+<p style="margin-top:12px"><strong>影响：</strong>独立 nologin 服务账号不能作为对宿主 root 的隔离边界。这里指出的是攻陷后的影响范围，并非发现了未经认证的远程代码执行入口。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>某个应用或依赖漏洞先让攻击者以 wingmankvm 身份执行代码；攻击者重置维护密码，再经维护账号使用 sudo。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/deploy/wingmankvm-sudoers:1–9
+/Users/bernard/Code/WingmanKVM/deploy/wingmankvm-set-wingman-password:7–9
+/Users/bernard/Code/WingmanKVM/deploy/wingmankvm.service:16–23
+/Users/bernard/Code/WingmanKVM/docs/DEPLOYMENT.md:90
+
+函数 / 模块：部署权限组合
+相关行为：sudoers 第 4 行允许 root 密码 helper，第 5 行允许 wingman bash，第 9 行允许 wingman ALL；unit 还开放 /etc 写入挂载。部署文档“只对 /run/sudo 开放写入”的描述与 unit 不符。普通 Unix 文件权限仍然有效。
+验证结果与限制：权限组合由部署文件直接确认，没有在宿主执行提权实验。README 已说明管理员可以 sudo，本发现不把这一已声明功能本身当成漏洞，而指出服务隔离声明的局限。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>明确是否接受“服务被攻陷即宿主可被接管”的模式并修正文档；若需要隔离，提供不带任意 sudo 的默认维护账号，限制密码重置 helper，特权维护改由主机侧显式启用。</code><p style="margin-top:12px"><strong>后续改进：</strong>只有在产品要求保留安全隔离时才拆出独立的特权授权边界；仅改文件所有者或保留 nologin 不能切断这条能力链。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>0.5–1 人日（明确模式与策略）；更强隔离另行估算 &nbsp;·&nbsp; <strong>回归测试建议：</strong>在可丢弃 Linux 环境以服务用户检查允许的 sudo 命令；非特权模式必须不能自行设置可提权账号密码或获得任意 root shell，同时验证合法设备功能。</div>
+    </div>
+
+<div class="finding severity-medium" id="AUD-17">
+      <div class="finding-header"><h4>AUD-17. 会话 Cookie 无 Secure 配置，HTTPS 部署仍需额外补救</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 安全 / 传输隐私</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:1981</code></span><span>🎯 登录及初始化会话 Cookie</span></div>
+      <div class="problem"><p><strong>问题：</strong>Cookie 生成函数始终只设置 HttpOnly、SameSite=Strict、Path 和 Max-Age，没有 Secure 开关或可信 HTTPS 判断。把服务放到 HTTPS 反向代理后，应用生成的 Cookie 属性仍不变。</p>
+<p style="margin-top:12px"><strong>影响：</strong>若公开主机仍可通过 HTTP 访问且代理没有重写 Cookie 或严格传输保护，会话可能随明文请求发送；HttpOnly 和 SameSite 无法提供传输加密。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>管理员按文档部署 HTTPS，但保留 HTTP 入口，且未另行配置 Set-Cookie 重写；浏览器持有不带 Secure 的会话。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/src/web.rs:1981–1985
+/Users/bernard/Code/WingmanKVM/docs/DEPLOYMENT.md:365–372
+
+函数 / 模块：with_session_cookie
+相关行为：with_session_cookie 固定格式中没有 Secure；部署文档仅说明“直接 HTTP 模式不会添加 Secure”，应用没有相对应的 HTTPS 模式分支。
+验证结果与限制：隔离 HTTP 实例返回的 Cookie 确实不含 Secure；HTTPS 情况依据共用生成函数确认，未搭建或验证用户的实际反向代理。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>提供明确的安全 Cookie / 公开源配置，在 HTTPS 部署中附加 Secure，或给出经过验证的代理重写配置；不要信任任意客户端提供的 X-Forwarded-Proto。</code><p style="margin-top:12px"><strong>后续改进：</strong>统一初始化、登录与注销的 Cookie 策略，并给出 HTTPS/VPN 部署的可执行验证方法。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>0.5 人日 &nbsp;·&nbsp; <strong>回归测试建议：</strong>HTTP 调试模式与 HTTPS 生产模式分别检查 Cookie；在真实浏览器确认 Secure 会话不随 HTTP 请求发送，伪造代理头不能降低策略。</div>
+    </div>
+
+<div class="finding severity-medium" id="AUD-18">
+      <div class="finding-header"><h4>AUD-18. 现有测试未覆盖 HTTP、WebSocket 与配置事务的关键边界</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 测试 / 验证有效性</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs:2153</code></span><span>🎯 跨模块集成测试及浏览器回归</span></div>
+      <div class="problem"><p><strong>问题：</strong>现有测试验证了认证存储、序列化、局部配置合并和设备辅助函数，但没有贯穿路由中间件、终端长连接、并发保存及浏览器表单的回归。前端唯一测试只匹配两个 select 字符串。</p>
+<p style="margin-top:12px"><strong>影响：</strong>92 项测试全部通过的同时，注销、跨源终端、并发更新和只读默认值仍能在实际入口复现；绿色测试不足以代表这些边界受保护。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>维护者修改会话或配置流程，运行已有测试后认为风险已覆盖，发布时仍带入跨模块状态错误。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/src/web.rs:2153–2850
+/Users/bernard/Code/WingmanKVM/src/web_ui.rs:607–615
+/Users/bernard/Code/WingmanKVM/src/auth.rs:681–695
+
+函数 / 模块：web.rs tests / web_ui.rs tests
+相关行为：SessionStore 的单元测试验证 token revoke，并不建立 WebSocket；配置测试直接调用 apply_*_patch；UI 测试 INDEX_HTML.matches(selector).count()。跟踪文件中未见 CI 配置或独立 HTTP/浏览器测试套件。
+验证结果与限制：cargo test --locked --offline：92 passed，0 failed。真实入口的独立隔离探针和浏览器操作复现了 AUD-01 至 AUD-09 中多项问题。未测量行覆盖率，不给出虚构覆盖百分比。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>把此次复现转成少量高价值集成回归：已建连接撤销、同站跨源拒绝、并发配置提交、setup 保留配置、IMG 默认值和退出后清除密码。</code><p style="margin-top:12px"><strong>后续改进：</strong>建立 Linux 构建/测试门禁和可选硬件冒烟清单；真实硬件测试与普通文件替身测试分别报告，不以字符串匹配代替交互验证。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>2–3 人日（基础集成套件） &nbsp;·&nbsp; <strong>回归测试建议：</strong>修复每项问题后先验证对应测试在旧版失败、新版通过；至少一次通过公开 HTTP/WS 入口，而不只直接调用内部辅助函数。</div>
+    </div>
+
+<div class="finding severity-medium" id="AUD-19">
+      <div class="finding-header"><h4>AUD-19. 升级逐个替换部署文件，失败后缺少可用版本回滚</h4><span class="badge badge-medium">Medium</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 发布 / 恢复能力</span><span>优先级：P2</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>install.sh:46</code></span><span>🎯 二进制、helper、sudoers 与服务升级</span></div>
+      <div class="problem"><p><strong>问题：</strong>安装器对单个文件使用临时文件加 rename，避免半文件，但多个部署文件按顺序替换，没有保存上一组可用文件或失败回滚；服务检查只有短暂的 is-active。</p>
+<p style="margin-top:12px"><strong>影响：</strong>二进制、unit 与密码 helper 可能落入不同升级状态。新版本启动后立即故障，或缺少运行库导致启动失败时，旧版本已被替换。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>更新二进制成功后，后续 sudoers 安装或服务重启失败；现场只有远程管理通道，需要恢复上一版才能继续维护。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/deploy/install.sh:46–68
+/Users/bernard/Code/WingmanKVM/deploy/install.sh:424–458
+/Users/bernard/Code/WingmanKVM/deploy/install.sh:212–226
+
+函数 / 模块：install_managed_file / start_services
+相关行为：第 433–447 行依次覆盖二进制及部署文件；错误分支 die 退出；start_services 不调用 HTTP/认证可用性验证，也没有恢复备份。
+验证结果与限制：静态检查确认安装顺序与失败处理。没有在真实 Linux 主机执行安装或模拟断电；单文件原子替换与配置保留应作为已有优点保留。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>预检并暂存本次所有托管文件，保留上一组可用版本；启动后在期限内检查基本 HTTP 可用性，失败时恢复文件并重启旧版，输出明确恢复结果。</code><p style="margin-top:12px"><strong>后续改进：</strong>采用版本化发布目录和明确的恢复命令；硬件 Gadget 变更与应用升级分开处理，避免影响正在挂载的介质。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>1–2 人日 &nbsp;·&nbsp; <strong>回归测试建议：</strong>在可丢弃 Linux 环境注入安装中断、helper 缺失和新服务启动失败，验证能回到上一版本且 auth/config/images 保持不变。</div>
+    </div>
+
+<div class="finding severity-low" id="AUD-20">
+      <div class="finding-header"><h4>AUD-20. HID 超时和重试配置可保存，但实际未使用</h4><span class="badge badge-low">Low</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 配置 / 契约一致性</span><span>优先级：P3</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>config.rs:188</code></span><span>🎯 HID 参数</span></div>
+      <div class="problem"><p><strong>问题：</strong>公开序列化配置包含 write_timeout_ms 和 retry_interval_ms，运行时却使用固定 500 ms 的 WRITE_TIMEOUT；两个配置字段在定义和默认值之外没有消费方。</p>
+<p style="margin-top:12px"><strong>影响：</strong>设备排障时看似保存成功的参数不会改变行为，增加定位超时与兼容性问题的成本。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>管理员通过完整配置 API 调整 HID 写入期限，然后期待不同的超时表现；实际始终使用常量。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/src/config.rs:188–201
+/Users/bernard/Code/WingmanKVM/src/devices/hid.rs:17–18
+/Users/bernard/Code/WingmanKVM/src/devices/hid.rs:583
+
+函数 / 模块：HidConfig / HID write deadline
+相关行为：全局引用搜索仅发现配置字段及默认值；HID 的 deadline = Instant::now() + WRITE_TIMEOUT，等待机制使用 AsyncFd。
+验证结果与限制：由字段引用及实际 deadline 代码确认；未使用真实 HID 设备测量 500 ms 超时。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>要么把受校验的写入期限传给 HID worker，要么明确弃用并拒绝/提示无效配置；不为已经采用 readiness 的路径保留假重试参数。</code><p style="margin-top:12px"><strong>后续改进：</strong>让每个公开配置项有唯一消费点和契约测试，迁移旧字段时给出可理解的兼容说明。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>2–4 小时 &nbsp;·&nbsp; <strong>回归测试建议：</strong>用可控不可写设备替身验证不同 write_timeout_ms 产生不同期限；若弃用，验证 API 返回明确说明而非静默接受。</div>
+    </div>
+
+<div class="finding severity-low" id="AUD-21">
+      <div class="finding-header"><h4>AUD-21. vendored xterm 只有代码和许可证，缺少版本来源清单</h4><span class="badge badge-low">Low</span><span class="badge badge-confirmed">Confirmed</span></div>
+      <div class="finding-meta"><span>📁 供应链 / 可追溯性</span><span>优先级：P3</span><span>置信度：High</span><span>📍 <code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>web/<wbr>vendor/<wbr>xterm/<wbr>xterm.js:1</code></span><span>🎯 浏览器终端依赖</span></div>
+      <div class="problem"><p><strong>问题：</strong>仓库固定了 vendored 文件内容，也保留了两个 MIT 许可证，但没有记录 xterm 与 addon-fit 的明确版本、上游发布来源、获取方式及校验摘要。Cargo.lock 不覆盖这部分依赖。</p>
+<p style="margin-top:12px"><strong>影响：</strong>收到浏览器终端库安全公告时，维护者难以判断当前文件是否受影响，也难以复现一次可靠更新。</p>
+<p style="margin-top:12px"><strong>现实失败场景：</strong>需要升级终端库或核对某个已修复问题，只有压缩 JavaScript，无法从仓库元数据定位对应发布版本。</p></div>
+      <div class="evidence">文件与行号：
+/Users/bernard/Code/WingmanKVM/web/vendor/xterm/xterm.js:1
+/Users/bernard/Code/WingmanKVM/web/vendor/xterm/addon-fit.js:1
+/Users/bernard/Code/WingmanKVM/web/vendor/xterm/LICENSE:1–3
+/Users/bernard/Code/WingmanKVM/web/vendor/xterm/LICENSE.addon-fit:1
+
+函数 / 模块：web/vendor/xterm 交付元数据
+相关行为：跟踪文件清单中的该目录仅有 xterm.js、addon-fit.js、xterm.css 和两份 LICENSE；主文档与依赖清单没有提供版本映射。
+验证结果与限制：核对了跟踪文件、许可证和代码入口；未尝试猜测压缩包版本，也未声称发现了该库的已知漏洞。</div>
+      <div class="fix-box"><div class="fix-label">最小修复建议 · 未实施</div><code>增加简短来源清单，分别记录版本、上游 URL / tag / commit、获取步骤和 SHA-256，并保留现有许可证。</code><p style="margin-top:12px"><strong>后续改进：</strong>将 vendored 更新纳入依赖检查与产物清单，不需要为此引入完整前端构建体系。</p></div>
+      <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082"><strong>⏱ 预计工时：</strong>1–2 小时 &nbsp;·&nbsp; <strong>回归测试建议：</strong>检查清单中的摘要与交付文件一致，干净环境按所述步骤获取相同版本；缺失版本信息时让检查失败。</div>
+    </div>
+
+<h3 class="section-title" id="architecture">🏗 架构与模块边界</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-confirmed">High</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>追踪启动、状态所有权、全部路由及设备 manager；核对配置克隆、持久化与运行时应用的顺序。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>main.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>config.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>auth.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>mod.rs</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>覆盖静态模块边界与可运行的 HTTP 流程；真实设备线程和宿主权限空间未在 Linux 上执行。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 4 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-04">AUD-04 · 并发保存不相干设置会丢失其中一次更新</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-07">AUD-07 · 网页登录被系统密码同步故障阻断，外部进程也无超时</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-10">AUD-10 · 保存介质或 GPIO 设置也会重启视频并关闭 WebRTC</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-16">AUD-16 · 服务用户可以沿密码 helper 和维护账号提升到 root</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> 认证、配置和各设备已有独立模块，入口 main 仅负责加载、绑定和服务启动。</div><div class="check-item"><span class="check">✓</span> 媒体、GPIO、HID 的关键串行化分别归属各 manager，未引入全局数据库或复杂服务编排。</div><div class="check-item"><span class="check">✓</span> web.rs 共 2,850 行，生产部分约 2,150 行，混合路由、PTY、配置、上传和鉴权；拆出配置提交与终端生命周期即可针对已确认耦合点改进，无需整体重写。</div></div></div>
+</div>
+
+<h3 class="section-title" id="security">🔒 安全</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-suspected">Medium</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>检查认证、随机令牌、Cookie、Origin、文件路径、子进程参数与部署权限；复现登录并发、终端注销和浏览器同站跨源连接。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>auth.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>wingmankvm-sudoers</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>wingmankvm-set-wingman-password</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>wingmankvm.service</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>没有对宿主执行 sudo 提权、扫描真实网络或测试反向代理；依赖内部实现未逐行审查。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 8 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-01">AUD-01 · 注销会话后，已连接的网页终端仍可接收输入</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-02">AUD-02 · 终端 WebSocket 不校验 Origin，同站不同源页面可借用登录态</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-03">AUD-03 · 登录限流在失败完成后记账，可被并发请求越过</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-05">AUD-05 · 首次初始化会把预设监听地址和端口改回默认值</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-07">AUD-07 · 网页登录被系统密码同步故障阻断，外部进程也无超时</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-09">AUD-09 · 退出后登录表单仍保留凭据，可直接再次进入</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-16">AUD-16 · 服务用户可以沿密码 helper 和维护账号提升到 root</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-17">AUD-17 · 会话 Cookie 无 Secure 配置，HTTPS 部署仍需额外补救</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> 密码使用 Argon2id 和随机盐，认证记录拒绝重复初始化；存储权限有实际单元测试。</div><div class="check-item"><span class="check">✓</span> 会话令牌来自系统随机源，Cookie 带 HttpOnly 和 SameSite=Strict，HTTP 写操作存在来源检查。</div><div class="check-item"><span class="check">✓</span> HID、电源、介质、配置、视频和终端接口均经过登录中间件；报告未发现可直接断言的未认证远程代码执行入口。</div><div class="check-item"><span class="check">✓</span> 密码 helper 使用固定账号和 stdin，未把密码拼到命令行或将用户名插入 shell 命令。</div></div></div>
+</div>
+
+<h3 class="section-title" id="stability">⚡ 稳定性与错误处理</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-suspected">Medium</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>追踪外部进程、超时、锁、重配置和连接回收；测试 helper 失败、上传停滞和并发配置。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>video.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>webrtc.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>hid.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>media.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>power.rs</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>未做长时间运行、断电、V4L2 热插拔和编码子任务回收压力验证；不能据此宣称不存在资源泄漏。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 10 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-01">AUD-01 · 注销会话后，已连接的网页终端仍可接收输入</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-04">AUD-04 · 并发保存不相干设置会丢失其中一次更新</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-07">AUD-07 · 网页登录被系统密码同步故障阻断，外部进程也无超时</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-08">AUD-08 · 非法监听地址能保存成功，下次启动才报错</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-10">AUD-10 · 保存介质或 GPIO 设置也会重启视频并关闭 WebRTC</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-11">AUD-11 · 正常 WebRTC 会话也在 10 分钟后被强制关闭</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-12">AUD-12 · FFmpeg 编码器探测没有期限，可阻塞启动和配置保存</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-13">AUD-13 · 持续没有有效视频帧时，状态仍可保持 Ready / LIVE</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-14">AUD-14 · 停滞上传长期占用全局上传锁，后续上传只能等待</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-19">AUD-19 · 升级逐个替换部署文件，失败后缺少可用版本回滚</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> HID 队列容量 64，写操作使用非阻塞 readiness 与固定 500 ms 截止时间。</div><div class="check-item"><span class="check">✓</span> GPIO 脉冲有互斥准入、时限以及异常时的子进程终止/回收路径。</div><div class="check-item"><span class="check">✓</span> 媒体操作存在超时、状态回读及幂等分支；上传普通断开在本次试验中正确清理了临时文件。</div></div></div>
+</div>
+
+<h3 class="section-title" id="performance">🚀 性能与扩展性</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-suspected">Medium</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>检查帧传递、编码器会话数、哈希准入和上传锁；完成 12 请求登录突发与微小镜像上传实验。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>video.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>webrtc.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>hid.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>Cargo.toml</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>没有 ARM CPU、内存、温度、带宽、端到端延迟或 release 二进制体积基准；不以桌面结果外推 RK3399 性能。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 4 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-03">AUD-03 · 登录限流在失败完成后记账，可被并发请求越过</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-10">AUD-10 · 保存介质或 GPIO 设置也会重启视频并关闭 WebRTC</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-12">AUD-12 · FFmpeg 编码器探测没有期限，可阻塞启动和配置保存</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-14">AUD-14 · 停滞上传长期占用全局上传锁，后续上传只能等待</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> 默认 MJPEG 直通避免 JPEG 解码与重编码，watch 通道只保留最新帧。</div><div class="check-item"><span class="check">✓</span> WebRTC 会话默认最多 1 个、配置范围 1–4；软件 H.264 编码必须显式允许。</div><div class="check-item"><span class="check">✓</span> 没有证据要求更换 Rust、Tokio 或整体视频框架；先处理已确认的重复探测、无关重配置和资源准入。</div></div></div>
+</div>
+
+<h3 class="section-title" id="testing">🧪 测试质量</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-suspected">Medium</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>运行全部本机测试并检查各模块测试意图；以隔离 HTTP、WebSocket 和浏览器交互补查跨模块路径。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>auth.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>config.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>discovery.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>media.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>power.rs</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>Linux cfg 路径未完成编译，没有覆盖率报告、完整 E2E 套件或硬件台架运行结果。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 3 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-02">AUD-02 · 终端 WebSocket 不校验 Origin，同站不同源页面可借用登录态</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-15">AUD-15 · 开启键鼠转发后，键盘用户无法从画面焦点退出</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-18">AUD-18 · 现有测试未覆盖 HTTP、WebSocket 与配置事务的关键边界</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> cargo test --locked --offline：92 通过、0 失败、0 忽略。</div><div class="check-item"><span class="check">✓</span> 已有真实 Argon2 验证、临时文件持久化、权限检查、设备发现和媒体操作测试，不能归为“全是 mock”。</div><div class="check-item"><span class="check">✓</span> 配置 PATCH 对省略与 null 的区别有明确测试；这类单元保证应保留并补充并发事务验证。</div></div></div>
+</div>
+
+<h3 class="section-title" id="maintainability">📐 可维护性</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-confirmed">High</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>检查文件职责、重复保存流程、前后端默认值、配置消费点和项目文档组织；运行格式与 Clippy。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>config.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>mod.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>rustfmt.toml</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>DESIGN.md</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>不以行数直接判定严重程度；未测量团队变更周期或人为估计圈复杂度百分比。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 4 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-04">AUD-04 · 并发保存不相干设置会丢失其中一次更新</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-10">AUD-10 · 保存介质或 GPIO 设置也会重启视频并关闭 WebRTC</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-18">AUD-18 · 现有测试未覆盖 HTTP、WebSocket 与配置事务的关键边界</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-20">AUD-20 · HID 超时和重试配置可保存，但实际未使用</a></td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> cargo fmt 与 Clippy 全部通过，设备模块命名和错误类型较一致。</div><div class="check-item"><span class="check">✓</span> 原生前端没有额外打包链，适合单文件部署；维护风险来自 138,443 字节 UI 字符串与跨层契约漂移。</div><div class="check-item"><span class="check">✓</span> 优先抽出共享 apply_config 流程，再按需要把 HTML/JS 拆为 include_str! 资源，以现有行为回归保护小步调整。</div></div></div>
+</div>
+
+<h3 class="section-title" id="design">📋 设计原则</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-confirmed">High</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>用已复现行为核对 SRP、DRY、最少意外、共享状态同步、最小权限、失败尽早暴露与取消安全。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>auth.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>config.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>media.rs</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>原则用于解释工程风险，不机械地把长函数、返回值或 bool 参数算成独立缺陷。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 11 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-01">AUD-01 · 注销会话后，已连接的网页终端仍可接收输入</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-02">AUD-02 · 终端 WebSocket 不校验 Origin，同站不同源页面可借用登录态</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-03">AUD-03 · 登录限流在失败完成后记账，可被并发请求越过</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-04">AUD-04 · 并发保存不相干设置会丢失其中一次更新</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-05">AUD-05 · 首次初始化会把预设监听地址和端口改回默认值</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-06">AUD-06 · IMG 的页面默认值覆盖了服务端“默认只读”设置</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-08">AUD-08 · 非法监听地址能保存成功，下次启动才报错</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-10">AUD-10 · 保存介质或 GPIO 设置也会重启视频并关闭 WebRTC</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-15">AUD-15 · 开启键鼠转发后，键盘用户无法从画面焦点退出</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-16">AUD-16 · 服务用户可以沿密码 helper 和维护账号提升到 root</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-20">AUD-20 · HID 超时和重试配置可保存，但实际未使用</a></td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> 设备快照、显式枚举和结构化错误有利于隔离硬件与请求解析。</div><div class="check-item"><span class="check">✓</span> 局部修复即可收紧生命周期和配置边界，没有发现必须整体重写的证据。</div><div class="check-item"><span class="check">✓</span> 下方原则表引用现有 AUD 编号，避免同一根因以“原则违规”再次累计。</div></div></div>
+</div>
+
+<h3 class="section-title" id="release">🚢 发布与部署流程</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-suspected">Medium</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>检查安装前置验证、文件替换、systemd、Gadget 生命周期、配置保留与升级恢复；尝试 Linux 目标检查。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>Cargo.toml</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>Cargo.lock</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>install.sh</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>wingmankvm.service</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>wingmankvm-gadget.service</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>wingmankvm-gadget</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>docs/<wbr>DEPLOYMENT.md</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>本机为 macOS arm64，没有运行 Linux 安装器、systemd、configfs 或目标板启动测试。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 8 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-05">AUD-05 · 首次初始化会把预设监听地址和端口改回默认值</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-08">AUD-08 · 非法监听地址能保存成功，下次启动才报错</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-12">AUD-12 · FFmpeg 编码器探测没有期限，可阻塞启动和配置保存</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-16">AUD-16 · 服务用户可以沿密码 helper 和维护账号提升到 root</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-17">AUD-17 · 会话 Cookie 无 Secure 配置，HTTPS 部署仍需额外补救</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-18">AUD-18 · 现有测试未覆盖 HTTP、WebSocket 与配置事务的关键边界</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-19">AUD-19 · 升级逐个替换部署文件，失败后缺少可用版本回滚</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-21">AUD-21 · vendored xterm 只有代码和许可证，缺少版本来源清单</a></td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> 安装器检查 ELF 与 CPU 架构、Linux/systemd/UDC、部署文件和 sudoers 语法；单文件以 rename 更新。</div><div class="check-item"><span class="check">✓</span> 重复安装保留认证、配置、镜像和用户自定义 gadget.env；已运行的 Gadget 避免无必要解绑。</div><div class="check-item"><span class="check">✓</span> 文档明确 Mac ARM64 产物不能直接在 Linux ARM64 运行，给出 Linux 构建路径。</div></div></div>
+</div>
+
+<h3 class="section-title" id="documentation">📚 文档准确性</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-confirmed">High</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>对照安装步骤、KVM 主机/被控机区别、HTTP 安全边界、硬件探测、WebRTC 回退和配置示例。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>README.md</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>docs/<wbr>DEPLOYMENT.md</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>docs/<wbr>RK3399_GUIDE.md</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>DESIGN.md</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>板级教程中的实物测量来自项目文档，本次未重新测量；DESIGN.md 是视觉规范，未将其作为系统架构保证。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 4 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-11">AUD-11 · 正常 WebRTC 会话也在 10 分钟后被强制关闭</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-16">AUD-16 · 服务用户可以沿密码 helper 和维护账号提升到 root</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-17">AUD-17 · 会话 Cookie 无 Secure 配置，HTTPS 部署仍需额外补救</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-21">AUD-21 · vendored xterm 只有代码和许可证，缺少版本来源清单</a></td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> 教程正确区分 Video Capture 和 Metadata Capture，并说明 USB Host 与 Device/OTG 的连接方向。</div><div class="check-item"><span class="check">✓</span> GPIO 线路、极性和继电器要求人工确认；文档没有建议盲试未知线路。</div><div class="check-item"><span class="check">✓</span> WebRTC 部分说明硬编码、软件编码成本与当前无 TURN 配置；“设计与实现边界”链接实际指向视觉设计文档，可随下次文档整理调整名称。</div></div></div>
+</div>
+
+<h3 class="section-title" id="configuration">⚙️ 配置安全</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-confirmed">High</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>检查默认值、版本、序列化、验证、PATCH/null、持久化与生效时机；复现初始化覆盖、非法地址、并发保存和介质默认值问题。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>config.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>gadget.env.example</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>真实设备是否支持某一分辨率、GPIO 接法或 HID report 仍依赖部署环境。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 7 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-04">AUD-04 · 并发保存不相干设置会丢失其中一次更新</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-05">AUD-05 · 首次初始化会把预设监听地址和端口改回默认值</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-06">AUD-06 · IMG 的页面默认值覆盖了服务端“默认只读”设置</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-08">AUD-08 · 非法监听地址能保存成功，下次启动才报错</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-10">AUD-10 · 保存介质或 GPIO 设置也会重启视频并关闭 WebRTC</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-17">AUD-17 · 会话 Cookie 无 Secure 配置，HTTPS 部署仍需额外补救</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-20">AUD-20 · HID 超时和重试配置可保存，但实际未使用</a></td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> GPIO 启用、线路冲突、脉冲长度、H.264 码率与并发等参数已有显式校验。</div><div class="check-item"><span class="check">✓</span> 未知配置版本明确拒绝；文件不存在可使用默认值，损坏 JSON 不会被静默重置。</div><div class="check-item"><span class="check">✓</span> 局部更新对省略与 null 有专门类型/反序列化处理，避免普通字段更新顺带清空设备路径。</div></div></div>
+</div>
+
+<h3 class="section-title" id="observability">🩺 可观测性</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-suspected">Medium</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>检查 tracing、状态 API、浏览器状态标签、healthz 与部署故障排查说明；观察 helper 故障时的 HTTP 结果。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>main.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>video.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>power.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>webrtc.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>docs/<wbr>DEPLOYMENT.md</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>未接入真实 journald、监控或告警系统；未量化日志采样与存储成本。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 3 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-07">AUD-07 · 网页登录被系统密码同步故障阻断，外部进程也无超时</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-13">AUD-13 · 持续没有有效视频帧时，状态仍可保持 Ready / LIVE</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-19">AUD-19 · 升级逐个替换部署文件，失败后缺少可用版本回滚</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> 结构化 tracing 已记录外部命令和设备失败的原因，API 内部错误不会直接返回完整错误链。</div><div class="check-item"><span class="check">✓</span> /healthz 可作为进程存活检查；它恒定正常不等于视频、终端或登录可用，报告不将缺少 readiness 本身另算一项漏洞。</div><div class="check-item"><span class="check">✓</span> 设备状态与 journalctl 排障文档已存在，可在其上补充帧新鲜度与密码同步状态。</div></div></div>
+</div>
+
+<h3 class="section-title" id="data-integrity">🧱 数据完整性</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-suspected">Medium</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>检查文件权限、原子替换、fsync、配置事务、镜像文件名与 LUN 幂等语义；并发配置和上传中断有实验。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>config.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>auth.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>media.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>wingmankvm-gadget</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>普通文件替身不能证明 configfs 的超时取消语义；未做真实 IMG 双写、USB 拔插或断电恢复实验。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 4 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-04">AUD-04 · 并发保存不相干设置会丢失其中一次更新</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-06">AUD-06 · IMG 的页面默认值覆盖了服务端“默认只读”设置</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-14">AUD-14 · 停滞上传长期占用全局上传锁，后续上传只能等待</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-19">AUD-19 · 升级逐个替换部署文件，失败后缺少可用版本回滚</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> 配置和认证持久化使用临时文件、0600 权限、fsync、rename 及目录同步。</div><div class="check-item"><span class="check">✓</span> 虚拟介质操作在 manager 内串行，检查文件位置、ISO 只读约束并回读内核属性。</div><div class="check-item"><span class="check">✓</span> Gadget 停止路径对已挂载介质有保护，文档要求被控机先安全卸载，避免同一 IMG 两端并发写入。</div></div></div>
+</div>
+
+<h3 class="section-title" id="privacy">🛡 隐私与数据治理</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-suspected">Medium</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>追踪账号/哈希、内存会话、密码同步、终端输出、浏览器本地偏好和初始化令牌的处理。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>auth.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>wingman.bash_profile</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>install.sh</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>没有检查用户真实运行数据、终端历史、反向代理日志或备份；不是法规符合性评估。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 3 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-01">AUD-01 · 注销会话后，已连接的网页终端仍可接收输入</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-09">AUD-09 · 退出后登录表单仍保留凭据，可直接再次进入</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-17">AUD-17 · 会话 Cookie 无 Secure 配置，HTTPS 部署仍需额外补救</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> 未发现第三方分析或外部遥测发送代码；主要数据留在本地状态目录与浏览器。</div><div class="check-item"><span class="check">✓</span> localStorage 用于视频展示偏好；服务端会话在内存中，默认 12 小时有效并周期清理。</div><div class="check-item"><span class="check">✓</span> 初始化令牌会从 URL fragment 读取后移除；安装输出与本地日志仍包含一次性令牌，需按运维凭据处理，本报告未复制其值。</div></div></div>
+</div>
+
+<h3 class="section-title" id="accessibility">⌨️ 可访问性与交互正确性</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-suspected">Medium</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>检查原生表单、标签、aria 状态、焦点转移、键盘捕获及 CSS 响应式规则；实测登录、退出、介质和画面焦点。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>未完成屏幕阅读器、色彩对比和多浏览器 WCAG 审核；报告文件的窄屏预览不等于应用全部移动端流程已测。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 3 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-09">AUD-09 · 退出后登录表单仍保留凭据，可直接再次进入</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-15">AUD-15 · 开启键鼠转发后，键盘用户无法从画面焦点退出</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-18">AUD-18 · 现有测试未覆盖 HTTP、WebSocket 与配置事务的关键边界</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> 主要输入使用 label，错误提示带 role=alert，上传进度与状态区域带 aria 信息。</div><div class="check-item"><span class="check">✓</span> 页面有 focus-visible 样式及减少动态效果的分支；帮助说明支持焦点触发。</div><div class="check-item"><span class="check">✓</span> 键鼠默认暂停，强制关机与复位提供确认，能降低误操作概率。</div></div></div>
+</div>
+
+<h3 class="section-title" id="supply-chain">🔗 供应链与可复现性</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-suspected">Medium</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>检查锁文件、供应商文件元数据、许可证、构建参数及 cargo audit；追踪 bincode 的引入路径。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>Cargo.toml</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>Cargo.lock</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>web/<wbr>vendor/<wbr>xterm/<wbr>LICENSE</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>web/<wbr>vendor/<wbr>xterm/<wbr>LICENSE.addon-fit</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>install.sh</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>只核对本次 RustSec 数据库快照，未审查全部依赖源码或进行完整许可证、产物签名与供应方身份验证。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 2 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-19">AUD-19 · 升级逐个替换部署文件，失败后缺少可用版本回滚</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-21">AUD-21 · vendored xterm 只有代码和许可证，缺少版本来源清单</a></td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> Cargo.lock 已入库；本次测试、构建与 Clippy 使用 --locked --offline，未为审查升级依赖。</div><div class="check-item"><span class="check">✓</span> cargo audit 覆盖锁文件中的 311 个依赖记录，已知漏洞 0；bincode 1.3.3 有 RUSTSEC-2025-0141 停止维护提示，不是已知可利用漏洞。</div><div class="check-item"><span class="check">✓</span> 停止维护依赖链为 wingmankvm → webrtc 0.14.0 → dtls 0.13.0 → bincode 1.3.3；先跟踪上游解决，不直接替换传递依赖的序列化格式。</div><div class="check-item"><span class="check">✓</span> xterm 与 addon-fit 的 MIT 许可证已保留，缺的是明确版本/来源元数据。</div></div></div>
+</div>
+
+<h3 class="section-title" id="cost">💸 成本与资源经济性</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-suspected">Medium</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>检查编码会话、默认码率、上传大小、哈希资源保护和回退对带宽的影响。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>config.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>webrtc.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>video.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>docs/<wbr>RK3399_GUIDE.md</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>没有云 API 或模型账单；未测量实际功耗、温度、流量和用户镜像增长率。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 4 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-03">AUD-03 · 登录限流在失败完成后记账，可被并发请求越过</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-11">AUD-11 · 正常 WebRTC 会话也在 10 分钟后被强制关闭</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-12">AUD-12 · FFmpeg 编码器探测没有期限，可阻塞启动和配置保存</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-14">AUD-14 · 停滞上传长期占用全局上传锁，后续上传只能等待</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> 默认 4,000 Kbps、单个 H.264 会话，软件编码需显式允许，资源成本对用户可见。</div><div class="check-item"><span class="check">✓</span> 上传存在单文件大小上限；未据此声称具备磁盘总配额或剩余空间保障。</div><div class="check-item"><span class="check">✓</span> 按纯码率计算 4 Mbps 约 1.8 GB/小时，实际含协议开销；这是估算公式，不是本次硬件测量结果。</div></div></div>
+</div>
+
+<h3 class="section-title" id="ai-safety">🤖 AI / LLM 安全</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-info">Not assessed</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>核对依赖、路由与浏览器脚本，未见模型调用、提示词、RAG、代理工具执行或模型输出消费。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>Cargo.toml</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>main.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>项目不存在本维度所针对的运行面，因此不评估，不计入独立分数。</p></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 适用性核验</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> 已完成适用性核验：当前版本为 KVM 服务，没有 AI / LLM 功能。</div><div class="check-item"><span class="check">✓</span> 这不是“AI 安全通过”的结论；将来引入模型或代理能力时需重新评估。</div></div></div>
+</div>
+
+<h3 class="section-title" id="fallback">🧯 回退与防御性代码</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-suspected">Medium</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>追踪 MJPEG/H.264 回退、重连退避、配置加载和异常状态转换，区分明确降级与隐藏故障。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>config.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>webrtc.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>video.rs</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>无真实硬件编码协商或驱动挂起试验；嵌套编码任务取消后的实际回收尚需专门验证。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 4 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-07">AUD-07 · 网页登录被系统密码同步故障阻断，外部进程也无超时</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-11">AUD-11 · 正常 WebRTC 会话也在 10 分钟后被强制关闭</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-12">AUD-12 · FFmpeg 编码器探测没有期限，可阻塞启动和配置保存</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-13">AUD-13 · 持续没有有效视频帧时，状态仍可保持 Ready / LIVE</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> H.264 不可用时页面明确显示回退，自动模式不会默认偷偷启用软件编码。</div><div class="check-item"><span class="check">✓</span> MJPEG 重连采用 500 ms 起步、最高 10 秒的退避，而不是无延迟重试。</div><div class="check-item"><span class="check">✓</span> 损坏配置会报错，缺失配置才回到默认；对错误类别的区分合理。</div></div></div>
+</div>
+
+<h3 class="section-title" id="testing-authenticity">🔬 测试真实性</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-suspected">Medium</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>检查测试是否验证可观察行为、是否使用真实文件/密码算法、替身与生产调用链的差别。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>auth.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>config.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>media.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>discovery.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>power.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>没有做 mutation testing；临时普通文件与回显 PTY 不能替代真实 configfs、sudo/PAM 或 USB 硬件。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 1 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-18">AUD-18 · 现有测试未覆盖 HTTP、WebSocket 与配置事务的关键边界</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> 认证测试真正计算并验证 Argon2 哈希；文件权限、序列化和原子存储有真实临时文件测试。</div><div class="check-item"><span class="check">✓</span> GPIO 测试使用外部命令替身检查失败路径，比仅断言构造字符串更有价值。</div><div class="check-item"><span class="check">✓</span> 本次验证使用原始应用二进制，未为了通过测试修改生产逻辑；替换的只是在临时 PATH 中的外部程序。</div></div></div>
+</div>
+
+<h3 class="section-title" id="type-safety">🧩 类型安全</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-suspected">Medium</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>检查手写 unsafe、生产 expect/unwrap、serde 边界、显式动作枚举和结构化错误；运行 all-targets Clippy。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>auth.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>config.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>hid.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>media.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>power.rs</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>Linux V4L2 bindgen 没有通过当前环境构建；不把 Rust 类型系统视为对 C/驱动依赖的安全证明。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 1 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-08">AUD-08 · 非法监听地址能保存成功，下次启动才报错</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> 未发现第一方 Rust 手写 unsafe；主要 unwrap 位于测试，生产 expect 多有预先检查或内部构造不变量。</div><div class="check-item"><span class="check">✓</span> 绝对指针动作使用带标签枚举，介质类型、指针模式和 GPIO 目标有明确类型。</div><div class="check-item"><span class="check">✓</span> ApiError、HidError、MediaError 等保留错误类别；主要薄弱点是尚未覆盖全部配置边界的语义验证。</div></div></div>
+</div>
+
+<h3 class="section-title" id="frontend-state">🖥 前端状态管理</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-suspected">Medium</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>检查 bootstrap、视频 generation、连接取消、表单忙碌状态、介质选择和认证 UI；完成关键浏览器流程。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>没有对所有快速切换、并行面板请求和各浏览器视频事件顺序穷举；未审查压缩 xterm 内部状态。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 7 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-01">AUD-01 · 注销会话后，已连接的网页终端仍可接收输入</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-06">AUD-06 · IMG 的页面默认值覆盖了服务端“默认只读”设置</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-09">AUD-09 · 退出后登录表单仍保留凭据，可直接再次进入</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-10">AUD-10 · 保存介质或 GPIO 设置也会重启视频并关闭 WebRTC</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-11">AUD-11 · 正常 WebRTC 会话也在 10 分钟后被强制关闭</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-13">AUD-13 · 持续没有有效视频帧时，状态仍可保持 Ready / LIVE</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-15">AUD-15 · 开启键鼠转发后，键盘用户无法从画面焦点退出</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> 视频异步响应使用 generation / AbortController 排除部分过期任务，配置保存有请求编号。</div><div class="check-item"><span class="check">✓</span> 动态文件名与大多数状态文本通过 textContent 写入，避免直接将文件名作为 HTML。</div><div class="check-item"><span class="check">✓</span> 主要风险已具体落到凭据清理、只读默认值与长连接生命周期，先修这些状态转换比更换前端框架更有效。</div></div></div>
+</div>
+
+<h3 class="section-title" id="backend-api">🔌 后端 API</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-confirmed">High</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>检查全部路由、请求体限制、鉴权、中间件、配置 PUT/POST、错误映射以及终端/视频长连接入口。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>auth.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>config.rs</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>硬件处理器使用替身或静态调用链；没有外部客户端契约测试，也没有验证真实网络代理行为。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 7 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-01">AUD-01 · 注销会话后，已连接的网页终端仍可接收输入</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-02">AUD-02 · 终端 WebSocket 不校验 Origin，同站不同源页面可借用登录态</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-03">AUD-03 · 登录限流在失败完成后记账，可被并发请求越过</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-04">AUD-04 · 并发保存不相干设置会丢失其中一次更新</a></td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-07">AUD-07 · 网页登录被系统密码同步故障阻断，外部进程也无超时</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-08">AUD-08 · 非法监听地址能保存成功，下次启动才报错</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-14">AUD-14 · 停滞上传长期占用全局上传锁，后续上传只能等待</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> 核心操作具有明确 JSON 请求结构、状态码和错误映射；WebRTC offer 体积限制为 64 KiB。</div><div class="check-item"><span class="check">✓</span> 局部配置更新实际是 POST /api/config，函数名为 patch_config；本报告中的“PATCH 语义”不表示项目提供 HTTP PATCH 方法。</div><div class="check-item"><span class="check">✓</span> 没有数据库 N+1 或 SQL 接口；真实风险集中在跨请求事务、长连接鉴权与资源边界。</div></div></div>
+</div>
+
+<h3 class="section-title" id="dependency-weight">📦 依赖体量</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-suspected">Medium</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>检查依赖功能选择、webrtc 传递链和浏览器终端资源大小；对照项目实际功能。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>Cargo.toml</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>Cargo.lock</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>web/<wbr>vendor/<wbr>xterm/<wbr>xterm.js</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>web/<wbr>vendor/<wbr>xterm/<wbr>addon-fit.js</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>没有在目标架构做 release 体积、RSS、链接器裁剪或冷启动基准；不声称已经识别了可安全删除的依赖。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 1 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-21">AUD-21 · vendored xterm 只有代码和许可证，缺少版本来源清单</a></td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> image 禁用默认功能，仅保留 JPEG；v4l 仅在 Linux 目标引入。</div><div class="check-item"><span class="check">✓</span> xterm.js 为 488,663 字节，addon-fit 为 1,521 字节，由应用本地提供；前端没有 npm 构建链。</div><div class="check-item"><span class="check">✓</span> webrtc 是主要依赖来源之一但承担实际功能；先量化成本，再决定是否提供可选编译功能。</div></div></div>
+</div>
+
+<h3 class="section-title" id="code-consistency">🧹 代码一致性</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-confirmed">High</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>检查命名、错误处理、默认值、格式与重复模式；运行 Rust 和 Shell 静态检查。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>config.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>hid.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web_ui.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>rustfmt.toml</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>wingman.bash_profile</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>项目没有配置独立 JavaScript linter；不把短变量名或不同语言风格单独升级成问题。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 1 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-20">AUD-20 · HID 超时和重试配置可保存，但实际未使用</a></td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> Rust 格式与 -D warnings 的 Clippy 通过，设备错误大多通过 thiserror 统一表示。</div><div class="check-item"><span class="check">✓</span> 三个可执行部署脚本通过 ShellCheck；Bash profile 指定 shell 后仅剩 SC2164（cd 失败未处理），作为轻微检查备注而非重复发现。</div><div class="check-item"><span class="check">✓</span> 应优先统一有实际漂移的默认值和配置提交行为；没有必要顺带进行全仓库格式重排。</div></div></div>
+</div>
+
+<h3 class="section-title" id="comment-coverage">💬 注释与说明覆盖</h3>
+<div class="card">
+<div class="card-header">🧭 审查覆盖范围</div>
+<div class="card-body"><p><strong>覆盖置信度：</strong><span class="badge badge-confirmed">High</span></p>
+<p style="margin-top:12px"><strong>检查证据：</strong>对照关键注释中的权限、生命周期、原子写与系统密码同步意图，核查部署说明与真实配置。</p>
+<p style="margin-top:12px"><strong>文件：</strong><code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>web.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>auth.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>src/<wbr>devices/<wbr>media.rs</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>wingmankvm-sudoers</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>deploy/<wbr>wingmankvm.service</code>、<code>/<wbr>Users/<wbr>bernard/<wbr>Code/<wbr>WingmanKVM/<wbr>README.md</code></p>
+<p style="margin-top:12px"><strong>排除与限制：</strong>不以注释行占比作为质量指标；没有要求每个私有辅助函数补形式化注释。</p></div>
+</div>
+<div class="card">
+<div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 2 项关联发现，跨维度引用不重复计数</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>发现</th><th>严重程度</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><a href="#AUD-16">AUD-16 · 服务用户可以沿密码 helper 和维护账号提升到 root</a></td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+<tr><td><a href="#AUD-20">AUD-20 · HID 超时和重试配置可保存，但实际未使用</a></td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+</tbody></table></div></div>
+</div>
+<div class="card">
+<div class="card-header">✅ 已验证做法与审查结论</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> 密码通过 stdin、原子持久化与硬件只读规则有解释实现原因的注释。</div><div class="check-item"><span class="check">✓</span> 部署脚本和板级文档说明了大量非显然硬件约束，降低误配风险。</div><div class="check-item"><span class="check">✓</span> sudoers 的隔离解释和 /etc 写入范围说明需要同步，公开但无效的 HID 配置项也需消除误导。</div></div></div>
+</div>
+
+<h3 class="section-title" id="principles">📋 工程原则核对</h3>
+
+<div class="card">
+<div class="card-header">需要修正的原则边界（与发现交叉引用）</div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>原则</th><th>关联数量</th><th>最高严重程度</th><th>具体位置与原因</th></tr></thead>
+<tbody>
+<tr><td>5.4 共享状态必须完整同步</td><td>2 个关联根因</td><td><span class="badge badge-high">High</span></td><td>AUD-03 登录准入分离；AUD-04 配置事务缺少跨 await 的协调。</td></tr>
+<tr><td>10.3 取消安全 / 4.6 最小权限</td><td>3 个关联根因</td><td><span class="badge badge-high">High</span></td><td>AUD-01 已建连接不随会话撤销；AUD-02 来源隔离缺口；AUD-16 服务能力可组合提权。</td></tr>
+<tr><td>3.1 最少意外 / 5.3 无隐藏副作用</td><td>4 个关联根因</td><td><span class="badge badge-high">High</span></td><td>AUD-05 初始化改监听；AUD-06 默认只读漂移；AUD-10 无关配置重启视频；AUD-20 无效公开配置。</td></tr>
+<tr><td>4.4 尽早失败 / 9.1 配置契约</td><td>1 个关联根因</td><td><span class="badge badge-medium">Medium</span></td><td>AUD-08 错误监听地址可保存，在重启时才失败。</td></tr>
+<tr><td>10.4 外部调用必须有期限</td><td>3 个关联根因</td><td><span class="badge badge-medium">Medium</span></td><td>AUD-07 密码 helper；AUD-12 编码器探测；AUD-14 网络上传等待。</td></tr>
+<tr><td>1.1 SRP / 4.1 DRY</td><td>关联 AUD-04、AUD-10</td><td><span class="badge badge-medium">Medium</span></td><td>web.rs 同时负责多种边界，两个配置应用流程重复。作为已确认问题的结构性解释，不另算文件过长缺陷。</td></tr>
+<tr><td>8.1 测试行为而非实现细节</td><td>1 个关联根因</td><td><span class="badge badge-medium">Medium</span></td><td>AUD-18：字符串选择器测试不能保护实际 UI 与跨路由状态转换。</td></tr>
+</tbody></table></div></div>
+</div>
+
+<div class="card">
+<div class="card-header">✅ 已体现的工程原则</div>
+<div class="card-body"><div class="check-list"><div class="check-item"><span class="check">✓</span> 6.4 结构化错误：设备 manager 使用明确错误枚举，HTTP 层集中映射状态码。</div><div class="check-item"><span class="check">✓</span> 4.3 KISS：单服务、JSON 状态文件、原生 UI 与本地资源适配项目规模。</div><div class="check-item"><span class="check">✓</span> 10.2 有界资源：HID 队列、最新帧 watch、H.264 会话上限限制部分资源增长。</div><div class="check-item"><span class="check">✓</span> 9.3 环境区分：状态目录可指定，Linux V4L2 依赖有目标条件；审查使用独立临时状态。</div><div class="check-item"><span class="check">✓</span> 8.1 行为验证：哈希验证、原子存储权限、媒体挂载与 GPIO 失败测试提供真实价值。</div></div></div>
+</div>
+
+<h3 class="section-title" id="fix-order">🎯 建议修复顺序</h3>
+
+<div class="card">
+<div class="card-header">📎 GitHub 追踪与基线说明</div>
+<div class="card-body"><p>本次源码审查基于本地 <code>9bef67f33a<wbr>33e74eeb34<wbr>a0809d81aa<wbr>d3209db10d</code>。创建 issue 前远端 main 为 <code>958774f76a<wbr>d95003263f<wbr>4eb4cdabe9<wbr>ef80a000c9</code>，本地领先 24 个提交；本次报告和模板独立发布，issue 中的行号与代码行为均以审查基线为准。</p>
+<p style="margin-top:12px">P0 表示需要立即处置的严重事件；P1 表示发布或扩大暴露前优先处理；P2 表示正常迭代处理的明确风险；P3 表示低风险维护。后续可按影响范围、触发概率和缓解措施重新定级，并保留理由。</p></div>
+</div>
+
+<div class="card">
+<div class="card-header"><span>⚡ 扩大访问范围或发布前</span><span class="badge badge-high">优先</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>编号</th><th>修复目标</th><th>预计工时</th><th>降低的风险</th></tr></thead>
+<tbody>
+<tr><td>AUD-01</td><td><a href="#AUD-01">AUD-01 · 注销会话后，已连接的网页终端仍可接收输入</a></td><td>1–2 人日</td><td>撤销会话无法撤销已经授予的终端能力，管理员看到退出页面后，原连接仍保有维护用户的执行权限。</td></tr>
+<tr><td>AUD-02</td><td><a href="#AUD-02">AUD-02 · 终端 WebSocket 不校验 Origin，同站不同源页面可借用登录态</a></td><td>0.5–1 人日</td><td>在满足同站前提时，另一个源中的脚本可以读写维护终端，绕过网页自身的操作界面与来源限制。</td></tr>
+<tr><td>AUD-03</td><td><a href="#AUD-03">AUD-03 · 登录限流在失败完成后记账，可被并发请求越过</a></td><td>0.5–1 人日</td><td>每分钟 5 次的限制不能约束同时进入的请求，攻击者可让嵌入式设备并行承担大量 Argon2 运算，影响视频和控制响应。</td></tr>
+<tr><td>AUD-04</td><td><a href="#AUD-04">AUD-04 · 并发保存不相干设置会丢失其中一次更新</a></td><td>1–2 人日</td><td>客户端都收到成功，但一个已保存的设置被另一个请求悄悄覆盖，可能影响介质只读策略或硬件参数。</td></tr>
+<tr><td>AUD-05</td><td><a href="#AUD-05">AUD-05 · 首次初始化会把预设监听地址和端口改回默认值</a></td><td>2–4 小时</td><td>原本限制在回环接口或专用管理接口的服务，在下次启动时可能改为所有 IPv4 接口，并改变端口。</td></tr>
+<tr><td>AUD-06</td><td><a href="#AUD-06">AUD-06 · IMG 的页面默认值覆盖了服务端“默认只读”设置</a></td><td>2–4 小时</td><td>运维者已设置默认只读，普通挂载操作仍可能把 IMG 作为可写介质交给被控机；ISO 强制只读分支不受影响。</td></tr>
+<tr><td>AUD-09</td><td><a href="#AUD-09">AUD-09 · 退出后登录表单仍保留凭据，可直接再次进入</a></td><td>1–2 小时</td><td>用户把退出界面当成安全交接点时，下一位使用同一页面的人可以再次提交现有凭据，密码在页面中的驻留时间也被无谓延长。</td></tr>
+<tr><td>AUD-17</td><td><a href="#AUD-17">AUD-17 · 会话 Cookie 无 Secure 配置，HTTPS 部署仍需额外补救</a></td><td>0.5 人日</td><td>若公开主机仍可通过 HTTP 访问且代理没有重写 Cookie 或严格传输保护，会话可能随明文请求发送；HttpOnly 和 SameSite 无法提供传输加密。</td></tr>
+</tbody></table></div></div>
+</div>
+
+<div class="card">
+<div class="card-header"><span>📅 随后完善稳定性与回归门禁</span><span class="badge badge-medium">计划</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>编号</th><th>修复目标</th><th>预计工时</th><th>降低的风险</th></tr></thead>
+<tbody>
+<tr><td>AUD-07</td><td><a href="#AUD-07">AUD-07 · 网页登录被系统密码同步故障阻断，外部进程也无超时</a></td><td>1 人日</td><td>系统账号维护故障被扩大为 KVM 管理入口故障；仅凭 /healthz 正常无法发现用户已经无法登录。</td></tr>
+<tr><td>AUD-08</td><td><a href="#AUD-08">AUD-08 · 非法监听地址能保存成功，下次启动才报错</a></td><td>2–4 小时</td><td>API 的成功响应不能保证配置可用于下一次启动；远程保存错误值后，可能需要本机修复文件才能恢复服务。</td></tr>
+<tr><td>AUD-10</td><td><a href="#AUD-10">AUD-10 · 保存介质或 GPIO 设置也会重启视频并关闭 WebRTC</a></td><td>0.5–1 人日</td><td>保存无关设置会中断观察画面，并可能把低带宽连接切换到 MJPEG；配置修改的影响范围超过用户所选模块。</td></tr>
+<tr><td>AUD-11</td><td><a href="#AUD-11">AUD-11 · 正常 WebRTC 会话也在 10 分钟后被强制关闭</a></td><td>0.5–1 人日</td><td>持续维护工作会遭遇人为断流；选择 H.264 以适应低上行带宽的用户随后可能进入高带宽 MJPEG，直到手动重建播放。</td></tr>
+<tr><td>AUD-12</td><td><a href="#AUD-12">AUD-12 · FFmpeg 编码器探测没有期限，可阻塞启动和配置保存</a></td><td>0.5–1 人日</td><td>损坏或阻塞的 FFmpeg 安装、包装脚本或动态加载环境，会让整个服务启动卡住；运行时则让配置保存持续等待。</td></tr>
+<tr><td>AUD-13</td><td><a href="#AUD-13">AUD-13 · 持续没有有效视频帧时，状态仍可保持 Ready / LIVE</a></td><td>1 人日</td><td>失去新视频数据时可能继续显示最后一帧，并以 LIVE 或配置帧率呈现，管理员难以分辨远端静止与采集冻结。</td></tr>
+<tr><td>AUD-14</td><td><a href="#AUD-14">AUD-14 · 停滞上传长期占用全局上传锁，后续上传只能等待</a></td><td>0.5–1 人日</td><td>一个仍保持 TCP 连接但停止发送数据的已认证客户端，可以占用整个镜像上传通道；其他管理员的上传无反馈地排队。</td></tr>
+<tr><td>AUD-15</td><td><a href="#AUD-15">AUD-15 · 开启键鼠转发后，键盘用户无法从画面焦点退出</a></td><td>2–4 小时</td><td>依赖键盘或辅助技术的用户会困在画面区域，正常退出输入转发必须改用指针或浏览器外部操作。</td></tr>
+<tr><td>AUD-16</td><td><a href="#AUD-16">AUD-16 · 服务用户可以沿密码 helper 和维护账号提升到 root</a></td><td>0.5–1 人日（明确模式与策略）；更强隔离另行估算</td><td>独立 nologin 服务账号不能作为对宿主 root 的隔离边界。这里指出的是攻陷后的影响范围，并非发现了未经认证的远程代码执行入口。</td></tr>
+<tr><td>AUD-18</td><td><a href="#AUD-18">AUD-18 · 现有测试未覆盖 HTTP、WebSocket 与配置事务的关键边界</a></td><td>2–3 人日（基础集成套件）</td><td>92 项测试全部通过的同时，注销、跨源终端、并发更新和只读默认值仍能在实际入口复现；绿色测试不足以代表这些边界受保护。</td></tr>
+<tr><td>AUD-19</td><td><a href="#AUD-19">AUD-19 · 升级逐个替换部署文件，失败后缺少可用版本回滚</a></td><td>1–2 人日</td><td>二进制、unit 与密码 helper 可能落入不同升级状态。新版本启动后立即故障，或缺少运行库导致启动失败时，旧版本已被替换。</td></tr>
+</tbody></table></div></div>
+</div>
+
+<div class="card">
+<div class="card-header"><span>🧹 后续维护整理</span><span class="badge badge-low">维护</span></div>
+<div class="card-body" style="padding:0"><div class="table-wrap"><table>
+<thead><tr><th>编号</th><th>修复目标</th><th>预计工时</th><th>降低的风险</th></tr></thead>
+<tbody>
+<tr><td>AUD-20</td><td><a href="#AUD-20">AUD-20 · HID 超时和重试配置可保存，但实际未使用</a></td><td>2–4 小时</td><td>设备排障时看似保存成功的参数不会改变行为，增加定位超时与兼容性问题的成本。</td></tr>
+<tr><td>AUD-21</td><td><a href="#AUD-21">AUD-21 · vendored xterm 只有代码和许可证，缺少版本来源清单</a></td><td>1–2 小时</td><td>收到浏览器终端库安全公告时，维护者难以判断当前文件是否受影响，也难以复现一次可靠更新。</td></tr>
+</tbody></table></div></div>
+</div>
+
+<div class="card">
+<div class="card-header">🧭 实施与验收建议</div>
+<div class="card-body"><p>先为已复现高风险补失败用例，再修复。配置事务与按需重配置共享同一提交入口；会话撤销与凭据清理共享退出生命周期，可以减少重复工作。</p>
+<p style="margin-top:12px">Linux 目标构建通过后，再在可丢弃镜像、确认接线的 GPIO 和真实采集卡上执行冒烟检查：连续 H.264 播放超过 10 分钟、断信号恢复、HID 释放、介质安全弹出、升级失败回滚。</p>
+<p style="margin-top:12px">本报告的工时估算针对熟悉代码的开发者，不包含排查板级驱动差异或建立完整硬件测试平台。所有修复均为建议，本次没有实施。</p></div>
+</div>
+
+<h3 class="section-title" id="quick-wins">⚡ 可先落地的小改动</h3>
+
+<div class="win-grid">
+<div class="win-card"><div class="win-title"><a href="#AUD-09">AUD-09 · 退出后登录表单仍保留凭据，可直接再次进入</a></div><div class="win-meta">1–2 小时 · Medium · 具体回归建议见发现卡片</div></div>
+<div class="win-card"><div class="win-title"><a href="#AUD-05">AUD-05 · 首次初始化会把预设监听地址和端口改回默认值</a></div><div class="win-meta">2–4 小时 · High · 具体回归建议见发现卡片</div></div>
+<div class="win-card"><div class="win-title"><a href="#AUD-06">AUD-06 · IMG 的页面默认值覆盖了服务端“默认只读”设置</a></div><div class="win-meta">2–4 小时 · Medium · 具体回归建议见发现卡片</div></div>
+<div class="win-card"><div class="win-title"><a href="#AUD-08">AUD-08 · 非法监听地址能保存成功，下次启动才报错</a></div><div class="win-meta">2–4 小时 · Medium · 具体回归建议见发现卡片</div></div>
+<div class="win-card"><div class="win-title"><a href="#AUD-15">AUD-15 · 开启键鼠转发后，键盘用户无法从画面焦点退出</a></div><div class="win-meta">2–4 小时 · Medium · 具体回归建议见发现卡片</div></div>
+<div class="win-card"><div class="win-title"><a href="#AUD-21">AUD-21 · vendored xterm 只有代码和许可证，缺少版本来源清单</a></div><div class="win-meta">1–2 小时 · Low · 具体回归建议见发现卡片</div></div>
+</div>
+<div style="text-align:center;padding:40px 0 20px;color:var(--text-secondary);font-size:12px">WingmanKVM · full 中文审查 · 2026-09-14<br>代码基线 9bef67f33a33e74eeb34a0809d81aad3209db10d<br>报告为离线自包含 HTML；结论受各维度列出的证据和运行环境限制。</div>
+</div>
+<script>
+  const sections = document.querySelectorAll('[id]');
+  const navLinks = document.querySelectorAll('.sidebar-nav a');
+
+  const observer = new IntersectionObserver((entries) => {
+    let activeId = null;
+    entries.forEach(entry => {
+      if (entry.isIntersecting) activeId = entry.target.id;
+    });
+    if (activeId) {
+      navLinks.forEach(a => {
+        a.classList.toggle('active', a.getAttribute('href') === '#' + activeId);
+      });
+    }
+  }, { rootMargin: '-10% 0px -60% 0px' });
+
+  sections.forEach(s => observer.observe(s));
+
+  navLinks.forEach(a => {
+    a.addEventListener('click', function(e) {
+      e.preventDefault();
+      const target = document.querySelector(this.getAttribute('href'));
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+</script>
+</body>
+</html>
