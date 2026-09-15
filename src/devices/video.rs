@@ -118,6 +118,7 @@ enum VideoCommand {
     Pause(mpsc::SyncSender<()>),
 }
 
+#[cfg(target_os = "linux")]
 enum SessionExit {
     Reconfigure(VideoConfig),
     Pause(mpsc::SyncSender<()>),

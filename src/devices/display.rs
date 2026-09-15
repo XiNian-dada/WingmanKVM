@@ -1,5 +1,4 @@
 use std::{
-    fs::{self, OpenOptions},
     io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -7,7 +6,10 @@ use std::{
 };
 
 #[cfg(target_os = "linux")]
-use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+use std::{
+    fs::{self, OpenOptions},
+    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
+};
 
 use serde::Serialize;
 use thiserror::Error;
@@ -16,7 +18,9 @@ use crate::config::{DisplayConfig, VirtualMonitorMode};
 
 const EDID_BLOCK_LEN: usize = 128;
 const EDID_RAM_LEN: usize = 256;
+#[cfg(target_os = "linux")]
 const MS2130_VENDOR_ID: u16 = 0x345f;
+#[cfg(target_os = "linux")]
 const MS2130_PRODUCT_ID: u16 = 0x2130;
 const CHIP_ID_REGISTER: u16 = 0xf800;
 const MS2130_CHIP_ID: u8 = 0x00;
@@ -29,6 +33,7 @@ const DDC_ENABLED: u8 = 0x08;
 const EDID_RAM_START: u16 = 0xf900;
 const HPD_LOW_DELAY: Duration = Duration::from_millis(300);
 const HPD_HIGH_DELAY: Duration = Duration::from_millis(800);
+#[cfg(target_os = "linux")]
 const MS2130_REPORT_DESCRIPTOR: &[u8] = &[
     0x06, 0x00, 0xff, 0x09, 0x01, 0xa1, 0x01, 0x15, 0x00, 0x26, 0xff, 0x00, 0x19, 0x01, 0x29, 0x02,
     0x75, 0x08, 0x95, 0x08, 0xb1, 0x02, 0xc0,
@@ -66,6 +71,7 @@ impl Default for DisplayStatus {
 }
 
 #[derive(Debug, Error)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub enum DisplayError {
     #[error("虚拟显示器控制仅支持 Linux")]
     Unsupported,
@@ -134,10 +140,11 @@ impl DisplayManager {
             .operation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_applied_mode = self.status().applied_mode;
         self.replace_status(DisplayStatus {
             state: DisplayState::Applying,
             requested_mode: config.virtual_monitor,
-            applied_mode: self.status().applied_mode,
+            applied_mode: previous_applied_mode,
             control_device: config.control_device.clone(),
             message: Some("正在安全切换 EDID 与 HDMI HPD".to_owned()),
         });
@@ -159,7 +166,7 @@ impl DisplayManager {
                     DisplayState::Error
                 },
                 requested_mode: config.virtual_monitor,
-                applied_mode: None,
+                applied_mode: previous_applied_mode,
                 control_device: config.control_device.clone(),
                 message: Some(error.to_string()),
             }),
