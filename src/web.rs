@@ -96,10 +96,10 @@ impl AppState {
             Some(token)
         };
         let display = DisplayManager::new();
-        if config.display.virtual_monitor != VirtualMonitorMode::Unmanaged {
-            if let Err(error) = display.apply(&config.display, config.video.device.as_deref()) {
-                tracing::error!(%error, "failed to restore configured virtual monitor at startup");
-            }
+        if config.display.virtual_monitor != VirtualMonitorMode::Unmanaged
+            && let Err(error) = display.apply(&config.display, config.video.device.as_deref())
+        {
+            tracing::error!(%error, "failed to restore configured virtual monitor at startup");
         }
         let video = VideoManager::new(effective_video_config(
             &config,
@@ -122,7 +122,7 @@ impl AppState {
             }
         });
 
-        Ok(Self {
+        let state = Self {
             config: Arc::new(RwLock::new(config)),
             config_path: Arc::new(config_path),
             auth,
@@ -138,12 +138,47 @@ impl AppState {
             display,
             video,
             webrtc,
-        })
+        };
+        state.start_display_monitor();
+        Ok(state)
     }
 
     pub async fn server_address(&self) -> anyhow::Result<SocketAddr> {
         let config = self.config.read().await;
         Ok(format!("{}:{}", config.server.listen_address, config.server.port).parse()?)
+    }
+
+    fn start_display_monitor(&self) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // `interval` ticks immediately once. Startup restoration already ran
+            // before V4L2 was opened, so only monitor later USB generations.
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let config = state.config.read().await.clone();
+                if !state
+                    .display
+                    .needs_reapply(&config.display, config.video.device.as_deref())
+                {
+                    continue;
+                }
+                let _update_guard = state.config_update.lock().await;
+                let config = state.config.read().await.clone();
+                if !state
+                    .display
+                    .needs_reapply(&config.display, config.video.device.as_deref())
+                {
+                    continue;
+                }
+                tracing::warn!("MS2130 re-enumerated; restoring volatile EDID RAM");
+                if let Err(error) = reapply_display_after_usb_reset(&state, &config).await {
+                    tracing::error!(message = %error.message, "failed to restore EDID after USB reset");
+                }
+            }
+        });
     }
 }
 
@@ -1810,19 +1845,28 @@ async fn commit_config(state: &AppState, config: &Config) -> Result<(), ApiError
         let display = state.display.clone();
         let display_config = config.display.clone();
         let video_device = config.video.device.clone();
-        match tokio::task::spawn_blocking(move || {
+        let apply_result = tokio::task::spawn_blocking(move || {
             display.apply(&display_config, video_device.as_deref())
         })
-        .await
-        .map_err(ApiError::internal)?
-        {
-            Ok(rollback) => rollback,
-            Err(error) => {
+        .await;
+        match apply_result {
+            Ok(Ok(rollback)) => rollback,
+            Ok(Err(error)) => {
                 resume_video(
                     &state.video,
                     effective_video_config(&previous, current_display.applied_mode),
                 )?;
                 return Err(map_display_error(error));
+            }
+            Err(error) => {
+                state
+                    .display
+                    .mark_unapplied("EDID 切换任务异常退出，已恢复旧采集配置");
+                resume_video(
+                    &state.video,
+                    effective_video_config(&previous, current_display.applied_mode),
+                )?;
+                return Err(ApiError::internal(error));
             }
         }
     } else {
@@ -1887,6 +1931,40 @@ async fn rollback_display(
         Ok(Err(error)) => tracing::error!(%error, "failed to roll back MS2130 EDID"),
         Err(error) => tracing::error!(%error, "MS2130 EDID rollback task failed"),
     }
+}
+
+async fn reapply_display_after_usb_reset(
+    state: &AppState,
+    config: &Config,
+) -> Result<(), ApiError> {
+    pause_video(&state.video).await?;
+    let display = state.display.clone();
+    let display_config = config.display.clone();
+    let video_device = config.video.device.clone();
+    let task_result = tokio::task::spawn_blocking(move || {
+        display.apply(&display_config, video_device.as_deref())
+    })
+    .await;
+    let result = match task_result {
+        Ok(result) => result,
+        Err(error) => {
+            state
+                .display
+                .mark_unapplied("采集卡重新枚举后的 EDID 恢复任务异常退出");
+            let _ = resume_video(&state.video, effective_video_config(config, None));
+            return Err(ApiError::internal(error));
+        }
+    };
+    if let Err(error) = result {
+        let message = format!("采集卡重新枚举后 EDID 恢复失败: {error}");
+        state.display.mark_unapplied(message.clone());
+        let _ = resume_video(&state.video, effective_video_config(config, None));
+        return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, message));
+    }
+    resume_video(
+        &state.video,
+        effective_video_config(config, state.display.status().applied_mode),
+    )
 }
 
 fn effective_video_config(

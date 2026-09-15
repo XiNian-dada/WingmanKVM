@@ -1,3 +1,5 @@
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 use std::{
     io,
     path::{Path, PathBuf},
@@ -98,6 +100,7 @@ pub enum DisplayError {
 #[derive(Clone)]
 pub struct DisplayManager {
     status: Arc<Mutex<DisplayStatus>>,
+    applied_generation: Arc<Mutex<Option<DeviceGeneration>>>,
     operation: Arc<Mutex<()>>,
 }
 
@@ -111,6 +114,7 @@ impl DisplayManager {
     pub fn new() -> Self {
         Self {
             status: Arc::new(Mutex::new(DisplayStatus::default())),
+            applied_generation: Arc::new(Mutex::new(None)),
             operation: Arc::new(Mutex::new(())),
         }
     }
@@ -123,7 +127,53 @@ impl DisplayManager {
     }
 
     pub fn set_unmanaged(&self) {
+        *self
+            .applied_generation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         self.replace_status(DisplayStatus::default());
+    }
+
+    /// Detect a USB re-enumeration after an EDID was successfully applied.
+    /// Missing devices are not retried until they reappear with a new USB
+    /// generation, avoiding repeated capture interruptions while unplugged.
+    pub fn needs_reapply(&self, config: &DisplayConfig, video_device: Option<&Path>) -> bool {
+        if config.virtual_monitor == VirtualMonitorMode::Unmanaged {
+            return false;
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = video_device;
+            false
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let Some(applied) = self
+                .applied_generation
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+            else {
+                return false;
+            };
+            let Ok(control_device) = resolve_control_device(config, video_device) else {
+                return false;
+            };
+            let Ok(current) = control_device_generation(&control_device) else {
+                return false;
+            };
+            current != applied
+        }
+    }
+
+    pub fn mark_unapplied(&self, message: impl Into<String>) {
+        let mut status = self
+            .status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        status.state = DisplayState::Error;
+        status.applied_mode = None;
+        status.message = Some(message.into());
     }
 
     pub fn apply(
@@ -151,13 +201,20 @@ impl DisplayManager {
 
         let result = self.apply_inner(config, video_device);
         match &result {
-            Ok(Some(rollback)) => self.replace_status(DisplayStatus {
-                state: DisplayState::Applied,
-                requested_mode: config.virtual_monitor,
-                applied_mode: Some(config.virtual_monitor),
-                control_device: Some(rollback.control_device.clone()),
-                message: Some("EDID RAM 已回读校验，HPD 已恢复".to_owned()),
-            }),
+            Ok(Some(rollback)) => {
+                *self
+                    .applied_generation
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                    Some(rollback.generation.clone());
+                self.replace_status(DisplayStatus {
+                    state: DisplayState::Applied,
+                    requested_mode: config.virtual_monitor,
+                    applied_mode: Some(config.virtual_monitor),
+                    control_device: Some(rollback.control_device.clone()),
+                    message: Some("EDID RAM 已回读校验，HPD 已恢复".to_owned()),
+                });
+            }
             Ok(None) => self.set_unmanaged(),
             Err(error) => self.replace_status(DisplayStatus {
                 state: if matches!(error, DisplayError::Unsupported) {
@@ -185,6 +242,10 @@ impl DisplayManager {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut transport = HidrawTransport::open(&rollback.control_device)?;
         apply_edid_transaction(&mut transport, &rollback.previous_edid)?;
+        *self
+            .applied_generation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(rollback.generation.clone());
         self.replace_status(DisplayStatus {
             state: if previous_mode == VirtualMonitorMode::Unmanaged {
                 DisplayState::Unmanaged
@@ -212,6 +273,7 @@ impl DisplayManager {
         #[cfg(target_os = "linux")]
         {
             let control_device = resolve_control_device(config, video_device)?;
+            let generation = control_device_generation(&control_device)?;
             let image = EdidImage::for_mode(config.virtual_monitor)
                 .ok_or_else(|| DisplayError::Protocol("缺少 EDID 配置".to_owned()))?;
             image.validate().map_err(|error| {
@@ -222,6 +284,7 @@ impl DisplayManager {
             Ok(Some(DisplayRollback {
                 control_device,
                 previous_edid,
+                generation,
             }))
         }
     }
@@ -238,6 +301,13 @@ impl DisplayManager {
 pub struct DisplayRollback {
     control_device: PathBuf,
     previous_edid: [u8; EDID_RAM_LEN],
+    generation: DeviceGeneration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeviceGeneration {
+    usb_path: PathBuf,
+    device_number: String,
 }
 
 trait RegisterIo {
@@ -389,6 +459,7 @@ fn restore_registers(
     errors: &mut Vec<String>,
 ) {
     restore_ddc(transport, original, errors);
+    transport.wait(HPD_LOW_DELAY);
     if let Err(error) = write_checked(transport, HPD_CONTROL_REGISTER, original.hpd) {
         errors.push(format!("恢复 HPD 原始状态失败: {error}"));
     }
@@ -645,6 +716,20 @@ fn validate_hid_descriptor(path: &Path) -> Result<(), DisplayError> {
             path: path.to_owned(),
         })
     }
+}
+
+#[cfg(target_os = "linux")]
+fn control_device_generation(path: &Path) -> Result<DeviceGeneration, DisplayError> {
+    let usb_path = usb_parent_for_node(path, "hidraw")?;
+    let devnum_path = usb_path.join("devnum");
+    let device_number = fs::read_to_string(&devnum_path).map_err(|source| DisplayError::Io {
+        path: devnum_path,
+        source,
+    })?;
+    Ok(DeviceGeneration {
+        usb_path,
+        device_number: device_number.trim().to_owned(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
