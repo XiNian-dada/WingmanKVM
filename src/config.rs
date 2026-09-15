@@ -23,6 +23,8 @@ pub struct Config {
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
+    pub display: DisplayConfig,
+    #[serde(default)]
     pub video: VideoConfig,
     #[serde(default)]
     pub hid: HidConfig,
@@ -37,10 +39,51 @@ impl Default for Config {
         Self {
             version: CONFIG_VERSION,
             server: ServerConfig::default(),
+            display: DisplayConfig::default(),
             video: VideoConfig::default(),
             hid: HidConfig::default(),
             power: PowerConfig::default(),
             media: MediaConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VirtualMonitorMode {
+    /// Leave the capture card's EDID and HPD state untouched.
+    #[default]
+    Unmanaged,
+    Hd1080p60,
+    Hd720p60,
+}
+
+impl VirtualMonitorMode {
+    pub fn timing(self) -> Option<(u32, u32, u32)> {
+        match self {
+            Self::Unmanaged => None,
+            Self::Hd1080p60 => Some((1920, 1080, 60)),
+            Self::Hd720p60 => Some((1280, 720, 60)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DisplayConfig {
+    /// EDID profile applied to volatile MS2130 RAM. `Unmanaged` is deliberately
+    /// the default so upgrading WingmanKVM never pulses HPD unexpectedly.
+    pub virtual_monitor: VirtualMonitorMode,
+    /// Optional explicit factory-HID node. When absent, the node must be
+    /// discovered as a sibling of the selected V4L2 device.
+    pub control_device: Option<PathBuf>,
+}
+
+impl Default for DisplayConfig {
+    fn default() -> Self {
+        Self {
+            virtual_monitor: VirtualMonitorMode::Unmanaged,
+            control_device: None,
         }
     }
 }
@@ -154,6 +197,10 @@ impl Default for H264Config {
 pub struct VideoConfig {
     pub auto_detect: bool,
     pub device: Option<PathBuf>,
+    /// Match the UVC capture format to the managed virtual-monitor mode.
+    /// Existing configurations default to `false` and retain their old
+    /// width/height semantics.
+    pub follow_display: bool,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub frames_per_second: Option<u32>,
@@ -167,6 +214,7 @@ impl Default for VideoConfig {
         Self {
             auto_detect: true,
             device: None,
+            follow_display: false,
             width: None,
             height: None,
             frames_per_second: None,
@@ -462,7 +510,13 @@ mod tests {
     #[test]
     fn default_hardware_devices_are_not_hard_coded() {
         let config = Config::default();
+        assert_eq!(
+            config.display.virtual_monitor,
+            VirtualMonitorMode::Unmanaged
+        );
+        assert_eq!(config.display.control_device, None);
         assert!(config.video.auto_detect);
+        assert!(!config.video.follow_display);
         assert_eq!(config.video.device, None);
         assert_eq!(config.hid.keyboard_device, None);
         assert_eq!(config.hid.mouse_device, None);
@@ -522,6 +576,11 @@ mod tests {
         assert_eq!(config.video.h264.encoder, H264Encoder::Auto);
         assert!(!config.video.h264.allow_software);
         assert_eq!(config.video.h264.max_sessions, 1);
+        assert!(!config.video.follow_display);
+        assert_eq!(
+            config.display.virtual_monitor,
+            VirtualMonitorMode::Unmanaged
+        );
     }
 
     #[test]
