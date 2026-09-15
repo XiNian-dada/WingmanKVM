@@ -1,10 +1,8 @@
 use std::{
     path::PathBuf,
     sync::{Arc, mpsc},
+    time::Duration,
 };
-
-#[cfg(target_os = "linux")]
-use std::time::Duration;
 
 use bytes::Bytes;
 use serde::Serialize;
@@ -24,6 +22,7 @@ pub struct VideoFrame {
 pub enum VideoState {
     Unconfigured,
     Starting,
+    Paused,
     Ready,
     Offline,
     #[cfg(not(target_os = "linux"))]
@@ -57,14 +56,14 @@ impl VideoStatus {
 
 #[derive(Clone)]
 pub struct VideoManager {
-    config_tx: mpsc::Sender<VideoConfig>,
+    command_tx: mpsc::Sender<VideoCommand>,
     frame_tx: watch::Sender<Option<Arc<VideoFrame>>>,
     status_tx: watch::Sender<VideoStatus>,
 }
 
 impl VideoManager {
     pub fn new(initial: VideoConfig) -> Self {
-        let (config_tx, config_rx) = mpsc::channel();
+        let (command_tx, command_rx) = mpsc::channel();
         let (frame_tx, _) = watch::channel(None);
         let (status_tx, _) = watch::channel(VideoStatus::from_config(
             &initial,
@@ -76,20 +75,33 @@ impl VideoManager {
         let thread_status = status_tx.clone();
         std::thread::Builder::new()
             .name("wingmankvm-video".into())
-            .spawn(move || video_supervisor(initial, config_rx, thread_frames, thread_status))
+            .spawn(move || video_supervisor(initial, command_rx, thread_frames, thread_status))
             .expect("failed to start video capture thread");
 
         Self {
-            config_tx,
+            command_tx,
             frame_tx,
             status_tx,
         }
     }
 
     pub fn reconfigure(&self, config: VideoConfig) -> Result<(), String> {
-        self.config_tx
-            .send(config)
+        self.command_tx
+            .send(VideoCommand::Reconfigure(config))
             .map_err(|_| "video capture thread stopped".to_string())
+    }
+
+    /// Stop the active V4L2 stream and acknowledge only after all capture
+    /// handles have been dropped. A later `reconfigure` resumes capture.
+    pub fn pause(&self, timeout: Duration) -> Result<(), String> {
+        let (ack_tx, ack_rx) = mpsc::sync_channel(0);
+        self.command_tx
+            .send(VideoCommand::Pause(ack_tx))
+            .map_err(|_| "video capture thread stopped".to_string())?;
+        ack_rx.recv_timeout(timeout).map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => "等待视频采集安全停流超时".to_owned(),
+            mpsc::RecvTimeoutError::Disconnected => "视频采集线程未确认停流".to_owned(),
+        })
     }
 
     pub fn subscribe(&self) -> watch::Receiver<Option<Arc<VideoFrame>>> {
@@ -101,17 +113,26 @@ impl VideoManager {
     }
 }
 
+enum VideoCommand {
+    Reconfigure(VideoConfig),
+    Pause(mpsc::SyncSender<()>),
+}
+
+enum SessionExit {
+    Reconfigure(VideoConfig),
+    Pause(mpsc::SyncSender<()>),
+}
+
 #[cfg(target_os = "linux")]
 fn video_supervisor(
     mut config: VideoConfig,
-    config_rx: mpsc::Receiver<VideoConfig>,
+    command_rx: mpsc::Receiver<VideoCommand>,
     frame_tx: watch::Sender<Option<Arc<VideoFrame>>>,
     status_tx: watch::Sender<VideoStatus>,
 ) {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     loop {
-        config = drain_latest(&config_rx).unwrap_or(config);
         let Some(device) = config.device.clone() else {
             frame_tx.send_replace(None);
             status_tx.send_replace(VideoStatus::from_config(
@@ -119,13 +140,18 @@ fn video_supervisor(
                 VideoState::Unconfigured,
                 Some("尚未选择视频采集设备".into()),
             ));
-            match config_rx.recv() {
-                Ok(next) => {
-                    config = next;
-                    continue;
+            match command_rx.recv() {
+                Ok(VideoCommand::Reconfigure(next)) => config = next,
+                Ok(VideoCommand::Pause(ack)) => {
+                    config =
+                        match wait_while_paused(&config, &command_rx, &frame_tx, &status_tx, ack) {
+                            Some(next) => next,
+                            None => return,
+                        };
                 }
                 Err(_) => return,
             }
+            continue;
         };
 
         status_tx.send_replace(VideoStatus::from_config(
@@ -134,15 +160,21 @@ fn video_supervisor(
             Some(format!("正在打开 {}", device.display())),
         ));
         let result = catch_unwind(AssertUnwindSafe(|| {
-            capture_session(&config, &config_rx, &frame_tx, &status_tx)
+            capture_session(&config, &command_rx, &frame_tx, &status_tx)
         }));
 
         match result {
-            Ok(Ok(Some(next))) => {
+            Ok(Ok(SessionExit::Reconfigure(next))) => {
                 config = next;
                 continue;
             }
-            Ok(Ok(None)) => return,
+            Ok(Ok(SessionExit::Pause(ack))) => {
+                config = match wait_while_paused(&config, &command_rx, &frame_tx, &status_tx, ack) {
+                    Some(next) => next,
+                    None => return,
+                };
+                continue;
+            }
             Ok(Err(error)) => {
                 frame_tx.send_replace(None);
                 status_tx.send_replace(VideoStatus::from_config(
@@ -161,8 +193,14 @@ fn video_supervisor(
             }
         }
 
-        match config_rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(next) => config = next,
+        match command_rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(VideoCommand::Reconfigure(next)) => config = next,
+            Ok(VideoCommand::Pause(ack)) => {
+                config = match wait_while_paused(&config, &command_rx, &frame_tx, &status_tx, ack) {
+                    Some(next) => next,
+                    None => return,
+                };
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         }
@@ -172,10 +210,10 @@ fn video_supervisor(
 #[cfg(target_os = "linux")]
 fn capture_session(
     config: &VideoConfig,
-    config_rx: &mpsc::Receiver<VideoConfig>,
+    command_rx: &mpsc::Receiver<VideoCommand>,
     frame_tx: &watch::Sender<Option<Arc<VideoFrame>>>,
     status_tx: &watch::Sender<VideoStatus>,
-) -> Result<Option<VideoConfig>, String> {
+) -> Result<SessionExit, String> {
     use v4l::{
         Device, Format, FourCC,
         buffer::{Flags, Type},
@@ -228,8 +266,13 @@ fn capture_session(
 
     let mut sequence = 0_u64;
     loop {
-        if let Some(next) = drain_latest(config_rx) {
-            return Ok(Some(next));
+        match command_rx.try_recv() {
+            Ok(VideoCommand::Reconfigure(next)) => return Ok(SessionExit::Reconfigure(next)),
+            Ok(VideoCommand::Pause(ack)) => return Ok(SessionExit::Pause(ack)),
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err("video capture controller stopped".to_owned());
+            }
         }
         match stream.next() {
             Ok((buffer, metadata)) => {
@@ -261,7 +304,7 @@ fn capture_session(
 #[cfg(not(target_os = "linux"))]
 fn video_supervisor(
     mut config: VideoConfig,
-    config_rx: mpsc::Receiver<VideoConfig>,
+    command_rx: mpsc::Receiver<VideoCommand>,
     frame_tx: watch::Sender<Option<Arc<VideoFrame>>>,
     status_tx: watch::Sender<VideoStatus>,
 ) {
@@ -272,20 +315,45 @@ fn video_supervisor(
             VideoState::Unsupported,
             Some("V4L2 视频采集仅在 Linux 上可用".into()),
         ));
-        match config_rx.recv() {
-            Ok(next) => config = next,
+        match command_rx.recv() {
+            Ok(VideoCommand::Reconfigure(next)) => config = next,
+            Ok(VideoCommand::Pause(ack)) => {
+                let _ = ack.send(());
+            }
             Err(_) => return,
         }
     }
 }
 
 #[cfg(target_os = "linux")]
-fn drain_latest(rx: &mpsc::Receiver<VideoConfig>) -> Option<VideoConfig> {
-    let mut latest = None;
-    while let Ok(config) = rx.try_recv() {
-        latest = Some(config);
+fn wait_while_paused(
+    config: &VideoConfig,
+    command_rx: &mpsc::Receiver<VideoCommand>,
+    frame_tx: &watch::Sender<Option<Arc<VideoFrame>>>,
+    status_tx: &watch::Sender<VideoStatus>,
+    ack: mpsc::SyncSender<()>,
+) -> Option<VideoConfig> {
+    frame_tx.send_replace(None);
+    status_tx.send_replace(VideoStatus::from_config(
+        config,
+        VideoState::Paused,
+        Some("视频采集已安全暂停".to_owned()),
+    ));
+    if ack.send(()).is_err() {
+        // The requester timed out or was cancelled before the capture thread
+        // reached a safe point. Resume the same configuration instead of
+        // leaving video permanently paused.
+        return Some(config.clone());
     }
-    latest
+    loop {
+        match command_rx.recv() {
+            Ok(VideoCommand::Pause(ack)) => {
+                let _ = ack.send(());
+            }
+            Ok(VideoCommand::Reconfigure(next)) => return Some(next),
+            Err(_) => return None,
+        }
+    }
 }
 
 #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
