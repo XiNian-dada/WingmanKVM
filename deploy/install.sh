@@ -206,6 +206,7 @@ check_platform() {
 reload_udev() {
     udevadm control --reload-rules
     udevadm trigger --subsystem-match=video4linux --action=change >/dev/null 2>&1 || true
+    udevadm trigger --subsystem-match=hidraw --action=change >/dev/null 2>&1 || true
     udevadm trigger --subsystem-match=gpio --action=change >/dev/null 2>&1 || true
 }
 

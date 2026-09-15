@@ -1,4 +1,7 @@
 # Tighten these matches to the actual capture card and Gadget nodes in production.
 SUBSYSTEM=="video4linux", GROUP="wingmankvm-hw", MODE="0660"
+# MS2130 factory HID used only for volatile EDID RAM and HPD control. Keep
+# access restricted to the service hardware group and the verified VID:PID.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="345f", ATTRS{idProduct}=="2130", GROUP="wingmankvm-hw", MODE="0660"
 KERNEL=="hidg*", GROUP="wingmankvm-hw", MODE="0660"
 SUBSYSTEM=="gpio", KERNEL=="gpiochip*", GROUP="wingmankvm-hw", MODE="0660"
