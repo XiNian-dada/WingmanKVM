@@ -108,6 +108,7 @@ cat /sys/class/udc/*/state
 | Firefly RK3399 从接线到验证 | [RK3399 从零部署实例](docs/RK3399_GUIDE.md) |
 | 配置 OTG/UDC、升级、服务检查 | [部署说明](docs/DEPLOYMENT.md) |
 | 找采集卡、HID、GPIO 或虚拟介质 | [硬件配置与排障](docs/DEPLOYMENT.md#8-常见故障排查) |
+| MS2130 虚拟显示器、EDID RAM 与安全回滚 | [MS2130 EDID 说明](docs/MS2130_EDID.md) |
 | 使用 GPIO 控制电源 | [GPIO 电源按钮说明](docs/RK3399_GUIDE.md#9-gpio-电源按钮必须按接线确认) |
 | 处理低上行带宽、VPN 或 WebRTC | [WebRTC/H.264 说明](docs/RK3399_GUIDE.md#8-webrtc--h264-低带宽模式) |
 | 自定义 USB Gadget、VID/PID 或 descriptor | [高级 Gadget 检查](docs/DEPLOYMENT.md#9-高级自定义-gadget-检查) |
