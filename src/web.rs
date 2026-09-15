@@ -1995,8 +1995,9 @@ fn map_display_error(error: DisplayError) -> ApiError {
         DisplayError::VideoDeviceRequired
         | DisplayError::DeviceMismatch { .. }
         | DisplayError::DescriptorMismatch { .. } => StatusCode::UNPROCESSABLE_ENTITY,
-        DisplayError::Unsupported
-        | DisplayError::ControlDeviceNotFound
+        #[cfg(not(target_os = "linux"))]
+        DisplayError::Unsupported => StatusCode::SERVICE_UNAVAILABLE,
+        DisplayError::ControlDeviceNotFound
         | DisplayError::AmbiguousControlDevice
         | DisplayError::Io { .. }
         | DisplayError::Protocol(_) => StatusCode::SERVICE_UNAVAILABLE,

@@ -75,6 +75,7 @@ impl Default for DisplayStatus {
 #[derive(Debug, Error)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub enum DisplayError {
+    #[cfg(not(target_os = "linux"))]
     #[error("虚拟显示器控制仅支持 Linux")]
     Unsupported,
     #[error("需要先选择视频采集设备，才能匹配同一块 MS2130 的控制接口")]
@@ -217,11 +218,7 @@ impl DisplayManager {
             }
             Ok(None) => self.set_unmanaged(),
             Err(error) => self.replace_status(DisplayStatus {
-                state: if matches!(error, DisplayError::Unsupported) {
-                    DisplayState::Unsupported
-                } else {
-                    DisplayState::Error
-                },
+                state: display_error_state(error),
                 requested_mode: config.virtual_monitor,
                 applied_mode: previous_applied_mode,
                 control_device: config.control_device.clone(),
@@ -295,6 +292,15 @@ impl DisplayManager {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = status;
     }
+}
+
+fn display_error_state(error: &DisplayError) -> DisplayState {
+    #[cfg(not(target_os = "linux"))]
+    if matches!(error, DisplayError::Unsupported) {
+        return DisplayState::Unsupported;
+    }
+    let _ = error;
+    DisplayState::Error
 }
 
 #[derive(Debug)]
