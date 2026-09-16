@@ -48,6 +48,7 @@ pub enum DisplayState {
     Applying,
     Applied,
     Error,
+    #[cfg(not(target_os = "linux"))]
     Unsupported,
 }
 
