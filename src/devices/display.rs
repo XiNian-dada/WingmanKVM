@@ -24,11 +24,12 @@ const EDID_RAM_LEN: usize = 256;
 const MS2130_VENDOR_ID: u16 = 0x345f;
 #[cfg(target_os = "linux")]
 const MS2130_PRODUCT_ID: u16 = 0x2130;
-// The stock firmware initializes the HDMI RX by holding F014 bit 4 high and
-// then clearing it (0x33 -> 0x23). Live testing on the supported MS2130
-// confirms that this makes the HDMI input disappear until the bit is cleared.
-const HPD_CONTROL_REGISTER: u16 = 0xf014;
-const HPD_DISCONNECTED: u8 = 0x10;
+// The stock firmware toggles F014 bit 4 (0x33 -> 0x23) while initializing
+// HDMI RX. It blanks capture on the tested card, but physical upstream HPD
+// toggling has NOT been verified. Never use this bit as proof of a source mode
+// change; the measured HDMI RX input timing is the acceptance criterion.
+const HDMI_RX_CONTROL_REGISTER: u16 = 0xf014;
+const HDMI_RX_QUIESCE: u8 = 0x10;
 const EDID_OWNER_REGISTER: u16 = 0xf062;
 const EDID_OWNER_8051: u8 = 0x80;
 const DDC_CONTROL_REGISTER: u16 = 0xf063;
@@ -36,8 +37,8 @@ const DDC_ENABLED: u8 = 0x08;
 const EDID_RAM_START: u16 = 0xf900;
 const INPUT_WIDTH_REGISTER: u16 = 0xf660;
 const INPUT_HEIGHT_REGISTER: u16 = 0xf662;
-const HPD_LOW_DELAY: Duration = Duration::from_millis(300);
-const HPD_HIGH_DELAY: Duration = Duration::from_millis(800);
+const RX_QUIESCE_DELAY: Duration = Duration::from_millis(300);
+const RX_SETTLE_DELAY: Duration = Duration::from_millis(800);
 const INPUT_TIMING_POLL_DELAY: Duration = Duration::from_millis(250);
 const INPUT_TIMING_POLL_ATTEMPTS: usize = 40;
 #[cfg(target_os = "linux")]
@@ -203,7 +204,7 @@ impl DisplayManager {
             requested_mode: config.virtual_monitor,
             applied_mode: previous_applied_mode,
             control_device: config.control_device.clone(),
-            message: Some("正在安全切换 EDID 与 HDMI HPD".to_owned()),
+            message: Some("正在写入 EDID 并确认 HDMI 输入时序".to_owned()),
         });
 
         let result = self.apply_inner(config, video_device);
@@ -220,7 +221,7 @@ impl DisplayManager {
                     applied_mode: Some(config.virtual_monitor),
                     control_device: Some(rollback.control_device.clone()),
                     message: config.virtual_monitor.timing().map(|(width, height, _)| {
-                        format!("EDID 已回读，HDMI 输入已确认 {width}×{height}，HPD 已恢复")
+                        format!("EDID 已回读，HDMI 输入已确认 {width}×{height}")
                     }),
                 });
             }
@@ -365,18 +366,23 @@ fn apply_edid_transaction(
     expected_timing: Option<InputTiming>,
 ) -> Result<[u8; EDID_RAM_LEN], DisplayError> {
     let original = RegisterSnapshot {
-        hpd: transport.read_register(HPD_CONTROL_REGISTER)?,
+        rx_control: transport.read_register(HDMI_RX_CONTROL_REGISTER)?,
         owner: transport.read_register(EDID_OWNER_REGISTER)?,
         ddc: transport.read_register(DDC_CONTROL_REGISTER)?,
     };
+    if original.rx_control & HDMI_RX_QUIESCE != 0 {
+        return Err(DisplayError::Protocol(
+            "HDMI RX 已处于中断状态，拒绝覆盖未知控制状态".to_owned(),
+        ));
+    }
     let mut previous_edid = None;
     let operation = (|| {
         write_checked(
             transport,
-            HPD_CONTROL_REGISTER,
-            original.hpd | HPD_DISCONNECTED,
+            HDMI_RX_CONTROL_REGISTER,
+            original.rx_control | HDMI_RX_QUIESCE,
         )?;
-        transport.wait(HPD_LOW_DELAY);
+        transport.wait(RX_QUIESCE_DELAY);
         write_checked(transport, DDC_CONTROL_REGISTER, original.ddc & !DDC_ENABLED)?;
         write_checked(
             transport,
@@ -416,13 +422,9 @@ fn apply_edid_transaction(
 
     let mut restore_errors = Vec::new();
     restore_ddc(transport, original, &mut restore_errors);
-    transport.wait(HPD_LOW_DELAY);
-    if let Err(error) = write_checked(
-        transport,
-        HPD_CONTROL_REGISTER,
-        original.hpd & !HPD_DISCONNECTED,
-    ) {
-        restore_errors.push(format!("恢复 HPD 失败: {error}"));
+    transport.wait(RX_QUIESCE_DELAY);
+    if let Err(error) = write_checked(transport, HDMI_RX_CONTROL_REGISTER, original.rx_control) {
+        restore_errors.push(format!("恢复 HDMI RX 控制状态失败: {error}"));
     }
     if !restore_errors.is_empty() {
         // The new EDID may already be visible, but the control state is not
@@ -432,7 +434,7 @@ fn apply_edid_transaction(
         }
         return Err(DisplayError::Protocol(restore_errors.join("; ")));
     }
-    transport.wait(HPD_HIGH_DELAY);
+    transport.wait(RX_SETTLE_DELAY);
     if let Some(expected) = expected_timing
         && let Err(error) = wait_for_input_timing(transport, expected)
     {
@@ -476,14 +478,14 @@ fn wait_for_input_timing(
         actual = read_input_timing(transport)?;
     }
     Err(DisplayError::Protocol(format!(
-        "EDID 已写入，但 HDMI 输入仍为 {}×{}，期望 {}×{}",
+        "EDID 已写入，但 HDMI 输入仍为 {}×{}，期望 {}×{}；源设备可能没有重新读取 EDID",
         actual.width, actual.height, expected.width, expected.height
     )))
 }
 
 #[derive(Clone, Copy)]
 struct RegisterSnapshot {
-    hpd: u8,
+    rx_control: u8,
     owner: u8,
     ddc: u8,
 }
@@ -541,9 +543,9 @@ fn restore_registers(
     errors: &mut Vec<String>,
 ) {
     restore_ddc(transport, original, errors);
-    transport.wait(HPD_LOW_DELAY);
-    if let Err(error) = write_checked(transport, HPD_CONTROL_REGISTER, original.hpd) {
-        errors.push(format!("恢复 HPD 原始状态失败: {error}"));
+    transport.wait(RX_QUIESCE_DELAY);
+    if let Err(error) = write_checked(transport, HDMI_RX_CONTROL_REGISTER, original.rx_control) {
+        errors.push(format!("恢复 HDMI RX 原始状态失败: {error}"));
     }
 }
 
@@ -554,10 +556,10 @@ fn rollback_after_commit_failure(
 ) -> Result<(), DisplayError> {
     write_checked(
         transport,
-        HPD_CONTROL_REGISTER,
-        original.hpd | HPD_DISCONNECTED,
+        HDMI_RX_CONTROL_REGISTER,
+        original.rx_control | HDMI_RX_QUIESCE,
     )?;
-    transport.wait(HPD_LOW_DELAY);
+    transport.wait(RX_QUIESCE_DELAY);
     write_checked(transport, DDC_CONTROL_REGISTER, original.ddc & !DDC_ENABLED)?;
     write_checked(
         transport,
@@ -575,7 +577,7 @@ fn rollback_after_commit_failure(
     })();
     let mut errors = Vec::new();
     restore_registers(transport, original, &mut errors);
-    transport.wait(HPD_HIGH_DELAY);
+    transport.wait(RX_SETTLE_DELAY);
     if let Err(error) = write_result {
         errors.insert(0, error.to_string());
     }
@@ -1004,7 +1006,7 @@ mod tests {
     impl MockTransport {
         fn new(previous_edid: [u8; EDID_RAM_LEN]) -> Self {
             let mut registers = BTreeMap::from([
-                (HPD_CONTROL_REGISTER, 0x23),
+                (HDMI_RX_CONTROL_REGISTER, 0x23),
                 (EDID_OWNER_REGISTER, 0x00),
                 (DDC_CONTROL_REGISTER, 0x1e),
             ]);
@@ -1055,8 +1057,8 @@ mod tests {
                 return Err(DisplayError::Protocol("injected write failure".to_owned()));
             }
             self.registers.insert(address, value);
-            if address == HPD_CONTROL_REGISTER
-                && value & HPD_DISCONNECTED == 0
+            if address == HDMI_RX_CONTROL_REGISTER
+                && value & HDMI_RX_QUIESCE == 0
                 && let Some(timing) = self.timing_after_reconnect.take()
             {
                 set_mock_input_timing(&mut self.registers, timing);
@@ -1123,17 +1125,17 @@ mod tests {
 
         assert_eq!(backup, previous);
         assert_eq!(transport.edid(), *expected.as_bytes());
-        assert_eq!(transport.registers[&HPD_CONTROL_REGISTER], 0x23);
+        assert_eq!(transport.registers[&HDMI_RX_CONTROL_REGISTER], 0x23);
         assert_eq!(transport.registers[&EDID_OWNER_REGISTER], 0x00);
         assert_eq!(transport.registers[&DDC_CONTROL_REGISTER], 0x1e);
         assert_eq!(
             transport.waits,
-            [HPD_LOW_DELAY, HPD_LOW_DELAY, HPD_HIGH_DELAY]
+            [RX_QUIESCE_DELAY, RX_QUIESCE_DELAY, RX_SETTLE_DELAY]
         );
         assert_eq!(
             &transport.writes[..3],
             &[
-                (HPD_CONTROL_REGISTER, 0x33),
+                (HDMI_RX_CONTROL_REGISTER, 0x33),
                 (DDC_CONTROL_REGISTER, 0x16),
                 (EDID_OWNER_REGISTER, 0x80),
             ]
@@ -1159,7 +1161,7 @@ mod tests {
 
         assert!(error.to_string().contains("injected write failure"));
         assert_eq!(transport.edid(), previous);
-        assert_eq!(transport.registers[&HPD_CONTROL_REGISTER], 0x23);
+        assert_eq!(transport.registers[&HDMI_RX_CONTROL_REGISTER], 0x23);
         assert_eq!(transport.registers[&EDID_OWNER_REGISTER], 0x00);
         assert_eq!(transport.registers[&DDC_CONTROL_REGISTER], 0x1e);
     }
@@ -1182,8 +1184,28 @@ mod tests {
 
         assert!(error.to_string().contains("HDMI 输入仍为 1920×1080"));
         assert_eq!(transport.edid(), previous);
-        assert_eq!(transport.registers[&HPD_CONTROL_REGISTER], 0x23);
+        assert_eq!(transport.registers[&HDMI_RX_CONTROL_REGISTER], 0x23);
         assert_eq!(transport.registers[&EDID_OWNER_REGISTER], 0x00);
         assert_eq!(transport.registers[&DDC_CONTROL_REGISTER], 0x1e);
+    }
+
+    #[test]
+    fn transaction_refuses_an_already_quiesced_receiver() {
+        let mut transport = MockTransport::new([0x5a; EDID_RAM_LEN]);
+        transport.registers.insert(HDMI_RX_CONTROL_REGISTER, 0x33);
+        let expected = EdidImage::for_mode(VirtualMonitorMode::Hd720p60).unwrap();
+
+        let error = apply_edid_transaction(
+            &mut transport,
+            expected.as_bytes(),
+            Some(InputTiming {
+                width: 1280,
+                height: 720,
+            }),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("已处于中断状态"));
+        assert!(transport.writes.is_empty());
     }
 }

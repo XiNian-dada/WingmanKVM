@@ -59,7 +59,7 @@ where
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VirtualMonitorMode {
-    /// Leave the capture card's EDID and HPD state untouched.
+    /// Leave the capture card's EDID and HDMI RX control state untouched.
     #[default]
     Unmanaged,
     Hd1080p60,
@@ -80,7 +80,7 @@ impl VirtualMonitorMode {
 #[serde(default)]
 pub struct DisplayConfig {
     /// EDID profile applied to volatile MS2130 RAM. `Unmanaged` is deliberately
-    /// the default so upgrading WingmanKVM never pulses HPD unexpectedly.
+    /// the default so upgrading WingmanKVM never interrupts HDMI RX unexpectedly.
     pub virtual_monitor: VirtualMonitorMode,
     /// Optional explicit factory-HID node. When absent, the node must be
     /// discovered as a sibling of the selected V4L2 device.
