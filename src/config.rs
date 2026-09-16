@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 #[cfg(unix)]
@@ -22,7 +22,7 @@ pub struct Config {
     pub version: u32,
     #[serde(default)]
     pub server: ServerConfig,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_default_on_null")]
     pub display: DisplayConfig,
     #[serde(default)]
     pub video: VideoConfig,
@@ -46,6 +46,14 @@ impl Default for Config {
             media: MediaConfig::default(),
         }
     }
+}
+
+fn deserialize_default_on_null<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -528,6 +536,29 @@ mod tests {
         assert_eq!(config.power.power_led, None);
         assert_eq!(config.media.lun_path, None);
         assert!(!config.media.read_only_by_default);
+    }
+
+    #[test]
+    fn legacy_null_display_defaults_to_unmanaged() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "version": CONFIG_VERSION,
+            "display": null,
+            "video": {
+                "device": "/dev/video5",
+                "width": 1920,
+                "height": 1080,
+                "frames_per_second": 30
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            config.display.virtual_monitor,
+            VirtualMonitorMode::Unmanaged
+        );
+        assert_eq!(config.display.control_device, None);
+        assert_eq!(config.video.device, Some(PathBuf::from("/dev/video5")));
+        assert!(!config.video.follow_display);
     }
 
     #[test]
