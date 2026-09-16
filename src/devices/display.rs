@@ -26,15 +26,22 @@ const MS2130_VENDOR_ID: u16 = 0x345f;
 const MS2130_PRODUCT_ID: u16 = 0x2130;
 const CHIP_ID_REGISTER: u16 = 0xf800;
 const MS2130_CHIP_ID: u8 = 0x00;
-const HPD_CONTROL_REGISTER: u16 = 0xf015;
-const HPD_DISCONNECTED: u8 = 0x08;
+// The stock firmware initializes the HDMI RX by holding F014 bit 4 high and
+// then clearing it (0x33 -> 0x23). Live testing on the supported MS2130
+// confirms that this makes the HDMI input disappear until the bit is cleared.
+const HPD_CONTROL_REGISTER: u16 = 0xf014;
+const HPD_DISCONNECTED: u8 = 0x10;
 const EDID_OWNER_REGISTER: u16 = 0xf062;
 const EDID_OWNER_8051: u8 = 0x80;
 const DDC_CONTROL_REGISTER: u16 = 0xf063;
 const DDC_ENABLED: u8 = 0x08;
 const EDID_RAM_START: u16 = 0xf900;
+const INPUT_WIDTH_REGISTER: u16 = 0xf660;
+const INPUT_HEIGHT_REGISTER: u16 = 0xf662;
 const HPD_LOW_DELAY: Duration = Duration::from_millis(300);
 const HPD_HIGH_DELAY: Duration = Duration::from_millis(800);
+const INPUT_TIMING_POLL_DELAY: Duration = Duration::from_millis(250);
+const INPUT_TIMING_POLL_ATTEMPTS: usize = 40;
 #[cfg(target_os = "linux")]
 const MS2130_REPORT_DESCRIPTOR: &[u8] = &[
     0x06, 0x00, 0xff, 0x09, 0x01, 0xa1, 0x01, 0x15, 0x00, 0x26, 0xff, 0x00, 0x19, 0x01, 0x29, 0x02,
@@ -214,7 +221,9 @@ impl DisplayManager {
                     requested_mode: config.virtual_monitor,
                     applied_mode: Some(config.virtual_monitor),
                     control_device: Some(rollback.control_device.clone()),
-                    message: Some("EDID RAM 已回读校验，HPD 已恢复".to_owned()),
+                    message: config.virtual_monitor.timing().map(|(width, height, _)| {
+                        format!("EDID 已回读，HDMI 输入已确认 {width}×{height}，HPD 已恢复")
+                    }),
                 });
             }
             Ok(None) => self.set_unmanaged(),
@@ -239,7 +248,11 @@ impl DisplayManager {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut transport = HidrawTransport::open(&rollback.control_device)?;
-        apply_edid_transaction(&mut transport, &rollback.previous_edid)?;
+        let expected_timing = previous_mode
+            .timing()
+            .map(|(width, height, _)| InputTiming::new(width, height))
+            .transpose()?;
+        apply_edid_transaction(&mut transport, &rollback.previous_edid, expected_timing)?;
         *self
             .applied_generation
             .lock()
@@ -278,7 +291,13 @@ impl DisplayManager {
                 DisplayError::Protocol(format!("内置 EDID 未通过校验: {error}"))
             })?;
             let mut transport = HidrawTransport::open(&control_device)?;
-            let previous_edid = apply_edid_transaction(&mut transport, image.as_bytes())?;
+            let (width, height, _) = config
+                .virtual_monitor
+                .timing()
+                .ok_or_else(|| DisplayError::Protocol("缺少显示时序".to_owned()))?;
+            let expected_timing = InputTiming::new(width, height)?;
+            let previous_edid =
+                apply_edid_transaction(&mut transport, image.as_bytes(), Some(expected_timing))?;
             Ok(Some(DisplayRollback {
                 control_device,
                 previous_edid,
@@ -317,6 +336,25 @@ struct DeviceGeneration {
     device_number: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InputTiming {
+    width: u16,
+    height: u16,
+}
+
+impl InputTiming {
+    fn new(width: u32, height: u32) -> Result<Self, DisplayError> {
+        Ok(Self {
+            width: u16::try_from(width).map_err(|_| {
+                DisplayError::Protocol(format!("显示宽度 {width} 超出 MS2130 时序范围"))
+            })?,
+            height: u16::try_from(height).map_err(|_| {
+                DisplayError::Protocol(format!("显示高度 {height} 超出 MS2130 时序范围"))
+            })?,
+        })
+    }
+}
+
 trait RegisterIo {
     fn read_register(&mut self, address: u16) -> Result<u8, DisplayError>;
     fn write_register(&mut self, address: u16, value: u8) -> Result<(), DisplayError>;
@@ -326,6 +364,7 @@ trait RegisterIo {
 fn apply_edid_transaction(
     transport: &mut impl RegisterIo,
     new_edid: &[u8; EDID_RAM_LEN],
+    expected_timing: Option<InputTiming>,
 ) -> Result<[u8; EDID_RAM_LEN], DisplayError> {
     let chip_id = transport.read_register(CHIP_ID_REGISTER)?;
     if chip_id != MS2130_CHIP_ID {
@@ -403,7 +442,52 @@ fn apply_edid_transaction(
         return Err(DisplayError::Protocol(restore_errors.join("; ")));
     }
     transport.wait(HPD_HIGH_DELAY);
+    if let Some(expected) = expected_timing
+        && let Err(error) = wait_for_input_timing(transport, expected)
+    {
+        let rollback = previous_edid
+            .ok_or_else(|| DisplayError::Protocol("未取得原始 EDID 备份".to_owned()))
+            .and_then(|backup| rollback_after_commit_failure(transport, &backup, original));
+        return match rollback {
+            Ok(()) => Err(DisplayError::Protocol(format!(
+                "{error}; 已恢复切换前的 EDID"
+            ))),
+            Err(rollback_error) => Err(DisplayError::Protocol(format!(
+                "{error}; 恢复切换前 EDID 时另有错误: {rollback_error}"
+            ))),
+        };
+    }
     previous_edid.ok_or_else(|| DisplayError::Protocol("未取得原始 EDID 备份".to_owned()))
+}
+
+fn read_input_timing(transport: &mut impl RegisterIo) -> Result<InputTiming, DisplayError> {
+    let width = u16::from_le_bytes([
+        transport.read_register(INPUT_WIDTH_REGISTER)?,
+        transport.read_register(INPUT_WIDTH_REGISTER + 1)?,
+    ]);
+    let height = u16::from_le_bytes([
+        transport.read_register(INPUT_HEIGHT_REGISTER)?,
+        transport.read_register(INPUT_HEIGHT_REGISTER + 1)?,
+    ]);
+    Ok(InputTiming { width, height })
+}
+
+fn wait_for_input_timing(
+    transport: &mut impl RegisterIo,
+    expected: InputTiming,
+) -> Result<(), DisplayError> {
+    let mut actual = read_input_timing(transport)?;
+    for _ in 0..INPUT_TIMING_POLL_ATTEMPTS {
+        if actual == expected {
+            return Ok(());
+        }
+        transport.wait(INPUT_TIMING_POLL_DELAY);
+        actual = read_input_timing(transport)?;
+    }
+    Err(DisplayError::Protocol(format!(
+        "EDID 已写入，但 HDMI 输入仍为 {}×{}，期望 {}×{}",
+        actual.width, actual.height, expected.width, expected.height
+    )))
 }
 
 #[derive(Clone, Copy)]
@@ -489,9 +573,21 @@ fn rollback_after_commit_failure(
         EDID_OWNER_REGISTER,
         original.owner | EDID_OWNER_8051,
     )?;
-    write_edid(transport, backup)?;
+    let write_result = (|| {
+        write_edid(transport, backup)?;
+        if read_edid(transport)? != *backup {
+            return Err(DisplayError::Protocol(
+                "恢复后的 EDID RAM 回读内容不一致".to_owned(),
+            ));
+        }
+        Ok(())
+    })();
     let mut errors = Vec::new();
     restore_registers(transport, original, &mut errors);
+    transport.wait(HPD_HIGH_DELAY);
+    if let Err(error) = write_result {
+        errors.insert(0, error.to_string());
+    }
     if errors.is_empty() {
         Ok(())
     } else {
@@ -911,16 +1007,24 @@ mod tests {
         writes: Vec<(u16, u8)>,
         waits: Vec<Duration>,
         fail_write_once: Option<u16>,
+        timing_after_reconnect: Option<InputTiming>,
     }
 
     impl MockTransport {
         fn new(previous_edid: [u8; EDID_RAM_LEN]) -> Self {
             let mut registers = BTreeMap::from([
                 (CHIP_ID_REGISTER, MS2130_CHIP_ID),
-                (HPD_CONTROL_REGISTER, 0x16),
+                (HPD_CONTROL_REGISTER, 0x23),
                 (EDID_OWNER_REGISTER, 0x00),
                 (DDC_CONTROL_REGISTER, 0x1e),
             ]);
+            set_mock_input_timing(
+                &mut registers,
+                InputTiming {
+                    width: 1920,
+                    height: 1080,
+                },
+            );
             for (offset, byte) in previous_edid.into_iter().enumerate() {
                 registers.insert(EDID_RAM_START + offset as u16, byte);
             }
@@ -929,7 +1033,12 @@ mod tests {
                 writes: Vec::new(),
                 waits: Vec::new(),
                 fail_write_once: None,
+                timing_after_reconnect: None,
             }
+        }
+
+        fn reconnect_with_timing(&mut self, width: u16, height: u16) {
+            self.timing_after_reconnect = Some(InputTiming { width, height });
         }
 
         fn edid(&self) -> [u8; EDID_RAM_LEN] {
@@ -956,12 +1065,27 @@ mod tests {
                 return Err(DisplayError::Protocol("injected write failure".to_owned()));
             }
             self.registers.insert(address, value);
+            if address == HPD_CONTROL_REGISTER
+                && value & HPD_DISCONNECTED == 0
+                && let Some(timing) = self.timing_after_reconnect.take()
+            {
+                set_mock_input_timing(&mut self.registers, timing);
+            }
             Ok(())
         }
 
         fn wait(&mut self, duration: Duration) {
             self.waits.push(duration);
         }
+    }
+
+    fn set_mock_input_timing(registers: &mut BTreeMap<u16, u8>, timing: InputTiming) {
+        let [width_low, width_high] = timing.width.to_le_bytes();
+        let [height_low, height_high] = timing.height.to_le_bytes();
+        registers.insert(INPUT_WIDTH_REGISTER, width_low);
+        registers.insert(INPUT_WIDTH_REGISTER + 1, width_high);
+        registers.insert(INPUT_HEIGHT_REGISTER, height_low);
+        registers.insert(INPUT_HEIGHT_REGISTER + 1, height_high);
     }
 
     fn decoded_preferred_size(edid: &EdidImage) -> (u16, u16) {
@@ -995,12 +1119,21 @@ mod tests {
         let previous = [0xa5; EDID_RAM_LEN];
         let expected = EdidImage::for_mode(VirtualMonitorMode::Hd720p60).unwrap();
         let mut transport = MockTransport::new(previous);
+        transport.reconnect_with_timing(1280, 720);
 
-        let backup = apply_edid_transaction(&mut transport, expected.as_bytes()).unwrap();
+        let backup = apply_edid_transaction(
+            &mut transport,
+            expected.as_bytes(),
+            Some(InputTiming {
+                width: 1280,
+                height: 720,
+            }),
+        )
+        .unwrap();
 
         assert_eq!(backup, previous);
         assert_eq!(transport.edid(), *expected.as_bytes());
-        assert_eq!(transport.registers[&HPD_CONTROL_REGISTER], 0x16);
+        assert_eq!(transport.registers[&HPD_CONTROL_REGISTER], 0x23);
         assert_eq!(transport.registers[&EDID_OWNER_REGISTER], 0x00);
         assert_eq!(transport.registers[&DDC_CONTROL_REGISTER], 0x1e);
         assert_eq!(
@@ -1010,7 +1143,7 @@ mod tests {
         assert_eq!(
             &transport.writes[..3],
             &[
-                (HPD_CONTROL_REGISTER, 0x1e),
+                (HPD_CONTROL_REGISTER, 0x33),
                 (DDC_CONTROL_REGISTER, 0x16),
                 (EDID_OWNER_REGISTER, 0x80),
             ]
@@ -1024,11 +1157,42 @@ mod tests {
         let mut transport = MockTransport::new(previous);
         transport.fail_write_once = Some(EDID_RAM_START + 42);
 
-        let error = apply_edid_transaction(&mut transport, expected.as_bytes()).unwrap_err();
+        let error = apply_edid_transaction(
+            &mut transport,
+            expected.as_bytes(),
+            Some(InputTiming {
+                width: 1920,
+                height: 1080,
+            }),
+        )
+        .unwrap_err();
 
         assert!(error.to_string().contains("injected write failure"));
         assert_eq!(transport.edid(), previous);
-        assert_eq!(transport.registers[&HPD_CONTROL_REGISTER], 0x16);
+        assert_eq!(transport.registers[&HPD_CONTROL_REGISTER], 0x23);
+        assert_eq!(transport.registers[&EDID_OWNER_REGISTER], 0x00);
+        assert_eq!(transport.registers[&DDC_CONTROL_REGISTER], 0x1e);
+    }
+
+    #[test]
+    fn transaction_rolls_back_when_hdmi_input_timing_does_not_change() {
+        let previous = [0x3c; EDID_RAM_LEN];
+        let expected = EdidImage::for_mode(VirtualMonitorMode::Hd720p60).unwrap();
+        let mut transport = MockTransport::new(previous);
+
+        let error = apply_edid_transaction(
+            &mut transport,
+            expected.as_bytes(),
+            Some(InputTiming {
+                width: 1280,
+                height: 720,
+            }),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("HDMI 输入仍为 1920×1080"));
+        assert_eq!(transport.edid(), previous);
+        assert_eq!(transport.registers[&HPD_CONTROL_REGISTER], 0x23);
         assert_eq!(transport.registers[&EDID_OWNER_REGISTER], 0x00);
         assert_eq!(transport.registers[&DDC_CONTROL_REGISTER], 0x1e);
     }
@@ -1039,7 +1203,15 @@ mod tests {
         transport.registers.insert(CHIP_ID_REGISTER, 0x21);
         let expected = EdidImage::for_mode(VirtualMonitorMode::Hd720p60).unwrap();
 
-        let error = apply_edid_transaction(&mut transport, expected.as_bytes()).unwrap_err();
+        let error = apply_edid_transaction(
+            &mut transport,
+            expected.as_bytes(),
+            Some(InputTiming {
+                width: 1280,
+                height: 720,
+            }),
+        )
+        .unwrap_err();
 
         assert!(error.to_string().contains("不是已验证的 MS2130"));
         assert!(transport.writes.is_empty());
