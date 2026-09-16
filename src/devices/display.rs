@@ -24,8 +24,6 @@ const EDID_RAM_LEN: usize = 256;
 const MS2130_VENDOR_ID: u16 = 0x345f;
 #[cfg(target_os = "linux")]
 const MS2130_PRODUCT_ID: u16 = 0x2130;
-const CHIP_ID_REGISTER: u16 = 0xf800;
-const MS2130_CHIP_ID: u8 = 0x00;
 // The stock firmware initializes the HDMI RX by holding F014 bit 4 high and
 // then clearing it (0x33 -> 0x23). Live testing on the supported MS2130
 // confirms that this makes the HDMI input disappear until the bit is cleared.
@@ -366,13 +364,6 @@ fn apply_edid_transaction(
     new_edid: &[u8; EDID_RAM_LEN],
     expected_timing: Option<InputTiming>,
 ) -> Result<[u8; EDID_RAM_LEN], DisplayError> {
-    let chip_id = transport.read_register(CHIP_ID_REGISTER)?;
-    if chip_id != MS2130_CHIP_ID {
-        return Err(DisplayError::Protocol(format!(
-            "芯片 ID 0x{chip_id:02x} 不是已验证的 MS2130"
-        )));
-    }
-
     let original = RegisterSnapshot {
         hpd: transport.read_register(HPD_CONTROL_REGISTER)?,
         owner: transport.read_register(EDID_OWNER_REGISTER)?,
@@ -1013,7 +1004,6 @@ mod tests {
     impl MockTransport {
         fn new(previous_edid: [u8; EDID_RAM_LEN]) -> Self {
             let mut registers = BTreeMap::from([
-                (CHIP_ID_REGISTER, MS2130_CHIP_ID),
                 (HPD_CONTROL_REGISTER, 0x23),
                 (EDID_OWNER_REGISTER, 0x00),
                 (DDC_CONTROL_REGISTER, 0x1e),
@@ -1195,25 +1185,5 @@ mod tests {
         assert_eq!(transport.registers[&HPD_CONTROL_REGISTER], 0x23);
         assert_eq!(transport.registers[&EDID_OWNER_REGISTER], 0x00);
         assert_eq!(transport.registers[&DDC_CONTROL_REGISTER], 0x1e);
-    }
-
-    #[test]
-    fn unknown_chip_id_is_rejected_before_any_write() {
-        let mut transport = MockTransport::new([0; EDID_RAM_LEN]);
-        transport.registers.insert(CHIP_ID_REGISTER, 0x21);
-        let expected = EdidImage::for_mode(VirtualMonitorMode::Hd720p60).unwrap();
-
-        let error = apply_edid_transaction(
-            &mut transport,
-            expected.as_bytes(),
-            Some(InputTiming {
-                width: 1280,
-                height: 720,
-            }),
-        )
-        .unwrap_err();
-
-        assert!(error.to_string().contains("不是已验证的 MS2130"));
-        assert!(transport.writes.is_empty());
     }
 }

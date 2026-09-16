@@ -28,7 +28,7 @@ MJPEG 或 H.264/WebRTC
 每次切换按以下顺序执行：
 
 1. 等待视频线程释放 V4L2 mmap 和设备句柄；
-2. 读取并核对芯片 ID、HPD、EDID RAM 所有权和 DDC 控制寄存器；
+2. 读取 HPD、EDID RAM 所有权和 DDC 控制寄存器；设备身份在打开 HID 前已通过 USB VID:PID、USB 父设备和 HID 描述符核对；
 3. 通过 `F014 bit 4` 断开 HDMI 输入并等待；
 4. 禁用 DDC，将 EDID RAM 所有权切给 8051；
 5. 备份原有 256 字节 RAM；
