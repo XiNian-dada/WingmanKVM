@@ -101,7 +101,7 @@ pub enum DisplayError {
         #[source]
         source: io::Error,
     },
-    #[error("MS2130 私有 HID 协议失败: {0}")]
+    #[error("{0}")]
     Protocol(String),
 }
 
@@ -478,7 +478,7 @@ fn wait_for_input_timing(
         actual = read_input_timing(transport)?;
     }
     Err(DisplayError::Protocol(format!(
-        "EDID 已写入，但 HDMI 输入仍为 {}×{}，期望 {}×{}；源设备可能没有重新读取 EDID",
+        "EDID 已写入，但 HDMI 输入仍为 {}×{}，期望 {}×{}；被控机尚未切换实际输出模式，可能需要 HPD 热插拔或源端主动切换",
         actual.width, actual.height, expected.width, expected.height
     )))
 }
@@ -678,9 +678,10 @@ fn hidraw_ioctl(
     // length and remains alive for the duration of the ioctl call.
     let result = unsafe { libc::ioctl(fd, request, report.as_mut_ptr()) };
     if result < 0 {
-        Err(DisplayError::Protocol(
-            io::Error::last_os_error().to_string(),
-        ))
+        Err(DisplayError::Protocol(format!(
+            "MS2130 HID Feature Report 调用失败: {}",
+            io::Error::last_os_error()
+        )))
     } else {
         Ok(())
     }
@@ -1183,6 +1184,8 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("HDMI 输入仍为 1920×1080"));
+        assert!(error.to_string().contains("被控机尚未切换实际输出模式"));
+        assert!(!error.to_string().contains("私有 HID 协议失败"));
         assert_eq!(transport.edid(), previous);
         assert_eq!(transport.registers[&HDMI_RX_CONTROL_REGISTER], 0x23);
         assert_eq!(transport.registers[&EDID_OWNER_REGISTER], 0x00);
