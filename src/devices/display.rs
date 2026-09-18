@@ -676,7 +676,10 @@ fn hidraw_ioctl(
 ) -> Result<(), DisplayError> {
     // SAFETY: `report` is a valid writable buffer for the request's encoded
     // length and remains alive for the duration of the ioctl call.
-    let result = unsafe { libc::ioctl(fd, request, report.as_mut_ptr()) };
+    // libc exposes the request argument as `c_ulong` on glibc but as `c_int`
+    // on musl. The HID ioctl number is encoded in `request`; cast it to the
+    // target libc ABI type at this boundary.
+    let result = unsafe { libc::ioctl(fd, request as _, report.as_mut_ptr()) };
     if result < 0 {
         Err(DisplayError::Protocol(format!(
             "MS2130 HID Feature Report 调用失败: {}",
