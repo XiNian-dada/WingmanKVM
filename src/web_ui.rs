@@ -3,36 +3,159 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="light dark">
   <meta http-equiv="Cache-Control" content="no-store, max-age=0">
   <meta http-equiv="Pragma" content="no-cache">
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/assets/xterm.css">
   <title>WingmanKVM</title>
+  <script>
+    (function(){
+      try{
+        var t=localStorage.getItem('wingman_theme')||'system';
+        var d=t==='dark'||(t==='system'&&window.matchMedia('(prefers-color-scheme:dark)').matches);
+        if(d)document.documentElement.setAttribute('data-theme','dark');
+        else if(t==='light')document.documentElement.setAttribute('data-theme','light');
+      }catch(_){}
+    })();
+  </script>
   <style>
-    :root{font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;color:#171717;background:#fafafa;line-height:1.45;font-feature-settings:"ss01","ss02";--ink:#171717;--body:#4d4d4d;--muted:#888;--line:#ebebeb;--line-strong:#d4d4d4;--canvas:#fff;--soft:#fafafa;--soft-2:#f5f5f5;--blue:#0070f3;--red:#ee0000;--red-soft:#fff1f1;--amber:#ab570a;--shadow-2:0 1px 1px #00000005,0 2px 2px #0000000a,0 0 0 1px #0000000d;--shadow-4:0 2px 2px #00000008,0 8px 16px -4px #0000000d,0 0 0 1px #00000012;--shadow-5:0 1px 1px #00000005,0 8px 16px -4px #0000000a,0 24px 32px -8px #00000016,0 0 0 1px #00000012}
-    *{box-sizing:border-box}html,body{margin:0;min-width:320px;min-height:100%;background:var(--soft)}body{min-height:100vh;min-height:100dvh}::selection{color:#fff;background:var(--ink)}button,input,select{font:inherit}button{cursor:pointer}button,input,select{color:var(--ink)}button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible{outline:0;box-shadow:0 0 0 2px #fff,0 0 0 4px var(--blue)}button:disabled{color:#a1a1a1;background:var(--soft-2);cursor:not-allowed}.hidden{display:none!important}.muted{color:var(--muted)}.ok{color:var(--blue)}.error{display:block;min-height:20px;color:var(--red);font-size:13px}.mono{font-family:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Monaco,monospace}.eyebrow{margin:0 0 12px;color:var(--muted);font:12px/16px "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.02em;text-transform:uppercase}
-    .brand{display:flex;align-items:center;gap:11px;min-width:0}.mark{position:relative;display:grid;place-items:center;width:34px;height:34px;flex:0 0 auto;border-radius:50%;color:#fff;background:var(--ink);font-size:13px;font-weight:600;letter-spacing:-.4px}.brand-copy{min-width:0}.brand h1{margin:0;font-size:15px;font-weight:600;line-height:20px;letter-spacing:-.35px}.brand p{margin:1px 0 0;color:var(--muted);font:11px/15px "Geist Mono",ui-monospace,monospace;white-space:nowrap}.primary,.secondary,.ghost,.danger,.icon-button,.key-strip button,.tab-button{min-height:36px;padding:0 14px;border:1px solid var(--line);border-radius:999px;background:var(--canvas);font-size:14px;font-weight:500;transition:background-color 160ms cubic-bezier(.2,.8,.2,1),border-color 160ms cubic-bezier(.2,.8,.2,1),color 160ms cubic-bezier(.2,.8,.2,1),transform 160ms cubic-bezier(.2,.8,.2,1)}.primary{color:#fff;background:var(--ink);border-color:var(--ink)}.primary:hover{background:#000}.secondary:hover,.ghost:hover,.icon-button:hover,.key-strip button:hover{background:var(--soft-2);border-color:var(--line-strong)}.ghost{border-color:transparent;background:transparent}.danger{color:var(--red);background:#fff;border-color:#f2c7c7}.danger:hover{background:var(--red-soft);border-color:#efaaaa}.wide-button{width:100%;min-height:44px}.field{display:grid;gap:7px;color:var(--body);font-size:13px}.field>span:first-child,.field-label{font-weight:500;color:var(--ink)}.field input,.field select{width:100%;height:40px;padding:0 12px;border:1px solid var(--line);border-radius:6px;background:var(--canvas);font-size:14px;box-shadow:0 1px 1px #00000004;transition:border-color 160ms,box-shadow 160ms}.field input:hover,.field select:hover{border-color:var(--line-strong)}.field input::placeholder{color:#a1a1a1}.field input[type=range]{height:24px;padding:0;border:0;box-shadow:none;accent-color:var(--ink)}.hint{color:var(--muted);font-size:12px;line-height:17px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.wide{grid-column:1/-1}.check{display:flex;align-items:flex-start;gap:10px;color:var(--body);font-size:13px;line-height:20px}.check input{width:16px;height:16px;margin:2px 0 0;accent-color:var(--ink)}.form-actions{display:flex;align-items:center;gap:10px;margin-top:24px;flex-wrap:wrap}.form-actions .error{flex:1 1 100%}.setup-readiness{flex:1;color:var(--muted);font-size:12px}.section-rule{height:1px;margin:24px 0;background:var(--line)}
-    #auth-view{position:relative;isolation:isolate;display:grid;place-items:center;min-height:100vh;min-height:100dvh;padding:32px;overflow:hidden;background:var(--soft)}#auth-view::before{content:"";position:absolute;z-index:-2;left:50%;top:-38vw;width:min(1300px,110vw);height:min(900px,82vw);transform:translateX(-50%);background:radial-gradient(circle at 18% 58%,#00dfd8 0,transparent 28%),radial-gradient(circle at 43% 32%,#007cf0 0,transparent 31%),radial-gradient(circle at 67% 46%,#ff0080 0,transparent 31%),radial-gradient(circle at 83% 67%,#f9cb28 0,transparent 28%);filter:blur(42px);opacity:.34;animation:mesh-drift 24s ease-in-out infinite alternate}#auth-view::after{content:"";position:absolute;z-index:-1;inset:0;background:linear-gradient(to bottom,#ffffff20 0,#fafafacc 50%,#fafafa 76%)}.auth-shell{display:grid;grid-template-columns:minmax(320px,.78fr) minmax(520px,1.22fr);width:min(1180px,100%);min-height:680px;overflow:hidden;border:1px solid #ffffffb8;border-radius:20px;background:#ffffffd9;box-shadow:var(--shadow-5);backdrop-filter:blur(18px)}.auth-story{position:relative;display:flex;flex-direction:column;justify-content:space-between;min-height:100%;padding:48px;border-right:1px solid var(--line);background:linear-gradient(145deg,#ffffffdc,#fafafae8)}.auth-story-copy{position:relative;z-index:1;margin:auto 0}.auth-story h2{max-width:430px;margin:0;font-size:44px;font-weight:600;line-height:1.03;letter-spacing:-2.1px}.auth-story h2 span{color:var(--muted)}.auth-guide{margin:auto 0;scroll-margin-top:16px;animation:step-in 180ms ease}.auth-guide .eyebrow{margin-top:26px}.auth-guide h2{font-size:34px;line-height:1.08;letter-spacing:-1.4px}.auth-guide-list{display:grid;gap:10px;margin-top:24px}.auth-guide-item{padding:13px 14px;border:1px solid var(--line);border-radius:9px;background:#ffffffa8}.auth-guide-item strong{display:block;font-size:13px;font-weight:500}.auth-guide-item span{display:block;margin-top:4px;color:var(--body);font-size:12px;line-height:18px}.guide-back{min-height:32px;padding:0 11px;border:1px solid var(--line);border-radius:999px;background:#fff;font-size:12px}.guide-help{display:inline-grid;place-items:center;width:28px;height:28px;margin:-4px 0 -4px 3px;padding:0;border:1px solid var(--line-strong);border-radius:50%;color:var(--muted);background:#fff;font:600 11px/1 ui-monospace,monospace;vertical-align:2px}.guide-help:hover{color:var(--ink);border-color:var(--ink)}.capability-heading{display:flex;align-items:center;gap:2px}.capability-heading .guide-help{margin-left:1px}.auth-story-text{max-width:430px;margin:22px 0 0;color:var(--body);font-size:16px;line-height:25px}.feature-list{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:42px}.feature-chip{padding:12px;border:1px solid var(--line);border-radius:8px;background:#ffffffb8}.feature-chip strong{display:block;font:12px/16px "Geist Mono",ui-monospace,monospace;font-weight:400}.feature-chip span{display:block;margin-top:5px;color:var(--muted);font-size:11px}.auth-foot{display:flex;justify-content:space-between;color:var(--muted);font:11px/16px "Geist Mono",ui-monospace,monospace}.auth-panel{display:flex;align-items:center;padding:48px;background:var(--canvas)}.auth-card{width:100%;max-width:660px;margin:auto}.auth-card h2{margin:0;font-size:30px;font-weight:600;line-height:38px;letter-spacing:-1.1px}.auth-lead{margin:8px 0 28px;color:var(--body);font-size:14px;line-height:21px}.auth-form.narrow{max-width:420px;margin:auto}.auth-form .field input{height:44px}.auth-form .primary{min-height:44px}.form-heading{margin-bottom:28px}.boot-orbit{width:34px;height:34px;margin-bottom:22px;border:1px solid var(--line);border-top-color:var(--ink);border-radius:50%;animation:spin .8s linear infinite}.setup-progress{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin:0 0 30px}.progress-step{position:relative;padding-top:12px;border-top:2px solid var(--line);color:var(--muted);font:11px/16px "Geist Mono",ui-monospace,monospace}.progress-step.active{border-color:var(--ink);color:var(--ink)}.progress-step.done{border-color:var(--blue);color:var(--body)}.setup-step{display:none;animation:step-in 180ms ease}.setup-step.active{display:block}.setup-step h3{margin:0 0 6px;font-size:20px;font-weight:600;letter-spacing:-.6px}.setup-step-copy{margin:0 0 22px;color:var(--muted);font-size:13px}.setup-scan-card{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px;padding:16px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}.setup-scan-card strong{display:block;font-size:14px;font-weight:500}.setup-detection-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.setup-detection-grid .capability{min-width:0}.setup-detection-grid .capability p{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.setup-detection-grid select{width:100%;height:34px;margin-top:10px;padding:0 9px;border:1px solid var(--line);border-radius:6px;background:#fff;font-size:12px}.setup-advanced{margin-top:16px;border-top:1px solid var(--line)}.setup-advanced summary{padding:16px 0;color:var(--body);cursor:pointer;font-size:13px}.setup-advanced[open] summary{margin-bottom:4px}.capability{padding:16px;border:1px solid var(--line);border-radius:8px;background:var(--canvas)}.capability .status-dot{margin-bottom:12px}.capability strong{display:block;font-size:14px;font-weight:500}.capability p{margin:5px 0 0;color:var(--muted);font-size:12px}.status-dot.warning{background:var(--amber)}.setup-option-fields{margin:0 0 12px;padding:14px;border:1px solid var(--line);border-radius:8px;background:var(--soft)}.auth-choice{display:flex;justify-content:space-between;gap:18px;padding:16px 0;border-top:1px solid var(--line)}.auth-choice strong{display:block;font-size:14px;font-weight:500}.auth-choice p{margin:4px 0 0;color:var(--muted);font-size:12px}.device-results,.media-list{margin-top:12px;padding:12px;max-height:170px;overflow:auto;white-space:pre-wrap;border:1px solid var(--line);border-radius:8px;background:var(--soft);color:var(--body);font:11px/1.55 "Geist Mono",ui-monospace,monospace}
+    :root{font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;color:#171717;background:#fafafa;line-height:1.45;font-feature-settings:"ss01","ss02";--ink:#171717;--ink-contrast:#fff;--body:#4d4d4d;--muted:#888;--line:#ebebeb;--line-strong:#d4d4d4;--canvas:#fff;--soft:#fafafa;--soft-2:#f5f5f5;--blue:#0070f3;--red:#ee0000;--red-soft:#fff1f1;--amber:#ab570a;--switch-bg:#d4d4d4;--shadow-2:0 1px 1px #00000005,0 2px 2px #0000000a,0 0 0 1px #0000000d;--shadow-4:0 2px 2px #00000008,0 8px 16px -4px #0000000d,0 0 0 1px #00000012;--shadow-5:0 1px 1px #00000005,0 8px 16px -4px #0000000a,0 24px 32px -8px #00000016,0 0 0 1px #00000012}
+    :root[data-theme="dark"]{--ink:#f0f0f0;--ink-contrast:#0d0d0d;--body:#a8a8a8;--muted:#757575;--line:#2d2d2d;--line-strong:#444;--canvas:#141414;--soft:#0d0d0d;--soft-2:#1e1e1e;--blue:#3291ff;--red:#ff5555;--red-soft:#2d1012;--amber:#f5a623;--switch-bg:#383838;--shadow-2:0 1px 1px #00000040,0 2px 2px #00000060,0 0 0 1px #ffffff12;--shadow-4:0 2px 2px #00000050,0 8px 16px -4px #00000080,0 0 0 1px #ffffff14;--shadow-5:0 1px 1px #00000060,0 8px 16px -4px #000000a0,0 24px 32px -8px #000000d0,0 0 0 1px #ffffff18}
+    :root[data-theme="dark"] .topbar,:root[data-theme="dark"] .command-bar{background:rgba(20,20,20,0.88)}
+    :root[data-theme="dark"] .workspace{background:radial-gradient(circle at 50% 8%,#1c1c1c 0,#131313 42%,#0a0a0a 100%)}
+    :root[data-theme="dark"] .console-head,:root[data-theme="dark"] .dropdown-menu,:root[data-theme="dark"] .diagnostics-popover,:root[data-theme="dark"] #toast,:root[data-theme="dark"] .keyboard-sheet,:root[data-theme="dark"] #keyboard-dialog,:root[data-theme="dark"] .settings-modal,:root[data-theme="dark"] #settings-dialog{background:var(--canvas);color:var(--ink)}
+    :root[data-theme="dark"] .auth-shell{background:rgba(20,20,20,0.85);border-color:#ffffff18}
+    :root[data-theme="dark"] .auth-story{background:linear-gradient(145deg,#181818ea,#121212f0)}
+    :root[data-theme="dark"] #auth-view::before{opacity:.22}
+    :root[data-theme="dark"] #auth-view::after{background:linear-gradient(to bottom,#00000015 0,#0d0d0dcc 50%,#0d0d0d 76%)}
+    :root[data-theme="dark"] .auth-guide-item,:root[data-theme="dark"] .feature-chip{background:rgba(30,30,30,0.8);border-color:var(--line)}
+    :root[data-theme="dark"] .guide-back,:root[data-theme="dark"] .guide-help{background:var(--soft-2);color:var(--muted);border-color:var(--line-strong)}
+    :root[data-theme="dark"] .diagnostics-card{background:var(--soft-2)}
+    :root[data-theme="dark"] .tab-button.active,:root[data-theme="dark"] .workspace-tab.active{background:var(--canvas);color:var(--ink)}
+    :root[data-theme="dark"] .video-message{background:rgba(20,20,20,0.92);border-color:#ffffff1a}
+    :root[data-theme="dark"] .media-list,:root[data-theme="dark"] .media-type-select,:root[data-theme="dark"] .setup-detection-grid select{background:var(--canvas);color:var(--ink)}
+    :root[data-theme="dark"] .input-badge.active,:root[data-theme="dark"] .media-badge{color:#60a5fa;background:#172554}
+    :root[data-theme="dark"] .primary{color:#0d0d0d;background:#f0f0f0;border-color:#f0f0f0}
+    :root[data-theme="dark"] .primary:hover{background:#fff}
+    :root[data-theme="dark"] #inspector-toggle.active{color:#0d0d0d;background:#f0f0f0;border-color:#f0f0f0}
+    :root[data-theme="dark"] #inspector-toggle.active:hover{color:#000;background:#fff;border-color:#fff}
+    :root[data-theme="dark"] .mark,:root[data-theme="dark"] .user-pill,:root[data-theme="dark"] .session-avatar{color:#0d0d0d;background:#f0f0f0}
+    :root[data-theme="dark"] .upload-progress{background:var(--soft-2)}
+    :root[data-theme="dark"] .danger{color:var(--red);background:var(--canvas);border-color:#551c1c}
+    :root[data-theme="dark"] .danger:hover{background:var(--red-soft);border-color:#772525}
+    :root[data-theme="dark"] .keyboard button{background:var(--soft-2);border-color:var(--line);color:var(--ink)}
+    :root[data-theme="dark"] .keyboard button:hover{background:var(--canvas);border-color:var(--line-strong)}
+    :root[data-theme="dark"] .keyboard .active{color:#0d0d0d;background:#f0f0f0}
+    @media(prefers-color-scheme:dark){
+      :root:not([data-theme="light"]){--ink:#f0f0f0;--ink-contrast:#0d0d0d;--body:#a8a8a8;--muted:#757575;--line:#2d2d2d;--line-strong:#444;--canvas:#141414;--soft:#0d0d0d;--soft-2:#1e1e1e;--blue:#3291ff;--red:#ff5555;--red-soft:#2d1012;--amber:#f5a623;--switch-bg:#383838;--shadow-2:0 1px 1px #00000040,0 2px 2px #00000060,0 0 0 1px #ffffff12;--shadow-4:0 2px 2px #00000050,0 8px 16px -4px #00000080,0 0 0 1px #ffffff14;--shadow-5:0 1px 1px #00000060,0 8px 16px -4px #000000a0,0 24px 32px -8px #000000d0,0 0 0 1px #ffffff18}
+      :root:not([data-theme="light"]) .topbar,:root:not([data-theme="light"]) .command-bar{background:rgba(20,20,20,0.88)}
+      :root:not([data-theme="light"]) .workspace{background:radial-gradient(circle at 50% 8%,#1c1c1c 0,#131313 42%,#0a0a0a 100%)}
+      :root:not([data-theme="light"]) .console-head,:root:not([data-theme="light"]) .dropdown-menu,:root:not([data-theme="light"]) .diagnostics-popover,:root:not([data-theme="light"]) #toast,:root:not([data-theme="light"]) .keyboard-sheet,:root:not([data-theme="light"]) #keyboard-dialog,:root:not([data-theme="light"]) .settings-modal,:root:not([data-theme="light"]) #settings-dialog{background:var(--canvas);color:var(--ink)}
+      :root:not([data-theme="light"]) .auth-shell{background:rgba(20,20,20,0.85);border-color:#ffffff18}
+      :root:not([data-theme="light"]) .auth-story{background:linear-gradient(145deg,#181818ea,#121212f0)}
+      :root:not([data-theme="light"]) #auth-view::before{opacity:.22}
+      :root:not([data-theme="light"]) #auth-view::after{background:linear-gradient(to bottom,#00000015 0,#0d0d0dcc 50%,#0d0d0d 76%)}
+      :root:not([data-theme="light"]) .auth-guide-item,:root:not([data-theme="light"]) .feature-chip{background:rgba(30,30,30,0.8);border-color:var(--line)}
+      :root:not([data-theme="light"]) .guide-back,:root:not([data-theme="light"]) .guide-help{background:var(--soft-2);color:var(--muted);border-color:var(--line-strong)}
+      :root:not([data-theme="light"]) .diagnostics-card{background:var(--soft-2)}
+      :root:not([data-theme="light"]) .tab-button.active,:root:not([data-theme="light"]) .workspace-tab.active{background:var(--canvas);color:var(--ink)}
+      :root:not([data-theme="light"]) .video-message{background:rgba(20,20,20,0.92);border-color:#ffffff1a}
+      :root:not([data-theme="light"]) .media-list,:root:not([data-theme="light"]) .media-type-select,:root:not([data-theme="light"]) .setup-detection-grid select{background:var(--canvas);color:var(--ink)}
+      :root:not([data-theme="light"]) .input-badge.active,:root:not([data-theme="light"]) .media-badge{color:#60a5fa;background:#172554}
+      :root:not([data-theme="light"]) .primary{color:#0d0d0d;background:#f0f0f0;border-color:#f0f0f0}
+      :root:not([data-theme="light"]) .primary:hover{background:#fff}
+      :root:not([data-theme="light"]) #inspector-toggle.active{color:#0d0d0d;background:#f0f0f0;border-color:#f0f0f0}
+      :root:not([data-theme="light"]) #inspector-toggle.active:hover{color:#000;background:#fff;border-color:#fff}
+      :root:not([data-theme="light"]) .mark,:root:not([data-theme="light"]) .user-pill,:root:not([data-theme="light"]) .session-avatar{color:#0d0d0d;background:#f0f0f0}
+      :root:not([data-theme="light"]) .upload-progress{background:var(--soft-2)}
+      :root:not([data-theme="light"]) .danger{color:var(--red);background:var(--canvas);border-color:#551c1c}
+      :root:not([data-theme="light"]) .danger:hover{background:var(--red-soft);border-color:#772525}
+      :root:not([data-theme="light"]) .keyboard button{background:var(--soft-2);border-color:var(--line);color:var(--ink)}
+      :root:not([data-theme="light"]) .keyboard button:hover{background:var(--canvas);border-color:var(--line-strong)}
+      :root:not([data-theme="light"]) .keyboard .active{color:#0d0d0d;background:#f0f0f0}
+    }
+    .theme-switching,.theme-switching *,.theme-switching *::before,.theme-switching *::after{transition:background-color 180ms ease,border-color 180ms ease,color 180ms ease,box-shadow 180ms ease!important}
+    *{box-sizing:border-box}html,body{margin:0;min-width:320px;min-height:100%;background:var(--soft)}body{min-height:100vh;min-height:100dvh}::selection{color:var(--ink-contrast);background:var(--ink)}button,input,select{font:inherit}button{cursor:pointer}button,input,select{color:var(--ink)}button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible{outline:0;box-shadow:0 0 0 2px var(--canvas),0 0 0 4px var(--blue)}button:disabled{color:#a1a1a1;background:var(--soft-2);cursor:not-allowed}.hidden{display:none!important}.muted{color:var(--muted)}.ok{color:var(--blue)}.error{display:block;min-height:20px;color:var(--red);font-size:13px}.mono{font-family:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Monaco,monospace}.eyebrow{margin:0 0 12px;color:var(--muted);font:12px/16px "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.02em;text-transform:uppercase}
+    button:active:not(:disabled),.tab-button:active,.preset-chip:active,.switch:active{transform:scale(0.96)}
+    .brand{display:flex;align-items:center;gap:11px;min-width:0}.mark{position:relative;display:grid;place-items:center;width:34px;height:34px;flex:0 0 auto;border-radius:50%;color:var(--ink-contrast);background:var(--ink);font-size:13px;font-weight:600;letter-spacing:-.4px;transition:background-color 160ms cubic-bezier(.2,.8,.2,1),color 160ms cubic-bezier(.2,.8,.2,1)}.brand-copy{min-width:0}.brand h1{margin:0;font-size:15px;font-weight:600;line-height:20px;letter-spacing:-.35px}.brand p{margin:1px 0 0;color:var(--muted);font:11px/15px "Geist Mono",ui-monospace,monospace;white-space:nowrap}    .primary,.secondary,.ghost,.danger,.icon-button,.key-strip button,.tab-button{min-height:36px;padding:0 14px;border:1px solid var(--line);border-radius:999px;background:var(--canvas);font-size:14px;font-weight:500;transition:background-color 160ms cubic-bezier(.2,.8,.2,1),border-color 160ms cubic-bezier(.2,.8,.2,1),color 160ms cubic-bezier(.2,.8,.2,1),transform 140ms cubic-bezier(.2,.8,.2,1)}.primary{color:var(--ink-contrast);background:var(--ink);border-color:var(--ink)}.primary:hover{background:#000}.secondary:hover,.ghost:hover,.icon-button:hover,.key-strip button:hover{background:var(--soft-2);border-color:var(--line-strong)}.ghost{border-color:transparent;background:transparent}.danger{color:var(--red);background:var(--canvas);border-color:#f2c7c7}.danger:hover{background:var(--red-soft);border-color:#efaaaa}.wide-button{width:100%;min-height:44px}.field{display:grid;gap:7px;color:var(--body);font-size:13px}.field>span:first-child,.field-label{font-weight:500;color:var(--ink)}.field input,.field select{width:100%;height:40px;padding:0 12px;border:1px solid var(--line);border-radius:6px;background:var(--canvas);font-size:14px;box-shadow:0 1px 1px #00000004;transition:border-color 160ms,box-shadow 160ms}.field input:hover,.field select:hover{border-color:var(--line-strong)}.field input::placeholder{color:#a1a1a1}.field input[type=range]{height:24px;padding:0;border:0;box-shadow:none;accent-color:var(--ink)}.hint{color:var(--muted);font-size:12px;line-height:17px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.wide{grid-column:1/-1}.check{display:flex;align-items:flex-start;gap:10px;color:var(--body);font-size:13px;line-height:20px}.check input{width:16px;height:16px;margin:2px 0 0;accent-color:var(--ink)}.form-actions{display:flex;align-items:center;gap:10px;margin-top:24px;flex-wrap:wrap}.form-actions .error{flex:1 1 100%}.setup-readiness{flex:1;color:var(--muted);font-size:12px}.section-rule{height:1px;margin:24px 0;background:var(--line)}
+    #auth-view{position:relative;isolation:isolate;display:grid;place-items:center;min-height:100vh;min-height:100dvh;padding:32px;overflow:hidden;background:var(--soft)}#auth-view::before{content:"";position:absolute;z-index:-2;left:50%;top:-38vw;width:min(1300px,110vw);height:min(900px,82vw);transform:translateX(-50%);background:radial-gradient(circle at 18% 58%,#00dfd8 0,transparent 28%),radial-gradient(circle at 43% 32%,#007cf0 0,transparent 31%),radial-gradient(circle at 67% 46%,#ff0080 0,transparent 31%),radial-gradient(circle at 83% 67%,#f9cb28 0,transparent 28%);filter:blur(42px);opacity:.34;animation:mesh-drift 24s ease-in-out infinite alternate}#auth-view::after{content:"";position:absolute;z-index:-1;inset:0;background:linear-gradient(to bottom,#ffffff20 0,#fafafacc 50%,#fafafa 76%)}.auth-shell{display:grid;grid-template-columns:minmax(320px,.78fr) minmax(520px,1.22fr);width:min(1180px,100%);min-height:680px;overflow:hidden;border:1px solid #ffffffb8;border-radius:20px;background:#ffffffd9;box-shadow:var(--shadow-5);backdrop-filter:blur(18px)}.auth-story{position:relative;display:flex;flex-direction:column;justify-content:space-between;min-height:100%;padding:48px;border-right:1px solid var(--line);background:linear-gradient(145deg,#ffffffdc,#fafafae8)}.auth-story-copy{position:relative;z-index:1;margin:auto 0}.auth-story h2{max-width:430px;margin:0;font-size:44px;font-weight:600;line-height:1.03;letter-spacing:-2.1px}.auth-story h2 span{color:var(--muted)}.auth-guide{margin:auto 0;scroll-margin-top:16px;animation:step-in 180ms ease}.auth-guide .eyebrow{margin-top:26px}.auth-guide h2{font-size:34px;line-height:1.08;letter-spacing:-1.4px}.auth-guide-list{display:grid;gap:10px;margin-top:24px}.auth-guide-item{padding:13px 14px;border:1px solid var(--line);border-radius:9px;background:#ffffffa8}.auth-guide-item strong{display:block;font-size:13px;font-weight:500}.auth-guide-item span{display:block;margin-top:4px;color:var(--body);font-size:12px;line-height:18px}.guide-back{min-height:32px;padding:0 11px;border:1px solid var(--line);border-radius:999px;background:var(--canvas);font-size:12px}.guide-help{display:inline-grid;place-items:center;width:28px;height:28px;margin:-4px 0 -4px 3px;padding:0;border:1px solid var(--line-strong);border-radius:50%;color:var(--muted);background:var(--canvas);font:600 11px/1 ui-monospace,monospace;vertical-align:2px}.guide-help:hover{color:var(--ink);border-color:var(--ink)}.capability-heading{display:flex;align-items:center;gap:2px}.capability-heading .guide-help{margin-left:1px}.auth-story-text{max-width:430px;margin:22px 0 0;color:var(--body);font-size:16px;line-height:25px}.feature-list{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:42px}.feature-chip{padding:12px;border:1px solid var(--line);border-radius:8px;background:#ffffffb8}.feature-chip strong{display:block;font:12px/16px "Geist Mono",ui-monospace,monospace;font-weight:400}.feature-chip span{display:block;margin-top:5px;color:var(--muted);font-size:11px}.auth-foot{display:flex;justify-content:space-between;color:var(--muted);font:11px/16px "Geist Mono",ui-monospace,monospace}.auth-panel{display:flex;align-items:center;padding:48px;background:var(--canvas)}.auth-card{width:100%;max-width:660px;margin:auto}.auth-card h2{margin:0;font-size:30px;font-weight:600;line-height:38px;letter-spacing:-1.1px}.auth-lead{margin:8px 0 28px;color:var(--body);font-size:14px;line-height:21px}.auth-form.narrow{max-width:420px;margin:auto}.auth-form .field input{height:44px}.auth-form .primary{min-height:44px}.form-heading{margin-bottom:28px}.boot-orbit{width:34px;height:34px;margin-bottom:22px;border:1px solid var(--line);border-top-color:var(--ink);border-radius:50%;animation:spin .8s linear infinite}.setup-progress{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin:0 0 30px}.progress-step{position:relative;padding-top:12px;border-top:2px solid var(--line);color:var(--muted);font:11px/16px "Geist Mono",ui-monospace,monospace}.progress-step.active{border-color:var(--ink);color:var(--ink)}.progress-step.done{border-color:var(--blue);color:var(--body)}.setup-step{display:none;animation:step-in 180ms ease}.setup-step.active{display:block}.setup-step h3{margin:0 0 6px;font-size:20px;font-weight:600;letter-spacing:-.6px}.setup-step-copy{margin:0 0 22px;color:var(--muted);font-size:13px}.setup-scan-card{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px;padding:16px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}.setup-scan-card strong{display:block;font-size:14px;font-weight:500}.setup-detection-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.setup-detection-grid .capability{min-width:0}.setup-detection-grid .capability p{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.setup-detection-grid select{width:100%;height:34px;margin-top:10px;padding:0 9px;border:1px solid var(--line);border-radius:6px;background:var(--canvas);font-size:12px}.setup-advanced{margin-top:16px;border-top:1px solid var(--line)}.setup-advanced summary{padding:16px 0;color:var(--body);cursor:pointer;font-size:13px}.setup-advanced[open] summary{margin-bottom:4px}.capability{padding:16px;border:1px solid var(--line);border-radius:8px;background:var(--canvas)}.capability .status-dot{margin-bottom:12px}.capability strong{display:block;font-size:14px;font-weight:500}.capability p{margin:5px 0 0;color:var(--muted);font-size:12px}.status-dot.warning{background:var(--amber)}.setup-option-fields{margin:0 0 12px;padding:14px;border:1px solid var(--line);border-radius:8px;background:var(--soft)}.auth-choice{display:flex;justify-content:space-between;gap:18px;padding:16px 0;border-top:1px solid var(--line)}.auth-choice strong{display:block;font-size:14px;font-weight:500}.auth-choice p{margin:4px 0 0;color:var(--muted);font-size:12px}.device-results,.media-list{margin-top:12px;padding:12px;max-height:170px;overflow:auto;white-space:pre-wrap;border:1px solid var(--line);border-radius:8px;background:var(--soft);color:var(--body);font:11px/1.55 "Geist Mono",ui-monospace,monospace}
     .auth-shell{max-height:calc(100dvh - 64px)}.auth-panel{min-height:0;max-height:calc(100dvh - 64px);overflow:auto}
-    #app{height:100vh;height:100dvh;display:grid;grid-template-rows:64px minmax(0,1fr);overflow:hidden;background:var(--soft)}.topbar{position:relative;z-index:40;display:grid;grid-template-columns:minmax(220px,1fr) auto minmax(220px,1fr);align-items:center;gap:16px;padding:0 20px;border-bottom:1px solid var(--line);background:#ffffffed;backdrop-filter:blur(14px)}.topbar-center{display:flex;align-items:center;gap:9px;height:32px;padding:0 12px;border:1px solid var(--line);border-radius:999px;background:var(--soft);font-size:12px}.status-dot{display:inline-block;width:7px;height:7px;flex:0 0 auto;border-radius:50%;background:#a1a1a1}.status-dot.online{background:var(--blue)}.topbar-actions{display:flex;justify-content:flex-end;align-items:center;gap:8px}.icon-button{min-height:34px;padding:0 12px;border-radius:6px;white-space:nowrap}.user-pill{display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;color:#fff;background:var(--ink);font-size:12px}.shell{display:grid;grid-template-columns:minmax(0,1fr) 360px;min-height:0;transition:grid-template-columns 200ms cubic-bezier(.2,.8,.2,1)}#app:not(.inspector-open) .shell{grid-template-columns:minmax(0,1fr) 0}.workspace{position:relative;min-width:0;min-height:0;overflow:hidden;background:radial-gradient(circle at 50% 8%,#fff 0,#f7f7f7 42%,#f3f3f3 100%)}.workspace::after{content:"";position:absolute;inset:auto 0 0;height:1px;background:var(--line)}.command-bar{position:absolute;z-index:15;top:18px;left:24px;right:24px;display:flex;align-items:center;gap:10px;height:44px;padding:5px 6px 5px 10px;border:1px solid var(--line);border-radius:10px;background:#ffffffeb;box-shadow:var(--shadow-2);backdrop-filter:blur(12px)}.remote-control{display:flex;align-items:center;gap:9px;padding-right:10px;border-right:1px solid var(--line);white-space:nowrap;font-size:12px;font-weight:500}.switch{position:relative;width:32px;height:18px;flex:0 0 auto}.switch input{position:absolute;inset:0;z-index:1;margin:0;opacity:0;cursor:pointer}.switch i{position:absolute;inset:0;border-radius:999px;background:#d4d4d4;transition:background 160ms}.switch i::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #0003;transition:transform 160ms}.switch input:checked+i{background:var(--ink)}.switch input:checked+i::after{transform:translateX(14px)}.switch input:focus-visible+i{box-shadow:0 0 0 2px #fff,0 0 0 4px var(--blue)}.key-strip{display:flex;min-width:0;gap:5px;overflow-x:auto;scrollbar-width:none}.key-strip::-webkit-scrollbar{display:none}.key-strip button{min-width:38px;min-height:32px;padding:0 9px;border-radius:6px;font:12px/16px "Geist Mono",ui-monospace,monospace;white-space:nowrap}.mobile-only{display:none}.command-spacer{flex:1}.command-meta{color:var(--muted);font:11px/16px "Geist Mono",ui-monospace,monospace;white-space:nowrap}.console{position:absolute;z-index:5;left:5%;top:82px;width:min(1040px,90%);height:min(68vh,680px);min-width:420px;min-height:280px;max-width:calc(100% - 24px);max-height:calc(100% - 96px);resize:both;overflow:hidden;border:1px solid #d5d5d5;border-radius:12px;background:#050505;box-shadow:0 2px 2px #0000000a,0 12px 24px -8px #0000001a,0 32px 52px -20px #00000024;transition:border-color 160ms,box-shadow 160ms}.console:hover{border-color:#bdbdbd}.console-head{height:46px;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid var(--line);background:#fff;cursor:move;user-select:none}.window-dots{display:flex;gap:6px}.window-dots i{width:8px;height:8px;border-radius:50%;background:#e7e7e7}.console-title{font-size:13px;font-weight:500}.console-meta{color:var(--muted);font:11px/16px "Geist Mono",ui-monospace,monospace}.console-actions{display:flex;align-items:center;gap:6px;margin-left:auto}.console-actions button{min-height:28px;padding:0 9px;font-size:11px}.input-badge{display:inline-flex;align-items:center;gap:6px;min-height:24px;padding:0 9px;border-radius:999px;background:var(--soft);color:var(--muted);font-size:11px}.input-badge::before{content:"";width:6px;height:6px;border-radius:50%;background:#a1a1a1}.input-badge.active{color:#0761d1;background:#edf6ff}.input-badge.active::before{background:var(--blue)}#video-viewport{position:absolute;inset:46px 0 0;display:grid;place-items:center;overflow:hidden;outline:none;touch-action:auto;cursor:default;background:#050505}#video-viewport.remote{cursor:crosshair;touch-action:none;box-shadow:inset 0 0 0 2px var(--blue)}#video-feed{display:block;width:100%;height:100%;max-width:100%;max-height:100%;object-fit:contain;user-select:none;-webkit-user-drag:none}.mode-native #video-feed{width:auto;height:auto;max-width:none;max-height:none}.mode-fill #video-feed{object-fit:fill}.render-pixelated #video-feed{image-rendering:pixelated}.video-message{position:absolute;max-width:calc(100% - 32px);padding:10px 13px;border:1px solid #ffffff24;border-radius:8px;background:#ffffffef;color:var(--body);box-shadow:var(--shadow-4);font-size:12px;pointer-events:none}
-    .inspector{position:relative;z-index:30;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;min-width:0;overflow:hidden;border-left:1px solid var(--line);background:var(--canvas);transition:opacity 180ms,transform 200ms}#app:not(.inspector-open) .inspector{opacity:0;pointer-events:none;transform:translateX(24px)}.inspector-head{display:flex;align-items:flex-start;justify-content:space-between;padding:20px 20px 14px}.inspector-head h2{margin:0;font-size:17px;font-weight:600;letter-spacing:-.45px}.inspector-head p{margin:3px 0 0;color:var(--muted);font:11px/16px "Geist Mono",ui-monospace,monospace}.inspector-tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:3px;margin:0 16px 12px;padding:3px;border-radius:8px;background:var(--soft-2)}.tab-button{min-width:0;min-height:30px;padding:0 6px;border:0;border-radius:6px;background:transparent;color:var(--muted);font-size:12px}.tab-button.active{color:var(--ink);background:#fff;box-shadow:0 1px 2px #0000000c,0 0 0 1px #00000008}.inspector-body{overflow:auto;border-top:1px solid var(--line)}.inspector-panel{padding:20px}.panel-kicker{margin:0 0 5px;color:var(--muted);font:11px/16px "Geist Mono",ui-monospace,monospace;text-transform:uppercase}.panel-title{margin:0;font-size:18px;font-weight:600;letter-spacing:-.5px}.panel-copy{margin:6px 0 20px;color:var(--body);font-size:13px;line-height:19px}.panel-section{padding:18px 0;border-top:1px solid var(--line)}.panel-section:first-of-type{padding-top:0;border-top:0}.control-card{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:15px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}.control-card strong{display:block;font-size:13px;font-weight:500}.control-card p{margin:3px 0 0;color:var(--muted);font-size:11px}.power-row{display:grid;grid-template-columns:1fr;gap:8px}.power-row form,.power-row button{width:100%}.power-row .primary{min-height:42px}.danger.power-danger{min-height:40px;background:#fff}.side-grid{display:grid;grid-template-columns:1fr 1fr;gap:13px}.side-grid .field{font-size:12px}.settings-heading{grid-column:1/-1;margin-top:8px;padding-top:16px;border-top:1px solid var(--line)}.settings-heading:first-child{margin-top:12px;padding-top:0;border-top:0}.settings-heading strong{display:block;font:600 11px/16px "Geist Mono",ui-monospace,monospace;letter-spacing:.08em;text-transform:uppercase}.settings-heading span{display:block;margin-top:3px;color:var(--muted);font-size:11px;line-height:16px}.display-status{display:flex;align-items:flex-start;gap:8px;grid-column:1/-1;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--soft);color:var(--body);font-size:11px;line-height:16px}.display-status .status-dot{flex:0 0 auto;margin-top:4px}.display-status.error{color:var(--red);border-color:#efcaca;background:#fff7f7}.side-actions{display:flex;align-items:center;gap:8px;margin-top:15px;flex-wrap:wrap}.side-actions.wide{grid-column:1/-1}.side-actions .primary{min-height:38px}.side-advanced{margin-top:16px;border-top:1px solid var(--line)}.side-advanced.wide{grid-column:1/-1;margin-top:0}.side-advanced summary{padding:14px 0;color:var(--body);cursor:pointer;font-size:12px}.side-advanced[open] summary{margin-bottom:10px}.device-overview{margin-top:16px}.device-overview .capability{padding:13px}.device-overview .capability p{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.upload-zone{margin-top:14px;padding:18px;border:1px dashed var(--line-strong);border-radius:10px;background:var(--soft);text-align:center}.upload-zone .field{display:block}.upload-zone input[type=file]{height:auto;margin-top:10px;padding:8px;background:#fff}.upload-progress{height:3px;margin-top:12px;overflow:hidden;border-radius:3px;background:#e5e5e5}.upload-progress i{display:block;width:0;height:100%;background:var(--ink);transition:width 160ms}.media-list{max-height:240px;background:#fff}.media-list>div{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)}.media-list>div:last-child{border-bottom:0}.session-row{display:flex;align-items:center;justify-content:space-between;padding:13px 16px calc(13px + env(safe-area-inset-bottom));border-top:1px solid var(--line);color:var(--muted);font-size:12px}.session-identity{display:flex;align-items:center;gap:9px}.session-avatar{display:grid;place-items:center;width:26px;height:26px;border-radius:50%;color:#fff;background:var(--ink);font-size:10px}
-    .media-status{display:flex;align-items:center;gap:10px;margin-top:14px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}.media-status>.status-dot{margin:0 2px}.media-status.mounted>.status-dot{background:var(--blue)}.media-status.busy>.status-dot{background:var(--amber)}.media-status.error>.status-dot{background:var(--red)}.media-status-copy{min-width:0;flex:1}.media-status-copy strong,.media-status-copy span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.media-status-copy strong{font-size:13px;font-weight:500}.media-status-copy span{margin-top:2px;color:var(--muted);font-size:11px}.media-status-actions{display:flex;gap:6px;flex:0 0 auto}.media-status-actions button{min-height:30px;padding:0 9px;font-size:11px}.media-list{max-height:300px;padding:0;white-space:normal;background:#fff;font:inherit}.media-item{padding:12px;border-bottom:1px solid var(--line)}.media-item:last-child{border-bottom:0}.media-item-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.media-item-name{min-width:0}.media-item-name strong{display:block;overflow:hidden;text-overflow:ellipsis;color:var(--ink);font-size:12px;font-weight:500;white-space:nowrap}.media-item-meta{display:flex;align-items:center;gap:6px;margin-top:3px;color:var(--muted);font:10px/15px "Geist Mono",ui-monospace,monospace}.media-badge{padding:1px 6px;border-radius:999px;color:#0761d1;background:#edf6ff}.media-item-controls{display:grid;grid-template-columns:minmax(88px,1fr) auto auto;align-items:center;gap:6px;margin-top:10px}.media-type-select{min-width:0;height:32px;padding:0 7px;border:1px solid var(--line);border-radius:6px;background:#fff;font-size:11px}.media-readonly{display:flex;align-items:center;gap:5px;height:32px;padding:0 7px;border:1px solid var(--line);border-radius:6px;color:var(--body);font-size:11px;white-space:nowrap}.media-readonly input{width:14px;height:14px;margin:0;accent-color:var(--ink)}.media-attach{min-height:32px;padding:0 10px;border-radius:6px;font-size:11px}
-    dialog{max-width:none;padding:0;border:0;color:var(--ink);background:transparent}.keyboard-sheet{position:fixed;left:50%;bottom:24px;width:min(940px,calc(100vw - 48px));transform:translateX(-50%);overflow:hidden;border:1px solid var(--line);border-radius:14px;background:#fff;box-shadow:var(--shadow-5)}dialog::backdrop{background:#00000032;backdrop-filter:blur(4px)}.dialog-head{display:flex;align-items:center;padding:13px 16px;border-bottom:1px solid var(--line)}.dialog-head h3{margin:0;font-size:14px;font-weight:600}.dialog-head p{margin:0 0 0 10px;color:var(--muted);font:11px/16px "Geist Mono",ui-monospace,monospace}.dialog-head button{margin-left:auto}.keyboard{display:grid;gap:7px;padding:16px;overflow-x:auto}.keyboard-row{display:flex;justify-content:center;gap:6px;min-width:max-content}.keyboard button{min-width:44px;height:44px;padding:5px;border:1px solid var(--line);border-radius:6px;background:var(--soft);font:12px/16px "Geist Mono",ui-monospace,monospace}.keyboard button:hover{background:var(--soft-2);border-color:var(--line-strong)}.keyboard .grow{min-width:180px}.keyboard .active{color:#fff;background:var(--ink)}#toast{position:fixed;z-index:100;left:50%;bottom:24px;max-width:calc(100vw - 32px);padding:10px 14px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);box-shadow:var(--shadow-4);opacity:0;pointer-events:none;translate:-50% 12px;transition:opacity 180ms,translate 180ms}#toast.show{opacity:1;translate:-50% 0}
-    @keyframes spin{to{transform:rotate(360deg)}}@keyframes step-in{from{opacity:0;transform:translateX(8px)}to{opacity:1;transform:none}}@keyframes mesh-drift{to{transform:translateX(-48%) translateY(5%) scale(1.04)}}
+    #app{height:100vh;height:100dvh;display:grid;grid-template-rows:64px minmax(0,1fr);overflow:hidden;background:var(--soft)}.topbar{position:relative;z-index:40;display:grid;grid-template-columns:minmax(220px,1fr) auto minmax(220px,1fr);align-items:center;gap:16px;padding:0 20px;border-bottom:1px solid var(--line);background:#ffffffed;backdrop-filter:blur(14px)}.topbar-center{display:flex;align-items:center;gap:9px;height:32px;padding:0 12px;border:1px solid var(--line);border-radius:999px;background:var(--soft);font-size:12px}.status-dot{display:inline-block;width:7px;height:7px;flex:0 0 auto;border-radius:50%;background:#a1a1a1}.status-dot.online{background:var(--blue)}.topbar-actions{display:flex;justify-content:flex-end;align-items:center;gap:8px}.icon-button{min-height:34px;padding:0 12px;border-radius:6px;white-space:nowrap}.user-pill{display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;color:var(--ink-contrast);background:var(--ink);font-size:12px;transition:background-color 160ms cubic-bezier(.2,.8,.2,1),color 160ms cubic-bezier(.2,.8,.2,1)}.shell{display:grid;grid-template-columns:minmax(0,1fr) 360px;min-height:0;transition:grid-template-columns 200ms cubic-bezier(.2,.8,.2,1)}#app:not(.inspector-open) .shell{grid-template-columns:minmax(0,1fr) 0}.workspace{position:relative;min-width:0;min-height:0;overflow:hidden;background:radial-gradient(circle at 50% 8%,#fff 0,#f7f7f7 42%,#f3f3f3 100%)}.workspace::after{content:"";position:absolute;inset:auto 0 0;height:1px;background:var(--line)}.command-bar{position:absolute;z-index:15;top:18px;left:24px;right:24px;display:flex;align-items:center;gap:10px;height:44px;padding:5px 6px 5px 10px;border:1px solid var(--line);border-radius:10px;background:#ffffffeb;box-shadow:var(--shadow-2);backdrop-filter:blur(12px)}.remote-control{display:flex;align-items:center;gap:9px;padding-right:10px;border-right:1px solid var(--line);white-space:nowrap;font-size:12px;font-weight:500}.switch{position:relative;width:32px;height:18px;flex:0 0 auto}.switch input{position:absolute;inset:0;z-index:1;margin:0;opacity:0;cursor:pointer}.switch i{position:absolute;inset:0;border-radius:999px;background:var(--switch-bg);transition:background 160ms}.switch i::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #0003;transition:transform 160ms}.switch input:checked+i{background:var(--blue)}.switch input:checked+i::after{transform:translateX(14px)}.switch input:focus-visible+i{box-shadow:0 0 0 2px #fff,0 0 0 4px var(--blue)}.key-strip{display:flex;min-width:0;gap:5px;overflow-x:auto;scrollbar-width:none}.key-strip::-webkit-scrollbar{display:none}.key-strip button{min-width:38px;min-height:32px;padding:0 9px;border-radius:6px;font:12px/16px "Geist Mono",ui-monospace,monospace;white-space:nowrap}.mobile-only{display:none}.command-spacer{flex:1}.command-meta{color:var(--muted);font:11px/16px "Geist Mono",ui-monospace,monospace;white-space:nowrap}.console{position:absolute;z-index:5;left:24px;top:24px;width:calc(100% - 48px);height:calc(100% - 48px);min-width:360px;min-height:240px;resize:both;overflow:hidden;border:1px solid var(--line-strong);border-radius:12px;background:#050505;box-shadow:0 2px 2px #0000000a,0 12px 24px -8px #0000001a,0 32px 52px -20px #00000024;transition:border-radius 200ms cubic-bezier(.2,.8,.2,1),border-color 160ms,box-shadow 160ms,background-color 160ms}.console:hover{border-color:#bdbdbd}.console.dragging{transition:none!important}:fullscreen .console,#console:fullscreen{position:fixed!important;inset:0!important;left:0!important;top:0!important;width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;border:0!important;border-radius:0!important;box-shadow:none!important;z-index:9999!important}:fullscreen #video-viewport,#console:fullscreen #video-viewport{inset:0!important}:fullscreen #console-head,#console:fullscreen #console-head{position:absolute;top:0;left:50%;transform:translateX(-50%) translateY(-100%);width:min(880px,94vw);border-radius:0 0 10px 10px;border:1px solid var(--line);border-top:0;box-shadow:var(--shadow-5);background:var(--canvas);z-index:100;opacity:0;transition:transform 200ms cubic-bezier(.2,.8,.2,1),opacity 200ms ease;pointer-events:none}:fullscreen #console-head:hover,:fullscreen #console-head:focus-within,:fullscreen #console-head.revealed,#console:fullscreen #console-head:hover,#console:fullscreen #console-head:focus-within,#console:fullscreen #console-head.revealed{transform:translateX(-50%) translateY(0);opacity:1;pointer-events:auto}.console-head{height:46px;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid var(--line);background:var(--canvas);cursor:move;user-select:none}.console-title{font-size:13px;font-weight:500}.console-meta{color:var(--muted);font:11px/16px "Geist Mono",ui-monospace,monospace}.console-actions{display:flex;align-items:center;gap:6px;margin-left:auto}.console-actions button{min-height:28px;padding:0 9px;font-size:11px}.input-badge{display:inline-flex;align-items:center;gap:6px;min-height:24px;padding:0 9px;border-radius:999px;background:var(--soft);color:var(--muted);font-size:11px}.input-badge::before{content:"";width:6px;height:6px;border-radius:50%;background:#a1a1a1}.input-badge.active{color:#0761d1;background:#edf6ff}.input-badge.active::before{background:var(--blue)}#video-viewport{position:absolute;inset:46px 0 0;display:grid;place-items:center;overflow:hidden;outline:none;touch-action:auto;cursor:default;background:#050505}#video-viewport.remote{cursor:crosshair;touch-action:none;box-shadow:inset 0 0 0 2px var(--blue)}#video-viewport.remote.just-captured{animation:capture-pulse 400ms ease-out}@keyframes capture-pulse{0%{box-shadow:inset 0 0 0 4px var(--blue)}50%{box-shadow:inset 0 0 0 7px rgba(0,112,243,0.6)}100%{box-shadow:inset 0 0 0 2px var(--blue)}}#video-feed{display:block;width:100%;height:100%;max-width:100%;max-height:100%;object-fit:contain;user-select:none;-webkit-user-drag:none}.mode-native #video-feed{width:auto;height:auto;max-width:none;max-height:none}.mode-fill #video-feed{object-fit:fill}.render-pixelated #video-feed{image-rendering:pixelated}.video-message{position:absolute;max-width:calc(100% - 32px);padding:10px 13px;border:1px solid #ffffff24;border-radius:8px;background:#ffffffef;color:var(--body);box-shadow:var(--shadow-4);font-size:12px;pointer-events:none}
+    .inspector{position:relative;z-index:30;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;min-width:0;overflow:hidden;border-left:1px solid var(--line);background:var(--canvas);transition:opacity 180ms,transform 200ms}#app:not(.inspector-open) .inspector{opacity:0;pointer-events:none;transform:translateX(24px)}.inspector-head{display:flex;align-items:flex-start;justify-content:space-between;padding:20px 20px 14px}.inspector-head h2{margin:0;font-size:17px;font-weight:600;letter-spacing:-.45px}.inspector-head p{margin:3px 0 0;color:var(--muted);font:11px/16px "Geist Mono",ui-monospace,monospace}.inspector-tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:3px;margin:0 16px 12px;padding:3px;border-radius:8px;background:var(--soft-2)}.tab-button{min-width:0;min-height:30px;padding:0 6px;border:0;border-radius:6px;background:transparent;color:var(--muted);font-size:12px}.tab-button.active{color:var(--ink);background:var(--canvas);box-shadow:0 1px 2px #0000000c,0 0 0 1px #00000008}.inspector-body{overflow:auto;border-top:1px solid var(--line)}.inspector-panel{padding:20px}.panel-kicker{margin:0 0 5px;color:var(--muted);font:11px/16px "Geist Mono",ui-monospace,monospace;text-transform:uppercase}.panel-title{margin:0;font-size:18px;font-weight:600;letter-spacing:-.5px}.panel-copy{margin:6px 0 20px;color:var(--body);font-size:13px;line-height:19px}.panel-section{padding:18px 0;border-top:1px solid var(--line)}.panel-section:first-of-type{padding-top:0;border-top:0}.control-card{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:15px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}.control-card strong{display:block;font-size:13px;font-weight:500}.control-card p{margin:3px 0 0;color:var(--muted);font-size:11px}.power-row{display:grid;grid-template-columns:1fr;gap:8px}.power-row form,.power-row button{width:100%}.power-row .primary{min-height:42px}.danger.power-danger{min-height:40px;background:var(--canvas)}.side-grid{display:grid;grid-template-columns:1fr 1fr;gap:13px}.side-grid .field{font-size:12px}.settings-heading{grid-column:1/-1;margin-top:8px;padding-top:16px;border-top:1px solid var(--line)}.settings-heading:first-child{margin-top:12px;padding-top:0;border-top:0}.settings-heading strong{display:block;font:600 11px/16px "Geist Mono",ui-monospace,monospace;letter-spacing:.08em;text-transform:uppercase}.settings-heading span{display:block;margin-top:3px;color:var(--muted);font-size:11px;line-height:16px}.display-status{display:flex;align-items:flex-start;gap:8px;grid-column:1/-1;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--soft);color:var(--body);font-size:11px;line-height:16px}.display-status .status-dot{flex:0 0 auto;margin-top:4px}.display-status.error{color:var(--red);border-color:#efcaca;background:#fff7f7}.side-actions{display:flex;align-items:center;gap:8px;margin-top:15px;flex-wrap:wrap}.side-actions.wide{grid-column:1/-1}.side-actions .primary{min-height:38px}.side-advanced{margin-top:16px;border-top:1px solid var(--line)}.side-advanced.wide{grid-column:1/-1;margin-top:0}.side-advanced summary{padding:14px 0;color:var(--body);cursor:pointer;font-size:12px}.side-advanced[open] summary{margin-bottom:10px}.device-overview{margin-top:16px}.device-overview .capability{padding:13px}.device-overview .capability p{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.upload-zone{margin-top:14px;padding:18px;border:1px dashed var(--line-strong);border-radius:10px;background:var(--soft);text-align:center}.upload-zone .field{display:block}.upload-zone input[type=file]{height:auto;margin-top:10px;padding:8px;background:var(--canvas)}.upload-progress{height:3px;margin-top:12px;overflow:hidden;border-radius:3px;background:#e5e5e5}.upload-progress i{display:block;width:0;height:100%;background:var(--ink);transition:width 160ms}.media-list{max-height:240px;background:var(--canvas)}.media-list>div{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)}.media-list>div:last-child{border-bottom:0}.session-row{display:flex;align-items:center;justify-content:space-between;padding:13px 16px calc(13px + env(safe-area-inset-bottom));border-top:1px solid var(--line);color:var(--muted);font-size:12px}.session-identity{display:flex;align-items:center;gap:9px}.session-avatar{display:grid;place-items:center;width:26px;height:26px;border-radius:50%;color:var(--ink-contrast);background:var(--ink);font-size:10px;transition:background-color 160ms cubic-bezier(.2,.8,.2,1),color 160ms cubic-bezier(.2,.8,.2,1)}
+    .media-status{display:flex;align-items:center;gap:10px;margin-top:14px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}.media-status>.status-dot{margin:0 2px}.media-status.mounted>.status-dot{background:var(--blue)}.media-status.busy>.status-dot{background:var(--amber)}.media-status.error>.status-dot{background:var(--red)}.media-status-copy{min-width:0;flex:1}.media-status-copy strong,.media-status-copy span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.media-status-copy strong{font-size:13px;font-weight:500}.media-status-copy span{margin-top:2px;color:var(--muted);font-size:11px}.media-status-actions{display:flex;gap:6px;flex:0 0 auto}.media-status-actions button{min-height:30px;padding:0 9px;font-size:11px}.media-list{max-height:300px;padding:0;white-space:normal;background:var(--canvas);font:inherit}.media-item{padding:12px;border-bottom:1px solid var(--line)}.media-item:last-child{border-bottom:0}.media-item-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.media-item-name{min-width:0}.media-item-name strong{display:block;overflow:hidden;text-overflow:ellipsis;color:var(--ink);font-size:12px;font-weight:500;white-space:nowrap}.media-item-meta{display:flex;align-items:center;gap:6px;margin-top:3px;color:var(--muted);font:10px/15px "Geist Mono",ui-monospace,monospace}.media-badge{padding:1px 6px;border-radius:999px;color:#0761d1;background:#edf6ff}.media-item-controls{display:grid;grid-template-columns:minmax(88px,1fr) auto auto;align-items:center;gap:6px;margin-top:10px}.media-type-select{min-width:0;height:32px;padding:0 7px;border:1px solid var(--line);border-radius:6px;background:var(--canvas);font-size:11px}.media-readonly{display:flex;align-items:center;gap:5px;height:32px;padding:0 7px;border:1px solid var(--line);border-radius:6px;color:var(--body);font-size:11px;white-space:nowrap}.media-readonly input{width:14px;height:14px;margin:0;accent-color:var(--ink)}.media-attach{min-height:32px;padding:0 10px;border-radius:6px;font-size:11px}
+    dialog{max-width:none;padding:0;border:0;color:var(--ink);background:transparent}.keyboard-sheet{position:fixed;left:50%;bottom:24px;width:min(940px,calc(100vw - 48px));transform:translateX(-50%);overflow:hidden;border:1px solid var(--line);border-radius:14px;background:var(--canvas);box-shadow:var(--shadow-5)}dialog::backdrop{background:#00000032;backdrop-filter:blur(4px)}.dialog-head{display:flex;align-items:center;padding:13px 16px;border-bottom:1px solid var(--line)}.dialog-head h3{margin:0;font-size:14px;font-weight:600}.dialog-head p{margin:0 0 0 10px;color:var(--muted);font:11px/16px "Geist Mono",ui-monospace,monospace}.dialog-head button{margin-left:auto}.keyboard{display:grid;gap:7px;padding:16px;overflow-x:auto}.keyboard-row{display:flex;justify-content:center;gap:6px;min-width:max-content}.keyboard button{min-width:44px;height:44px;padding:5px;border:1px solid var(--line);border-radius:6px;background:var(--soft);font:12px/16px "Geist Mono",ui-monospace,monospace}.keyboard button:hover{background:var(--soft-2);border-color:var(--line-strong)}.keyboard .grow{min-width:180px}.keyboard .active{color:var(--ink-contrast);background:var(--ink)}#toast{position:fixed;z-index:100;left:50%;bottom:24px;max-width:calc(100vw - 32px);padding:10px 14px;border:1px solid var(--line);border-radius:8px;background:var(--canvas);color:var(--ink);box-shadow:var(--shadow-4);opacity:0;pointer-events:none;translate:-50% 12px;transition:opacity 180ms,translate 180ms}#toast.show{opacity:1;translate:-50% 0}
+    @keyframes spin{to{transform:rotate(360deg)}}@keyframes step-in{from{opacity:0;transform:translateX(8px)}to{opacity:1;transform:none}}@keyframes mesh-drift{to{transform:translateX(-48%) translateY(5%) scale(1.04)}}@keyframes dropdown-drop{from{opacity:0;transform:translateY(-6px) scale(0.98)}to{opacity:1;transform:translateY(0) scale(1)}}@keyframes popover-drop{from{opacity:0;transform:translateX(-50%) translateY(-6px) scale(0.98)}to{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}}
     @media(max-width:1040px){.auth-shell{grid-template-columns:360px minmax(0,1fr)}.auth-story{padding:36px}.auth-story h2{font-size:38px}.feature-list{grid-template-columns:1fr}.feature-chip:nth-child(3){display:none}.topbar{grid-template-columns:1fr auto}.topbar-center{display:none}.console{left:24px;width:calc(100% - 48px)}}
-    @media(max-width:900px){#app{grid-template-rows:56px minmax(0,1fr)}.topbar{padding:0 14px}.topbar .brand p,.topbar-actions #keyboard-toggle{display:none}.shell,#app:not(.inspector-open) .shell{display:block}.workspace{height:100%}.command-bar{top:12px;left:12px;right:12px}.command-meta{display:none}.console{position:absolute;left:12px!important;top:68px!important;width:calc(100% - 24px)!important;height:calc(100% - 82px)!important;min-width:0;min-height:220px;max-width:none;max-height:none;resize:none}.console-head{cursor:default}.inspector{position:fixed;z-index:80;left:12px;right:12px;bottom:12px;height:min(76dvh,680px);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow-5);transform:translateY(calc(100% + 28px));opacity:0;pointer-events:none}#app.inspector-open .inspector{transform:none;opacity:1;pointer-events:auto}.inspector-head::before{content:"";position:absolute;top:7px;left:50%;width:36px;height:4px;transform:translateX(-50%);border-radius:4px;background:#dedede}.inspector-head{padding-top:22px}.session-row{border-radius:0 0 14px 14px}.keyboard-sheet{bottom:8px;width:calc(100vw - 16px)}}
-    @media(max-width:720px){#auth-view{padding:0;overflow:auto}.auth-shell{display:block;width:100%;min-height:100dvh;border:0;border-radius:0;box-shadow:none}.auth-story{min-height:auto;padding:24px;border:0;border-bottom:1px solid var(--line)}.auth-story-copy{margin:54px 0 0}.auth-story h2{font-size:34px;letter-spacing:-1.5px}.auth-story-text{margin-top:14px}.feature-list,.auth-foot{display:none}.auth-panel{padding:32px 20px 48px}.auth-form.narrow{max-width:none}.grid{grid-template-columns:1fr}.wide{grid-column:auto}.capability-grid,.setup-detection-grid{grid-template-columns:1fr}.topbar-actions .icon-button:not(#inspector-toggle){display:none}.command-bar{height:48px}.remote-control>span:last-child{display:none}.mobile-only{display:inline-flex;align-items:center;min-height:36px;padding:0 10px;border-radius:6px}.key-strip button{min-width:44px;min-height:36px}.console{top:72px!important;height:calc(100% - 84px)!important}.console-head{height:42px;padding:0 10px}.window-dots,.console-meta{display:none}.console-title{font-size:12px}.input-badge{padding:0 7px}#video-viewport{inset:42px 0 0}.side-grid{grid-template-columns:1fr}.side-actions.wide{grid-column:auto}.setup-scan-card{align-items:flex-start;flex-direction:column}.form-actions{align-items:stretch}.form-actions button{min-height:44px}.form-actions .primary{order:-1;width:100%}}
+    @media(max-width:900px){#app{grid-template-rows:56px minmax(0,1fr)}.topbar{padding:0 14px}.topbar .brand p,.topbar-actions #keyboard-toggle{display:none}.shell,#app:not(.inspector-open) .shell{display:block}.workspace{height:100%}.command-bar{top:12px;left:12px;right:12px}.command-meta{display:none}.console{position:absolute;left:12px!important;top:12px!important;width:calc(100% - 24px)!important;height:calc(100% - 24px)!important;min-width:0;min-height:220px;max-width:none;max-height:none;resize:none}.console-head{cursor:default}.inspector{position:fixed;z-index:80;left:12px;right:12px;bottom:12px;height:min(76dvh,680px);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow-5);transform:translateY(calc(100% + 28px));opacity:0;pointer-events:none}#app.inspector-open .inspector{transform:none;opacity:1;pointer-events:auto}.inspector-head::before{content:"";position:absolute;top:7px;left:50%;width:36px;height:4px;transform:translateX(-50%);border-radius:4px;background:var(--line-strong)}.inspector-head{padding-top:22px}.session-row{border-radius:0 0 14px 14px}.keyboard-sheet{bottom:8px;width:calc(100vw - 16px)}}
+    @media(max-width:720px){#auth-view{padding:0;overflow:auto}.auth-shell{display:block;width:100%;min-height:100dvh;border:0;border-radius:0;box-shadow:none}.auth-story{min-height:auto;padding:24px;border:0;border-bottom:1px solid var(--line)}.auth-story-copy{margin:54px 0 0}.auth-story h2{font-size:34px;letter-spacing:-1.5px}.auth-story-text{margin-top:14px}.feature-list,.auth-foot{display:none}.auth-panel{padding:32px 20px 48px}.auth-form.narrow{max-width:none}.grid{grid-template-columns:1fr}.wide{grid-column:auto}.capability-grid,.setup-detection-grid{grid-template-columns:1fr}.topbar-actions .icon-button:not(#inspector-toggle){display:none}.command-bar{height:48px}.remote-control>span:last-child{display:none}.mobile-only{display:inline-flex;align-items:center;min-height:36px;padding:0 10px;border-radius:6px}.key-strip button{min-width:44px;min-height:36px}.console{top:12px!important;height:calc(100% - 24px)!important}.console-head{height:42px;padding:0 10px}.window-dots,.console-meta{display:none}.console-title{font-size:12px}.input-badge{padding:0 7px}#video-viewport{inset:42px 0 0}.side-grid{grid-template-columns:1fr}.side-actions.wide{grid-column:auto}.setup-scan-card{align-items:flex-start;flex-direction:column}.form-actions{align-items:stretch}.form-actions button{min-height:44px}.form-actions .primary{order:-1;width:100%}}
     @media(max-width:420px){.topbar{grid-template-columns:1fr auto}.topbar-actions{gap:4px}.mark{width:30px;height:30px}.brand h1{font-size:14px}.command-bar{gap:6px;padding-left:7px}.remote-control{padding-right:6px}.key-strip{gap:4px}.console-actions .input-badge{display:none}.inspector{left:6px;right:6px;bottom:6px;height:84dvh}.inspector-panel{padding:18px 16px}.keyboard-sheet{bottom:0;width:100vw;border-radius:14px 14px 0 0}.keyboard{padding:12px}.dialog-head p{display:none}}
-    #app{grid-template-rows:64px minmax(0,1fr) auto}#keyboard-dialog{position:relative;inset:auto;align-self:end;width:100%;max-width:none;max-height:min(34dvh,310px);margin:0;overflow:hidden;border:0;border-top:1px solid var(--line);border-radius:0;background:#fff}#keyboard-dialog::backdrop{display:none}.keyboard-sheet{position:static;left:auto;bottom:auto;width:100%;transform:none;border:0;border-radius:0;box-shadow:0 -8px 24px -16px #0003}.keyboard-sheet .dialog-head{min-height:46px;padding:9px 16px}.keyboard{max-height:calc(min(34dvh,310px) - 46px);gap:4px;padding:10px}.keyboard-row{gap:4px}.keyboard button{min-width:40px;height:36px;font-size:11px}.keyboard .grow{min-width:150px}
+    #app{grid-template-rows:64px minmax(0,1fr) auto}#keyboard-dialog{position:relative;inset:auto;align-self:end;width:100%;max-width:none;max-height:min(34dvh,310px);margin:0;overflow:hidden;border:0;border-top:1px solid var(--line);border-radius:0;background:var(--canvas)}#keyboard-dialog::backdrop{display:none}.keyboard-sheet{position:static;left:auto;bottom:auto;width:100%;transform:none;border:0;border-radius:0;box-shadow:0 -8px 24px -16px #0003}.keyboard-sheet .dialog-head{min-height:46px;padding:9px 16px}.keyboard{max-height:calc(min(34dvh,310px) - 46px);gap:4px;padding:10px}.keyboard-row{gap:4px}.keyboard button{min-width:40px;height:36px;font-size:11px}.keyboard .grow{min-width:150px}
     @media(max-width:900px){#app{grid-template-rows:56px minmax(0,1fr) auto}#keyboard-dialog{max-height:min(38dvh,300px)}.keyboard{max-height:calc(min(38dvh,300px) - 46px)}.keyboard button{min-width:42px;height:38px}}
     .console{left:24px;top:24px;width:calc(100% - 48px);height:calc(100% - 48px);max-width:none;max-height:none}.inspector-keys{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;overflow:visible;margin-bottom:10px}.inspector-keys button{width:100%;min-width:0;min-height:34px;padding:0 4px}
     @media(max-width:900px){#keyboard-toggle{display:inline-flex!important;align-items:center}.user-pill{display:none}.console{left:12px!important;top:12px!important;width:calc(100% - 24px)!important;height:calc(100% - 24px)!important}}
     h2[tabindex="-1"]:focus{outline:0;box-shadow:none}
     @media(max-width:720px){.auth-shell{max-height:none}.auth-panel{max-height:none;overflow:visible}}
     @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
-    .inspector-tabs{grid-template-columns:repeat(5,1fr)}.workspace-tabs{display:flex;gap:3px;padding:3px;border-radius:7px;background:var(--soft-2)}.workspace-tab{min-height:28px;padding:0 10px;border:0;border-radius:5px;background:transparent;color:var(--muted);font-size:11px}.workspace-tab.active{color:var(--ink);background:#fff;box-shadow:0 1px 2px #0001}.terminal-actions{display:flex;gap:8px;margin-top:10px}.terminal-window{position:absolute;inset:46px 0 0;overflow:hidden;background:#111;outline:0;cursor:text}.terminal-window[hidden]{display:none}.terminal-host{width:100%;height:100%;overflow:hidden}.terminal-host .xterm{height:100%;padding:14px}.terminal-host .xterm-viewport{scrollbar-color:#555 #111}.terminal-host .xterm-screen{outline:none}
+    .workspace-tabs{display:flex;gap:3px;padding:3px;border-radius:7px;background:var(--soft-2)}.workspace-tab{min-height:28px;padding:0 10px;border:0;border-radius:5px;background:transparent;color:var(--muted);font-size:11px}.workspace-tab.active{color:var(--ink);background:var(--canvas);box-shadow:0 1px 2px #0001}.terminal-actions{display:flex;gap:8px;margin-top:10px}.terminal-window{position:absolute;inset:46px 0 0;overflow:hidden;background:#111;outline:0;cursor:text}.terminal-window[hidden]{display:none}.terminal-host{width:100%;height:100%;overflow:hidden}.terminal-host .xterm{height:100%;padding:14px}.terminal-host .xterm-viewport{scrollbar-color:#555 #111}.terminal-host .xterm-screen{outline:none}
     .gpio-led-row{display:flex;align-items:center;gap:8px;margin-top:10px;min-height:32px;padding:0 2px;color:var(--body);font-size:12px}.gpio-led-row .status-dot{margin-right:1px}.gpio-led-label{font:11px/16px "Geist Mono",ui-monospace,monospace;color:var(--ink)}.gpio-led-state{min-width:0;flex:1;color:var(--muted);font-size:11px}.gpio-led-row .ghost{min-height:28px;padding:0 7px;font-size:11px}.gpio-led-row .status-dot.online{background:var(--blue)}.gpio-led-row .status-dot.warning{background:var(--amber)}.gpio-led-row .status-dot.error{background:var(--red)}
+    #inspector-close{display:inline-flex;align-items:center;gap:4px;min-height:28px;padding:0 9px;font-size:12px;color:var(--muted);border:1px solid transparent;border-radius:6px;background:transparent;cursor:pointer}
+    #inspector-close:hover{color:var(--ink);background:var(--soft-2);border-color:var(--line)}
+    .inspector-float-handle{position:absolute;z-index:25;right:0;top:50%;transform:translateY(-50%);display:none;align-items:center;gap:5px;padding:9px 10px 9px 8px;border:1px solid var(--line-strong);border-right:0;border-radius:8px 0 0 8px;background:var(--canvas);color:var(--ink);box-shadow:var(--shadow-4);font-size:12px;font-weight:500;cursor:pointer;transition:transform 160ms,background-color 160ms}
+    .inspector-float-handle:hover{background:var(--soft-2);transform:translateY(-50%) translateX(-2px)}
+    #app:not(.inspector-open) .inspector-float-handle{display:inline-flex}
+    #inspector-toggle.active{color:var(--ink-contrast);background:var(--ink);border-color:var(--ink)}
+    #inspector-toggle.active:hover{background:#000;border-color:#000;color:#fff}
+    button.topbar-center{cursor:pointer;transition:background-color 160ms,border-color 160ms}
+    button.topbar-center:hover{background:var(--soft-2);border-color:var(--line-strong)}
+    button.topbar-center svg{opacity:.6;transition:transform 160ms}
+    button.topbar-center[aria-expanded="true"] svg{transform:rotate(180deg)}
+    .power-menu-container{position:relative}
+    #power-menu-toggle{display:inline-flex;align-items:center;gap:6px}
+    #power-menu-toggle svg{opacity:.6}
+    .lang-menu-container{position:relative}
+    #lang-toggle{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600}
+    #lang-toggle svg{opacity:.7}
+    #theme-toggle{display:inline-flex;align-items:center;justify-content:center;width:34px;padding:0}
+    #theme-toggle svg{opacity:.8}
+    .dropdown-menu{position:absolute;right:0;top:calc(100% + 8px);z-index:90;min-width:210px;padding:6px;border:1px solid var(--line);border-radius:10px;background:var(--canvas);box-shadow:var(--shadow-5);display:grid;gap:3px;animation:dropdown-drop 140ms cubic-bezier(.16,1,.3,1)}
+    .dropdown-menu[hidden]{display:none!important}
+    .dropdown-header{padding:6px 10px 8px;border-bottom:1px solid var(--line);color:var(--muted);font:11px/16px "Geist Mono",ui-monospace,monospace}
+    .dropdown-item{display:flex;align-items:center;gap:8px;width:100%;min-height:34px;padding:6px 10px;border:0;border-radius:6px;background:transparent;color:var(--ink);font-size:12px;text-align:left;cursor:pointer;transition:background-color 140ms}
+    .dropdown-item:hover{background:var(--soft-2)}
+    .dropdown-item.danger{color:var(--red)}
+    .dropdown-item.danger:hover{background:var(--red-soft)}
+    .diagnostics-popover{position:fixed;left:50%;top:64px;transform:translateX(-50%);z-index:90;width:min(440px,calc(100vw - 32px));padding:18px;border:1px solid var(--line);border-radius:14px;background:var(--canvas);box-shadow:var(--shadow-5);animation:popover-drop 150ms cubic-bezier(.16,1,.3,1)}
+    .diagnostics-popover[hidden]{display:none!important}
+    .diagnostics-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+    .diagnostics-head h3{margin:0;font-size:14px;font-weight:600}
+    .diagnostics-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px}
+    .diagnostics-card{padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:var(--soft-2)}
+    .diagnostics-card span{display:block;font:10px/14px "Geist Mono",ui-monospace,monospace;color:var(--muted);text-transform:uppercase}
+    .diagnostics-card strong{display:block;margin-top:2px;font-size:12px;font-weight:500;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .diagnostics-actions{display:flex;gap:8px;justify-content:flex-end}
+    .quick-keys{display:flex;align-items:center;gap:4px;margin-left:6px}
+    .icon-button-sm{min-height:28px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:var(--canvas);color:var(--body);font:11px/1 "Geist Mono",ui-monospace,monospace;cursor:pointer;transition:background-color 140ms,border-color 140ms,color 140ms,transform 140ms}
+    .icon-button-sm:hover{background:var(--soft-2);border-color:var(--line-strong);color:var(--ink)}
+    .icon-button-sm.danger{color:var(--red);border-color:#f2c7c7}
+    .icon-button-sm.danger:hover{background:var(--red-soft);border-color:#efaaaa}
+    #input-state.clickable{cursor:pointer;transition:background-color 140ms,box-shadow 140ms}
+    #input-state.clickable:hover{box-shadow:0 0 0 1px var(--line-strong)}
+    .video-preset-chips{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 14px}
+    .preset-chip{min-height:28px;padding:0 10px;border:1px solid var(--line);border-radius:999px;background:var(--soft);color:var(--body);font-size:11px;font-weight:500;cursor:pointer;transition:background-color 140ms,border-color 140ms,color 140ms,transform 120ms}
+    .preset-chip:hover{background:var(--soft-2);border-color:var(--line-strong);color:var(--ink)}
+    .preset-chip:active{transform:scale(0.96)}
+    #settings-dialog{max-width:none;padding:0;border:0;color:var(--ink);background:transparent}
+    #settings-dialog::backdrop{background:#00000040;backdrop-filter:blur(4px)}
+    .settings-modal{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(540px,calc(100vw - 32px));max-height:min(86dvh,700px);display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--line);border-radius:14px;background:var(--canvas);box-shadow:var(--shadow-5);animation:popover-drop 160ms cubic-bezier(.16,1,.3,1)}
+    .settings-dialog-body{padding:16px 20px 22px;overflow-y:auto;display:flex;flex-direction:column;gap:18px}
+    .settings-group{display:flex;flex-direction:column;gap:9px}
+    .settings-group-title{font:600 11px/16px "Geist Mono",ui-monospace,monospace;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;padding-bottom:4px;border-bottom:1px solid var(--line)}
+    .settings-item{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:11px 13px;border:1px solid var(--line);border-radius:9px;background:var(--soft)}
+    .settings-item-copy{display:flex;flex-direction:column;gap:2px}
+    .settings-item-copy strong{font-size:13px;font-weight:500;color:var(--ink)}
+    .settings-item-copy span{font-size:11px;color:var(--muted);line-height:15px}
+    @media(max-width:720px){.quick-keys{display:none}}
   </style>
   <style>
     #webrtc-feed{display:block;width:100%;height:100%;max-width:100%;max-height:100%;object-fit:contain;user-select:none;-webkit-user-drag:none;background:#050505}
@@ -44,7 +167,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     #video-transport-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     @media(max-width:720px){.window-dots{display:none}.console-meta{display:inline;max-width:64px;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
     @media(max-width:420px){.console-meta{max-width:50px}}
-    .gpio-config-block{grid-column:1/-1;margin-top:5px;padding-top:14px;border-top:1px solid var(--line)}.gpio-config-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;color:var(--ink);font:600 11px/16px "Geist Mono",ui-monospace,monospace;letter-spacing:.04em}.gpio-inline-test{min-height:26px;padding:0 8px;font-size:10px;letter-spacing:0}.gpio-config-status{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:10px;font-weight:400;letter-spacing:0}.gpio-config-status .status-dot{width:6px;height:6px}.gpio-config-fields{gap:10px}.gpio-config-fields .field{font-size:11px}.gpio-config-fields .field input,.gpio-config-fields .field select{height:36px;font-size:12px}.field-help{display:inline-grid;place-items:center;width:16px;height:16px;margin-left:4px;padding:0;border:1px solid var(--line-strong);border-radius:50%;color:var(--muted);background:var(--canvas);font:600 10px/1 "Geist Mono",ui-monospace,monospace;vertical-align:1px;cursor:help;transition:color 160ms,border-color 160ms,background-color 160ms}.field-help:hover,.field-help:focus-visible{color:var(--ink);border-color:var(--ink);background:var(--soft-2)}.field-help:focus-visible{outline:0;box-shadow:0 0 0 2px #fff,0 0 0 4px var(--blue)}#field-tooltip{position:fixed;z-index:120;max-width:min(280px,calc(100vw - 24px));padding:8px 10px;border:1px solid #383838;border-radius:8px;color:#fff;background:#1d1d1d;box-shadow:0 8px 20px #0003;font-size:11px;line-height:17px;overflow-wrap:anywhere;pointer-events:none;opacity:0;translate:0 4px;transition:opacity 140ms,translate 140ms}#field-tooltip.visible{opacity:1;translate:0 0}#field-tooltip[hidden]{display:none}
+    .gpio-config-block{grid-column:1/-1;margin-top:5px;padding-top:14px;border-top:1px solid var(--line)}.gpio-config-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;color:var(--ink);font:600 11px/16px "Geist Mono",ui-monospace,monospace;letter-spacing:.04em}.gpio-inline-test{min-height:26px;padding:0 8px;font-size:10px;letter-spacing:0}.gpio-config-status{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:10px;font-weight:400;letter-spacing:0}.gpio-config-status .status-dot{width:6px;height:6px}.gpio-config-fields{gap:10px}.gpio-config-fields .field{font-size:11px}.gpio-config-fields .field input,.gpio-config-fields .field select{height:36px;font-size:12px}.field-help{display:inline-grid;place-items:center;width:16px;height:16px;margin-left:4px;padding:0;border:1px solid var(--line-strong);border-radius:50%;color:var(--muted);background:var(--canvas);font:600 10px/1 "Geist Mono",ui-monospace,monospace;vertical-align:1px;cursor:help;transition:color 160ms,border-color 160ms,background-color 160ms}.field-help:hover,.field-help:focus-visible{color:var(--ink);border-color:var(--ink);background:var(--soft-2)}.field-help:focus-visible{outline:0;box-shadow:0 0 0 2px var(--canvas),0 0 0 4px var(--blue)}#field-tooltip{position:fixed;z-index:120;max-width:min(280px,calc(100vw - 24px));padding:8px 10px;border:1px solid #383838;border-radius:8px;color:#fff;background:#1d1d1d;box-shadow:0 8px 20px #0003;font-size:11px;line-height:17px;overflow-wrap:anywhere;pointer-events:none;opacity:0;translate:0 4px;transition:opacity 140ms,translate 140ms}#field-tooltip.visible{opacity:1;translate:0 0}#field-tooltip[hidden]{display:none}
   </style>
 </head>
 <body>
@@ -62,8 +185,10 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
           <div id="boot-panel" role="status"><div class="boot-orbit" aria-hidden="true"></div><h2 tabindex="-1">连接中</h2></div>
           <form id="login-form" class="auth-form narrow hidden" aria-busy="false">
             <div class="form-heading"><h2 tabindex="-1">登录</h2></div>
-            <div class="grid"><label class="field wide"><span>管理员账号</span><input name="username" autocomplete="username" required></label><label class="field wide"><span>密码</span><input name="password" type="password" autocomplete="current-password" required aria-describedby="login-error"></label></div>
+            <div class="grid"><label class="field wide"><span>管理员账号</span><input name="username" autocomplete="username webauthn" required></label><label class="field wide"><span>密码</span><input name="password" type="password" autocomplete="current-password" required aria-describedby="login-error"></label></div>
             <span id="login-error" class="error" role="alert"></span><div class="form-actions"><button class="primary wide-button" type="submit">进入控制台</button></div>
+            <div id="passkey-login-container" class="passkey-login-box hidden" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--line);"><button id="passkey-login-btn" class="secondary wide-button" type="button" style="display:flex;align-items:center;justify-content:center;gap:8px;font-weight:500;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/><path d="M12 8a4 4 0 0 0-4 4c0 2 2 4 4 4s4-2 4-4a4 4 0 0 0-4-4z"/></svg><span data-i18n="passkey_signin">使用 Passkey (Touch ID / Face ID) 登录</span></button></div>
+            <div id="passkey-insecure-hint" class="hint hidden" style="margin-top:10px;text-align:center;color:var(--amber);"></div>
           </form>
           <form id="setup-form" class="auth-form hidden" aria-busy="false">
             <div class="form-heading"><h2 tabindex="-1">初始化</h2></div>
@@ -91,38 +216,103 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
   <main id="app" class="hidden inspector-open">
     <header class="topbar">
       <div class="brand"><div class="mark">W</div><div class="brand-copy"><h1>WingmanKVM</h1></div></div>
-      <div class="topbar-center" role="status"><span id="status-dot" class="status-dot"></span><span id="status-label">正在建立视频链路</span></div>
-      <div class="topbar-actions"><button id="keyboard-toggle" class="icon-button" type="button">键盘</button><button id="inspector-toggle" class="icon-button" type="button" aria-expanded="true">控制面板</button><span class="user-pill" aria-hidden="true">WK</span></div>
+      <button id="diagnostics-toggle" class="topbar-center" type="button" aria-expanded="false" aria-controls="diagnostics-popover" title="点击查看连接与设备诊断"><span id="status-dot" class="status-dot"></span><span id="status-label">正在建立视频链路</span><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6l4 4 4-4"/></svg></button>
+      <div class="topbar-actions">
+        <div class="power-menu-container">
+          <button id="power-menu-toggle" class="icon-button" type="button" aria-expanded="false" aria-controls="power-menu" title="电源与系统控制"><span data-power-led-dot class="status-dot"></span><span data-i18n="power">电源</span><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6l4 4 4-4"/></svg></button>
+          <div id="power-menu" class="dropdown-menu" hidden>
+            <div class="dropdown-header"><span data-i18n="power_status">电源状态</span>: <span data-power-led-state>读取中…</span></div>
+            <button class="dropdown-item" type="button" data-power-action="press"><span data-i18n="short_press">短按电源开机/关机</span></button>
+            <button class="dropdown-item" type="button" data-power-action="reset"><span data-i18n="reset_pc">复位重启 (Reset)</span></button>
+            <button class="dropdown-item danger" type="button" data-power-action="force-off"><span data-i18n="force_off">强制关机 (长按 5 秒)</span></button>
+          </div>
+        </div>
+        <div class="lang-menu-container">
+          <button id="lang-toggle" class="icon-button" type="button" aria-expanded="false" aria-controls="lang-menu" title="切换界面语言 / Language"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg><span id="lang-current-label">简</span></button>
+          <div id="lang-menu" class="dropdown-menu" hidden>
+            <button class="dropdown-item" type="button" data-lang="zh-CN"><span>简体中文 (默认)</span></button>
+            <button class="dropdown-item" type="button" data-lang="zh-TW"><span>繁體中文</span></button>
+            <button class="dropdown-item" type="button" data-lang="en"><span>English</span></button>
+          </div>
+        </div>
+        <button id="theme-toggle" class="icon-button" type="button" title="切换深色/浅色模式">
+          <svg class="theme-icon-dark" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <svg class="theme-icon-light hidden" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        </button>
+        <button id="settings-toggle" class="icon-button" type="button" title="全局偏好设置" aria-controls="settings-dialog" style="display:inline-flex;align-items:center;gap:5px;">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <span data-i18n="settings">设置</span>
+        </button>
+        <button id="keyboard-toggle" class="icon-button" type="button" data-i18n="keyboard">键盘</button>
+        <button id="inspector-toggle" class="icon-button" type="button" aria-expanded="true" data-i18n="inspector">控制面板</button>
+        <span class="user-pill" aria-hidden="true">WK</span>
+      </div>
     </header>
+    <div id="diagnostics-popover" class="diagnostics-popover" hidden>
+      <div class="diagnostics-head">
+        <h3 data-i18n="diag_title">连接与设备诊断</h3>
+        <button id="diagnostics-close" class="ghost" type="button" aria-label="关闭诊断面板"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 4L4 12M4 4l8 8"/></svg></button>
+      </div>
+      <div class="diagnostics-grid">
+        <div class="diagnostics-card"><span data-i18n="diag_transport">视频传输链路</span><strong id="diag-transport">MJPEG</strong></div>
+        <div class="diagnostics-card"><span data-i18n="diag_resolution">采集画面分辨率</span><strong id="diag-resolution">--</strong></div>
+        <div class="diagnostics-card"><span data-i18n="diag_input">键鼠控制模式</span><strong id="diag-input-mode">转发已暂停</strong></div>
+        <div class="diagnostics-card"><span data-i18n="diag_power_led">被控机电源 LED</span><strong id="diag-power-led">读取中…</strong></div>
+      </div>
+      <div class="diagnostics-actions">
+        <button id="diagnostics-reconnect" class="secondary" type="button" data-i18n="diag_reconnect">重连视频</button>
+        <button id="diagnostics-scan" class="secondary" type="button" data-i18n="diag_scan">扫描设备</button>
+      </div>
+    </div>
     <div class="shell">
       <section id="workspace" class="workspace">
         <div id="console" class="console mode-fit render-pixelated">
-          <div id="console-head" class="console-head"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><div class="workspace-tabs"><button class="workspace-tab active" type="button" data-workspace="video">远程画面</button><button class="workspace-tab" type="button" data-workspace="terminal">终端</button></div><span id="video-transport-label" class="console-meta">MJPEG</span><div class="console-actions"><span id="input-state" class="input-badge" role="status">输入已暂停</span><button id="mode-button" class="secondary" type="button">适应</button><button id="fullscreen" class="secondary" type="button">全屏</button></div></div>
+          <div id="console-head" class="console-head"><div class="workspace-tabs"><button class="workspace-tab active" type="button" data-workspace="video" data-i18n="tab_remote_screen">远程画面</button><button class="workspace-tab" type="button" data-workspace="terminal" data-i18n="tab_terminal">终端</button></div><div class="quick-keys" aria-label="常用快捷键"><button class="icon-button-sm" type="button" data-quick-key="cad" title="发送 Ctrl+Alt+Del">Ctrl+Alt+Del</button><button class="icon-button-sm" type="button" data-quick-key="win" title="发送 Win 徽标键">Win</button><button class="icon-button-sm" type="button" data-quick-key="alttab" title="发送 Alt+Tab">Alt+Tab</button><button class="icon-button-sm" type="button" data-quick-key="esc" title="发送 Esc">Esc</button></div><span id="video-transport-label" class="console-meta">MJPEG</span><div class="console-actions"><button id="input-release" class="icon-button-sm danger hidden" type="button" data-i18n="release_keys" title="紧急释放所有按键与鼠标锁定">释放按键</button><button id="input-state" class="input-badge clickable" type="button" role="status" title="点击切换键鼠转发状态">输入已暂停</button><button id="terminal-reconnect" class="secondary hidden" type="button" data-i18n="reconnect">重连</button><button id="terminal-clear" class="secondary hidden" type="button" data-i18n="clear">清空</button><button id="mode-button" class="secondary" type="button" data-i18n="mode_fit">适应</button><button id="fullscreen" class="secondary" type="button" data-i18n="fullscreen">全屏</button></div></div>
           <div id="video-viewport" tabindex="0" aria-label="远程视频与鼠标控制区域">
             <img id="video-feed" class="video-surface" alt="远程设备视频" draggable="false"><video id="webrtc-feed" class="video-surface hidden" autoplay muted playsinline aria-label="远程设备视频"></video><span id="video-message" class="video-message" role="status" aria-live="polite">正在连接视频…</span>
           </div>
           <div id="terminal-window" class="terminal-window" hidden><div id="terminal-host" class="terminal-host" aria-label="RK3399 终端"></div></div>
         </div>
+        <button id="inspector-float-open" class="inspector-float-handle" type="button" aria-label="展开控制面板" title="展开控制面板"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 12L6 8l4-4"/></svg><span data-i18n="inspector">控制面板</span></button>
       </section>
       <aside id="inspector" class="inspector">
-        <header class="inspector-head"><div><h2>控制面板</h2></div></header>
-        <nav class="inspector-tabs" aria-label="控制面板"><button class="tab-button active" type="button" data-panel-target="control">控制</button><button class="tab-button" type="button" data-panel-target="video">视频</button><button class="tab-button" type="button" data-panel-target="devices">设备</button><button class="tab-button" type="button" data-panel-target="media">介质</button><button class="tab-button" type="button" data-panel-target="terminal">终端</button></nav>
+        <header class="inspector-head"><div><h2 data-i18n="inspector">控制面板</h2></div><button id="inspector-close" class="ghost" type="button" aria-label="收起控制面板" title="收起控制面板 (快捷键: Esc)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 4L4 12M4 4l8 8"/></svg><span data-i18n="inspector_close">收起</span></button></header>
+        <nav class="inspector-tabs" aria-label="控制面板"><button class="tab-button active" type="button" data-panel-target="control" data-i18n="tab_control">控制</button><button class="tab-button" type="button" data-panel-target="video" data-i18n="tab_video">视频</button><button class="tab-button" type="button" data-panel-target="devices" data-i18n="tab_devices">设备</button><button class="tab-button" type="button" data-panel-target="media" data-i18n="tab_media">介质</button></nav>
         <div class="inspector-body">
           <section class="inspector-panel" data-panel="control">
-            <h3 class="panel-title">远程控制</h3>
-            <div class="panel-section"><div class="control-card"><div><strong>转发键鼠</strong></div><label class="switch"><input id="remote-input" type="checkbox" aria-label="转发键盘和鼠标"><i></i></label></div></div>
+            <h3 class="panel-title" data-i18n="remote_control">远程控制</h3>
+            <div class="panel-section"><div class="control-card"><div><strong data-i18n="forward_input">转发键鼠</strong></div><label class="switch"><input id="remote-input" type="checkbox" aria-label="转发键盘和鼠标"><i></i></label></div></div>
             <div class="panel-section"><div class="key-strip inspector-keys" aria-label="特殊按键"><button type="button" data-key="Escape">Esc</button><button type="button" data-key="Delete">Del</button><button type="button" data-key="F1">F1</button><button type="button" data-key="F2">F2</button><button type="button" data-key="F3">F3</button><button type="button" data-key="F4">F4</button><button type="button" data-key="F5">F5</button><button type="button" data-key="F6">F6</button><button type="button" data-key="F7">F7</button><button type="button" data-key="F8">F8</button><button type="button" data-key="F9">F9</button><button type="button" data-key="F10">F10</button><button type="button" data-key="F11">F11</button><button type="button" data-key="F12">F12</button></div></div>
             <div class="panel-section">
               <div class="power-row">
-                <form method="post" action="/power"><input type="hidden" name="duration" value="0.5"><button class="primary" type="submit">短按电源</button></form>
-                <form method="post" action="/reset" onsubmit="return confirm('确定复位吗？')"><input type="hidden" name="duration" value="0.5"><button class="secondary" type="submit">复位</button></form>
-                <form method="post" action="/power" onsubmit="return confirm('确定长按电源 5 秒吗？这可能强制关机。')"><input type="hidden" name="duration" value="5"><button class="danger power-danger" type="submit">强制关机</button></form>
+                <button class="primary" type="button" data-power-action="press" data-i18n="short_press_btn">短按电源</button>
+                <button class="secondary" type="button" data-power-action="reset" data-i18n="reset_btn">复位</button>
+                <button class="danger power-danger" type="button" data-power-action="force-off" data-i18n="force_off_btn">强制关机</button>
               </div>
-              <div class="gpio-led-row" role="status" aria-live="polite"><span id="power-led-dot" data-power-led-dot class="status-dot"></span><span class="gpio-led-label">PWR LED</span><span id="power-led-state" data-power-led-state class="gpio-led-state">读取中…</span><button id="power-led-refresh" data-power-led-refresh class="ghost" type="button">刷新</button></div>
+              <div class="gpio-led-row" role="status" aria-live="polite"><span id="power-led-dot" data-power-led-dot class="status-dot"></span><span class="gpio-led-label">PWR LED</span><span id="power-led-state" data-power-led-state class="gpio-led-state">读取中…</span><button id="power-led-refresh" data-power-led-refresh class="ghost" type="button" data-i18n="refresh">刷新</button></div>
+            </div>
+            <div class="panel-section">
+              <div class="control-card">
+                <div>
+                  <strong data-i18n="passkey_title">Passkey 通行密钥</strong>
+                  <p data-i18n="passkey_desc">绑定 Apple Touch ID / Face ID，无需输入密码快速登录</p>
+                </div>
+                <button id="passkey-add-btn" class="primary" type="button" style="min-height:32px;padding:0 12px;font-size:12px;" data-i18n="passkey_add">+ 绑定此设备</button>
+              </div>
+              <div id="passkey-list-container" style="margin-top:10px;">
+                <div id="passkey-empty-hint" class="hint" style="text-align:center;padding:8px 0;color:var(--muted);" data-i18n="passkey_none">尚未绑定任何 Passkey</div>
+                <div id="passkey-items" class="media-list hidden" style="max-height:160px;margin-top:6px;"></div>
+              </div>
+              <div id="passkey-inspector-hint" class="hint hidden" style="margin-top:8px;color:var(--amber);"></div>
             </div>
           </section>
           <section class="inspector-panel" data-panel="video" hidden>
-            <h3 class="panel-title">视频</h3>
+            <h3 class="panel-title" data-i18n="tab_video">视频</h3>
+            <div class="video-preset-chips" aria-label="视频预设模式">
+              <button type="button" class="preset-chip" data-video-preset="desktop" data-i18n="preset_desktop">🖥️ 桌面优化 (1080p 60fps 8M)</button>
+              <button type="button" class="preset-chip" data-video-preset="bios" data-i18n="preset_bios">⚙️ BIOS/UEFI (720p 30fps MJPEG)</button>
+              <button type="button" class="preset-chip" data-video-preset="bandwidth" data-i18n="preset_bandwidth">⚡ 低带宽省流 (720p 25fps 2M)</button>
+            </div>
             <form id="video-config" class="side-grid">
               <div class="settings-heading"><strong>Display</strong><span>决定被控机通过 HDMI EDID 看到的虚拟显示器。</span></div>
               <label class="field wide"><span>虚拟显示器 <button class="field-help" type="button" data-help="写入仅包含所选分辨率的易失 EDID，并短暂中断采集卡 HDMI RX。此型号尚未证实能从软件触发被控机侧物理 HPD；若被控机未重新输出目标分辨率，会自动回滚。停止接管只是不再写入，不会猜测或恢复未知的出厂 EDID。" aria-label="虚拟显示器说明">?</button></span><select name="virtual_monitor"><option value="unmanaged">未接管 / 停止接管</option><option value="hd1080p60">1920 × 1080 @ 60Hz</option><option value="hd720p60">1280 × 720 @ 60Hz</option></select></label>
@@ -144,14 +334,14 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
               <div class="settings-heading"><strong>Viewer</strong><span>仅改变浏览器里的显示方式。</span></div>
               <label class="field wide"><span>显示缩放 <button class="field-help" type="button" data-help="适应窗口会等比显示整张画面；1:1 按原像素显示；填满窗口可能变形。这些选项不会改变 HDMI 或采集分辨率。" aria-label="显示缩放说明">?</button></span><select name="display_scale"><option value="fit">适应窗口</option><option value="native">1:1 像素</option><option value="fill">填满窗口</option></select></label>
               <label class="field wide"><span>显示插值 <button class="field-help" type="button" data-help="放大或缩小时的像素处理：像素锐利保留边缘，适合 BIOS 和文字；平滑画面更柔和，但细字可能变糊。" aria-label="显示插值说明">?</button></span><select name="rendering"><option value="pixelated">像素锐利</option><option value="smooth">平滑</option></select></label>
-              <div class="side-actions wide"><button class="secondary" data-viewer-fullscreen type="button">进入全屏</button></div>
-              <div class="side-actions wide"><button class="primary" type="submit">应用</button></div>
+              <div class="side-actions wide"><button class="secondary" data-viewer-fullscreen type="button" data-i18n="fullscreen">进入全屏</button></div>
+              <div class="side-actions wide"><button class="primary" type="submit" data-i18n="apply">应用</button></div>
             </form>
           </section>
           <section class="inspector-panel" data-panel="devices" hidden>
-            <h3 class="panel-title">设备</h3>
+            <h3 class="panel-title" data-i18n="tab_devices">设备</h3>
             <div id="device-results" class="setup-detection-grid device-overview" role="status"><div class="capability"><span class="status-dot"></span><strong>等待检测</strong></div></div>
-            <div class="side-actions"><button id="scan-devices" class="secondary" type="button">重新检测</button></div>
+            <div class="side-actions"><button id="scan-devices" class="secondary" type="button" data-i18n="rescan">重新检测</button></div>
             <details class="side-advanced">
               <summary>手动配置</summary>
               <form id="device-config" class="side-grid">
@@ -174,7 +364,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
                   </div>
                 </div>
                 <div class="gpio-config-block">
-                  <div class="gpio-config-title"><span>PWR LED <button class="field-help" type="button" data-help="这是输入线路，只读取 LED 状态，不能发送测试脉冲。低电平有效通常表示 LED 亮。" aria-label="PWR LED 说明">?</button></span><span class="gpio-config-status"><span data-power-led-dot class="status-dot"></span><span data-power-led-state>读取中…</span><button class="ghost gpio-inline-test" data-power-led-refresh type="button">刷新</button></span></div>
+                  <div class="gpio-config-title"><span>PWR LED <button class="field-help" type="button" data-help="这是输入线路，只读取 LED 状态，不能发送测试脉冲。低电平有效通常表示 LED 亮。" aria-label="PWR LED 说明">?</button></span><span class="gpio-config-status"><span data-power-led-dot class="status-dot"></span><span data-power-led-state>读取中…</span><button class="ghost gpio-inline-test" data-power-led-refresh type="button" data-i18n="refresh">刷新</button></span></div>
                   <div class="side-grid gpio-config-fields">
                     <label class="field"><span>GPIO 芯片</span><input name="power_led_gpio_chip" class="mono"></label>
                     <label class="field"><span>线路</span><input name="power_led_gpio_line" type="number" min="0"></label>
@@ -184,18 +374,84 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
                     <label class="field"><span>去抖 · ms <button class="field-help" type="button" data-help="要求状态稳定一段时间后才更新，避免 LED 或线路抖动造成误报。" aria-label="PWR LED 去抖说明">?</button></span><input name="power_led_debounce_ms" type="number" min="0" max="5000" placeholder="50"></label>
                   </div>
                 </div>
-                <div class="side-actions wide"><button class="primary" type="submit">保存</button></div>
+                <div class="side-actions wide"><button class="primary" type="submit" data-i18n="save">保存</button></div>
               </form>
             </details>
             <details class="side-advanced"><summary>诊断信息</summary><pre id="device-diagnostics" class="device-results">尚未扫描</pre></details>
           </section>
-          <section class="inspector-panel" data-panel="media" hidden><h3 class="panel-title">虚拟介质</h3><div class="panel-section"><div id="media-status" class="media-status" role="status"><span class="status-dot"></span><span class="media-status-copy"><strong>正在读取…</strong></span></div><form id="media-upload" class="upload-zone"><label class="field"><span>上传 ISO / IMG <button class="field-help" type="button" data-help="ISO 通常以只读光驱挂载；IMG 可选择 U 盘模式，并按需读写。" aria-label="上传镜像说明">?</button></span><input name="file" type="file" accept=".iso,.img" required></label><div class="side-actions"><button class="primary" type="submit">上传</button><button id="media-refresh" class="secondary" type="button">刷新</button></div><div class="upload-progress" role="progressbar" aria-label="上传进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="upload-bar"></i></div></form><div id="media-list" class="media-list">正在读取…</div></div><details class="side-advanced"><summary>存储设置 <button class="field-help" type="button" data-help="启用虚拟介质需要一个已连接到 Gadget 的 LUN，以及一个用于保存镜像的目录。" aria-label="存储设置说明">?</button></summary><form id="media-config" class="side-grid"><label class="check wide"><input name="enabled" type="checkbox"><span>启用虚拟介质 <button class="field-help" type="button" data-help="启用后，被控机会看到一只 USB 光驱或 U 盘；启用前请确认 Gadget 已提供 Mass Storage LUN。" aria-label="启用虚拟介质说明">?</button></span></label><label class="field wide"><span>LUN 目录 <button class="field-help" type="button" data-help="指向 USB Gadget 的 mass_storage lun.0；可以使用自动检测，也可以手动填写 configfs 路径。" aria-label="LUN 目录说明">?</button></span><input name="lun_path" class="mono" placeholder="/sys/kernel/config/usb_gadget/…/lun.0"></label><label class="field wide"><span>镜像目录 <button class="field-help" type="button" data-help="上传的 ISO/IMG 文件会保存到这里。目录必须允许 WingmanKVM 服务读写。" aria-label="镜像目录说明">?</button></span><input name="image_directory" class="mono" placeholder="/var/lib/wingmankvm/images"></label><div class="side-actions wide"><button id="media-scan" class="secondary" type="button">自动检测</button><button class="primary" type="submit">保存</button></div></form></details></section>
-          <section class="inspector-panel" data-panel="terminal" hidden><h3 class="panel-title">终端</h3><div class="panel-section"><div class="terminal-actions"><button id="terminal-connect" class="primary" type="button">连接</button><button id="terminal-clear" class="secondary" type="button">清空</button></div></div></section>
+          <section class="inspector-panel" data-panel="media" hidden><h3 class="panel-title" data-i18n="tab_media">虚拟介质</h3><div class="panel-section"><div id="media-status" class="media-status" role="status"><span class="status-dot"></span><span class="media-status-copy"><strong>正在读取…</strong></span></div><form id="media-upload" class="upload-zone"><label class="field"><span>上传 ISO / IMG <button class="field-help" type="button" data-help="ISO 通常以只读光驱挂载；IMG 可选择 U 盘模式，并按需读写。" aria-label="上传镜像说明">?</button></span><input name="file" type="file" accept=".iso,.img" required></label><div class="side-actions"><button class="primary" type="submit" data-i18n="upload">上传</button><button id="media-refresh" class="secondary" type="button" data-i18n="refresh">刷新</button></div><div class="upload-progress" role="progressbar" aria-label="上传进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="upload-bar"></i></div></form><div id="media-list" class="media-list">正在读取…</div></div><details class="side-advanced"><summary>存储设置 <button class="field-help" type="button" data-help="启用虚拟介质需要一个已连接到 Gadget 的 LUN，以及一个用于保存镜像的目录。" aria-label="存储设置说明">?</button></summary><form id="media-config" class="side-grid"><label class="check wide"><input name="enabled" type="checkbox"><span>启用虚拟介质 <button class="field-help" type="button" data-help="启用后，被控机会看到一只 USB 光驱或 U 盘；启用前请确认 Gadget 已提供 Mass Storage LUN。" aria-label="启用虚拟介质说明">?</button></span></label><label class="field wide"><span>LUN 目录 <button class="field-help" type="button" data-help="指向 USB Gadget 的 mass_storage lun.0；可以使用自动检测，也可以手动填写 configfs 路径。" aria-label="LUN 目录说明">?</button></span><input name="lun_path" class="mono" placeholder="/sys/kernel/config/usb_gadget/…/lun.0"></label><label class="field wide"><span>镜像目录 <button class="field-help" type="button" data-help="上传的 ISO/IMG 文件会保存到这里。目录必须允许 WingmanKVM 服务读写。" aria-label="镜像目录说明">?</button></span><input name="image_directory" class="mono" placeholder="/var/lib/wingmankvm/images"></label><div class="side-actions wide"><button id="media-scan" class="secondary" type="button">自动检测</button><button class="primary" type="submit" data-i18n="save">保存</button></div></form></details></section>
         </div>
-        <div class="session-row"><span class="session-identity"><span class="session-avatar">WK</span><span id="session-user">管理员</span></span><button id="logout" class="ghost" type="button">退出登录</button></div>
+        <div class="session-row"><span class="session-identity"><span class="session-avatar">WK</span><span id="session-user">管理员</span></span><div style="display:flex;align-items:center;gap:6px;"><button id="settings-inspector-btn" class="ghost" type="button" data-i18n="settings">设置</button><button id="logout" class="ghost" type="button" data-i18n="logout">退出登录</button></div></div>
       </aside>
     </div>
-    <dialog id="keyboard-dialog"><div class="keyboard-sheet"><div class="dialog-head"><h3>虚拟键盘</h3><button class="secondary" type="button" data-close>收起</button></div><div id="virtual-keyboard" class="keyboard"></div></div></dialog>
+    <dialog id="settings-dialog">
+      <div class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title">
+        <div class="dialog-head">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+            <h3 id="settings-dialog-title" data-i18n="settings_title">全局偏好设置</h3>
+          </div>
+          <button class="secondary" type="button" data-settings-close data-i18n="close">收起</button>
+        </div>
+        <div class="settings-dialog-body">
+          <div class="settings-group">
+            <span class="settings-group-title" data-i18n="settings_group_input">交互与通知</span>
+            <div class="settings-item">
+              <div class="settings-item-copy">
+                <strong data-i18n="settings_suppress_hid">屏蔽 HID 写入超时警告</strong>
+                <span data-i18n="settings_suppress_hid_desc">在纯 Linux 环境或被控端未开机时，忽略鼠标与键盘写入超时 (writable timeout) 弹窗警告</span>
+              </div>
+              <label class="switch"><input type="checkbox" id="setting-suppress-hid-timeout" checked><i></i></label>
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-copy">
+                <strong data-i18n="settings_capture_pulse">接管边缘微光脉冲</strong>
+                <span data-i18n="settings_capture_pulse_desc">激活键鼠转发时，在远端画面边缘显示光晕视觉反馈</span>
+              </div>
+              <label class="switch"><input type="checkbox" id="setting-capture-pulse" checked><i></i></label>
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-copy">
+                <strong data-i18n="settings_release_toast">按键释放提示</strong>
+                <span data-i18n="settings_release_toast_desc">执行「释放按键」或切换控制权时弹出状态提示</span>
+              </div>
+              <label class="switch"><input type="checkbox" id="setting-release-toast" checked><i></i></label>
+            </div>
+          </div>
+          <div class="settings-group">
+            <span class="settings-group-title" data-i18n="settings_group_display">画面与渲染</span>
+            <div class="settings-item">
+              <div class="settings-item-copy">
+                <strong data-i18n="settings_render_pixelated">像素锐利渲染 (Pixelated)</strong>
+                <span data-i18n="settings_render_pixelated_desc">近邻采样字符边缘无模糊滤镜，适合 BIOS 与纯文本终端</span>
+              </div>
+              <label class="switch"><input type="checkbox" id="setting-render-pixelated"><i></i></label>
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-copy">
+                <strong data-i18n="settings_auto_inspector">宽屏默认展开面板</strong>
+                <span data-i18n="settings_auto_inspector_desc">屏幕宽度充足时，进入控制台默认展开右侧控制面板</span>
+              </div>
+              <label class="switch"><input type="checkbox" id="setting-auto-inspector" checked><i></i></label>
+            </div>
+          </div>
+          <div class="settings-group">
+            <span class="settings-group-title" data-i18n="settings_group_system">系统与重置</span>
+            <div class="settings-item">
+              <div class="settings-item-copy">
+                <strong data-i18n="settings_reset_btn">恢复默认设置</strong>
+                <span data-i18n="settings_reset_desc">清除所有保存在本机的偏好设置并还原为初始默认值</span>
+              </div>
+              <button id="setting-reset-btn" class="secondary" type="button" style="min-height:30px;padding:0 10px;font-size:12px;" data-i18n="settings_reset_action">还原</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="keyboard-dialog"><div class="keyboard-sheet"><div class="dialog-head"><h3 data-i18n="virtual_keyboard">虚拟键盘</h3><button class="secondary" type="button" data-close data-i18n="close">收起</button></div><div id="virtual-keyboard" class="keyboard"></div></div></dialog>
   </main>
 
   <div id="toast" role="status" aria-live="polite"></div>
@@ -210,6 +466,164 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     const authView = $('#auth-view'), app = $('#app'), setupForm = $('#setup-form'), loginForm = $('#login-form');
     const viewport = $('#video-viewport'), feed = $('#video-feed'), webrtcFeed = $('#webrtc-feed'), consoleBox = $('#console');
     const fieldTooltip = $('#field-tooltip');
+    const I18N = {
+      'zh-CN': {
+        power:'电源',power_status:'电源状态',short_press:'短按电源开机/关机',reset_pc:'复位重启 (Reset)',force_off:'强制关机 (长按 5 秒)',
+        keyboard:'键盘',inspector:'控制面板',inspector_close:'收起',
+        diag_title:'连接与设备诊断',diag_transport:'视频传输链路',diag_resolution:'采集画面分辨率',diag_input:'键鼠控制模式',diag_power_led:'被控机电源 LED',diag_reconnect:'重连视频',diag_scan:'扫描设备',
+        tab_remote_screen:'远程画面',tab_terminal:'终端',release_keys:'释放按键',reconnect:'重连',clear:'清空',mode_fit:'适应',fullscreen:'全屏',exit_fullscreen:'退出全屏',
+        tab_control:'控制',tab_video:'视频',tab_devices:'设备',tab_media:'介质',remote_control:'远程控制',forward_input:'转发键鼠',
+        short_press_btn:'短按电源',reset_btn:'复位',force_off_btn:'强制关机',refresh:'刷新',
+        preset_desktop:'🖥️ 桌面优化 (1080p 60fps 8M)',preset_bios:'⚙️ BIOS/UEFI (720p 30fps MJPEG)',preset_bandwidth:'⚡ 低带宽省流 (720p 25fps 2M)',
+        apply:'应用',rescan:'重新检测',save:'保存',upload:'上传',logout:'退出登录',virtual_keyboard:'虚拟键盘',close:'收起',
+        input_paused:'输入已暂停',input_captured:'相对鼠标已捕获',input_click_to_capture:'点击画面捕获鼠标',input_forwarding:'键鼠正在转发',input_released:'已释放所有按键与鼠标锁定',
+        theme_dark:'深色模式',theme_light:'浅色模式',theme_system:'跟随系统',switch_theme:'切换外观主题',
+        connecting:'正在连接…',video_connecting:'正在连接视频…',video_paused:'视频已暂停',device_offline:'设备离线',
+        collapse_inspector:'收起面板',open_inspector:'控制面板',lang_name:'简',
+        passkey_title:'Passkey 通行密钥',passkey_desc:'绑定 Apple Touch ID / Face ID，无需密码快速登录',
+        passkey_add:'+ 绑定此设备',passkey_signin:'使用 Passkey (Touch ID / Face ID) 登录',passkey_none:'尚未绑定任何 Passkey',
+        passkey_delete:'删除',passkey_prompt_name:'为新 Passkey 命名（例如：MacBook Pro、iPhone）：',
+        passkey_insecure:'⚠️ Passkey 需要在安全连接（HTTPS 或 localhost）下使用',
+        passkey_ip_warn:'⚠️ WebAuthn 规范要求使用域名（如 localhost 或 wingman.local），不支持 IP 地址',
+        passkey_added_success:'Passkey 绑定成功！',passkey_delete_confirm:'确定要删除此 Passkey 吗？',
+        settings:'设置',settings_title:'全局偏好设置',settings_desc:'配置交互反馈、通知拦截与全局渲染偏好',
+        settings_group_input:'交互与通知',
+        settings_suppress_hid:'屏蔽 HID 写入超时警告',settings_suppress_hid_desc:'在纯 Linux 环境或被控端未开机时，忽略鼠标与键盘写入超时 (writable timeout) 弹窗警告',
+        settings_capture_pulse:'接管边缘微光脉冲',settings_capture_pulse_desc:'激活键鼠转发时，在远端画面边缘显示光晕视觉反馈',
+        settings_release_toast:'按键释放提示',settings_release_toast_desc:'执行「释放按键」或切换控制权时弹出状态提示',
+        settings_group_display:'画面与渲染',
+        settings_render_pixelated:'像素锐利渲染 (Pixelated)',settings_render_pixelated_desc:'近邻采样字符边缘无模糊滤镜，适合 BIOS 与纯文本终端',
+        settings_auto_inspector:'宽屏默认展开面板',settings_auto_inspector_desc:'屏幕宽度充足时，进入控制台默认展开右侧控制面板',
+        settings_group_system:'系统与重置',
+        settings_reset_btn:'恢复默认设置',settings_reset_desc:'清除所有保存在本机的偏好设置并还原为初始默认值',
+        settings_reset_action:'还原',settings_reset_confirm:'确定要恢复所有全局偏好设置为默认值吗？',settings_reset_done:'已恢复默认设置',settings_saved:'设置已保存'
+      },
+      'zh-TW': {
+        power:'電源',power_status:'電源狀態',short_press:'短按電源開機/關機',reset_pc:'重置重啟 (Reset)',force_off:'強制關機 (長按 5 秒)',
+        keyboard:'鍵盤',inspector:'控制面板',inspector_close:'收起',
+        diag_title:'連線與設備診斷',diag_transport:'視訊傳輸鏈路',diag_resolution:'採集畫面解析度',diag_input:'鍵鼠控制模式',diag_power_led:'被控機電源 LED',diag_reconnect:'重新連線視訊',diag_scan:'掃描設備',
+        tab_remote_screen:'遠端畫面',tab_terminal:'終端機',release_keys:'釋放按鍵',reconnect:'重新連線',clear:'清除',mode_fit:'適應',fullscreen:'全螢幕',exit_fullscreen:'退出全螢幕',
+        tab_control:'控制',tab_video:'視訊',tab_devices:'設備',tab_media:'媒體',remote_control:'遠端控制',forward_input:'轉發鍵鼠',
+        short_press_btn:'短按電源',reset_btn:'重置',force_off_btn:'強制關機',refresh:'重新整理',
+        preset_desktop:'🖥️ 桌面最佳化 (1080p 60fps 8M)',preset_bios:'⚙️ BIOS/UEFI (720p 30fps MJPEG)',preset_bandwidth:'⚡ 低頻寬省流 (720p 25fps 2M)',
+        apply:'套用',rescan:'重新檢測',save:'儲存',upload:'上傳',logout:'登出',virtual_keyboard:'虛擬鍵盤',close:'收起',
+        input_paused:'輸入已暫停',input_captured:'相對滑鼠已捕獲',input_click_to_capture:'點擊畫面捕獲滑鼠',input_forwarding:'鍵鼠正在轉發',input_released:'已釋放所有按鍵與滑鼠鎖定',
+        theme_dark:'深色模式',theme_light:'淺色模式',theme_system:'跟隨系統',switch_theme:'切換外觀主題',
+        connecting:'正在連線…',video_connecting:'正在連線視訊…',video_paused:'視訊已暫停',device_offline:'設備離線',
+        collapse_inspector:'收起面板',open_inspector:'控制面板',lang_name:'繁',
+        passkey_title:'Passkey 通行密鑰',passkey_desc:'綁定 Apple Touch ID / Face ID，無需密碼快速登入',
+        passkey_add:'+ 綁定此設備',passkey_signin:'使用 Passkey (Touch ID / Face ID) 登入',passkey_none:'尚未綁定任何 Passkey',
+        passkey_delete:'刪除',passkey_prompt_name:'為新 Passkey 命名（例如：MacBook Pro、iPhone）：',
+        passkey_insecure:'⚠️ Passkey 需要在安全連線（HTTPS 或 localhost）下使用',
+        passkey_ip_warn:'⚠️ WebAuthn 規範要求使用網域名稱（如 localhost 或 wingman.local），不支援 IP 位址',
+        passkey_added_success:'Passkey 綁定成功！',passkey_delete_confirm:'確定要刪除此 Passkey 嗎？',
+        settings:'設定',settings_title:'全局偏好設定',settings_desc:'配置交互反饋、通知攔截與全局渲染偏好',
+        settings_group_input:'交互與通知',
+        settings_suppress_hid:'屏蔽 HID 寫入逾時警告',settings_suppress_hid_desc:'在純 Linux 環境或被控端未開機時，忽略滑鼠與鍵盤寫入逾時 (writable timeout) 彈窗警告',
+        settings_capture_pulse:'接管邊緣微光脈衝',settings_capture_pulse_desc:'激活鍵鼠轉發時，在遠端畫面邊緣顯示光暈視覺反饋',
+        settings_release_toast:'按鍵釋放提示',settings_release_toast_desc:'執行「釋放按鍵」或切換控制權時彈出狀態提示',
+        settings_group_display:'畫面與渲染',
+        settings_render_pixelated:'像素銳利渲染 (Pixelated)',settings_render_pixelated_desc:'近鄰採樣字符邊緣無模糊濾鏡，適合 BIOS 與純文本終端',
+        settings_auto_inspector:'寬螢幕預設展開面板',settings_auto_inspector_desc:'螢幕寬度充足時，進入控制台預設展開右側控制面板',
+        settings_group_system:'系統與重設',
+        settings_reset_btn:'恢復預設設定',settings_reset_desc:'清除所有保存在本機的偏好設定並還原為初始預設值',
+        settings_reset_action:'還原',settings_reset_confirm:'確定要恢復所有全局偏好設定為預設值嗎？',settings_reset_done:'已恢復預設設定',settings_saved:'設定已儲存'
+      },
+      'en': {
+        power:'Power',power_status:'Power Status',short_press:'Power On / Off (Short Press)',reset_pc:'System Reset (Reset)',force_off:'Force Power Off (Hold 5s)',
+        keyboard:'Keyboard',inspector:'Inspector',inspector_close:'Collapse',
+        diag_title:'Diagnostics',diag_transport:'Video Transport',diag_resolution:'Capture Resolution',diag_input:'Input Mode',diag_power_led:'Target Power LED',diag_reconnect:'Reconnect Video',diag_scan:'Scan Devices',
+        tab_remote_screen:'Remote Screen',tab_terminal:'Terminal',release_keys:'Release Keys',reconnect:'Reconnect',clear:'Clear',mode_fit:'Fit',fullscreen:'Fullscreen',exit_fullscreen:'Exit Fullscreen',
+        tab_control:'Control',tab_video:'Video',tab_devices:'Devices',tab_media:'Media',remote_control:'Remote Control',forward_input:'Forward Input',
+        short_press_btn:'Power',reset_btn:'Reset',force_off_btn:'Force Off',refresh:'Refresh',
+        preset_desktop:'🖥️ Desktop (1080p 60fps 8M)',preset_bios:'⚙️ BIOS/UEFI (720p 30fps MJPEG)',preset_bandwidth:'⚡ Low Bandwidth (720p 25fps 2M)',
+        apply:'Apply',rescan:'Rescan',save:'Save',upload:'Upload',logout:'Log Out',virtual_keyboard:'Virtual Keyboard',close:'Close',
+        input_paused:'Input Paused',input_captured:'Relative Mouse Captured',input_click_to_capture:'Click to Capture Mouse',input_forwarding:'Input Active',input_released:'All keys and pointer locks released',
+        theme_dark:'Dark Mode',theme_light:'Light Mode',theme_system:'System Theme',switch_theme:'Toggle Theme',
+        connecting:'Connecting…',video_connecting:'Connecting video…',video_paused:'Video paused',device_offline:'Device offline',
+        collapse_inspector:'Collapse',open_inspector:'Inspector',lang_name:'EN',
+        passkey_title:'Passkey Credentials',passkey_desc:'Sign in with Apple Touch ID / Face ID or Windows Hello',
+        passkey_add:'+ Add This Device',passkey_signin:'Sign in with Passkey',passkey_none:'No Passkeys registered yet',
+        passkey_delete:'Delete',passkey_prompt_name:'Enter a name for this Passkey (e.g. MacBook Pro, iPhone):',
+        passkey_insecure:'⚠️ Passkey requires a secure context (HTTPS or localhost)',
+        passkey_ip_warn:'⚠️ WebAuthn requires a domain name (e.g. localhost or wingman.local), IP addresses not supported',
+        passkey_added_success:'Passkey registered successfully!',passkey_delete_confirm:'Are you sure you want to delete this Passkey?',
+        settings:'Settings',settings_title:'Global Preferences',settings_desc:'Configure interaction feedback, alert silencing, and rendering preferences',
+        settings_group_input:'Interaction & Alerts',
+        settings_suppress_hid:'Silence HID Timeout Warnings',settings_suppress_hid_desc:'Suppress popup warnings when mouse/keyboard /dev/hidg device times out waiting to become writable',
+        settings_capture_pulse:'Input Capture Edge Glow',settings_capture_pulse_desc:'Display a subtle blue edge glow feedback when activating remote keyboard/mouse capture',
+        settings_release_toast:'Key Release Notification',settings_release_toast_desc:'Show toast notification when releasing held keys or toggling remote input',
+        settings_group_display:'Display & Rendering',
+        settings_render_pixelated:'Pixelated Sharp Scaling',settings_render_pixelated_desc:'Disable bilinear blur filtering for crisp characters in BIOS and text terminals',
+        settings_auto_inspector:'Auto-expand Inspector on Wide Screens',settings_auto_inspector_desc:'Automatically keep the right-hand Inspector open on large screens',
+        settings_group_system:'System & Reset',
+        settings_reset_btn:'Reset to Defaults',settings_reset_desc:'Clear all locally stored preferences and restore initial default values',
+        settings_reset_action:'Reset',settings_reset_confirm:'Are you sure you want to reset all preferences to defaults?',settings_reset_done:'Preferences reset to defaults',settings_saved:'Settings saved'
+      }
+    };
+    let currentLang = 'zh-CN';
+    function t(key, fallback = '') { return I18N[currentLang]?.[key] ?? I18N['zh-CN']?.[key] ?? fallback ?? key; }
+    function updateI18nElements() {
+      $$('[data-i18n]').forEach(el => {
+        const key = el.dataset.i18n;
+        if (key && I18N[currentLang]?.[key]) el.textContent = I18N[currentLang][key];
+      });
+      const langLabel = $('#lang-current-label');
+      if (langLabel) langLabel.textContent = I18N[currentLang]?.lang_name || '简';
+      $$('[data-lang]').forEach(btn => btn.classList.toggle('active', btn.dataset.lang === currentLang));
+    }
+    function setLanguage(lang) {
+      currentLang = ['zh-CN','zh-TW','en'].includes(lang) ? lang : 'zh-CN';
+      try { localStorage.setItem('wingman_lang', currentLang); } catch (_) {}
+      document.documentElement.lang = currentLang;
+      updateI18nElements();
+      syncInputUi();
+      renderVideoUi();
+      if (app.classList.contains('inspector-open')) {
+        $('#inspector-toggle').textContent = t('collapse_inspector', '收起面板');
+      } else {
+        $('#inspector-toggle').textContent = t('open_inspector', '控制面板');
+      }
+      if (!app.classList.contains('hidden')) {
+        refreshPasskeys();
+      } else if (!loginForm.classList.contains('hidden')) {
+        updateLoginPasskeyUI();
+      }
+    }
+    function getPreferredTheme() { try { return localStorage.getItem('wingman_theme') || 'system'; } catch (_) { return 'system'; } }
+    function applyTheme(theme) {
+      const root = document.documentElement, darkIcon = $('.theme-icon-dark'), lightIcon = $('.theme-icon-light'), toggleBtn = $('#theme-toggle');
+      if (theme === 'dark') {
+        root.setAttribute('data-theme', 'dark');
+        darkIcon?.classList.add('hidden'); lightIcon?.classList.remove('hidden');
+        if (toggleBtn) toggleBtn.title = t('theme_dark', '深色模式');
+      } else if (theme === 'light') {
+        root.setAttribute('data-theme', 'light');
+        darkIcon?.classList.remove('hidden'); lightIcon?.classList.add('hidden');
+        if (toggleBtn) toggleBtn.title = t('theme_light', '浅色模式');
+      } else {
+        root.removeAttribute('data-theme');
+        const isDark = matchMedia('(prefers-color-scheme: dark)').matches;
+        darkIcon?.classList.toggle('hidden', isDark); lightIcon?.classList.toggle('hidden', !isDark);
+        if (toggleBtn) toggleBtn.title = t('theme_system', '跟随系统');
+      }
+      try { localStorage.setItem('wingman_theme', theme); } catch (_) {}
+    }
+    function toggleTheme() {
+      const cur = getPreferredTheme();
+      const next = cur === 'system' ? 'dark' : cur === 'dark' ? 'light' : 'system';
+      document.documentElement.classList.add('theme-switching');
+      applyTheme(next);
+      toast(t(next === 'dark' ? 'theme_dark' : next === 'light' ? 'theme_light' : 'theme_system'));
+      setTimeout(() => document.documentElement.classList.remove('theme-switching'), 220);
+    }
+    matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+      if (getPreferredTheme() === 'system') {
+        document.documentElement.classList.add('theme-switching');
+        applyTheme('system');
+        setTimeout(() => document.documentElement.classList.remove('theme-switching'), 220);
+      }
+    });
     let activeHelp = null, helpTimer = 0;
     function positionFieldTooltip() {
       if (!activeHelp || fieldTooltip.hidden) return;
@@ -270,8 +684,16 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     function hardwareFrom(form) { const mouse=value(form,'mouse_device')||null,absolute=value(form,'absolute_pointer_device')||null,selected=value(form,'pointer_mode')==='relative'?'relative':'absolute';return {video_device:value(form,'video_device')||null,keyboard_device:value(form,'keyboard_device')||null,mouse_device:mouse,absolute_pointer_device:absolute,pointer_mode:selected,power_enabled:form.elements.power_enabled.checked,gpio_chip:value(form,'gpio_chip')||null,gpio_line:optionalNumber(value(form,'gpio_line')),active_high:value(form,'active_high')!=='false',media_enabled:form.elements.media_enabled.checked,lun_path:value(form,'lun_path')||null,image_directory:value(form,'image_directory')||null}; }
     function showState(state) {
       $('#boot-panel').classList.add('hidden'); setupForm.classList.toggle('hidden', state !== 'setup'); loginForm.classList.toggle('hidden', state !== 'login'); authView.classList.toggle('hidden', state === 'main'); app.classList.toggle('hidden', state !== 'main');if(state!=='setup')closeSetupGuide(false);
-      if (state === 'main') { pageActive=!document.hidden; applyBootstrap(); startVideo(); refreshStatus(); scanDevices(); if(matchMedia('(max-width:900px)').matches)setInspectorOpen(false); if(bootstrap.capabilities?.mass_storage)refreshMedia();else $('#media-list').textContent='虚拟介质尚未配置'; requestAnimationFrame(()=>viewport.focus({preventScroll:true})); }
-      else { stopInput(); stopVideo(); requestAnimationFrame(()=>$(state==='setup'?'#setup-form h2':'#login-form h2')?.focus()); }
+      if (state === 'main') {
+        pageActive=!document.hidden; applyBootstrap(); startVideo(); refreshStatus(); scanDevices();
+        let defaultOpen=!matchMedia('(max-width:900px)').matches;
+        try{const saved=localStorage.getItem('wingman_inspector_open');if(saved!==null)defaultOpen=saved==='true';}catch(_){}
+        setInspectorOpen(defaultOpen);
+        if(bootstrap.capabilities?.mass_storage)refreshMedia();else $('#media-list').textContent='虚拟介质尚未配置';
+        refreshPasskeys();
+        requestAnimationFrame(()=>viewport.focus({preventScroll:true}));
+      }
+      else { stopInput(); stopVideo(); if (state === 'login') updateLoginPasskeyUI(); requestAnimationFrame(()=>$(state==='setup'?'#setup-form h2':'#login-form h2')?.focus()); }
     }
     function consumeSetupToken() { const params=new URLSearchParams(location.hash.slice(1)),token=params.get('setup');if(!token)return;setupForm.elements.setup_token.value=token;$('#setup-token-field').classList.add('hidden');history.replaceState(null,'',`${location.pathname}${location.search}`); }
     async function start() {
@@ -295,7 +717,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       try { await request('/api/login',{method:'POST',body:JSON.stringify({username:value(loginForm,'username'),password:rawValue(loginForm,'password')})}); bootstrap = await request('/api/bootstrap'); showState(bootstrap.authenticated?'main':'login'); }
       catch (e) { error.textContent = e.message; } finally { button.disabled = false; button.textContent=label; loginForm.setAttribute('aria-busy','false'); }
     });
-    $('#logout').addEventListener('click', async () => { await stopInput(); try { await request('/api/logout',{method:'POST'}); } finally { bootstrap.authenticated=false; showState('login'); } });
+    $('#logout').addEventListener('click', async () => { await stopInput(); try { await request('/api/logout',{method:'POST'}); } finally { bootstrap.authenticated=false; try { bootstrap = await request('/api/bootstrap'); } catch(_) {} showState('login'); } });
 
     function unwrapConfig(source) { return source?.config || source || {}; }
     const resolutionPresets = new Set(['3840x2160','2560x1440','1920x1080','1280x720','720x480']);
@@ -373,12 +795,12 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       df.elements.power_enabled.checked = !!power.enabled; df.elements.gpio_chip.value = power.gpio_chip ?? ''; df.elements.gpio_line.value = power.gpio_line ?? ''; df.elements.active_high.value = power.active_high === false ? 'false' : 'true';
       const reset=power.reset_switch||{},led=power.power_led||{}; df.elements.reset_gpio_chip.value=reset.gpio_chip??''; df.elements.reset_gpio_line.value=reset.gpio_line??''; df.elements.reset_active_high.value=reset.active_high===false?'false':'true'; df.elements.reset_pulse_ms.value=reset.pulse_ms??''; df.elements.power_led_gpio_chip.value=led.gpio_chip??''; df.elements.power_led_gpio_line.value=led.gpio_line??''; df.elements.power_led_active_low.value=led.active_low===false?'false':'true'; df.elements.power_led_bias.value=led.bias||'pull_up'; df.elements.power_led_poll_interval_ms.value=led.poll_interval_ms??''; df.elements.power_led_debounce_ms.value=led.debounce_ms??'';
       mf.elements.enabled.checked = !!media.enabled; if (media.lun_path != null) mf.elements.lun_path.value = media.lun_path; if (media.lun_file != null && !media.lun_path) mf.elements.lun_path.value = media.lun_file; if (media.image_directory != null) mf.elements.image_directory.value = media.image_directory;
-      $$('.power-row form[action="/power"] button').forEach(button=>button.disabled=bootstrap.capabilities?.gpio_power!==true);
-      $$('.power-row form[action="/reset"] button').forEach(button=>button.disabled=bootstrap.capabilities?.gpio_reset!==true);
       $('#quality-value').textContent = vf.elements.jpeg_quality.value; $('#session-user').textContent = bootstrap.username || bootstrap.user?.username || '管理员';if(bootstrap.capabilities?.pointer_mode==='absolute'&&relativeCaptured())document.exitPointerLock();syncInputUi();syncTransportControl(); syncGpioControls(); renderPowerLed(latestPowerStatus);
     }
     function syncGpioControls() {
       const caps=bootstrap.capabilities||{};
+      $$('[data-power-action="press"],[data-power-action="force-off"]').forEach(b=>b.disabled=caps.gpio_power!==true);
+      $$('[data-power-action="reset"]').forEach(b=>b.disabled=caps.gpio_reset!==true);
       $$('[data-gpio-test="power"]').forEach(button=>button.disabled=gpioTestBusy||caps.gpio_power!==true);
       $$('[data-gpio-test="reset"]').forEach(button=>button.disabled=gpioTestBusy||caps.gpio_reset!==true);
       $$('[data-power-led-refresh]').forEach(button=>button.disabled=caps.gpio_power_led!==true);
@@ -388,36 +810,74 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       if(!dots.length||!states.length)return;
       dots.forEach(dot=>dot.classList.remove('online','warning','error'));
       const show=(label,tone='')=>{states.forEach(state=>state.textContent=label);if(tone)dots.forEach(dot=>dot.classList.add(tone));};
-      if(led.configured===false){show('未配置');return;}
-      if(led.sense_error){show('读取失败','error');return;}
+      if(led.configured===false){show('未配置');updateDiagnosticsCard();return;}
+      if(led.sense_error){show('读取失败','error');updateDiagnosticsCard();return;}
       const ledState=led.state||(led.active===true?'on':led.active===false?'off':'unknown');
-      if(ledState==='on'){show('亮','online');return;}
-      if(ledState==='off'){show('灭');return;}
-      show('未知','warning');
+      if(ledState==='on'){show('亮','online');updateDiagnosticsCard();return;}
+      if(ledState==='off'){show('灭');updateDiagnosticsCard();return;}
+      show('未知','warning');updateDiagnosticsCard();
     }
-    $('#video-config').elements.resolution_preset.addEventListener('change',syncVideoPresets);
-    $('#video-config').elements.virtual_monitor.addEventListener('change',()=>syncVirtualMonitorControl(true));
-    $('#video-config').elements.fps_preset.addEventListener('change',syncVideoPresets);
-    $('#video-config').elements.h264_bitrate_preset.addEventListener('change',syncH264Preset);
-    $('#video-config').elements.transport.addEventListener('change',event=>setVideoPreference(event.target.value));
-    $('#video-config').elements.display_scale.addEventListener('change',event=>setDisplayScale(event.target.value,true));
-    $('#video-config').elements.rendering.addEventListener('change',event=>setVideoRendering(event.target.value,true));
-    $('#video-config').elements.jpeg_quality.addEventListener('input', event => $('#quality-value').textContent = event.target.value);
-    setDisplayScale(readVideoUiPreference('scale','fit'));
-    setVideoRendering(readVideoUiPreference('rendering','pixelated'));
-    syncTransportControl();
-    $$('.power-row form').forEach(form=>form.addEventListener('submit',async event=>{
-      if(event.defaultPrevented)return;
-      event.preventDefault();
-      const button=$('button[type=submit]',form), label=button.textContent, resetAction=new URL(form.action).pathname==='/reset', actionLabel=resetAction?'复位':'电源';
-      button.disabled=true; button.textContent='执行中…';
-      try {
-        const response=await fetch(form.action,{method:'POST',body:new URLSearchParams(new FormData(form)),credentials:'same-origin'});
+    const powerMenuToggle=$('#power-menu-toggle'),powerMenu=$('#power-menu');
+    powerMenuToggle?.addEventListener('click',event=>{
+      event.stopPropagation();
+      const open=!powerMenu.hasAttribute('hidden');
+      if(open){powerMenu.setAttribute('hidden','');powerMenuToggle.setAttribute('aria-expanded','false');}
+      else{powerMenu.removeAttribute('hidden');powerMenuToggle.setAttribute('aria-expanded','true');$('#diagnostics-popover')?.setAttribute('hidden','');$('#diagnostics-toggle')?.setAttribute('aria-expanded','false');$('#lang-menu')?.setAttribute('hidden','');$('#lang-toggle')?.setAttribute('aria-expanded','false');}
+    });
+    const langToggle=$('#lang-toggle'),langMenu=$('#lang-menu');
+    langToggle?.addEventListener('click',event=>{
+      event.stopPropagation();
+      const open=!langMenu.hasAttribute('hidden');
+      if(open){langMenu.setAttribute('hidden','');langToggle.setAttribute('aria-expanded','false');}
+      else{langMenu.removeAttribute('hidden');langToggle.setAttribute('aria-expanded','true');powerMenu?.setAttribute('hidden','');powerMenuToggle?.setAttribute('aria-expanded','false');$('#diagnostics-popover')?.setAttribute('hidden','');$('#diagnostics-toggle')?.setAttribute('aria-expanded','false');}
+    });
+    $$('[data-lang]').forEach(btn=>btn.addEventListener('click',()=>{setLanguage(btn.dataset.lang);langMenu?.setAttribute('hidden','');langToggle?.setAttribute('aria-expanded','false');}));
+    $('#theme-toggle')?.addEventListener('click',toggleTheme);
+    const diagToggle=$('#diagnostics-toggle'),diagPopover=$('#diagnostics-popover');
+    function updateDiagnosticsCard(){
+      if(!diagPopover||diagPopover.hasAttribute('hidden'))return;
+      $('#diag-transport').textContent=activeVideoTransport==='webrtc_h264'?'WebRTC (H.264)':activeVideoTransport==='mjpeg'?'MJPEG':'未连接';
+      const w=latestVideoStatus?.width,h=latestVideoStatus?.height,fps=latestVideoStatus?.frames_per_second;
+      $('#diag-resolution').textContent=w&&h?`${w} × ${h}${fps?` @ ${Math.round(fps)} FPS`:''}`:'--';
+      $('#diag-input-mode').textContent=!inputEnabled()?'已暂停':absoluteMode()?'绝对指针 (USB Tablet)':relativeCaptured()?'相对鼠标 (已捕获)':'相对鼠标 (未捕获)';
+      const led=latestPowerStatus?.power_led;
+      const ledOn=led?.state==='on'||led?.active===true;
+      const ledOff=led?.state==='off'||led?.active===false;
+      $('#diag-power-led').textContent=ledOn?'已开机 (LED 亮)':ledOff?'已关机 (LED 灭)':led?.configured===false?'未配置':'未知';
+    }
+    diagToggle?.addEventListener('click',event=>{
+      event.stopPropagation();
+      const open=!diagPopover.hasAttribute('hidden');
+      if(open){diagPopover.setAttribute('hidden','');diagToggle.setAttribute('aria-expanded','false');}
+      else{diagPopover.removeAttribute('hidden');diagToggle.setAttribute('aria-expanded','true');powerMenu?.setAttribute('hidden','');powerMenuToggle?.setAttribute('aria-expanded','false');langMenu?.setAttribute('hidden','');langToggle?.setAttribute('aria-expanded','false');updateDiagnosticsCard();}
+    });
+    $('#diagnostics-close')?.addEventListener('click',()=>{diagPopover?.setAttribute('hidden','');diagToggle?.setAttribute('aria-expanded','false');});
+    $('#diagnostics-reconnect')?.addEventListener('click',()=>{diagPopover?.setAttribute('hidden','');diagToggle?.setAttribute('aria-expanded','false');restartVideo();toast('已重新连接视频');});
+    $('#diagnostics-scan')?.addEventListener('click',()=>{diagPopover?.setAttribute('hidden','');diagToggle?.setAttribute('aria-expanded','false');scanDevices();toast('已触发设备扫描');});
+    document.addEventListener('click',event=>{
+      if(!event.target.closest('.power-menu-container')){powerMenu?.setAttribute('hidden','');powerMenuToggle?.setAttribute('aria-expanded','false');}
+      if(!event.target.closest('.diagnostics-popover')&&!event.target.closest('#diagnostics-toggle')){diagPopover?.setAttribute('hidden','');diagToggle?.setAttribute('aria-expanded','false');}
+      if(!event.target.closest('.lang-menu-container')){langMenu?.setAttribute('hidden','');langToggle?.setAttribute('aria-expanded','false');}
+    });
+    async function executePowerAction(action) {
+      const caps=bootstrap.capabilities||{};
+      if(action==='reset'&&caps.gpio_reset!==true){toast('复位引脚未配置',true);return;}
+      if((action==='press'||action==='force-off')&&caps.gpio_power!==true){toast('电源引脚未配置',true);return;}
+      let url='/power',duration='0.5',label='电源';
+      if(action==='reset'){if(!confirm('确定复位吗？'))return;url='/reset';duration='0.5';label='复位';}
+      else if(action==='force-off'){if(!confirm('确定长按电源 5 秒吗？这可能强制关机。'))return;url='/power';duration='5';label='强制关机';}
+      else{label='短按电源';}
+      toast(`${label}操作已发送…`);
+      try{
+        const response=await fetch(url,{method:'POST',body:new URLSearchParams({duration}),credentials:'same-origin'});
         const type=response.headers.get('content-type')||'';const data=type.includes('json')?await response.json():await response.text();
-        if(!response.ok) throw new Error((data&&data.error)||data||`${actionLabel}操作失败`);
-        toast(`${actionLabel}操作已执行`);
-      } catch(error) { toast(error.message||`${actionLabel}操作失败`,true); }
-      finally { button.textContent=label;button.disabled=resetAction?bootstrap.capabilities?.gpio_reset!==true:bootstrap.capabilities?.gpio_power!==true; }
+        if(!response.ok)throw new Error((data&&data.error)||data||`${label}操作失败`);
+        toast(`${label}操作已执行`);setTimeout(refreshStatus,1000);
+      }catch(error){toast(error.message||`${label}操作失败`,true);}
+    }
+    $$('[data-power-action]').forEach(button=>button.addEventListener('click',()=>{
+      powerMenu?.setAttribute('hidden','');powerMenuToggle?.setAttribute('aria-expanded','false');
+      executePowerAction(button.dataset.powerAction);
     }));
     async function runGpioTest(target,button){
       if(gpioTestBusy||button.disabled)return;
@@ -435,6 +895,33 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       catch(e){if(requestId===videoConfigRequestId)toast(e.message,true);}
       finally {if(requestId===videoConfigRequestId){button.disabled=false;button.textContent=label;if(shouldVideoRun())startVideo(true);}}
     });
+    $$('[data-video-preset]').forEach(chip=>chip.addEventListener('click',()=>{
+      $$('.preset-chip').forEach(c=>c.classList.toggle('active',c===chip));
+      const preset=chip.dataset.videoPreset,form=$('#video-config');
+      if(preset==='desktop'){
+        form.elements.transport.value='auto';setVideoPreference('auto');
+        form.elements.resolution_preset.value='1920x1080';
+        form.elements.fps_preset.value='60';
+        form.elements.h264_bitrate_preset.value='8000';
+        setDisplayScale('fit',true);setVideoRendering('smooth',true);
+        toast(t('preset_desktop_applied','已加载桌面优化预设 (1080p 60fps 8M)'));
+      }else if(preset==='bios'){
+        form.elements.transport.value='mjpeg';setVideoPreference('mjpeg');
+        form.elements.resolution_preset.value='1280x720';
+        form.elements.fps_preset.value='30';
+        form.elements.h264_bitrate_preset.value='4000';
+        setDisplayScale('native',true);setVideoRendering('pixelated',true);
+        toast(t('preset_bios_applied','已加载 BIOS/UEFI 预设 (720p 30fps MJPEG 像素锐利)'));
+      }else if(preset==='bandwidth'){
+        form.elements.transport.value='auto';setVideoPreference('auto');
+        form.elements.resolution_preset.value='1280x720';
+        form.elements.fps_preset.value='24';
+        form.elements.h264_bitrate_preset.value='2000';
+        setDisplayScale('fit',true);setVideoRendering('smooth',true);
+        toast(t('preset_bandwidth_applied','已加载低带宽省流预设 (720p 24fps 2M)'));
+      }
+      syncVideoPresets();syncH264Preset();
+    }));
     function gpioPulseFrom(form){const chip=value(form,'reset_gpio_chip'),rawLine=value(form,'reset_gpio_line');if(!chip&&!rawLine)return null;if(!chip||!rawLine)throw new Error('RESET SW 需要芯片和线路');return {gpio_chip:chip,gpio_line:Number(rawLine),active_high:value(form,'reset_active_high')!=='false',pulse_ms:optionalNumber(value(form,'reset_pulse_ms'))??500};}
     function gpioInputFrom(form){const chip=value(form,'power_led_gpio_chip'),rawLine=value(form,'power_led_gpio_line');if(!chip&&!rawLine)return null;if(!chip||!rawLine)throw new Error('PWR LED 需要芯片和线路');return {gpio_chip:chip,gpio_line:Number(rawLine),active_low:value(form,'power_led_active_low')!=='false',bias:value(form,'power_led_bias')||'pull_up',poll_interval_ms:optionalNumber(value(form,'power_led_poll_interval_ms'))??1000,debounce_ms:optionalNumber(value(form,'power_led_debounce_ms'))??50};}
     $('#device-config').addEventListener('submit', async event => {
@@ -492,7 +979,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       if(serverUnavailable){label.textContent=latestVideoStatus?.message||'设备离线';meta.textContent=mode;return;}
       if(videoUiState==='playing'){const fps=latestVideoStatus?.frames_per_second;label.textContent=videoFallback?'MJPEG · H.264 回退':`${mode}${fps?` · ${Math.round(fps)} FPS`:''}`;meta.textContent=`LIVE / ${mode}`;return;}
       if(videoUiState==='fallback'){label.textContent='MJPEG · H.264 回退';meta.textContent='MJPEG';return;}
-      label.textContent=videoUiState==='connecting'?`正在连接 ${mode}…`:'视频连接中';meta.textContent=mode;
+      label.textContent=videoUiState==='connecting'?`正在连接 ${mode}…`:'视频连接中';meta.textContent=mode;updateDiagnosticsCard();
     }
     function setVideoState(state,transport=activeVideoTransport){activeVideoTransport=transport;videoUiState=state;renderVideoUi();}
     function clearVideoTimers(){clearTimeout(reconnectTimer);clearTimeout(videoFirstFrameTimer);reconnectTimer=0;videoFirstFrameTimer=0;}
@@ -529,22 +1016,67 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     $('#mode-button').addEventListener('click',()=>setDisplayScale(displayModes[(modeIndex+1)%displayModes.length][0],true));
     async function toggleFullscreen(){try{if(document.fullscreenElement)await document.exitFullscreen();else await consoleBox.requestFullscreen();}catch(e){toast(e.message,true);}}
     $$('#fullscreen,[data-viewer-fullscreen]').forEach(button=>button.addEventListener('click',toggleFullscreen));
-    document.addEventListener('fullscreenchange',()=>{$$('[data-viewer-fullscreen]').forEach(button=>button.textContent=document.fullscreenElement?'退出全屏':'进入全屏');});
+    document.addEventListener('fullscreenchange',()=>{$$('[data-viewer-fullscreen]').forEach(button=>button.textContent=document.fullscreenElement?t('exit_fullscreen','退出全屏'):t('fullscreen','进入全屏'));if(!document.fullscreenElement)$('#console-head')?.classList.remove('revealed');});
+    document.addEventListener('pointermove',event=>{if(!document.fullscreenElement)return;const head=$('#console-head');if(!head)return;if(event.clientY<48)head.classList.add('revealed');else if(event.clientY>84&&!head.matches(':hover')&&!head.contains(document.activeElement))head.classList.remove('revealed');});
 
-    let drag=null; $('#console-head').addEventListener('pointerdown',event=>{if(event.button!==0||event.target.closest('button,input,select,a')||matchMedia('(max-width:900px)').matches)return;const r=consoleBox.getBoundingClientRect(),w=$('#workspace').getBoundingClientRect();drag={x:event.clientX-r.left,y:event.clientY-r.top,wx:w.left,wy:w.top};event.currentTarget.setPointerCapture(event.pointerId);});
+    let drag=null; $('#console-head').addEventListener('pointerdown',event=>{if(event.button!==0||event.target.closest('button,input,select,a')||matchMedia('(max-width:900px)').matches)return;const r=consoleBox.getBoundingClientRect(),w=$('#workspace').getBoundingClientRect();drag={x:event.clientX-r.left,y:event.clientY-r.top,wx:w.left,wy:w.top};consoleBox.classList.add('dragging');event.currentTarget.setPointerCapture(event.pointerId);});
     $('#console-head').addEventListener('pointermove',event=>{if(!drag)return;const area=$('#workspace').getBoundingClientRect();const left=Math.max(0,Math.min(event.clientX-area.left-drag.x,area.width-consoleBox.offsetWidth));const top=Math.max(0,Math.min(event.clientY-area.top-drag.y,area.height-consoleBox.offsetHeight));consoleBox.style.left=`${left}px`;consoleBox.style.top=`${top}px`;});
-    $('#console-head').addEventListener('pointerup',()=>drag=null); $('#console-head').addEventListener('pointercancel',()=>drag=null);
+    const stopDrag=()=>{if(drag){drag=null;consoleBox.classList.remove('dragging');}};
+    $('#console-head').addEventListener('pointerup',stopDrag); $('#console-head').addEventListener('pointercancel',stopDrag);
+
+    const SETTING_DEFAULTS = {
+      suppress_hid_timeout: true,
+      capture_pulse: true,
+      release_key_toast: true,
+      render_pixelated: true,
+      auto_expand_inspector: true,
+    };
+    function getSetting(key, fallback = null) {
+      try {
+        const v = localStorage.getItem(`wingman_setting_${key}`);
+        if (v === null) return fallback !== null ? fallback : SETTING_DEFAULTS[key];
+        if (v === 'true') return true;
+        if (v === 'false') return false;
+        return v;
+      } catch (_) {
+        return fallback !== null ? fallback : SETTING_DEFAULTS[key];
+      }
+    }
+    function setSetting(key, value) {
+      try { localStorage.setItem(`wingman_setting_${key}`, String(value)); } catch (_) {}
+    }
+    let lastHidToast = 0;
+    function isHidWritableTimeoutError(message) {
+      if (!message) return false;
+      const msg = String(message).toLowerCase();
+      return msg.includes('writable') || msg.includes('timed out') || msg.includes('timeout') || msg.includes('超时') || msg.includes('未就绪');
+    }
+    function handleHidError(error) {
+      const message = (error && (error.message || error.error)) || String(error);
+      if (isHidWritableTimeoutError(message)) {
+        if (getSetting('suppress_hid_timeout', true)) return;
+        const now = performance.now();
+        if (now - lastHidToast < 10000) return;
+        lastHidToast = now;
+      }
+      toast(message, true);
+    }
 
     function interactiveTarget(target){ return !!target.closest('input,textarea,select,button,a,[contenteditable="true"],dialog'); }
     function inputEnabled(){ return remoteWanted && pageActive && videoWorkspace==='video' && !app.classList.contains('hidden'); }
     function relativeCaptured(){return document.pointerLockElement===viewport;}
-    function syncInputUi(){const enabled=inputEnabled(),relative=enabled&&!absoluteMode(),captured=relative&&relativeCaptured();$$('#remote-input,.remote-input-mirror').forEach(input=>input.checked=remoteWanted);viewport.classList.toggle('remote',enabled);$('#input-state').classList.toggle('active',enabled);$('#input-state').textContent=!enabled?'输入已暂停':relative?(captured?'相对鼠标已捕获':'点击画面捕获鼠标'):'键鼠正在转发';}
-    function setRemote(enabled){remoteWanted=enabled;if(!enabled&&relativeCaptured())document.exitPointerLock();syncInputUi();if(!enabled)releaseAll();}
+    function pulseViewport(){if(!getSetting('capture_pulse',true))return;viewport.classList.remove('just-captured');requestAnimationFrame(()=>{requestAnimationFrame(()=>{viewport.classList.add('just-captured');setTimeout(()=>viewport.classList.remove('just-captured'),450);});});}
+    function syncInputUi(){const enabled=inputEnabled(),relative=enabled&&!absoluteMode(),captured=relative&&relativeCaptured();$$('#remote-input,.remote-input-mirror').forEach(input=>input.checked=remoteWanted);viewport.classList.toggle('remote',enabled);$('#input-state').classList.toggle('active',enabled);$('#input-release')?.classList.toggle('hidden',!enabled);$('#input-state').textContent=!enabled?t('input_paused','输入已暂停'):relative?(captured?t('input_captured','相对鼠标已捕获'):t('input_click_to_capture','点击画面捕获鼠标')):t('input_forwarding','键鼠正在转发');updateDiagnosticsCard();}
+    function setRemote(enabled){remoteWanted=enabled;if(!enabled&&relativeCaptured())document.exitPointerLock();syncInputUi();if(!enabled)releaseAll();else pulseViewport();}
     $$('#remote-input,.remote-input-mirror').forEach(input=>input.addEventListener('change',event=>setRemote(event.target.checked)));
+    $('#input-state')?.addEventListener('click',()=>{setRemote(!remoteWanted);if(getSetting('release_key_toast',true))toast(remoteWanted?t('toast_input_started','已开启键鼠转发'):t('toast_input_paused','已暂停键鼠转发'));});
+    $('#input-release')?.addEventListener('click',async()=>{await releaseAll();if(relativeCaptured())document.exitPointerLock();if(getSetting('release_key_toast',true))toast(t('input_released','已释放所有按键与鼠标锁定'));});
     async function sendKey(key, event={}) { if(!inputEnabled()){toast('请先开启“转发键鼠”',true);return;} await request('/api/key',{method:'POST',body:JSON.stringify({key,ctrl:!!event.ctrlKey,shift:!!event.shiftKey,alt:!!event.altKey,meta:!!event.metaKey,hold_ms:key.startsWith('F')?100:25})}); }
-    document.addEventListener('keydown',event=>{if(!inputEnabled()||interactiveTarget(event.target)||event.repeat)return;const key=normalizeKey(event);if(!key)return;event.preventDefault();sendKey(key,event).catch(e=>toast(e.message,true));});
+    async function sendQuickKey(action){if(!inputEnabled())setRemote(true);try{if(action==='cad'){await request('/api/key',{method:'POST',body:JSON.stringify({key:'Delete',ctrl:true,alt:true,hold_ms:100})});toast('已发送 Ctrl+Alt+Del');}else if(action==='win'){await request('/api/key',{method:'POST',body:JSON.stringify({key:'Meta',meta:true,hold_ms:60})});toast('已发送 Win');}else if(action==='alttab'){await request('/api/key',{method:'POST',body:JSON.stringify({key:'Tab',alt:true,hold_ms:100})});toast('已发送 Alt+Tab');}else if(action==='esc'){await request('/api/key',{method:'POST',body:JSON.stringify({key:'Escape',hold_ms:40})});toast('已发送 Esc');}}catch(e){toast(e.message,true);}}
+    $$('[data-quick-key]').forEach(button=>button.addEventListener('click',()=>sendQuickKey(button.dataset.quickKey)));
+    document.addEventListener('keydown',event=>{if(!inputEnabled()||interactiveTarget(event.target)||event.repeat)return;const key=normalizeKey(event);if(!key)return;event.preventDefault();sendKey(key,event).catch(handleHidError);});
     function normalizeKey(event){const code=event.code;if(/^Key[A-Z]$/.test(code)||/^Digit[0-9]$/.test(code)||/^F(?:[1-9]|1[0-2])$/.test(code)||['Escape','Delete','Enter','Tab','Backspace','Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Home','End','PageUp','PageDown','Insert','Minus','Equal','BracketLeft','BracketRight','Backslash','Semicolon','Quote','Backquote','Comma','Period','Slash','CapsLock'].includes(code))return code;return null;}
-    $$('.key-strip [data-key]').forEach(button=>button.addEventListener('click',()=>sendKey(button.dataset.key).catch(e=>toast(e.message,true))));
+    $$('.key-strip [data-key]').forEach(button=>button.addEventListener('click',()=>sendKey(button.dataset.key).catch(handleHidError)));
     function releaseAll(){ mouseX=mouseY=0;absolutePending=null;if(app.classList.contains('hidden')||bootstrap.authenticated===false)return Promise.resolve(); return request('/api/input/release-all',{method:'POST',keepalive:true}).catch(()=>{}); }
     function stopInput(){pageActive=false;remoteWanted=false;if(relativeCaptured())document.exitPointerLock();syncInputUi();return releaseAll();}
     function suspendInput(){pageActive=false;if(relativeCaptured())document.exitPointerLock();syncInputUi();return releaseAll();}
@@ -563,14 +1095,27 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     }
     document.addEventListener('pointerlockchange',()=>{if(!relativeCaptured())mouseX=mouseY=0;syncInputUi();});document.addEventListener('pointerlockerror',()=>toast('浏览器未允许捕获鼠标',true));
     viewport.addEventListener('pointermove',event=>{if(!inputEnabled())return;if(absoluteMode()){const point=mapAbsolute(event.clientX,event.clientY);absolutePending=point;if(!point)return;}else{if(!relativeCaptured())return;mouseX+=event.movementX;mouseY+=event.movementY;}scheduleMouse();});
-    viewport.addEventListener('pointerdown',event=>{if(!inputEnabled()||event.button>2)return;event.preventDefault();viewport.focus({preventScroll:true});if(!absoluteMode()&&!relativeCaptured()){viewport.requestPointerLock?.();return;}const button=event.button===0?1:event.button===2?2:4;if(absoluteMode()){const point=mapAbsolute(event.clientX,event.clientY);absolutePending=point;if(!point)return;request('/api/mouse/absolute',{method:'POST',body:JSON.stringify({action:'click',...point,button})}).catch(e=>toast(e.message,true));}else request('/api/mouse/click',{method:'POST',body:JSON.stringify({button})}).catch(e=>toast(e.message,true));});
+    viewport.addEventListener('pointerdown',event=>{
+      if(event.button>2)return;
+      if(!inputEnabled()){
+        setRemote(true);
+        if(getSetting('release_key_toast',true))toast('已激活键鼠转发 (点击状态栏或关闭开关可暂停)');
+        viewport.focus({preventScroll:true});
+        return;
+      }
+      event.preventDefault();viewport.focus({preventScroll:true});
+      if(!absoluteMode()&&!relativeCaptured()){viewport.requestPointerLock?.();pulseViewport();return;}
+      const button=event.button===0?1:event.button===2?2:4;
+      if(absoluteMode()){const point=mapAbsolute(event.clientX,event.clientY);absolutePending=point;if(!point)return;request('/api/mouse/absolute',{method:'POST',body:JSON.stringify({action:'click',...point,button})}).catch(handleHidError);}
+      else request('/api/mouse/click',{method:'POST',body:JSON.stringify({button})}).catch(handleHidError);
+    });
     viewport.addEventListener('contextmenu',event=>{if(inputEnabled())event.preventDefault();});
-    viewport.addEventListener('wheel',event=>{if(!inputEnabled()||(!absoluteMode()&&!relativeCaptured()))return;event.preventDefault();const wheel=Math.max(-127,Math.min(127,Math.round(-event.deltaY/40)||Math.sign(-event.deltaY)));if(absoluteMode()){const point=mapAbsolute(event.clientX,event.clientY);absolutePending=point;if(!point)return;request('/api/mouse/absolute',{method:'POST',body:JSON.stringify({action:'scroll',...point,delta:wheel})}).catch(e=>toast(e.message,true));}else request('/api/mouse/scroll',{method:'POST',body:JSON.stringify({wheel})}).catch(e=>toast(e.message,true));},{passive:false});
+    viewport.addEventListener('wheel',event=>{if(!inputEnabled()||(!absoluteMode()&&!relativeCaptured()))return;event.preventDefault();const wheel=Math.max(-127,Math.min(127,Math.round(-event.deltaY/40)||Math.sign(-event.deltaY)));if(absoluteMode()){const point=mapAbsolute(event.clientX,event.clientY);absolutePending=point;if(!point)return;request('/api/mouse/absolute',{method:'POST',body:JSON.stringify({action:'scroll',...point,delta:wheel})}).catch(handleHidError);}else request('/api/mouse/scroll',{method:'POST',body:JSON.stringify({wheel})}).catch(handleHidError);},{passive:false});
     function scheduleMouse(){const pending=absoluteMode()?absolutePending:mouseX||mouseY;if(mouseBusy||mouseTimer||!pending)return;const wait=Math.max(0,16-(performance.now()-lastMouseSend));mouseTimer=setTimeout(flushMouse,wait);}
-    async function flushMouse(){mouseTimer=0;if(mouseBusy||!inputEnabled())return;let url,body;if(absoluteMode()){if(!absolutePending)return;const point=absolutePending;absolutePending=null;url='/api/mouse/absolute';body={action:'move',...point};}else{const dx=Math.max(-127,Math.min(127,mouseX)),dy=Math.max(-127,Math.min(127,mouseY));if(!dx&&!dy)return;mouseX-=dx;mouseY-=dy;url='/api/mouse/move';body={dx,dy};}mouseBusy=true;lastMouseSend=performance.now();try{await request(url,{method:'POST',body:JSON.stringify(body)});}catch(e){toast(e.message,true);}finally{mouseBusy=false;scheduleMouse();}}
+    async function flushMouse(){mouseTimer=0;if(mouseBusy||!inputEnabled())return;let url,body;if(absoluteMode()){if(!absolutePending)return;const point=absolutePending;absolutePending=null;url='/api/mouse/absolute';body={action:'move',...point};}else{const dx=Math.max(-127,Math.min(127,mouseX)),dy=Math.max(-127,Math.min(127,mouseY));if(!dx&&!dy)return;mouseX-=dx;mouseY-=dy;url='/api/mouse/move';body={dx,dy};}mouseBusy=true;lastMouseSend=performance.now();try{await request(url,{method:'POST',body:JSON.stringify(body)});}catch(e){handleHidError(e);}finally{mouseBusy=false;scheduleMouse();}}
 
     const rows=[['Escape','F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12','Delete'],['`','1','2','3','4','5','6','7','8','9','0','-','=','Backspace'],['Tab','Q','W','E','R','T','Y','U','I','O','P','[',']','\\'],['CapsLock','A','S','D','F','G','H','J','K','L',';','\'','Enter'],['Shift','Z','X','C','V','B','N','M',',','.','/','Shift'],['Control','Meta','Alt','Spacebar','Alt','Meta','Control']];
-    const vk=$('#virtual-keyboard');rows.forEach(row=>{const line=document.createElement('div');line.className='keyboard-row';row.forEach(key=>{const b=document.createElement('button');b.type='button';b.textContent=key==='Spacebar'?'空格':key;b.dataset.key=key;if(key==='Spacebar')b.className='grow';b.addEventListener('click',()=>sendKey(key).catch(e=>toast(e.message,true)));line.append(b);});vk.append(line);});
+    const vk=$('#virtual-keyboard');rows.forEach(row=>{const line=document.createElement('div');line.className='keyboard-row';row.forEach(key=>{const b=document.createElement('button');b.type='button';b.textContent=key==='Spacebar'?'空格':key;b.dataset.key=key;if(key==='Spacebar')b.className='grow';b.addEventListener('click',()=>sendKey(key).catch(handleHidError));line.append(b);});vk.append(line);});
     let terminalSocket=null,terminal=null,terminalFit=null,terminalFitFrame=0,terminalLastSize='';
     const terminalEncoder=new TextEncoder();
     function ensureTerminal(){
@@ -588,22 +1133,25 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       ensureTerminal();
       if(terminalSocket&&terminalSocket.readyState<=WebSocket.OPEN)return;
       const scheme=location.protocol==='https:'?'wss':'ws';const socket=new WebSocket(`${scheme}://${location.host}/api/terminal/ws`);terminalSocket=socket;terminalLastSize='';socket.binaryType='arraybuffer';
-      socket.onopen=()=>{if(terminalSocket!==socket)return;$('#terminal-connect').textContent='断开';scheduleTerminalFit();requestAnimationFrame(()=>{terminalResize(terminal.cols,terminal.rows);terminal.focus();});};
+      socket.onopen=()=>{if(terminalSocket!==socket)return;$('#terminal-reconnect')?.classList.add('hidden');scheduleTerminalFit();requestAnimationFrame(()=>{terminalResize(terminal.cols,terminal.rows);terminal.focus();});};
       socket.onmessage=event=>terminal.write(typeof event.data==='string'?event.data:new Uint8Array(event.data));
       socket.onerror=()=>terminal.writeln('\r\n\x1b[31m终端连接失败\x1b[0m');
-      socket.onclose=()=>{if(terminalSocket!==socket)return;terminalSocket=null;$('#terminal-connect').textContent='连接';};
+      socket.onclose=()=>{if(terminalSocket!==socket)return;terminalSocket=null;if(videoWorkspace==='terminal')$('#terminal-reconnect')?.classList.remove('hidden');};
     }
-    function terminalDisconnect(){if(terminalSocket){const socket=terminalSocket;terminalSocket=null;socket.close();}$('#terminal-connect').textContent='连接';}
-    $('#terminal-connect').addEventListener('click',()=>terminalSocket?terminalDisconnect():terminalConnect());
-    $('#terminal-clear').addEventListener('click',()=>terminal?.clear());
+    function terminalDisconnect(){if(terminalSocket){const socket=terminalSocket;terminalSocket=null;socket.close();}$('#terminal-reconnect')?.classList.remove('hidden');}
+    $('#terminal-reconnect')?.addEventListener('click',terminalConnect);
+    $('#terminal-clear')?.addEventListener('click',()=>terminal?.clear());
     const keyboardDialog=$('#keyboard-dialog');$$('#keyboard-toggle,#keyboard-toggle-mobile').forEach(button=>button.addEventListener('click',()=>{if(keyboardDialog.open)keyboardDialog.close();else keyboardDialog.show();}));$('[data-close]',keyboardDialog).addEventListener('click',()=>keyboardDialog.close());
 
-    function setWorkspaceMode(mode){const next=mode==='terminal'?'terminal':'video',terminalMode=next==='terminal',changed=videoWorkspace!==next;videoWorkspace=next;$('#terminal-window').hidden=!terminalMode;$('#video-viewport').hidden=terminalMode;$$('[data-workspace]').forEach(tab=>tab.classList.toggle('active',tab.dataset.workspace===next));syncInputUi();if(terminalMode){if(changed)stopVideo();terminalConnect();scheduleTerminalFit();requestAnimationFrame(()=>terminal?.focus());}else if(changed)startVideo();}
+    function setWorkspaceMode(mode){const next=mode==='terminal'?'terminal':'video',terminalMode=next==='terminal',changed=videoWorkspace!==next;videoWorkspace=next;$('#terminal-window').hidden=!terminalMode;$('#video-viewport').hidden=terminalMode;$$('[data-workspace]').forEach(tab=>tab.classList.toggle('active',tab.dataset.workspace===next));$('#terminal-clear')?.classList.toggle('hidden',!terminalMode);if(!terminalMode)$('#terminal-reconnect')?.classList.add('hidden');else if(!terminalSocket||terminalSocket.readyState>WebSocket.OPEN)$('#terminal-reconnect')?.classList.remove('hidden');$('.quick-keys')?.classList.toggle('hidden',terminalMode);$('#input-state')?.classList.toggle('hidden',terminalMode);$('#mode-button')?.classList.toggle('hidden',terminalMode);$('#video-transport-label')?.classList.toggle('hidden',terminalMode);syncInputUi();if(terminalMode){if(changed)stopVideo();terminalConnect();scheduleTerminalFit();requestAnimationFrame(()=>terminal?.focus());}else if(changed)startVideo();}
     $$('[data-workspace]').forEach(tab=>tab.addEventListener('click',()=>setWorkspaceMode(tab.dataset.workspace)));
-    $$('.tab-button').forEach(button=>button.addEventListener('click',()=>{const mode=button.dataset.panelTarget;$$('.tab-button').forEach(item=>item.classList.toggle('active',item===button));$$('[data-panel]').forEach(panel=>panel.hidden=panel.dataset.panel!==mode);setWorkspaceMode(mode);}));
+    $$('.tab-button').forEach(button=>button.addEventListener('click',()=>{const mode=button.dataset.panelTarget;$$('.tab-button').forEach(item=>item.classList.toggle('active',item===button));$$('[data-panel]').forEach(panel=>panel.hidden=panel.dataset.panel!==mode);}));
     const inspectorToggle=$('#inspector-toggle');
-    function setInspectorOpen(open){app.classList.toggle('inspector-open',open);inspectorToggle.setAttribute('aria-expanded',String(open));inspectorToggle.textContent=open?'收起面板':'控制面板';}
+    function setInspectorOpen(open){app.classList.toggle('inspector-open',open);inspectorToggle.setAttribute('aria-expanded',String(open));inspectorToggle.classList.toggle('active',open);inspectorToggle.textContent=open?t('collapse_inspector','收起面板'):t('open_inspector','控制面板');try{localStorage.setItem('wingman_inspector_open',open?'true':'false');}catch(_){}requestAnimationFrame(()=>{window.dispatchEvent(new Event('resize'));if(videoWorkspace==='terminal')scheduleTerminalFit();});}
     inspectorToggle.addEventListener('click',()=>setInspectorOpen(!app.classList.contains('inspector-open')));
+    $('#inspector-close')?.addEventListener('click',()=>setInspectorOpen(false));
+    $('#inspector-float-open')?.addEventListener('click',()=>setInspectorOpen(true));
+    window.addEventListener('keydown',event=>{if(event.key==='Escape'&&!inputEnabled()&&app.classList.contains('inspector-open')&&!keyboardDialog?.open&&!settingsDialog?.open){setInspectorOpen(false);}});
 
     async function refreshStatus(){if(statusTimer===-1)return;if(statusTimer>0)clearTimeout(statusTimer);if(app.classList.contains('hidden')||document.hidden){statusTimer=0;renderVideoUi();return;}statusTimer=-1;try{const status=await request('/api/status');latestDisplayStatus=status.display||null;latestVideoStatus=status.video||null;latestPowerStatus=status.power||null;renderDisplayStatus(latestDisplayStatus);renderPowerLed(latestPowerStatus);renderVideoUi();}catch{latestDisplayStatus={state:'error',message:'EDID 状态读取失败'};latestVideoStatus={state:'offline',message:'连接失败'};latestPowerStatus={power_led:{configured:true,state:'unknown',sense_error:'连接失败'}};renderDisplayStatus(latestDisplayStatus);renderPowerLed(latestPowerStatus);renderVideoUi();}finally{statusTimer=app.classList.contains('hidden')||document.hidden?0:setTimeout(()=>{statusTimer=0;refreshStatus();},3000);}}
     const mediaChoices=new Map();let mediaBusy=false,mediaServerBusy=false,mediaStatus={};
@@ -621,6 +1169,392 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     async function refreshMedia(){const ownsBusy=!mediaBusy;if(ownsBusy){mediaBusy=true;syncMediaBusy();}try{renderMedia(await request('/api/media'));}catch(error){mediaServerBusy=false;$('#media-list').textContent=error.message;const status=$('#media-status');status.className='media-status error';status.innerHTML='<span class="status-dot"></span><span class="media-status-copy"><strong>状态不可用</strong></span>';}finally{if(ownsBusy){mediaBusy=false;syncMediaBusy();}}}
     $('#media-refresh').addEventListener('click',refreshMedia);
     $('#media-upload').addEventListener('submit',event=>{event.preventDefault();if(mediaBusy)return;const form=event.currentTarget,bar=$('#upload-bar'),progress=bar.parentElement,xhr=new XMLHttpRequest();mediaBusy=true;syncMediaBusy();xhr.open('POST','/api/media/upload');xhr.upload.onprogress=e=>{if(!e.lengthComputable)return;const value=Math.round(e.loaded/e.total*100);bar.style.width=`${value}%`;progress.setAttribute('aria-valuenow',String(value));};const finish=async(success,message)=>{bar.style.width='0';progress.setAttribute('aria-valuenow','0');if(success){toast('镜像上传完成');form.reset();await refreshMedia();}else toast(message||'上传失败',true);mediaBusy=false;syncMediaBusy();};xhr.onload=()=>{let message=xhr.responseText;try{const data=JSON.parse(message);message=data.error||data.message||message;}catch{}finish(xhr.status>=200&&xhr.status<300,message);};xhr.onerror=()=>finish(false,'上传连接失败');xhr.onabort=()=>finish(false,'上传已取消');xhr.send(new FormData(form));});
+
+    function base64UrlToBuffer(base64url) {
+      if (!base64url) return new ArrayBuffer(0);
+      if (base64url instanceof ArrayBuffer) return base64url;
+      if (ArrayBuffer.isView(base64url)) return base64url.buffer;
+      const padding = '='.repeat((4 - (base64url.length % 4)) % 4);
+      const base64 = (base64url + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const rawData = atob(base64);
+      const outputArray = new Uint8Array(rawData.length);
+      for (let i = 0; i < rawData.length; ++i) {
+        outputArray[i] = rawData.charCodeAt(i);
+      }
+      return outputArray.buffer;
+    }
+    function bufferToBase64Url(buffer) {
+      if (!buffer) return '';
+      const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+      let binary = '';
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+    function isIpAddress(hostname) {
+      if (!hostname || hostname === 'localhost') return false;
+      return /^(\d{1,3}\.){3}\d{1,3}$/.test(hostname) || hostname.startsWith('[') || hostname.includes(':');
+    }
+    function isPasskeySupported() {
+      return !!(window.isSecureContext && window.PublicKeyCredential);
+    }
+    async function registerPasskey() {
+      if (!isPasskeySupported()) {
+        toast(t('passkey_insecure'), true);
+        return;
+      }
+      if (isIpAddress(window.location.hostname)) {
+        toast(t('passkey_ip_warn'), true);
+        return;
+      }
+      const defaultName = navigator.userAgent.includes('Macintosh') ? 'Mac (Touch ID)' :
+                          navigator.userAgent.includes('iPhone') ? 'iPhone (Face ID)' :
+                          navigator.userAgent.includes('iPad') ? 'iPad (Touch/Face ID)' :
+                          navigator.userAgent.includes('Windows') ? 'Windows Hello' : 'Passkey Device';
+      const name = prompt(t('passkey_prompt_name'), defaultName);
+      if (name === null) return;
+      const passkeyName = name.trim() || defaultName;
+
+      const btn = $('#passkey-add-btn');
+      const oldText = btn?.textContent || '';
+      if (btn) { btn.disabled = true; btn.textContent = '...'; }
+
+      try {
+        const startRes = await request('/api/passkey/register/start', {
+          method: 'POST',
+          body: JSON.stringify({ name: passkeyName })
+        });
+        const { challenge_id, options } = startRes;
+        const pk = { ...options.publicKey };
+        pk.challenge = base64UrlToBuffer(pk.challenge);
+        pk.user = { ...pk.user, id: base64UrlToBuffer(pk.user.id) };
+        if (Array.isArray(pk.excludeCredentials) && pk.excludeCredentials.length > 0) {
+          pk.excludeCredentials = pk.excludeCredentials.map(c => ({
+            ...c,
+            id: base64UrlToBuffer(c.id)
+          }));
+        } else {
+          delete pk.excludeCredentials;
+        }
+        if (pk.authenticatorSelection) {
+          pk.authenticatorSelection = {
+            ...pk.authenticatorSelection,
+            residentKey: 'preferred'
+          };
+        }
+
+        const cred = await navigator.credentials.create({ publicKey: pk });
+        if (!cred) throw new Error('未能建立通行密鑰');
+
+        const credentialPayload = {
+          id: cred.id,
+          rawId: bufferToBase64Url(cred.rawId),
+          response: {
+            clientDataJSON: bufferToBase64Url(cred.response.clientDataJSON),
+            attestationObject: bufferToBase64Url(cred.response.attestationObject)
+          },
+          type: cred.type,
+          extensions: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {}
+        };
+
+        await request('/api/passkey/register/finish', {
+          method: 'POST',
+          body: JSON.stringify({
+            challenge_id,
+            name: passkeyName,
+            credential: credentialPayload
+          })
+        });
+
+        toast(t('passkey_added_success'));
+        await refreshPasskeys();
+      } catch (err) {
+        if (err.name !== 'NotAllowedError') {
+          toast(err.message || 'Passkey 绑定失败', true);
+        }
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = oldText; }
+      }
+    }
+
+    let passkeyLoginBusy = false;
+    let conditionalUiStarted = false;
+
+    async function loginWithPasskey(isConditional = false) {
+      if (passkeyLoginBusy) return;
+      if (!isPasskeySupported()) {
+        if (!isConditional) toast(t('passkey_insecure'), true);
+        return;
+      }
+      if (isIpAddress(window.location.hostname)) {
+        if (!isConditional) toast(t('passkey_ip_warn'), true);
+        return;
+      }
+
+      const btn = $('#passkey-login-btn');
+      const errorBox = $('#login-error');
+      if (errorBox) errorBox.textContent = '';
+      passkeyLoginBusy = true;
+      if (!isConditional && btn) btn.disabled = true;
+
+      try {
+        const startRes = await request('/api/passkey/login/start', { method: 'POST' });
+        const { challenge_id, options } = startRes;
+        const pk = { ...options.publicKey };
+        pk.challenge = base64UrlToBuffer(pk.challenge);
+        if (Array.isArray(pk.allowCredentials) && pk.allowCredentials.length > 0) {
+          pk.allowCredentials = pk.allowCredentials.map(c => ({
+            ...c,
+            id: base64UrlToBuffer(c.id)
+          }));
+        } else {
+          delete pk.allowCredentials;
+        }
+
+        const getOptions = { publicKey: pk };
+        if (isConditional) {
+          getOptions.mediation = 'conditional';
+        }
+
+        const cred = await navigator.credentials.get(getOptions);
+        if (!cred) return;
+
+        const credentialPayload = {
+          id: cred.id,
+          rawId: bufferToBase64Url(cred.rawId),
+          response: {
+            clientDataJSON: bufferToBase64Url(cred.response.clientDataJSON),
+            authenticatorData: bufferToBase64Url(cred.response.authenticatorData),
+            signature: bufferToBase64Url(cred.response.signature),
+            userHandle: cred.response.userHandle ? bufferToBase64Url(cred.response.userHandle) : null
+          },
+          type: cred.type,
+          extensions: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {}
+        };
+
+        await request('/api/passkey/login/finish', {
+          method: 'POST',
+          body: JSON.stringify({
+            challenge_id,
+            credential: credentialPayload
+          })
+        });
+
+        bootstrap = await request('/api/bootstrap');
+        showState(bootstrap.authenticated ? 'main' : 'login');
+      } catch (err) {
+        if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
+          if (errorBox) errorBox.textContent = err.message || 'Passkey 登录失败';
+          else toast(err.message || 'Passkey 登录失败', true);
+        }
+      } finally {
+        passkeyLoginBusy = false;
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    async function refreshPasskeys() {
+      const container = $('#passkey-items');
+      const emptyHint = $('#passkey-empty-hint');
+      const inspectorHint = $('#passkey-inspector-hint');
+      const addBtn = $('#passkey-add-btn');
+
+      if (isIpAddress(window.location.hostname)) {
+        if (inspectorHint) {
+          inspectorHint.textContent = t('passkey_ip_warn');
+          inspectorHint.classList.remove('hidden');
+        }
+        if (addBtn) addBtn.disabled = true;
+      } else if (!isPasskeySupported()) {
+        if (inspectorHint) {
+          inspectorHint.textContent = t('passkey_insecure');
+          inspectorHint.classList.remove('hidden');
+        }
+        if (addBtn) addBtn.disabled = true;
+      } else {
+        if (inspectorHint) inspectorHint.classList.add('hidden');
+        if (addBtn) addBtn.disabled = false;
+      }
+
+      try {
+        const res = await request('/api/passkey/list');
+        const list = res.passkeys || [];
+        if (!container) return;
+        container.replaceChildren();
+
+        if (list.length === 0) {
+          emptyHint?.classList.remove('hidden');
+          container?.classList.add('hidden');
+        } else {
+          emptyHint?.classList.add('hidden');
+          container?.classList.remove('hidden');
+
+          list.forEach(pk => {
+            const item = document.createElement('div');
+            item.className = 'media-item';
+            item.style.padding = '8px 10px';
+            item.style.marginBottom = '6px';
+
+            const head = document.createElement('div');
+            head.className = 'media-item-head';
+
+            const nameBox = document.createElement('span');
+            nameBox.className = 'media-item-name';
+
+            const title = document.createElement('strong');
+            title.textContent = pk.name || 'Passkey';
+
+            const meta = document.createElement('span');
+            meta.className = 'media-item-meta';
+            const dateStr = pk.created_at_unix_seconds ? new Date(pk.created_at_unix_seconds * 1000).toLocaleDateString() : '';
+            meta.textContent = dateStr;
+
+            nameBox.append(title, meta);
+            head.append(nameBox);
+
+            const controls = document.createElement('div');
+            controls.className = 'media-item-controls';
+
+            const delBtn = document.createElement('button');
+            delBtn.type = 'button';
+            delBtn.className = 'danger';
+            delBtn.style.minHeight = '28px';
+            delBtn.style.padding = '0 8px';
+            delBtn.style.fontSize = '12px';
+            delBtn.textContent = t('passkey_delete');
+            delBtn.addEventListener('click', async () => {
+              if (!confirm(t('passkey_delete_confirm'))) return;
+              try {
+                await request(`/api/passkey/${encodeURIComponent(pk.id)}`, { method: 'DELETE' });
+                toast(t('passkey_delete') + ' OK');
+                await refreshPasskeys();
+              } catch (e) {
+                toast(e.message, true);
+              }
+            });
+
+            controls.append(delBtn);
+            item.append(head, controls);
+            container.append(item);
+          });
+        }
+      } catch (err) {
+        // Silently ignore if not authorized
+      }
+    }
+
+    function updateLoginPasskeyUI() {
+      const container = $('#passkey-login-container');
+      const insecureHint = $('#passkey-insecure-hint');
+      const hasPasskeys = !!bootstrap.has_passkeys;
+
+      if (isIpAddress(window.location.hostname)) {
+        if (insecureHint) {
+          insecureHint.textContent = t('passkey_ip_warn');
+          insecureHint.classList.remove('hidden');
+        }
+        if (container) container.classList.add('hidden');
+        return;
+      }
+
+      if (!isPasskeySupported()) {
+        if (hasPasskeys && insecureHint) {
+          insecureHint.textContent = t('passkey_insecure');
+          insecureHint.classList.remove('hidden');
+        }
+        if (container) container.classList.add('hidden');
+        return;
+      }
+
+      if (insecureHint) insecureHint.classList.add('hidden');
+
+      if (hasPasskeys) {
+        if (container) container.classList.remove('hidden');
+
+        // Trigger Conditional UI (Autofill) once if available
+        if (!conditionalUiStarted && window.PublicKeyCredential && PublicKeyCredential.isConditionalMediationAvailable) {
+          PublicKeyCredential.isConditionalMediationAvailable().then(available => {
+            if (available && !conditionalUiStarted) {
+              conditionalUiStarted = true;
+              loginWithPasskey(true);
+            }
+          }).catch(() => {});
+        }
+      } else {
+        if (container) container.classList.add('hidden');
+      }
+    }
+
+    $('#passkey-login-btn')?.addEventListener('click', () => loginWithPasskey(false));
+    $('#passkey-add-btn')?.addEventListener('click', registerPasskey);
+
+    const settingsDialog = $('#settings-dialog');
+    function applyRenderPixelated(enabled) {
+      $('#console')?.classList.toggle('render-pixelated', enabled);
+      setSetting('render_pixelated', enabled);
+    }
+    function syncSettingsDialogUi() {
+      if (!settingsDialog) return;
+      const hidCheckbox = $('#setting-suppress-hid-timeout');
+      if (hidCheckbox) hidCheckbox.checked = getSetting('suppress_hid_timeout', true);
+      const pulseCheckbox = $('#setting-capture-pulse');
+      if (pulseCheckbox) pulseCheckbox.checked = getSetting('capture_pulse', true);
+      const releaseCheckbox = $('#setting-release-toast');
+      if (releaseCheckbox) releaseCheckbox.checked = getSetting('release_key_toast', true);
+      const pixelCheckbox = $('#setting-render-pixelated');
+      if (pixelCheckbox) pixelCheckbox.checked = getSetting('render_pixelated', true);
+      const inspectorCheckbox = $('#setting-auto-inspector');
+      if (inspectorCheckbox) inspectorCheckbox.checked = getSetting('auto_expand_inspector', true);
+    }
+    function openSettingsDialog() {
+      if (!settingsDialog) return;
+      syncSettingsDialogUi();
+      try { settingsDialog.showModal?.() || settingsDialog.show?.(); } catch(_) { settingsDialog.show?.(); }
+    }
+    function closeSettingsDialog() {
+      if (!settingsDialog) return;
+      try { settingsDialog.close?.(); } catch(_) {}
+    }
+    $('#settings-toggle')?.addEventListener('click', openSettingsDialog);
+    $('#settings-inspector-btn')?.addEventListener('click', openSettingsDialog);
+    $$('[data-settings-close]', settingsDialog).forEach(btn => btn.addEventListener('click', closeSettingsDialog));
+    settingsDialog?.addEventListener('click', event => {
+      if (event.target === settingsDialog) closeSettingsDialog();
+    });
+    $('#setting-suppress-hid-timeout')?.addEventListener('change', e => {
+      setSetting('suppress_hid_timeout', e.target.checked);
+      toast(t('settings_saved', '设置已保存'));
+    });
+    $('#setting-capture-pulse')?.addEventListener('change', e => {
+      setSetting('capture_pulse', e.target.checked);
+      toast(t('settings_saved', '设置已保存'));
+    });
+    $('#setting-release-toast')?.addEventListener('change', e => {
+      setSetting('release_key_toast', e.target.checked);
+      toast(t('settings_saved', '设置已保存'));
+    });
+    $('#setting-render-pixelated')?.addEventListener('change', e => {
+      applyRenderPixelated(e.target.checked);
+      toast(t('settings_saved', '设置已保存'));
+    });
+    $('#setting-auto-inspector')?.addEventListener('change', e => {
+      setSetting('auto_expand_inspector', e.target.checked);
+      toast(t('settings_saved', '设置已保存'));
+    });
+    $('#setting-reset-btn')?.addEventListener('click', () => {
+      if (!confirm(t('settings_reset_confirm', '确定要恢复所有全局偏好设置为默认值吗？'))) return;
+      Object.keys(SETTING_DEFAULTS).forEach(key => {
+        try { localStorage.removeItem(`wingman_setting_${key}`); } catch (_) {}
+      });
+      syncSettingsDialogUi();
+      applyRenderPixelated(SETTING_DEFAULTS.render_pixelated);
+      toast(t('settings_reset_done', '已恢复默认设置'));
+    });
+
+    applyTheme(getPreferredTheme());
+    applyRenderPixelated(getSetting('render_pixelated', true));
+    try{const savedLang=localStorage.getItem('wingman_lang');if(savedLang&&['zh-CN','zh-TW','en'].includes(savedLang))setLanguage(savedLang);else setLanguage('zh-CN');}catch(_){setLanguage('zh-CN');}
     consumeSetupToken();
     start();
   })();
@@ -646,5 +1580,89 @@ mod tests {
         assert!(INDEX_HTML.contains("<strong>Streaming</strong>"));
         assert!(INDEX_HTML.contains("<strong>Viewer</strong>"));
         assert!(INDEX_HTML.contains("object-fit:contain"));
+    }
+
+    #[test]
+    fn inspector_has_close_button_and_only_four_tabs() {
+        assert!(INDEX_HTML.contains("id=\"inspector-close\""));
+        assert!(INDEX_HTML.contains("id=\"inspector-float-open\""));
+        assert!(!INDEX_HTML.contains("data-panel-target=\"terminal\""));
+        assert!(!INDEX_HTML.contains("data-panel=\"terminal\""));
+        assert!(INDEX_HTML.contains("data-panel-target=\"control\""));
+        assert!(INDEX_HTML.contains("data-panel-target=\"video\""));
+        assert!(INDEX_HTML.contains("data-panel-target=\"devices\""));
+        assert!(INDEX_HTML.contains("data-panel-target=\"media\""));
+        assert!(INDEX_HTML.contains("id=\"terminal-clear\""));
+        assert!(INDEX_HTML.contains("id=\"terminal-reconnect\""));
+    }
+
+    #[test]
+    fn topbar_power_menu_diagnostics_and_quick_keys() {
+        assert!(INDEX_HTML.contains("id=\"power-menu-toggle\""));
+        assert!(INDEX_HTML.contains("id=\"power-menu\""));
+        assert!(INDEX_HTML.contains("id=\"diagnostics-toggle\""));
+        assert!(INDEX_HTML.contains("id=\"diagnostics-popover\""));
+        assert!(INDEX_HTML.contains("data-quick-key=\"cad\""));
+        assert!(INDEX_HTML.contains("data-quick-key=\"win\""));
+        assert!(INDEX_HTML.contains("data-quick-key=\"alttab\""));
+        assert!(INDEX_HTML.contains("data-quick-key=\"esc\""));
+        assert!(!INDEX_HTML.contains("class=\"window-dots\""));
+        assert!(INDEX_HTML.contains("id=\"input-state\" class=\"input-badge clickable\""));
+    }
+
+    #[test]
+    fn theme_toggle_i18n_and_ergonomic_elements_present() {
+        assert!(INDEX_HTML.contains("id=\"theme-toggle\""));
+        assert!(INDEX_HTML.contains("id=\"lang-toggle\""));
+        assert!(INDEX_HTML.contains("id=\"lang-menu\""));
+        assert!(INDEX_HTML.contains("data-lang=\"zh-CN\""));
+        assert!(INDEX_HTML.contains("data-lang=\"zh-TW\""));
+        assert!(INDEX_HTML.contains("data-lang=\"en\""));
+        assert!(INDEX_HTML.contains("id=\"input-release\""));
+        assert!(INDEX_HTML.contains("data-video-preset=\"desktop\""));
+        assert!(INDEX_HTML.contains("data-video-preset=\"bios\""));
+        assert!(INDEX_HTML.contains("data-video-preset=\"bandwidth\""));
+        assert!(INDEX_HTML.contains("capture-pulse"));
+    }
+
+    #[test]
+    fn passkey_ui_and_scripts_present() {
+        assert!(INDEX_HTML.contains("id=\"passkey-login-btn\""));
+        assert!(INDEX_HTML.contains("id=\"passkey-add-btn\""));
+        assert!(INDEX_HTML.contains("id=\"passkey-items\""));
+        assert!(INDEX_HTML.contains("registerPasskey"));
+        assert!(INDEX_HTML.contains("loginWithPasskey"));
+        assert!(INDEX_HTML.contains("refreshPasskeys"));
+        assert!(INDEX_HTML.contains("updateLoginPasskeyUI"));
+        assert!(INDEX_HTML.contains("autocomplete=\"username webauthn\""));
+        assert!(INDEX_HTML.contains("passkey_signin"));
+        assert!(INDEX_HTML.contains("passkey_title"));
+    }
+
+    #[test]
+    fn global_settings_ui_and_scripts_present() {
+        assert!(INDEX_HTML.contains("id=\"settings-toggle\""));
+        assert!(INDEX_HTML.contains("id=\"settings-inspector-btn\""));
+        assert!(INDEX_HTML.contains("id=\"settings-dialog\""));
+        assert!(INDEX_HTML.contains("id=\"setting-suppress-hid-timeout\""));
+        assert!(INDEX_HTML.contains("id=\"setting-capture-pulse\""));
+        assert!(INDEX_HTML.contains("id=\"setting-release-toast\""));
+        assert!(INDEX_HTML.contains("id=\"setting-render-pixelated\""));
+        assert!(INDEX_HTML.contains("id=\"setting-auto-inspector\""));
+        assert!(INDEX_HTML.contains("id=\"setting-reset-btn\""));
+        assert!(INDEX_HTML.contains("handleHidError"));
+        assert!(INDEX_HTML.contains("isHidWritableTimeoutError"));
+        assert!(INDEX_HTML.contains("getSetting"));
+        assert!(INDEX_HTML.contains("setSetting"));
+    }
+
+    #[test]
+    fn dark_mode_contrast_and_adaptations() {
+        assert!(INDEX_HTML.contains("--ink-contrast:#fff"));
+        assert!(INDEX_HTML.contains("--ink-contrast:#0d0d0d"));
+        assert!(INDEX_HTML.contains(":root[data-theme=\"dark\"] #inspector-toggle.active{color:#0d0d0d;background:#f0f0f0;border-color:#f0f0f0}"));
+        assert!(INDEX_HTML.contains(":root[data-theme=\"dark\"] .mark,:root[data-theme=\"dark\"] .user-pill,:root[data-theme=\"dark\"] .session-avatar{color:#0d0d0d;background:#f0f0f0}"));
+        assert!(INDEX_HTML.contains(".mark{position:relative;display:grid;place-items:center;width:34px;height:34px;flex:0 0 auto;border-radius:50%;color:var(--ink-contrast);background:var(--ink)"));
+        assert!(INDEX_HTML.contains(":root[data-theme=\"dark\"] .topbar,:root[data-theme=\"dark\"] .command-bar{background:rgba(20,20,20,0.88)}"));
     }
 }

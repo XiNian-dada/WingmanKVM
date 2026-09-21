@@ -23,6 +23,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 portable-pty = "0.9"
 webrtc = "0.14"
+webauthn-rs = "0.5"
+sha2 = "0.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 v4l = "0.14"

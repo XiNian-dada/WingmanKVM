@@ -15,6 +15,7 @@ use argon2::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
+use webauthn_rs::prelude::*;
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -177,11 +178,21 @@ impl<'de> Deserialize<'de> for AdminPasswordHash {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PasskeyCredential {
+    pub id: String,
+    pub name: String,
+    pub created_at_unix_seconds: u64,
+    pub passkey: Passkey,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AuthRecord {
     pub version: u32,
     pub username: String,
     pub password_hash: AdminPasswordHash,
+    #[serde(default)]
+    pub passkeys: Vec<PasskeyCredential>,
     pub created_at_unix_seconds: u64,
     pub updated_at_unix_seconds: u64,
 }
@@ -194,6 +205,7 @@ impl AuthRecord {
             version: AUTH_VERSION,
             username,
             password_hash: AdminPasswordHash::new(password)?,
+            passkeys: Vec::new(),
             created_at_unix_seconds: now,
             updated_at_unix_seconds: now,
         })
@@ -216,6 +228,64 @@ impl AuthRecord {
         self.username = validate_username(username.into())?;
         self.updated_at_unix_seconds = unix_time_now()?;
         Ok(())
+    }
+
+    pub fn user_unique_id(&self) -> Uuid {
+        use sha2::Digest;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(self.username.as_bytes());
+        let hash = hasher.finalize();
+        let mut uuid_bytes = [0_u8; 16];
+        uuid_bytes.copy_from_slice(&hash[0..16]);
+        uuid_bytes[6] = (uuid_bytes[6] & 0x0f) | 0x50; // RFC 4122 version 5
+        uuid_bytes[8] = (uuid_bytes[8] & 0x3f) | 0x80; // RFC 4122 variant 1
+        Uuid::from_bytes(uuid_bytes)
+    }
+
+    pub fn add_passkey(&mut self, name: impl Into<String>, passkey: Passkey) -> Result<&PasskeyCredential, AuthError> {
+        let id = URL_SAFE_NO_PAD.encode(passkey.cred_id());
+        if self.passkeys.iter().any(|c| c.id == id) {
+            return Err(AuthError::PasskeyAlreadyExists);
+        }
+        let mut name = name.into().trim().to_owned();
+        if name.is_empty() {
+            name = "Passkey".to_owned();
+        }
+        if name.chars().count() > 64 {
+            name = name.chars().take(64).collect();
+        }
+        let now = unix_time_now()?;
+        let credential = PasskeyCredential {
+            id,
+            name,
+            created_at_unix_seconds: now,
+            passkey,
+        };
+        self.passkeys.push(credential);
+        self.updated_at_unix_seconds = now;
+        Ok(self.passkeys.last().expect("credential was just inserted"))
+    }
+
+    pub fn remove_passkey(&mut self, id: &str) -> Result<bool, AuthError> {
+        let original_len = self.passkeys.len();
+        self.passkeys.retain(|c| c.id != id);
+        let removed = self.passkeys.len() < original_len;
+        if removed {
+            self.updated_at_unix_seconds = unix_time_now()?;
+        }
+        Ok(removed)
+    }
+
+    pub fn update_passkey_credential(&mut self, cred_id: &[u8], res: &AuthenticationResult) -> bool {
+        if let Some(existing) = self.passkeys.iter_mut().find(|c| c.passkey.cred_id().as_slice() == cred_id) {
+            existing.passkey.update_credential(res);
+            if let Ok(now) = unix_time_now() {
+                self.updated_at_unix_seconds = now;
+            }
+            true
+        } else {
+            false
+        }
     }
 
     fn validate(&self) -> Result<(), AuthError> {
@@ -296,6 +366,20 @@ impl AuthStore {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.save_unlocked(record)
+    }
+
+    pub fn update<F, R>(&self, f: F) -> Result<R, AuthError>
+    where
+        F: FnOnce(&mut AuthRecord) -> Result<R, AuthError>,
+    {
+        let _guard = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut record = self.load()?.ok_or(AuthError::NotInitialized)?;
+        let res = f(&mut record)?;
+        self.save_unlocked(&record)?;
+        Ok(res)
     }
 
     fn save_unlocked(&self, record: &AuthRecord) -> Result<(), AuthError> {
@@ -469,6 +553,13 @@ pub enum AuthError {
     UnsupportedVersion { found: u32, supported: u32 },
     #[error("administrator credentials have already been initialized")]
     AlreadyInitialized,
+    #[error("administrator credentials have not been initialized")]
+    NotInitialized,
+    #[error("passkey credential already exists")]
+    PasskeyAlreadyExists,
+    #[allow(dead_code)]
+    #[error("invalid passkey: {0}")]
+    InvalidPasskey(String),
     #[error("invalid authentication record: {0}")]
     InvalidRecord(String),
     #[error("system time is before the Unix epoch")]
@@ -714,5 +805,52 @@ mod tests {
         store.initialize("admin", "Correct-Horse7!").unwrap();
         let mode = fs::metadata(store.path()).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn legacy_auth_record_without_passkeys_loads_seamlessly() {
+        let legacy_json = r#"{
+            "version": 1,
+            "username": "admin",
+            "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$7v/f5o0h3oP9x3z7W1Q5AQ$0P9X3Z7W1Q5AQ7v/f5o0h3oP9x3z7W1Q5AQ7v/f5o0g",
+            "created_at_unix_seconds": 1700000000,
+            "updated_at_unix_seconds": 1700000000
+        }"#;
+
+        let record: AuthRecord = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(record.version, 1);
+        assert_eq!(record.username, "admin");
+        assert!(record.passkeys.is_empty());
+        assert!(record.validate().is_ok());
+
+        // Saving and re-serializing includes the passkeys field
+        let serialized = serde_json::to_string(&record).unwrap();
+        assert!(serialized.contains(r#""passkeys":[]"#));
+    }
+
+    #[test]
+    fn user_unique_id_is_deterministic() {
+        let record1 = AuthRecord::new("admin", "Correct-Horse7!").unwrap();
+        let record2 = AuthRecord::new("admin", "Another-Password8@").unwrap();
+        let record3 = AuthRecord::new("other", "Correct-Horse7!").unwrap();
+
+        assert_eq!(record1.user_unique_id(), record2.user_unique_id());
+        assert_ne!(record1.user_unique_id(), record3.user_unique_id());
+    }
+
+    #[test]
+    fn passkey_management_operations() {
+        let mut record = AuthRecord::new("admin", "Correct-Horse7!").unwrap();
+        assert!(record.passkeys.is_empty());
+
+        let rp_id = "localhost";
+        let rp_origin = Url::parse("http://localhost:8080").unwrap();
+        let builder = WebauthnBuilder::new(rp_id, &rp_origin).unwrap();
+        let webauthn = builder.rp_name("WingmanKVM").build().unwrap();
+        let (_ccr, _reg_state) = webauthn
+            .start_passkey_registration(record.user_unique_id(), &record.username, "Admin", None)
+            .unwrap();
+
+        assert!(!record.remove_passkey("nonexistent").unwrap());
     }
 }
