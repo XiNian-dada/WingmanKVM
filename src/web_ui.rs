@@ -24,7 +24,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     :root[data-theme="dark"]{--ink:#f0f0f0;--ink-contrast:#0d0d0d;--body:#a8a8a8;--muted:#757575;--line:#2d2d2d;--line-strong:#444;--canvas:#141414;--soft:#0d0d0d;--soft-2:#1e1e1e;--blue:#3291ff;--red:#ff5555;--red-soft:#2d1012;--amber:#f5a623;--switch-bg:#383838;--shadow-2:0 1px 1px #00000040,0 2px 2px #00000060,0 0 0 1px #ffffff12;--shadow-4:0 2px 2px #00000050,0 8px 16px -4px #00000080,0 0 0 1px #ffffff14;--shadow-5:0 1px 1px #00000060,0 8px 16px -4px #000000a0,0 24px 32px -8px #000000d0,0 0 0 1px #ffffff18}
     :root[data-theme="dark"] .topbar,:root[data-theme="dark"] .command-bar{background:rgba(20,20,20,0.88)}
     :root[data-theme="dark"] .workspace{background:radial-gradient(circle at 50% 8%,#1c1c1c 0,#131313 42%,#0a0a0a 100%)}
-    :root[data-theme="dark"] .console-head,:root[data-theme="dark"] .dropdown-menu,:root[data-theme="dark"] .diagnostics-popover,:root[data-theme="dark"] #toast,:root[data-theme="dark"] .keyboard-sheet,:root[data-theme="dark"] #keyboard-dialog,:root[data-theme="dark"] .settings-modal,:root[data-theme="dark"] #settings-dialog{background:var(--canvas);color:var(--ink)}
+    :root[data-theme="dark"] .console-head,:root[data-theme="dark"] .dropdown-menu,:root[data-theme="dark"] .diagnostics-popover,:root[data-theme="dark"] #toast,:root[data-theme="dark"] .keyboard-sheet,:root[data-theme="dark"] #keyboard-dialog,:root[data-theme="dark"] .settings-modal{background:var(--canvas);color:var(--ink)}
     :root[data-theme="dark"] .auth-shell{background:rgba(20,20,20,0.85);border-color:#ffffff18}
     :root[data-theme="dark"] .auth-story{background:linear-gradient(145deg,#181818ea,#121212f0)}
     :root[data-theme="dark"] #auth-view::before{opacity:.22}
@@ -54,7 +54,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       :root:not([data-theme="light"]){--ink:#f0f0f0;--ink-contrast:#0d0d0d;--body:#a8a8a8;--muted:#757575;--line:#2d2d2d;--line-strong:#444;--canvas:#141414;--soft:#0d0d0d;--soft-2:#1e1e1e;--blue:#3291ff;--red:#ff5555;--red-soft:#2d1012;--amber:#f5a623;--switch-bg:#383838;--shadow-2:0 1px 1px #00000040,0 2px 2px #00000060,0 0 0 1px #ffffff12;--shadow-4:0 2px 2px #00000050,0 8px 16px -4px #00000080,0 0 0 1px #ffffff14;--shadow-5:0 1px 1px #00000060,0 8px 16px -4px #000000a0,0 24px 32px -8px #000000d0,0 0 0 1px #ffffff18}
       :root:not([data-theme="light"]) .topbar,:root:not([data-theme="light"]) .command-bar{background:rgba(20,20,20,0.88)}
       :root:not([data-theme="light"]) .workspace{background:radial-gradient(circle at 50% 8%,#1c1c1c 0,#131313 42%,#0a0a0a 100%)}
-      :root:not([data-theme="light"]) .console-head,:root:not([data-theme="light"]) .dropdown-menu,:root:not([data-theme="light"]) .diagnostics-popover,:root:not([data-theme="light"]) #toast,:root:not([data-theme="light"]) .keyboard-sheet,:root:not([data-theme="light"]) #keyboard-dialog,:root:not([data-theme="light"]) .settings-modal,:root:not([data-theme="light"]) #settings-dialog{background:var(--canvas);color:var(--ink)}
+      :root:not([data-theme="light"]) .console-head,:root:not([data-theme="light"]) .dropdown-menu,:root:not([data-theme="light"]) .diagnostics-popover,:root:not([data-theme="light"]) #toast,:root:not([data-theme="light"]) .keyboard-sheet,:root:not([data-theme="light"]) #keyboard-dialog,:root:not([data-theme="light"]) .settings-modal{background:var(--canvas);color:var(--ink)}
       :root:not([data-theme="light"]) .auth-shell{background:rgba(20,20,20,0.85);border-color:#ffffff18}
       :root:not([data-theme="light"]) .auth-story{background:linear-gradient(145deg,#181818ea,#121212f0)}
       :root:not([data-theme="light"]) #auth-view::before{opacity:.22}
@@ -151,9 +151,13 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     .preset-chip{min-height:28px;padding:0 10px;border:1px solid var(--line);border-radius:999px;background:var(--soft);color:var(--body);font-size:11px;font-weight:500;cursor:pointer;transition:background-color 140ms,border-color 140ms,color 140ms,transform 120ms}
     .preset-chip:hover{background:var(--soft-2);border-color:var(--line-strong);color:var(--ink)}
     .preset-chip:active{transform:scale(0.96)}
-    #settings-dialog{max-width:none;padding:0;border:0;color:var(--ink);background:transparent}
-    #settings-dialog::backdrop{background:#00000040;backdrop-filter:blur(4px)}
-    .settings-modal{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(540px,calc(100vw - 32px));max-height:min(86dvh,700px);display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--line);border-radius:14px;background:var(--canvas);box-shadow:var(--shadow-5);animation:popover-drop 160ms cubic-bezier(.16,1,.3,1)}
+    #settings-dialog{position:fixed;inset:0;width:100vw;height:100dvh;max-width:none;max-height:none;margin:0;padding:0;border:0;background:transparent;display:grid;place-items:center;overflow:hidden;outline:none;z-index:90}
+    #settings-dialog:not([open]){display:none}
+    #settings-dialog::backdrop{background:#00000055;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);animation:settings-backdrop-fade 180ms ease forwards}
+    @keyframes settings-backdrop-fade{from{opacity:0}to{opacity:1}}
+    @keyframes settings-modal-pop{from{opacity:0;transform:scale(0.96) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}
+    .settings-modal{position:relative;width:min(540px,calc(100vw - 32px));max-height:min(86dvh,700px);display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--line);border-radius:14px;background:var(--canvas);color:var(--ink);box-shadow:0 24px 48px -12px rgba(0,0,0,0.25),0 0 0 1px var(--line);animation:settings-modal-pop 200ms cubic-bezier(.16,1,.3,1) both;will-change:transform,opacity}
+    @media(prefers-reduced-motion:reduce){.settings-modal{animation:none;will-change:auto}#settings-dialog::backdrop{animation:none}}
     .settings-dialog-body{padding:16px 20px 22px;overflow-y:auto;display:flex;flex-direction:column;gap:18px}
     .settings-group{display:flex;flex-direction:column;gap:9px}
     .settings-group-title{font:600 11px/16px "Geist Mono",ui-monospace,monospace;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;padding-bottom:4px;border-bottom:1px solid var(--line)}
@@ -328,9 +332,9 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
           <section class="inspector-panel" data-panel="video" hidden>
             <h3 class="panel-title" data-i18n="tab_video">视频</h3>
             <div class="video-preset-chips" aria-label="视频预设模式">
-              <button type="button" class="preset-chip" data-video-preset="desktop" data-i18n="preset_desktop">🖥️ 桌面优化 (1080p 60fps 8M)</button>
-              <button type="button" class="preset-chip" data-video-preset="bios" data-i18n="preset_bios">⚙️ BIOS/UEFI (720p 30fps MJPEG)</button>
-              <button type="button" class="preset-chip" data-video-preset="bandwidth" data-i18n="preset_bandwidth">⚡ 低带宽省流 (720p 25fps 2M)</button>
+              <button type="button" class="preset-chip" data-video-preset="desktop" data-i18n="preset_desktop">桌面优化 (1080p 60fps 8M)</button>
+              <button type="button" class="preset-chip" data-video-preset="bios" data-i18n="preset_bios">BIOS / UEFI (720p 30fps MJPEG)</button>
+              <button type="button" class="preset-chip" data-video-preset="bandwidth" data-i18n="preset_bandwidth">低带宽省流 (720p 25fps 2M)</button>
             </div>
             <form id="video-config" class="side-grid">
               <div class="settings-heading"><strong>Display</strong><span>决定被控机通过 HDMI EDID 看到的虚拟显示器。</span></div>
@@ -493,7 +497,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         tab_remote_screen:'远程画面',tab_terminal:'终端',release_keys:'释放按键',reconnect:'重连',clear:'清空',mode_fit:'适应',fullscreen:'全屏',exit_fullscreen:'退出全屏',
         tab_control:'控制',tab_video:'视频',tab_devices:'设备',tab_media:'介质',remote_control:'远程控制',forward_input:'转发键鼠',
         short_press_btn:'短按电源',reset_btn:'复位',force_off_btn:'强制关机',refresh:'刷新',
-        preset_desktop:'🖥️ 桌面优化 (1080p 60fps 8M)',preset_bios:'⚙️ BIOS/UEFI (720p 30fps MJPEG)',preset_bandwidth:'⚡ 低带宽省流 (720p 25fps 2M)',
+        preset_desktop:'桌面优化 (1080p 60fps 8M)',preset_bios:'BIOS / UEFI (720p 30fps MJPEG)',preset_bandwidth:'低带宽省流 (720p 25fps 2M)',
         apply:'应用',rescan:'重新检测',save:'保存',upload:'上传',logout:'退出登录',virtual_keyboard:'虚拟键盘',close:'收起',
         input_paused:'输入已暂停',input_captured:'相对鼠标已捕获',input_click_to_capture:'点击画面捕获鼠标',input_forwarding:'键鼠正在转发',input_released:'已释放所有按键与鼠标锁定',
         theme_dark:'深色模式',theme_light:'浅色模式',theme_system:'跟随系统',switch_theme:'切换外观主题',
@@ -502,8 +506,8 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         passkey_title:'Passkey 通行密钥',passkey_desc:'绑定 Apple Touch ID / Face ID，无需密码快速登录',
         passkey_add:'+ 绑定此设备',passkey_signin:'使用 Passkey (Touch ID / Face ID) 登录',passkey_none:'尚未绑定任何 Passkey',
         passkey_delete:'删除',passkey_prompt_name:'为新 Passkey 命名（例如：MacBook Pro、iPhone）：',
-        passkey_insecure:'⚠️ Passkey 需要在安全连接（HTTPS 或 localhost）下使用',
-        passkey_ip_warn:'⚠️ WebAuthn 规范要求使用域名（如 localhost 或 wingman.local），不支持 IP 地址',
+        passkey_insecure:'Passkey 需要在安全连接（HTTPS 或 localhost）下使用',
+        passkey_ip_warn:'WebAuthn 规范要求使用域名（如 localhost 或 wingman.local），不支持 IP 地址',
         passkey_added_success:'Passkey 绑定成功！',passkey_delete_confirm:'确定要删除此 Passkey 吗？',
         settings:'设置',settings_title:'全局偏好设置',settings_desc:'配置交互反馈、通知拦截与全局渲染偏好',
         settings_group_input:'交互与通知',
@@ -526,7 +530,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         tab_remote_screen:'遠端畫面',tab_terminal:'終端機',release_keys:'釋放按鍵',reconnect:'重新連線',clear:'清除',mode_fit:'適應',fullscreen:'全螢幕',exit_fullscreen:'退出全螢幕',
         tab_control:'控制',tab_video:'視訊',tab_devices:'設備',tab_media:'媒體',remote_control:'遠端控制',forward_input:'轉發鍵鼠',
         short_press_btn:'短按電源',reset_btn:'重置',force_off_btn:'強制關機',refresh:'重新整理',
-        preset_desktop:'🖥️ 桌面最佳化 (1080p 60fps 8M)',preset_bios:'⚙️ BIOS/UEFI (720p 30fps MJPEG)',preset_bandwidth:'⚡ 低頻寬省流 (720p 25fps 2M)',
+        preset_desktop:'桌面最佳化 (1080p 60fps 8M)',preset_bios:'BIOS / UEFI (720p 30fps MJPEG)',preset_bandwidth:'低頻寬省流 (720p 25fps 2M)',
         apply:'套用',rescan:'重新檢測',save:'儲存',upload:'上傳',logout:'登出',virtual_keyboard:'虛擬鍵盤',close:'收起',
         input_paused:'輸入已暫停',input_captured:'相對滑鼠已捕獲',input_click_to_capture:'點擊畫面捕獲滑鼠',input_forwarding:'鍵鼠正在轉發',input_released:'已釋放所有按鍵與滑鼠鎖定',
         theme_dark:'深色模式',theme_light:'淺色模式',theme_system:'跟隨系統',switch_theme:'切換外觀主題',
@@ -535,8 +539,8 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         passkey_title:'Passkey 通行密鑰',passkey_desc:'綁定 Apple Touch ID / Face ID，無需密碼快速登入',
         passkey_add:'+ 綁定此設備',passkey_signin:'使用 Passkey (Touch ID / Face ID) 登入',passkey_none:'尚未綁定任何 Passkey',
         passkey_delete:'刪除',passkey_prompt_name:'為新 Passkey 命名（例如：MacBook Pro、iPhone）：',
-        passkey_insecure:'⚠️ Passkey 需要在安全連線（HTTPS 或 localhost）下使用',
-        passkey_ip_warn:'⚠️ WebAuthn 規範要求使用網域名稱（如 localhost 或 wingman.local），不支援 IP 位址',
+        passkey_insecure:'Passkey 需要在安全連線（HTTPS 或 localhost）下使用',
+        passkey_ip_warn:'WebAuthn 規範要求使用網域名稱（如 localhost 或 wingman.local），不支援 IP 位址',
         passkey_added_success:'Passkey 綁定成功！',passkey_delete_confirm:'確定要刪除此 Passkey 嗎？',
         settings:'設定',settings_title:'全局偏好設定',settings_desc:'配置交互反饋、通知攔截與全局渲染偏好',
         settings_group_input:'交互與通知',
@@ -559,7 +563,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         tab_remote_screen:'Remote Screen',tab_terminal:'Terminal',release_keys:'Release Keys',reconnect:'Reconnect',clear:'Clear',mode_fit:'Fit',fullscreen:'Fullscreen',exit_fullscreen:'Exit Fullscreen',
         tab_control:'Control',tab_video:'Video',tab_devices:'Devices',tab_media:'Media',remote_control:'Remote Control',forward_input:'Forward Input',
         short_press_btn:'Power',reset_btn:'Reset',force_off_btn:'Force Off',refresh:'Refresh',
-        preset_desktop:'🖥️ Desktop (1080p 60fps 8M)',preset_bios:'⚙️ BIOS/UEFI (720p 30fps MJPEG)',preset_bandwidth:'⚡ Low Bandwidth (720p 25fps 2M)',
+        preset_desktop:'Desktop (1080p 60fps 8M)',preset_bios:'BIOS / UEFI (720p 30fps MJPEG)',preset_bandwidth:'Low Bandwidth (720p 25fps 2M)',
         apply:'Apply',rescan:'Rescan',save:'Save',upload:'Upload',logout:'Log Out',virtual_keyboard:'Virtual Keyboard',close:'Close',
         input_paused:'Input Paused',input_captured:'Relative Mouse Captured',input_click_to_capture:'Click to Capture Mouse',input_forwarding:'Input Active',input_released:'All keys and pointer locks released',
         theme_dark:'Dark Mode',theme_light:'Light Mode',theme_system:'System Theme',switch_theme:'Toggle Theme',
@@ -568,8 +572,8 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         passkey_title:'Passkey Credentials',passkey_desc:'Sign in with Apple Touch ID / Face ID or Windows Hello',
         passkey_add:'+ Add This Device',passkey_signin:'Sign in with Passkey',passkey_none:'No Passkeys registered yet',
         passkey_delete:'Delete',passkey_prompt_name:'Enter a name for this Passkey (e.g. MacBook Pro, iPhone):',
-        passkey_insecure:'⚠️ Passkey requires a secure context (HTTPS or localhost)',
-        passkey_ip_warn:'⚠️ WebAuthn requires a domain name (e.g. localhost or wingman.local), IP addresses not supported',
+        passkey_insecure:'Passkey requires a secure context (HTTPS or localhost)',
+        passkey_ip_warn:'WebAuthn requires a domain name (e.g. localhost or wingman.local), IP addresses not supported',
         passkey_added_success:'Passkey registered successfully!',passkey_delete_confirm:'Are you sure you want to delete this Passkey?',
         settings:'Settings',settings_title:'Global Preferences',settings_desc:'Configure interaction feedback, alert silencing, and rendering preferences',
         settings_group_input:'Interaction & Alerts',
@@ -1732,6 +1736,20 @@ mod tests {
         assert!(INDEX_HTML.contains("isHidWritableTimeoutError"));
         assert!(INDEX_HTML.contains("getSetting"));
         assert!(INDEX_HTML.contains("setSetting"));
+        assert!(INDEX_HTML.contains("settings-modal-pop"));
+        assert!(INDEX_HTML.contains("place-items:center"));
+    }
+
+    #[test]
+    fn no_emojis_in_ui_and_clean_dialog_animation() {
+        let has_emoji = INDEX_HTML.chars().any(|c| {
+            matches!(c,
+                '\u{1F300}'..='\u{1F9FF}' |
+                '\u{2600}'..='\u{27BF}' |
+                '\u{2300}'..='\u{23FF}'
+            )
+        });
+        assert!(!has_emoji, "INDEX_HTML should not contain informal emojis");
     }
 
     #[test]
