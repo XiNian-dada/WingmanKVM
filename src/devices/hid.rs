@@ -1,16 +1,20 @@
 use std::{
     collections::HashMap,
-    io::{self, Write},
+    io::{self, Read, Write},
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
     io::unix::AsyncFd,
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
     time::Instant,
 };
 
@@ -130,10 +134,42 @@ impl AbsolutePointerState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct KeyboardLeds {
+    pub num_lock: bool,
+    pub caps_lock: bool,
+    pub scroll_lock: bool,
+    pub raw: u8,
+}
+
+impl KeyboardLeds {
+    pub fn from_byte(byte: u8) -> Self {
+        Self {
+            num_lock: (byte & 0x01) != 0,
+            caps_lock: (byte & 0x02) != 0,
+            scroll_lock: (byte & 0x04) != 0,
+            raw: byte,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn to_byte(&self) -> u8 {
+        self.raw
+    }
+}
+
 #[derive(Clone)]
 pub struct HidManager {
     keyboard_tx: mpsc::Sender<KeyboardCommand>,
     mouse_tx: mpsc::Sender<MouseCommand>,
+    keyboard_leds: Arc<AtomicU8>,
+    keyboard_path_tx: watch::Sender<Option<PathBuf>>,
+}
+
+impl Default for HidManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 enum KeyboardCommand {
@@ -181,18 +217,45 @@ enum MouseCommand {
 
 impl HidManager {
     pub fn new() -> Self {
+        Self::with_keyboard_device(None)
+    }
+
+    pub fn with_keyboard_device(keyboard_device: Option<PathBuf>) -> Self {
         let (keyboard_tx, keyboard_rx) = mpsc::channel(QUEUE_CAPACITY);
         let (mouse_tx, mouse_rx) = mpsc::channel(QUEUE_CAPACITY);
+        let (keyboard_path_tx, keyboard_path_rx) = watch::channel(keyboard_device);
+        let keyboard_leds = Arc::new(AtomicU8::new(0));
+
         tokio::spawn(keyboard_worker(keyboard_rx));
         tokio::spawn(mouse_worker(mouse_rx));
+        tokio::spawn(keyboard_led_reader(keyboard_path_rx, Arc::clone(&keyboard_leds)));
+
         Self {
             keyboard_tx,
             mouse_tx,
+            keyboard_leds,
+            keyboard_path_tx,
+        }
+    }
+
+    pub fn leds(&self) -> KeyboardLeds {
+        KeyboardLeds::from_byte(self.keyboard_leds.load(Ordering::Acquire))
+    }
+
+    #[allow(dead_code)]
+    pub fn set_leds_raw(&self, raw: u8) {
+        self.keyboard_leds.store(raw, Ordering::Release);
+    }
+
+    pub fn set_keyboard_device(&self, path: Option<PathBuf>) {
+        if *self.keyboard_path_tx.borrow() != path {
+            let _ = self.keyboard_path_tx.send(path);
         }
     }
 
     pub async fn key(&self, path: Option<PathBuf>, request: KeyRequest) -> Result<(), HidError> {
         let path = path.ok_or(HidError::NotConfigured)?;
+        self.set_keyboard_device(Some(path.clone()));
         let (reply, response) = oneshot::channel();
         self.keyboard_tx
             .try_send(KeyboardCommand::Key {
@@ -354,6 +417,103 @@ async fn keyboard_worker(mut rx: mpsc::Receiver<KeyboardCommand>) {
             KeyboardCommand::Release { path, reply } => {
                 let result = send_report(&path, &[0; 8]).await;
                 let _ = reply.send(result);
+            }
+        }
+    }
+}
+
+async fn keyboard_led_reader(
+    mut path_rx: watch::Receiver<Option<PathBuf>>,
+    leds: Arc<AtomicU8>,
+) {
+    loop {
+        let current_path = path_rx.borrow_and_update().clone();
+        let Some(path) = current_path else {
+            if path_rx.changed().await.is_err() {
+                break;
+            }
+            continue;
+        };
+
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(_) => {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                    changed = path_rx.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+        };
+
+        let async_fd = match AsyncFd::new(file) {
+            Ok(fd) => fd,
+            Err(_) => {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                    changed = path_rx.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+        };
+
+        let mut buf = [0u8; 8];
+        loop {
+            tokio::select! {
+                changed = path_rx.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    break;
+                }
+                readable = async_fd.readable() => {
+                    let mut guard = match readable {
+                        Ok(g) => g,
+                        Err(_) => {
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            break;
+                        }
+                    };
+
+                    match guard.try_io(|inner| {
+                        let mut file = inner.get_ref();
+                        file.read(&mut buf)
+                    }) {
+                        Ok(Ok(n)) if n > 0 => {
+                            let byte = buf[0];
+                            leds.store(byte, Ordering::Release);
+                        }
+                        Ok(Ok(_)) => {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            break;
+                        }
+                        Ok(Err(source)) if source.kind() == io::ErrorKind::Interrupted => {
+                            continue;
+                        }
+                        Ok(Err(source)) if source.kind() == io::ErrorKind::WouldBlock => {
+                            continue;
+                        }
+                        Ok(Err(_)) => {
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            break;
+                        }
+                        Err(_) => {
+                            continue;
+                        }
+                    }
+                }
             }
         }
     }
@@ -805,9 +965,12 @@ mod tests {
         let (keyboard_tx, keyboard_rx) = mpsc::channel(1);
         drop(keyboard_rx);
         let (mouse_tx, mut mouse_rx) = mpsc::channel(2);
+        let (keyboard_path_tx, _) = watch::channel(None);
         let manager = HidManager {
             keyboard_tx,
             mouse_tx,
+            keyboard_leds: Arc::new(AtomicU8::new(0)),
+            keyboard_path_tx,
         };
         let mouse_releases = tokio::spawn(async move {
             let mut relative = false;
@@ -838,5 +1001,48 @@ mod tests {
 
         assert!(matches!(result, Err(HidError::WorkerStopped)));
         assert_eq!(mouse_releases.await.unwrap(), (true, true));
+    }
+
+    #[test]
+    fn keyboard_leds_parsing_and_serialization() {
+        let leds_zero = KeyboardLeds::from_byte(0);
+        assert!(!leds_zero.num_lock);
+        assert!(!leds_zero.caps_lock);
+        assert!(!leds_zero.scroll_lock);
+        assert_eq!(leds_zero.to_byte(), 0);
+
+        let leds_num = KeyboardLeds::from_byte(0x01);
+        assert!(leds_num.num_lock);
+        assert!(!leds_num.caps_lock);
+        assert!(!leds_num.scroll_lock);
+        assert_eq!(leds_num.to_byte(), 1);
+
+        let leds_caps = KeyboardLeds::from_byte(0x02);
+        assert!(!leds_caps.num_lock);
+        assert!(leds_caps.caps_lock);
+        assert!(!leds_caps.scroll_lock);
+        assert_eq!(leds_caps.to_byte(), 2);
+
+        let leds_scroll = KeyboardLeds::from_byte(0x04);
+        assert!(!leds_scroll.num_lock);
+        assert!(!leds_scroll.caps_lock);
+        assert!(leds_scroll.scroll_lock);
+        assert_eq!(leds_scroll.to_byte(), 4);
+
+        let leds_all = KeyboardLeds::from_byte(0x07);
+        assert!(leds_all.num_lock);
+        assert!(leds_all.caps_lock);
+        assert!(leds_all.scroll_lock);
+        assert_eq!(leds_all.to_byte(), 7);
+    }
+
+    #[tokio::test]
+    async fn hid_manager_leds_getter_and_setter() {
+        let manager = HidManager::new();
+        assert_eq!(manager.leds(), KeyboardLeds::default());
+        manager.set_leds_raw(0x02);
+        assert!(manager.leds().caps_lock);
+        assert!(!manager.leds().num_lock);
+        assert_eq!(manager.leds().to_byte(), 2);
     }
 }

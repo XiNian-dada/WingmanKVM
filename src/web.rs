@@ -153,6 +153,8 @@ impl AppState {
             }
         });
 
+        let hid = HidManager::with_keyboard_device(config.hid.keyboard_device.clone());
+
         let state = Self {
             config: Arc::new(RwLock::new(config)),
             config_path: Arc::new(config_path),
@@ -163,7 +165,7 @@ impl AppState {
             setup_token: Arc::new(Mutex::new(setup_token)),
             login_limiter: LoginLimiter::default(),
             passkey_challenges,
-            hid: HidManager::new(),
+            hid,
             power,
             media: Arc::new(MediaManager::default()),
             media_upload: Arc::new(AsyncMutex::new(())),
@@ -230,6 +232,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mouse/click", post(mouse_click))
         .route("/api/mouse/scroll", post(mouse_scroll))
         .route("/api/input/release-all", post(release_all))
+        .route("/api/hid/leds", get(get_keyboard_leds))
         .route("/api/gpio/test", post(gpio_test))
         .route("/api/power/test", post(gpio_test))
         .route(
@@ -1320,6 +1323,9 @@ async fn status(State(state): State<AppState>) -> impl IntoResponse {
         "power": state.power.status().await,
         "webrtc": webrtc,
         "capabilities": capabilities_with_webrtc(&config, webrtc.available),
+        "hid": {
+            "keyboard_leds": state.hid.leds(),
+        },
     })))
 }
 
@@ -1649,7 +1655,13 @@ async fn key(
 ) -> Result<impl IntoResponse, ApiError> {
     let path = state.config.read().await.hid.keyboard_device.clone();
     state.hid.key(path, request).await.map_err(map_hid_error)?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(no_store(Json(json!({
+        "keyboard_leds": state.hid.leds(),
+    }))))
+}
+
+async fn get_keyboard_leds(State(state): State<AppState>) -> impl IntoResponse {
+    no_store(Json(state.hid.leds()))
 }
 
 async fn mouse_move(
@@ -2301,6 +2313,7 @@ async fn commit_config(state: &AppState, config: &Config) -> Result<(), ApiError
     let power_led = power_led_snapshot(&config.power);
     *state.config.write().await = config.clone();
     state.power.set_power_led_config(power_led).await;
+    state.hid.set_keyboard_device(config.hid.keyboard_device.clone());
     Ok(())
 }
 
@@ -2802,6 +2815,7 @@ impl LoginLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::devices::hid::KeyboardLeds;
 
     #[cfg(unix)]
     use std::{
@@ -3675,5 +3689,30 @@ mod tests {
         });
         let auth_deser: Result<PublicKeyCredential, _> = serde_json::from_value(auth_dummy);
         assert!(auth_deser.is_ok());
+    }
+
+    #[tokio::test]
+    async fn keyboard_leds_serialization_and_endpoint_shape() {
+        let hid = HidManager::new();
+        hid.set_leds_raw(0x02);
+        assert_eq!(hid.leds().caps_lock, true);
+        assert_eq!(hid.leds().num_lock, false);
+        assert_eq!(hid.leds().scroll_lock, false);
+
+        let leds_json = serde_json::to_value(hid.leds()).unwrap();
+        assert_eq!(leds_json["caps_lock"], true);
+        assert_eq!(leds_json["num_lock"], false);
+        assert_eq!(leds_json["scroll_lock"], false);
+        assert_eq!(leds_json["raw"], 2);
+
+        let parsed: KeyboardLeds = serde_json::from_value(leds_json).unwrap();
+        assert_eq!(parsed, hid.leds());
+
+        let status_json = json!({
+            "hid": {
+                "keyboard_leds": hid.leds(),
+            }
+        });
+        assert_eq!(status_json["hid"]["keyboard_leds"]["caps_lock"], true);
     }
 }
