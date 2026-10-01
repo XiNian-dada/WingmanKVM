@@ -268,6 +268,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         <div class="diagnostics-card"><span data-i18n="diag_resolution">采集画面分辨率</span><strong id="diag-resolution">--</strong></div>
         <div class="diagnostics-card"><span data-i18n="diag_input">键鼠控制模式</span><strong id="diag-input-mode">转发已暂停</strong></div>
         <div class="diagnostics-card"><span data-i18n="diag_power_led">被控机电源 LED</span><strong id="diag-power-led">读取中…</strong></div>
+        <div class="diagnostics-card" style="grid-column:1/-1;"><span data-i18n="diag_client_ip">客户端来源地址</span><strong id="diag-client-ip">--</strong></div>
       </div>
       <div class="diagnostics-actions">
         <button id="diagnostics-reconnect" class="secondary" type="button" data-i18n="diag_reconnect">重连视频</button>
@@ -404,7 +405,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
           </section>
           <section class="inspector-panel" data-panel="media" hidden><h3 class="panel-title" data-i18n="tab_media">虚拟介质</h3><div class="panel-section"><div id="media-status" class="media-status" role="status"><span class="status-dot"></span><span class="media-status-copy"><strong>正在读取…</strong></span></div><form id="media-upload" class="upload-zone"><label class="field"><span>上传 ISO / IMG <button class="field-help" type="button" data-help="ISO 通常以只读光驱挂载；IMG 可选择 U 盘模式，并按需读写。" aria-label="上传镜像说明">?</button></span><input name="file" type="file" accept=".iso,.img" required></label><div class="side-actions"><button class="primary" type="submit" data-i18n="upload">上传</button><button id="media-refresh" class="secondary" type="button" data-i18n="refresh">刷新</button></div><div class="upload-progress" role="progressbar" aria-label="上传进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="upload-bar"></i></div></form><div id="media-list" class="media-list">正在读取…</div></div><details class="side-advanced"><summary>存储设置 <button class="field-help" type="button" data-help="启用虚拟介质需要一个已连接到 Gadget 的 LUN，以及一个用于保存镜像的目录。" aria-label="存储设置说明">?</button></summary><form id="media-config" class="side-grid"><label class="check wide"><input name="enabled" type="checkbox"><span>启用虚拟介质 <button class="field-help" type="button" data-help="启用后，被控机会看到一只 USB 光驱或 U 盘；启用前请确认 Gadget 已提供 Mass Storage LUN。" aria-label="启用虚拟介质说明">?</button></span></label><label class="field wide"><span>LUN 目录 <button class="field-help" type="button" data-help="指向 USB Gadget 的 mass_storage lun.0；可以使用自动检测，也可以手动填写 configfs 路径。" aria-label="LUN 目录说明">?</button></span><input name="lun_path" class="mono" placeholder="/sys/kernel/config/usb_gadget/…/lun.0"></label><label class="field wide"><span>镜像目录 <button class="field-help" type="button" data-help="上传的 ISO/IMG 文件会保存到这里。目录必须允许 WingmanKVM 服务读写。" aria-label="镜像目录说明">?</button></span><input name="image_directory" class="mono" placeholder="/var/lib/wingmankvm/images"></label><div class="side-actions wide"><button id="media-scan" class="secondary" type="button">自动检测</button><button class="primary" type="submit" data-i18n="save">保存</button></div></form></details></section>
         </div>
-        <div class="session-row"><span class="session-identity"><span class="session-avatar">WK</span><span id="session-user">管理员</span></span><div style="display:flex;align-items:center;gap:6px;"><button id="settings-inspector-btn" class="ghost" type="button" data-i18n="settings">设置</button><button id="logout" class="ghost" type="button" data-i18n="logout">退出登录</button></div></div>
+        <div class="session-row"><span class="session-identity"><span class="session-avatar">WK</span><span style="display:flex;flex-direction:column;line-height:1.2;"><span id="session-user">管理员</span><small id="session-ip" style="font-size:10px;color:var(--muted);font-family:ui-monospace,monospace;"></small></span></span><div style="display:flex;align-items:center;gap:6px;"><button id="settings-inspector-btn" class="ghost" type="button" data-i18n="settings">设置</button><button id="logout" class="ghost" type="button" data-i18n="logout">退出登录</button></div></div>
       </aside>
     </div>
     <dialog id="settings-dialog">
@@ -462,6 +463,20 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
             </div>
           </div>
           <div class="settings-group">
+            <span class="settings-group-title" data-i18n="settings_group_network">网络与代理</span>
+            <div class="settings-item">
+              <div class="settings-item-copy">
+                <strong data-i18n="settings_ppv2">PROXY Protocol v2 (PPv2)</strong>
+                <span data-i18n="settings_ppv2_desc">解析并透传反向代理 (HAProxy / Nginx) 转发的真实客户端 IP</span>
+              </div>
+              <select id="setting-proxy-protocol" style="min-width:110px;padding:6px 10px;font-size:12px;border-radius:6px;background:var(--soft);color:var(--ink);border:1px solid var(--line);">
+                <option value="disabled" data-i18n="proxy_disabled">关闭</option>
+                <option value="auto" data-i18n="proxy_auto">自动检测</option>
+                <option value="required" data-i18n="proxy_required">强制要求</option>
+              </select>
+            </div>
+          </div>
+          <div class="settings-group">
             <span class="settings-group-title" data-i18n="settings_group_system">系统与重置</span>
             <div class="settings-item">
               <div class="settings-item-copy">
@@ -493,7 +508,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       'zh-CN': {
         power:'电源',power_status:'电源状态',short_press:'短按电源开机/关机',reset_pc:'复位重启 (Reset)',force_off:'强制关机 (长按 5 秒)',
         keyboard:'键盘',inspector:'控制面板',inspector_close:'收起',
-        diag_title:'连接与设备诊断',diag_transport:'视频传输链路',diag_resolution:'采集画面分辨率',diag_input:'键鼠控制模式',diag_power_led:'被控机电源 LED',diag_reconnect:'重连视频',diag_scan:'扫描设备',
+        diag_title:'连接与设备诊断',diag_transport:'视频传输链路',diag_resolution:'采集画面分辨率',diag_input:'键鼠控制模式',diag_power_led:'被控机电源 LED',diag_client_ip:'客户端来源地址',diag_reconnect:'重连视频',diag_scan:'扫描设备',
         tab_remote_screen:'远程画面',tab_terminal:'终端',release_keys:'释放按键',reconnect:'重连',clear:'清空',mode_fit:'适应',fullscreen:'全屏',exit_fullscreen:'退出全屏',
         tab_control:'控制',tab_video:'视频',tab_devices:'设备',tab_media:'介质',remote_control:'远程控制',forward_input:'转发键鼠',
         short_press_btn:'短按电源',reset_btn:'复位',force_off_btn:'强制关机',refresh:'刷新',
@@ -517,6 +532,9 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         settings_group_display:'画面与渲染',
         settings_render_pixelated:'像素锐利渲染 (Pixelated)',settings_render_pixelated_desc:'近邻采样字符边缘无模糊滤镜，适合 BIOS 与纯文本终端',
         settings_auto_inspector:'宽屏默认展开面板',settings_auto_inspector_desc:'屏幕宽度充足时，进入控制台默认展开右侧控制面板',
+        settings_group_network:'网络与代理',
+        settings_ppv2:'PROXY Protocol v2 (PPv2)',settings_ppv2_desc:'解析并透传反向代理 (HAProxy / Nginx) 转发的真实客户端 IP',
+        proxy_disabled:'关闭',proxy_auto:'自动检测',proxy_required:'强制要求',
         settings_group_system:'系统与重置',
         settings_reset_btn:'恢复默认设置',settings_reset_desc:'清除所有保存在本机的偏好设置并还原为初始默认值',
         settings_reset_action:'还原',settings_reset_confirm:'确定要恢复所有全局偏好设置为默认值吗？',settings_reset_done:'已恢复默认设置',settings_saved:'设置已保存',
@@ -526,7 +544,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       'zh-TW': {
         power:'電源',power_status:'電源狀態',short_press:'短按電源開機/關機',reset_pc:'重置重啟 (Reset)',force_off:'強制關機 (長按 5 秒)',
         keyboard:'鍵盤',inspector:'控制面板',inspector_close:'收起',
-        diag_title:'連線與設備診斷',diag_transport:'視訊傳輸鏈路',diag_resolution:'採集畫面解析度',diag_input:'鍵鼠控制模式',diag_power_led:'被控機電源 LED',diag_reconnect:'重新連線視訊',diag_scan:'掃描設備',
+        diag_title:'連線與設備診斷',diag_transport:'視訊傳輸鏈路',diag_resolution:'採集畫面解析度',diag_input:'鍵鼠控制模式',diag_power_led:'被控機電源 LED',diag_client_ip:'客戶端來源位址',diag_reconnect:'重新連線視訊',diag_scan:'掃描設備',
         tab_remote_screen:'遠端畫面',tab_terminal:'終端機',release_keys:'釋放按鍵',reconnect:'重新連線',clear:'清除',mode_fit:'適應',fullscreen:'全螢幕',exit_fullscreen:'退出全螢幕',
         tab_control:'控制',tab_video:'視訊',tab_devices:'設備',tab_media:'媒體',remote_control:'遠端控制',forward_input:'轉發鍵鼠',
         short_press_btn:'短按電源',reset_btn:'重置',force_off_btn:'強制關機',refresh:'重新整理',
@@ -550,6 +568,9 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         settings_group_display:'畫面與渲染',
         settings_render_pixelated:'像素銳利渲染 (Pixelated)',settings_render_pixelated_desc:'近鄰採樣字符邊緣無模糊濾鏡，適合 BIOS 與純文本終端',
         settings_auto_inspector:'寬螢幕預設展開面板',settings_auto_inspector_desc:'螢幕寬度充足時，進入控制台預設展開右側控制面板',
+        settings_group_network:'網路與代理',
+        settings_ppv2:'PROXY Protocol v2 (PPv2)',settings_ppv2_desc:'解析並透傳反向代理 (HAProxy / Nginx) 轉發的真實客戶端 IP',
+        proxy_disabled:'關閉',proxy_auto:'自動檢測',proxy_required:'強制要求',
         settings_group_system:'系統與重設',
         settings_reset_btn:'恢復預設設定',settings_reset_desc:'清除所有保存在本機的偏好設定並還原為初始預設值',
         settings_reset_action:'還原',settings_reset_confirm:'確定要恢復所有全局偏好設定為預設值嗎？',settings_reset_done:'已恢復預設設定',settings_saved:'設定已儲存',
@@ -559,7 +580,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       'en': {
         power:'Power',power_status:'Power Status',short_press:'Power On / Off (Short Press)',reset_pc:'System Reset (Reset)',force_off:'Force Power Off (Hold 5s)',
         keyboard:'Keyboard',inspector:'Inspector',inspector_close:'Collapse',
-        diag_title:'Diagnostics',diag_transport:'Video Transport',diag_resolution:'Capture Resolution',diag_input:'Input Mode',diag_power_led:'Target Power LED',diag_reconnect:'Reconnect Video',diag_scan:'Scan Devices',
+        diag_title:'Diagnostics',diag_transport:'Video Transport',diag_resolution:'Capture Resolution',diag_input:'Input Mode',diag_power_led:'Target Power LED',diag_client_ip:'Client Address',diag_reconnect:'Reconnect Video',diag_scan:'Scan Devices',
         tab_remote_screen:'Remote Screen',tab_terminal:'Terminal',release_keys:'Release Keys',reconnect:'Reconnect',clear:'Clear',mode_fit:'Fit',fullscreen:'Fullscreen',exit_fullscreen:'Exit Fullscreen',
         tab_control:'Control',tab_video:'Video',tab_devices:'Devices',tab_media:'Media',remote_control:'Remote Control',forward_input:'Forward Input',
         short_press_btn:'Power',reset_btn:'Reset',force_off_btn:'Force Off',refresh:'Refresh',
@@ -583,6 +604,9 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         settings_group_display:'Display & Rendering',
         settings_render_pixelated:'Pixelated Sharp Scaling',settings_render_pixelated_desc:'Disable bilinear blur filtering for crisp characters in BIOS and text terminals',
         settings_auto_inspector:'Auto-expand Inspector on Wide Screens',settings_auto_inspector_desc:'Automatically keep the right-hand Inspector open on large screens',
+        settings_group_network:'Network & Proxy',
+        settings_ppv2:'PROXY Protocol v2 (PPv2)',settings_ppv2_desc:'Parse and forward real client IPs from reverse proxies (HAProxy / NGINX)',
+        proxy_disabled:'Disabled',proxy_auto:'Auto Detect',proxy_required:'Required',
         settings_group_system:'System & Reset',
         settings_reset_btn:'Reset to Defaults',settings_reset_desc:'Clear all locally stored preferences and restore initial default values',
         settings_reset_action:'Reset',settings_reset_confirm:'Are you sure you want to reset all preferences to defaults?',settings_reset_done:'Preferences reset to defaults',settings_saved:'Settings saved',
@@ -824,6 +848,17 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       box.classList.toggle('error',state==='error'||state==='unsupported');dot.classList.toggle('online',state==='applied');dot.classList.toggle('warning',state==='applying');
       copy.textContent=status?.message||(state==='applied'?'EDID RAM 已应用':state==='applying'?'正在应用 EDID…':'未接管采集卡 EDID');
     }
+    function renderClientInfo(client){
+      if(!client)return;
+      const ip=client.ip||client;if(!ip)return;
+      const port=client.port?`:${client.port}`:'';
+      const isProxy=client.proxy_protocol&&client.proxy_protocol!=='disabled';
+      const proxySuffix=isProxy?' (PPv2)':'';
+      const diagEl=$('#diag-client-ip');
+      if(diagEl)diagEl.textContent=`${ip}${port}${proxySuffix}`;
+      const sessionIpEl=$('#session-ip');
+      if(sessionIpEl)sessionIpEl.textContent=`(${ip}${proxySuffix})`;
+    }
     function applyBootstrap() {
       const config = unwrapConfig(bootstrap), display=config.display||{}, video = config.video || {}, h264 = video.h264 || {}, hid = config.hid || {}, power = config.power || {}, media = config.media || {};
       const vf = $('#video-config'), df = $('#device-config'), mf = $('#media-config');
@@ -837,7 +872,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       df.elements.power_enabled.checked = !!power.enabled; df.elements.gpio_chip.value = power.gpio_chip ?? ''; df.elements.gpio_line.value = power.gpio_line ?? ''; df.elements.active_high.value = power.active_high === false ? 'false' : 'true';
       const reset=power.reset_switch||{},led=power.power_led||{}; df.elements.reset_gpio_chip.value=reset.gpio_chip??''; df.elements.reset_gpio_line.value=reset.gpio_line??''; df.elements.reset_active_high.value=reset.active_high===false?'false':'true'; df.elements.reset_pulse_ms.value=reset.pulse_ms??''; df.elements.power_led_gpio_chip.value=led.gpio_chip??''; df.elements.power_led_gpio_line.value=led.gpio_line??''; df.elements.power_led_active_low.value=led.active_low===false?'false':'true'; df.elements.power_led_bias.value=led.bias||'pull_up'; df.elements.power_led_poll_interval_ms.value=led.poll_interval_ms??''; df.elements.power_led_debounce_ms.value=led.debounce_ms??'';
       mf.elements.enabled.checked = !!media.enabled; if (media.lun_path != null) mf.elements.lun_path.value = media.lun_path; if (media.lun_file != null && !media.lun_path) mf.elements.lun_path.value = media.lun_file; if (media.image_directory != null) mf.elements.image_directory.value = media.image_directory;
-      $('#quality-value').textContent = vf.elements.jpeg_quality.value; $('#session-user').textContent = bootstrap.username || bootstrap.user?.username || '管理员';if(bootstrap.capabilities?.pointer_mode==='absolute'&&relativeCaptured())document.exitPointerLock();syncInputUi();syncTransportControl(); syncGpioControls(); renderPowerLed(latestPowerStatus);
+      $('#quality-value').textContent = vf.elements.jpeg_quality.value; $('#session-user').textContent = bootstrap.username || bootstrap.user?.username || '管理员';if(bootstrap.client_ip)renderClientInfo({ip:bootstrap.client_ip,proxy_protocol:unwrapConfig(bootstrap).server?.proxy_protocol});if(bootstrap.capabilities?.pointer_mode==='absolute'&&relativeCaptured())document.exitPointerLock();syncInputUi();syncTransportControl(); syncGpioControls(); renderPowerLed(latestPowerStatus);
     }
     function syncGpioControls() {
       const caps=bootstrap.capabilities||{};
@@ -1281,7 +1316,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
 
     function setWorkspaceMode(mode){const next=mode==='terminal'?'terminal':'video',terminalMode=next==='terminal',changed=videoWorkspace!==next;videoWorkspace=next;invalidateSurfaceBox();$('#terminal-window').hidden=!terminalMode;$('#video-viewport').hidden=terminalMode;$$('[data-workspace]').forEach(tab=>tab.classList.toggle('active',tab.dataset.workspace===next));$('#terminal-clear')?.classList.toggle('hidden',!terminalMode);if(!terminalMode)$('#terminal-reconnect')?.classList.add('hidden');else if(!terminalSocket||terminalSocket.readyState>WebSocket.OPEN)$('#terminal-reconnect')?.classList.remove('hidden');$('.quick-keys')?.classList.toggle('hidden',terminalMode);$('#input-state')?.classList.toggle('hidden',terminalMode);$('#mode-button')?.classList.toggle('hidden',terminalMode);$('#video-transport-label')?.classList.toggle('hidden',terminalMode);syncInputUi();if(terminalMode){if(changed)stopVideo();terminalConnect();scheduleTerminalFit();requestAnimationFrame(()=>terminal?.focus());}else if(changed)startVideo();}
     $$('[data-workspace]').forEach(tab=>tab.addEventListener('click',()=>setWorkspaceMode(tab.dataset.workspace)));
-    $$('.tab-button').forEach(button=>button.addEventListener('click',()=>{const mode=button.dataset.panelTarget;$$('.tab-button').forEach(item=>item.classList.toggle('active',item===button));$$('[data-panel]').forEach(panel=>panel.hidden=panel.dataset.panel!==mode;}));
+    $$('.tab-button').forEach(button=>button.addEventListener('click',()=>{const mode=button.dataset.panelTarget;$$('.tab-button').forEach(item=>item.classList.toggle('active',item===button));$$('[data-panel]').forEach(panel=>panel.hidden=panel.dataset.panel!==mode);}));
     const inspectorToggle=$('#inspector-toggle');
     function setInspectorOpen(open){invalidateSurfaceBox();app.classList.toggle('inspector-open',open);inspectorToggle.setAttribute('aria-expanded',String(open));inspectorToggle.classList.toggle('active',open);inspectorToggle.textContent=open?t('collapse_inspector','收起面板'):t('open_inspector','控制面板');try{localStorage.setItem('wingman_inspector_open',open?'true':'false');}catch(_){}requestAnimationFrame(()=>{invalidateSurfaceBox();window.dispatchEvent(new Event('resize'));if(videoWorkspace==='terminal')scheduleTerminalFit();});}
     inspectorToggle.addEventListener('click',()=>setInspectorOpen(!app.classList.contains('inspector-open')));
@@ -1289,7 +1324,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     $('#inspector-float-open')?.addEventListener('click',()=>setInspectorOpen(true));
     window.addEventListener('keydown',event=>{if(event.key==='Escape'&&!inputEnabled()&&app.classList.contains('inspector-open')&&!keyboardDialog?.open&&!settingsDialog?.open){setInspectorOpen(false);}});
 
-    async function refreshStatus(){if(statusTimer===-1)return;if(statusTimer>0)clearTimeout(statusTimer);if(app.classList.contains('hidden')||document.hidden){statusTimer=0;renderVideoUi();return;}statusTimer=-1;try{const status=await request('/api/status');latestDisplayStatus=status.display||null;latestVideoStatus=status.video||null;latestPowerStatus=status.power||null;renderDisplayStatus(latestDisplayStatus);renderPowerLed(latestPowerStatus);if(status.hid?.keyboard_leds)renderKeyboardLeds(status.hid.keyboard_leds);renderVideoUi();}catch{latestDisplayStatus={state:'error',message:'EDID 状态读取失败'};latestVideoStatus={state:'offline',message:'连接失败'};latestPowerStatus={power_led:{configured:true,state:'unknown',sense_error:'连接失败'}};renderDisplayStatus(latestDisplayStatus);renderPowerLed(latestPowerStatus);renderVideoUi();}finally{statusTimer=app.classList.contains('hidden')||document.hidden?0:setTimeout(()=>{statusTimer=0;refreshStatus();},3000);}}
+    async function refreshStatus(){if(statusTimer===-1)return;if(statusTimer>0)clearTimeout(statusTimer);if(app.classList.contains('hidden')||document.hidden){statusTimer=0;renderVideoUi();return;}statusTimer=-1;try{const status=await request('/api/status');latestDisplayStatus=status.display||null;latestVideoStatus=status.video||null;latestPowerStatus=status.power||null;renderDisplayStatus(latestDisplayStatus);renderPowerLed(latestPowerStatus);if(status.hid?.keyboard_leds)renderKeyboardLeds(status.hid.keyboard_leds);if(status.client)renderClientInfo(status.client);renderVideoUi();}catch{latestDisplayStatus={state:'error',message:'EDID 状态读取失败'};latestVideoStatus={state:'offline',message:'连接失败'};latestPowerStatus={power_led:{configured:true,state:'unknown',sense_error:'连接失败'}};renderDisplayStatus(latestDisplayStatus);renderPowerLed(latestPowerStatus);renderVideoUi();}finally{statusTimer=app.classList.contains('hidden')||document.hidden?0:setTimeout(()=>{statusTimer=0;refreshStatus();},3000);}}
     const mediaChoices=new Map();let mediaBusy=false,mediaServerBusy=false,mediaStatus={};
     function mediaItems(data){return Array.isArray(data)?data:(data?.items||data?.images||[]);}
     function mediaTypeLabel(type){return type==='cdrom'?'光驱':type==='disk'?'U 盘':'自动';}
@@ -1642,6 +1677,11 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       if (pixelCheckbox) pixelCheckbox.checked = getSetting('render_pixelated', true);
       const inspectorCheckbox = $('#setting-auto-inspector');
       if (inspectorCheckbox) inspectorCheckbox.checked = getSetting('auto_expand_inspector', true);
+      const proxySelect = $('#setting-proxy-protocol');
+      if (proxySelect) {
+        const config = unwrapConfig(bootstrap);
+        proxySelect.value = config.server?.proxy_protocol || 'disabled';
+      }
     }
     function openSettingsDialog() {
       if (!settingsDialog) return;
@@ -1677,6 +1717,21 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     $('#setting-auto-inspector')?.addEventListener('change', e => {
       setSetting('auto_expand_inspector', e.target.checked);
       toast(t('settings_saved', '设置已保存'));
+    });
+    $('#setting-proxy-protocol')?.addEventListener('change', async e => {
+      const mode = e.target.value;
+      try {
+        await request('/api/config', {
+          method: 'PATCH',
+          body: JSON.stringify({ server: { proxy_protocol: mode } }),
+        });
+        const config = unwrapConfig(bootstrap);
+        if (!config.server) config.server = {};
+        config.server.proxy_protocol = mode;
+        toast(t('settings_saved', '设置已保存'));
+      } catch (err) {
+        toast(err.message || '保存失败', true);
+      }
     });
     $('#setting-reset-btn')?.addEventListener('click', () => {
       if (!confirm(t('settings_reset_confirm', '确定要恢复所有全局偏好设置为默认值吗？'))) return;
@@ -1840,4 +1895,15 @@ mod tests {
         assert!(INDEX_HTML.contains("cachedSurfaceBox"));
         assert!(INDEX_HTML.contains("dragRaf"));
     }
+
+    #[test]
+    fn proxy_protocol_ui_and_client_address_display_present() {
+        assert!(INDEX_HTML.contains("id=\"diag-client-ip\""));
+        assert!(INDEX_HTML.contains("id=\"session-ip\""));
+        assert!(INDEX_HTML.contains("id=\"setting-proxy-protocol\""));
+        assert!(INDEX_HTML.contains("PROXY Protocol v2 (PPv2)"));
+        assert!(INDEX_HTML.contains("renderClientInfo"));
+        assert!(INDEX_HTML.contains("settings_ppv2"));
+    }
 }
+

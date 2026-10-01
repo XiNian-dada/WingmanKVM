@@ -29,6 +29,8 @@ use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc};
 use tokio::{fs, io::AsyncWriteExt};
 use webauthn_rs::prelude::*;
 
+use crate::proxy_protocol::ProxyProtocolMode;
+
 use crate::{
     auth::{AuthError, AuthRecord, AuthStore, PasswordPolicyError, SessionStore},
     config::{
@@ -180,6 +182,11 @@ impl AppState {
     pub async fn server_address(&self) -> anyhow::Result<SocketAddr> {
         let config = self.config.read().await;
         Ok(format!("{}:{}", config.server.listen_address, config.server.port).parse()?)
+    }
+
+    pub async fn proxy_protocol_mode(&self) -> ProxyProtocolMode {
+        let config = self.config.read().await;
+        config.server.proxy_protocol
     }
 
     fn start_display_monitor(&self) {
@@ -406,6 +413,8 @@ struct BootstrapResponse {
     token_required: bool,
     authenticated: bool,
     has_passkeys: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_ip: Option<String>,
     config: Option<Config>,
     display: Option<DisplayStatus>,
     video: Option<crate::devices::video::VideoStatus>,
@@ -430,7 +439,11 @@ struct Capabilities {
     video_webrtc_h264: bool,
 }
 
-async fn bootstrap(State(state): State<AppState>, headers: HeaderMap) -> Response {
+async fn bootstrap(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
     let setup_required = !state.auth.is_initialized().unwrap_or(false);
     let authenticated = !setup_required && is_authenticated(&state, &headers);
     let has_passkeys = state
@@ -458,6 +471,7 @@ async fn bootstrap(State(state): State<AppState>, headers: HeaderMap) -> Respons
         token_required: setup_required,
         authenticated,
         has_passkeys,
+        client_ip: Some(peer.ip().to_string()),
         config,
         display,
         video,
@@ -1314,7 +1328,10 @@ async fn passkey_delete_path(
     passkey_delete(State(state), Json(PasskeyDeleteRequest { id })).await
 }
 
-async fn status(State(state): State<AppState>) -> impl IntoResponse {
+async fn status(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
     let config = state.config.read().await.clone();
     let webrtc = state.webrtc.status();
     no_store(Json(json!({
@@ -1325,6 +1342,11 @@ async fn status(State(state): State<AppState>) -> impl IntoResponse {
         "capabilities": capabilities_with_webrtc(&config, webrtc.available),
         "hid": {
             "keyboard_leds": state.hid.leds(),
+        },
+        "client": {
+            "ip": peer.ip().to_string(),
+            "port": peer.port(),
+            "proxy_protocol": config.server.proxy_protocol,
         },
     })))
 }
@@ -1356,11 +1378,17 @@ async fn update_config(
 
 #[derive(Default, Deserialize)]
 struct ConfigPatch {
+    server: Option<ServerPatch>,
     display: Option<DisplayPatch>,
     video: Option<VideoPatch>,
     hid: Option<HidPatch>,
     power: Option<PowerPatch>,
     media: Option<MediaPatch>,
+}
+
+#[derive(Deserialize)]
+struct ServerPatch {
+    proxy_protocol: Option<ProxyProtocolMode>,
 }
 
 #[derive(Deserialize)]
@@ -1469,6 +1497,9 @@ async fn patch_config(
 ) -> Result<impl IntoResponse, ApiError> {
     let _update_guard = state.config_update.lock().await;
     let mut config = state.config.read().await.clone();
+    if let Some(server) = patch.server {
+        apply_server_patch(&mut config.server, server);
+    }
     if let Some(display) = patch.display {
         apply_display_patch(&mut config.display, display);
     }
@@ -1487,6 +1518,12 @@ async fn patch_config(
     validate_config(&config)?;
     commit_config(&state, &config).await?;
     Ok(no_store(Json(config)))
+}
+
+fn apply_server_patch(config: &mut config::ServerConfig, patch: ServerPatch) {
+    if let Some(proxy_protocol) = patch.proxy_protocol {
+        config.proxy_protocol = proxy_protocol;
+    }
 }
 
 fn apply_display_patch(config: &mut config::DisplayConfig, patch: DisplayPatch) {

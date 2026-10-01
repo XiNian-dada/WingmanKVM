@@ -9,6 +9,8 @@ use std::{
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
+use crate::proxy_protocol::ProxyProtocolMode;
+
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
@@ -16,6 +18,7 @@ pub const CONFIG_VERSION: u32 = 1;
 pub const STATE_DIR_ENV: &str = "WINGMANKVM_STATE_DIR";
 pub const DEFAULT_STATE_DIR: &str = "/var/lib/wingmankvm";
 pub const CONFIG_FILE_NAME: &str = "config.json";
+pub const PROXY_PROTOCOL_ENV: &str = "WINGMANKVM_PROXY_PROTOCOL";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
@@ -103,23 +106,30 @@ impl Config {
             path: path.to_owned(),
             source,
         })?;
-        let config: Self = serde_json::from_slice(&bytes).map_err(|source| ConfigError::Json {
+        let mut config: Self = serde_json::from_slice(&bytes).map_err(|source| ConfigError::Json {
             path: path.to_owned(),
             source,
         })?;
         config.validate_version()?;
+        if let Some(mode) = proxy_protocol_from_env() {
+            config.server.proxy_protocol = mode;
+        }
         Ok(config)
     }
 
     pub fn load_or_default(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let path = path.as_ref();
-        match Self::load(path) {
-            Ok(config) => Ok(config),
+        let mut config = match Self::load(path) {
+            Ok(config) => config,
             Err(ConfigError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
-                Ok(Self::default())
+                Self::default()
             }
-            Err(error) => Err(error),
+            Err(error) => return Err(error),
+        };
+        if let Some(mode) = proxy_protocol_from_env() {
+            config.server.proxy_protocol = mode;
         }
+        Ok(config)
     }
 
     pub fn save_atomic(&self, path: impl AsRef<Path>) -> Result<(), ConfigError> {
@@ -142,11 +152,23 @@ impl Config {
     }
 }
 
+pub fn proxy_protocol_from_env() -> Option<ProxyProtocolMode> {
+    env::var(PROXY_PROTOCOL_ENV).ok().and_then(|val| {
+        match val.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(ProxyProtocolMode::Auto),
+            "required" | "force" | "true" | "1" => Some(ProxyProtocolMode::Required),
+            "disabled" | "off" | "false" | "0" => Some(ProxyProtocolMode::Disabled),
+            _ => None,
+        }
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServerConfig {
     pub listen_address: String,
     pub port: u16,
+    pub proxy_protocol: ProxyProtocolMode,
 }
 
 impl Default for ServerConfig {
@@ -154,6 +176,7 @@ impl Default for ServerConfig {
         Self {
             listen_address: "0.0.0.0".to_owned(),
             port: 8080,
+            proxy_protocol: proxy_protocol_from_env().unwrap_or_default(),
         }
     }
 }
@@ -759,4 +782,24 @@ mod tests {
         let mode = fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
     }
+
+    #[test]
+    fn server_config_defaults_and_proxy_protocol_deserialization() {
+        let json = r#"{
+            "version": 1,
+            "server": {
+                "listen_address": "127.0.0.1",
+                "port": 9090,
+                "proxy_protocol": "auto"
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.server.proxy_protocol, ProxyProtocolMode::Auto);
+        assert_eq!(config.server.port, 9090);
+
+        let json_omitted = r#"{ "version": 1 }"#;
+        let config_omitted: Config = serde_json::from_str(json_omitted).unwrap();
+        assert_eq!(config_omitted.server.proxy_protocol, ProxyProtocolMode::Disabled);
+    }
 }
+
