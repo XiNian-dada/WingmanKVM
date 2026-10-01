@@ -13,6 +13,7 @@ use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf},
     net::{TcpListener, TcpStream},
+    sync::watch,
 };
 
 /// 12-byte fixed signature required at the start of every PROXY protocol v2 header.
@@ -276,17 +277,22 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for PrefixedStream<S> {
 /// optionally parses PROXY protocol v2 headers, and forwards the authentic client `SocketAddr`.
 pub struct ProxyProtocolListener {
     listener: TcpListener,
-    mode: ProxyProtocolMode,
+    mode: watch::Receiver<ProxyProtocolMode>,
 }
 
 impl ProxyProtocolListener {
+    #[cfg(test)]
     pub fn new(listener: TcpListener, mode: ProxyProtocolMode) -> Self {
+        Self::with_mode_updates(listener, watch::channel(mode).1)
+    }
+
+    pub fn with_mode_updates(listener: TcpListener, mode: watch::Receiver<ProxyProtocolMode>) -> Self {
         Self { listener, mode }
     }
 
     #[allow(dead_code)]
     pub fn mode(&self) -> ProxyProtocolMode {
-        self.mode
+        *self.mode.borrow()
     }
 
     /// Negotiates the incoming stream according to the configured `ProxyProtocolMode`.
@@ -372,11 +378,13 @@ impl Listener for ProxyProtocolListener {
                 }
             };
 
-            if self.mode == ProxyProtocolMode::Disabled {
+            // Snapshot once per accepted connection; existing streams retain their protocol.
+            let mode = *self.mode.borrow();
+            if mode == ProxyProtocolMode::Disabled {
                 return (PrefixedStream::new(stream), peer_addr);
             }
 
-            match Self::process_stream(self.mode, stream, peer_addr).await {
+            match Self::process_stream(mode, stream, peer_addr).await {
                 Ok(conn) => return conn,
                 Err(err) => {
                     tracing::debug!(%peer_addr, ?err, "Rejected proxy protocol connection");
@@ -602,6 +610,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn listener_applies_mode_changes_to_new_connections() {
+        let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = tcp.local_addr().unwrap();
+        let (updates, modes) = watch::channel(ProxyProtocolMode::Disabled);
+        let mut listener = ProxyProtocolListener::with_mode_updates(tcp, modes);
+        let claimed_ip = Ipv4Addr::new(203, 0, 113, 195);
+        let packet = make_ppv2_ipv4_packet(
+            claimed_ip, Ipv4Addr::LOCALHOST, 54321, address.port(), b"hello",
+        );
+
+        // The same header is passed through while disabled, and parsed after an update.
+        for mode in [ProxyProtocolMode::Disabled, ProxyProtocolMode::Auto, ProxyProtocolMode::Disabled] {
+            updates.send_replace(mode);
+            let mut client = TcpStream::connect(address).await.unwrap();
+            client.write_all(&packet).await.unwrap();
+            let (mut stream, peer) = tokio::time::timeout(
+                Duration::from_secs(2), listener.accept(),
+            ).await.unwrap();
+            if mode == ProxyProtocolMode::Auto {
+                assert_eq!(peer, SocketAddr::new(claimed_ip.into(), 54321));
+                let mut payload = [0; 5];
+                stream.read_exact(&mut payload).await.unwrap();
+                assert_eq!(&payload, b"hello");
+            } else {
+                assert_eq!(peer.ip(), Ipv4Addr::LOCALHOST);
+                let mut header = [0; 12];
+                stream.read_exact(&mut header).await.unwrap();
+                assert_eq!(header, PPV2_SIGNATURE);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn axum_server_integrates_with_proxy_protocol_listener() {
         use axum::{extract::ConnectInfo, routing::get, serve::ListenerExt, Router};
 
@@ -669,4 +710,3 @@ mod tests {
         server_task.abort();
     }
 }
-

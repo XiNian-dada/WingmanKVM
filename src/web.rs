@@ -25,7 +25,7 @@ use bytes::Bytes;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
-use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc};
+use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc, watch};
 use tokio::{fs, io::AsyncWriteExt};
 use webauthn_rs::prelude::*;
 
@@ -91,6 +91,7 @@ fn prune_passkey_challenges(challenges: &Arc<Mutex<HashMap<String, PasskeyChalle
 #[derive(Clone)]
 pub struct AppState {
     config: Arc<RwLock<Config>>,
+    proxy_protocol_updates: watch::Sender<ProxyProtocolMode>,
     config_path: Arc<PathBuf>,
     auth: AuthStore,
     sessions: SessionStore,
@@ -158,6 +159,7 @@ impl AppState {
         let hid = HidManager::with_keyboard_device(config.hid.keyboard_device.clone());
 
         let state = Self {
+            proxy_protocol_updates: watch::channel(config.server.proxy_protocol).0,
             config: Arc::new(RwLock::new(config)),
             config_path: Arc::new(config_path),
             auth,
@@ -187,6 +189,10 @@ impl AppState {
     pub async fn proxy_protocol_mode(&self) -> ProxyProtocolMode {
         let config = self.config.read().await;
         config.server.proxy_protocol
+    }
+
+    pub fn proxy_protocol_updates(&self) -> watch::Receiver<ProxyProtocolMode> {
+        self.proxy_protocol_updates.subscribe()
     }
 
     fn start_display_monitor(&self) {
@@ -2349,6 +2355,7 @@ async fn commit_config(state: &AppState, config: &Config) -> Result<(), ApiError
     state.webrtc.reconfigure(config.video.h264.clone()).await;
     let power_led = power_led_snapshot(&config.power);
     *state.config.write().await = config.clone();
+    state.proxy_protocol_updates.send_replace(config.server.proxy_protocol);
     state.power.set_power_led_config(power_led).await;
     state.hid.set_keyboard_device(config.hid.keyboard_device.clone());
     Ok(())

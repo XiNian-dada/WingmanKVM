@@ -1719,18 +1719,25 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       toast(t('settings_saved', '设置已保存'));
     });
     $('#setting-proxy-protocol')?.addEventListener('change', async e => {
-      const mode = e.target.value;
+      const select = e.target;
+      const mode = select.value;
+      const previousMode = unwrapConfig(bootstrap).server?.proxy_protocol || 'disabled';
+      select.disabled = true;
       try {
-        await request('/api/config', {
-          method: 'PATCH',
+        const saved = await request('/api/config', {
+          method: 'POST',
           body: JSON.stringify({ server: { proxy_protocol: mode } }),
         });
         const config = unwrapConfig(bootstrap);
         if (!config.server) config.server = {};
-        config.server.proxy_protocol = mode;
+        config.server.proxy_protocol = saved.server.proxy_protocol;
+        select.value = config.server.proxy_protocol;
         toast(t('settings_saved', '设置已保存'));
       } catch (err) {
+        select.value = previousMode;
         toast(err.message || '保存失败', true);
+      } finally {
+        select.disabled = false;
       }
     });
     $('#setting-reset-btn')?.addEventListener('click', () => {
@@ -1906,4 +1913,3 @@ mod tests {
         assert!(INDEX_HTML.contains("settings_ppv2"));
     }
 }
-

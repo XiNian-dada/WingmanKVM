@@ -20,11 +20,12 @@ async fn main() -> anyhow::Result<()> {
     let state = web::AppState::load().context("failed to load WingmanKVM state")?;
     let address = state.server_address().await?;
     let proxy_mode = state.proxy_protocol_mode().await;
+    let proxy_updates = state.proxy_protocol_updates();
     let app = web::router(state);
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .with_context(|| format!("failed to listen on {address}"))?;
-    let listener = proxy_protocol::ProxyProtocolListener::new(listener, proxy_mode);
+    let listener = proxy_protocol::ProxyProtocolListener::with_mode_updates(listener, proxy_updates);
 
     tracing::info!(%address, ?proxy_mode, "WingmanKVM is listening");
     axum::serve(
@@ -34,4 +35,3 @@ async fn main() -> anyhow::Result<()> {
     .await
     .context("HTTP server failed")
 }
-
