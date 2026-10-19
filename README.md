@@ -1,128 +1,120 @@
 # WingmanKVM
 
-WingmanKVM 是运行在 Linux 开发板或主机上的网页 KVM：把 HDMI 采集卡、USB Gadget 和可选 GPIO 电源控制组合起来，在浏览器中查看画面、操作键鼠、控制电源和挂载 ISO/IMG。
+轻量、现代的 Linux Web KVM：将 HDMI 采集卡、USB Gadget 与 GPIO 电源控制整合为一体，只需在浏览器中即可实现远程屏幕查看、BIOS 级键鼠操作、物理电源控制与 ISO/IMG 虚拟介质挂载。
 
-> 第一次部署只需阅读下面的“部署前确认”和“四步部署”。遇到板卡、USB OTG 或 GPIO 问题时，再打开文末对应的专项文档。
+![WingmanKVM 控制台主界面](docs/images/console-desktop.png)
 
-## 部署前确认
+---
 
-完整 KVM 需要以下硬件条件：
-
-- 一台运行 Debian、Ubuntu 或 Armbian 等 Linux 发行版的主机；
-- 一个可用或可切换到 **Device/OTG 模式**的 USB 控制器（Linux 中能看到 UDC）；
-- 一个 USB Host 口连接 HDMI 采集卡；
-- 被控机与 KVM 主机之间的一根 OTG/Device USB 线，用于键盘、鼠标和虚拟介质；
-- 可选：接到继电器或隔离电路的 GPIO，用于模拟被控机电源按钮。
-
-没有 UDC/OTG 的普通 x86 主机不能使用官方的一键完整 KVM 安装；它不能向被控机模拟 USB 键盘、鼠标或 U 盘。
-
-### 接线概览
+## 硬件连接概览
 
 ```text
-被控机 HDMI 输出 ──> HDMI 采集卡 ──USB──> KVM 主机 Host 口
-被控机 USB Host  <──USB OTG/Device──> KVM 主机 OTG/Device 口
-被控机 POWER SW <──继电器干接点──> KVM 主机 GPIO（可选）
-浏览器          <──────局域网──────> WingmanKVM :8080
+被控机 HDMI 输出  ──>  HDMI 采集卡  ──USB──>  KVM 主机 USB Host 口
+被控机 USB Host   <──  USB OTG 线  ────────>  KVM 主机 Type-C / OTG 口
+被控机 POWER SW   <──  继电器干接点 ────────>  KVM 主机 GPIO 针脚（可选）
+浏览器终端        <──────  局域网网络  ──────>  http://<KVM主机IP>:8080
 ```
 
-GPIO 不应直接接到被控机主板电源针脚；请使用继电器干接点或合适的隔离电路。
+- **视频采集**：HDMI 采集卡插入 KVM 主机的 USB Host 接口。
+- **键鼠与介质**：KVM 主机的 OTG/Device 接口（通常为 Type-C）连接被控机 USB 接口，模拟 USB 键盘、鼠标与虚拟 U 盘。
+- **电源控制（可选）**：通过 GPIO 控制继电器模块，并联至被控机主板电源针脚。
 
-## 四步部署
+---
 
-### 1. 在 KVM 主机准备依赖并构建
+## 极速开始（三步搞定）
+
+### 1. 准备依赖并构建
+
+在 KVM 主机（Debian / Ubuntu / Armbian）上执行：
 
 ```bash
 sudo apt update
-sudo apt install -y \
-  build-essential pkg-config clang libclang-dev linux-libc-dev \
-  libgpiod-tools v4l-utils
+sudo apt install -y build-essential pkg-config clang libclang-dev linux-libc-dev libgpiod-tools v4l-utils
 
 git clone https://github.com/XiNian-dada/WingmanKVM.git
 cd WingmanKVM
 cargo build --release --locked
 ```
 
-需要安装近期稳定版 Rust（包含 `cargo`）。如果你在 Mac 或另一台机器上为 ARM 板构建，请使用[部署说明中的跨机器构建步骤](docs/DEPLOYMENT.md#2-构建-linux-二进制)。
-
-### 2. 安装并启动
+### 2. 一键安装与启动
 
 ```bash
 sudo ./deploy/install.sh --binary ./target/release/wingmankvm
 ```
 
-安装器会创建服务、USB Gadget、终端用户、设备权限和状态目录，然后监听 `0.0.0.0:8080`。
+安装脚本会自动配置 systemd 服务、USB Gadget 复合设备（键盘、相对鼠标、绝对指针、虚拟介质）、权限规则，并启动监听在 `8080` 端口。
 
-若安装器提示没有 UDC，先不要反复重试。确认 OTG 口接对，并按[UDC 与 USB role 指南](docs/DEPLOYMENT.md#4-udc-与板级-usb-role)配置板卡；需要先落盘配置时可使用 `--no-start`。
+### 3. 打开网页完成初始化
 
-### 3. 打开首次设置链接
-
-安装器会输出类似地址：
+安装完成后终端会输出一次性初始化地址：
 
 ```text
-http://192.168.1.20:8080/#setup=...
+http://<你的主机IP>:8080/#setup=...
 ```
 
-在同一局域网的浏览器中打开它。这个一次性令牌只在创建管理员前有效，页面读取后会自动从地址栏删除。
+在同一局域网的电脑或平板浏览器中打开该地址，完成两步向导：
 
-依次完成：
+1. **设置管理员账号与强密码**（密码同时同步给主机内置终端用户 `wingman`）；
+2. **确认自动检测到的硬件设备**（采集卡、HID 键鼠、虚拟介质 LUN）。
 
-1. 创建管理员账号和强密码；
-2. 在“检查连接”中确认自动检测到的采集卡、键盘、鼠标和虚拟介质；
-3. 仅在已确认接线与触发电平后启用 GPIO 电源控制。
+完成即可直接进入控制台接管远端机器！
 
-管理员密码会同步给网页终端中的 `wingman` 用户；终端中执行 `sudo` 时使用同一密码。
+---
 
-### 4. 确认服务正常
+## 核心功能与界面一览
 
-在 KVM 主机执行：
+### 1. 极简首次配置与硬件自检
 
-```bash
-systemctl --no-pager --full status \
-  wingmankvm-gadget.service wingmankvm.service
-curl -fsS http://127.0.0.1:8080/healthz
-```
+初始化向导自动扫描可用的 V4L2 采集卡与 USB Gadget 节点，无需手动翻查设备树或配置文件。
 
-`wingmankvm-gadget.service` 显示 `active (exited)` 是正常的；`wingmankvm.service` 应显示 `active (running)`。被控机接入 OTG 后，以下状态应为 `configured`：
+| 步骤一：创建管理员 | 步骤二：连接自检 | 硬件指引 |
+| :---: | :---: | :---: |
+| [![创建管理员](docs/images/setup-account.png)](docs/images/setup-account.png) | [![连接自检](docs/images/setup-detection.png)](docs/images/setup-detection.png) | [![硬件指引](docs/images/setup-guide.png)](docs/images/setup-guide.png) |
 
-```bash
-cat /sys/class/udc/*/state
-```
+---
 
-## 使用方式
+### 2. 沉浸式深浅色控制台
 
-网页默认使用低 CPU 占用的 MJPEG 直通，适合局域网。可在视频设置中按需切换 WebRTC H.264；它需要目标机上带相应编码器的 FFmpeg，详细条件见[低带宽与 WebRTC 说明](docs/RK3399_GUIDE.md#8-webrtc--h264-低带宽模式)。
+支持日间明亮模式与极客质感的深色模式（Dark Mode），提供常用快捷键（`Ctrl+Alt+Del`、`Win`、`Alt+Tab`、`Esc`）与键盘状态锁指示灯（NumLock、CapsLock、ScrollLock 双向同步）。
 
-网页还提供：
+| 浅色模式 | 深色模式 |
+| :---: | :---: |
+| [![浅色控制台](docs/images/console-desktop.png)](docs/images/console-desktop.png) | [![深色控制台](docs/images/console-dark.png)](docs/images/console-dark.png) |
 
-- 键盘、相对鼠标和绝对坐标鼠标；
-- 短按和长按电源按钮；
-- KVM 主机本机的交互式终端；
-- ISO（只读）与 IMG（可选读写）虚拟介质。
+---
 
-写入型 IMG 在弹出前必须先从被控机安全卸载，不能同时被 KVM 主机和被控机读写。
+### 3. 虚拟软键盘与全键位支持
 
-## 常见下一步
+平板、手机或移动端无需外接键盘，点击控制台顶部的“键盘”即可展开标准全尺寸虚拟键盘，支持 8 字节 Boot HID 规范与全部功能键。
 
-| 你要做什么 | 请看 |
-| --- | --- |
-| Firefly RK3399 从接线到验证 | [RK3399 从零部署实例](docs/RK3399_GUIDE.md) |
-| 配置 OTG/UDC、升级、服务检查 | [部署说明](docs/DEPLOYMENT.md) |
-| 找采集卡、HID、GPIO 或虚拟介质 | [硬件配置与排障](docs/DEPLOYMENT.md#8-常见故障排查) |
-| MS2130 虚拟显示器、EDID RAM 与安全回滚 | [MS2130 EDID 说明](docs/MS2130_EDID.md) |
-| 使用 GPIO 控制电源 | [GPIO 电源按钮说明](docs/RK3399_GUIDE.md#9-gpio-电源按钮必须按接线确认) |
-| 处理低上行带宽、VPN 或 WebRTC | [WebRTC/H.264 说明](docs/RK3399_GUIDE.md#8-webrtc--h264-低带宽模式) |
-| 自定义 USB Gadget、VID/PID 或 descriptor | [高级 Gadget 检查](docs/DEPLOYMENT.md#9-高级自定义-gadget-检查) |
+![虚拟全键盘](docs/images/virtual-keyboard.png)
 
-## 安全边界
+---
 
-- 不要直接把 `8080` 暴露到公网；优先使用 WireGuard、Tailscale 或可信管理网。
-- 网页终端是 **KVM 主机** 的 shell，不是被控机 shell；能登录网页并知道管理员密码的用户可以通过 `sudo` 管理该主机。
-- GPIO 自动扫描只能列出候选线路，无法判断物理接线、IO 电压或继电器极性。先用原理图和万用表确认。
-- 一个 UDC 一次只能由一个 USB Gadget 管理；启用官方 Gadget 服务前，停用旧脚本或板厂服务。
+### 4. 虚拟介质挂载（ISO / IMG）
 
-## 更多文档
+无需频繁插拔物理 U 盘。支持在网页中直接上传 ISO/IMG 镜像，一键挂载为只读系统安装光驱或读写存储设备，被控机可直接开机引导或读写数据。
 
-- [部署说明：构建、UDC、更新与排障](docs/DEPLOYMENT.md)
-- [Firefly RK3399 从零部署实例](docs/RK3399_GUIDE.md)
-- [设计与实现边界](DESIGN.md)
-- [MIT 许可证](LICENSE)
+![虚拟介质控制面板](docs/images/media-panel.png)
+
+---
+
+### 5. 灵活画质调节与低延迟直通
+
+默认采用超低延迟的 MJPEG 直通模式，局域网体验丝滑流畅；同时支持一键切换预设模式（桌面优化 1080p 60fps、BIOS / UEFI、低带宽省流）或按需启用 WebRTC H.264 编码。
+
+![视频设置面板](docs/images/video-panel.png)
+
+---
+
+## 硬件实战与专题指南
+
+- **Firefly RK3399 部署实战**：查看 [Firefly RK3399 从零部署指南](docs/RK3399_GUIDE.md)，包含详细接口对应、系统配置与避坑速查。
+- **采集卡 EDID 管理**：查看 [MS2130 EDID 配置说明](docs/MS2130_EDID.md)。
+- **高级自定义配置**：查看 [系统部署与进阶排障说明](docs/DEPLOYMENT.md)。
+
+---
+
+## 许可证
+
+基于 [MIT 许可证](LICENSE) 开源。
