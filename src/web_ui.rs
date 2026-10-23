@@ -287,8 +287,8 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
 <body>
   <section id="auth-view">
     <div class="auth-shell">
-      <section class="auth-story" aria-label="WingmanKVM 简介">
-        <div class="brand"><div class="mark">W</div><div class="brand-copy"><h1>WingmanKVM</h1></div></div>
+      <section class="auth-story" aria-label="Wingman 简介">
+        <div class="brand"><div class="mark">W</div><div class="brand-copy"><h1>Wingman</h1></div></div>
         <div id="auth-story-home" class="auth-story-copy">
           <h2>随时接管。</h2>
         </div>
@@ -329,7 +329,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
 
   <main id="app" class="hidden inspector-open">
     <header class="topbar">
-      <div class="brand"><div class="mark">W</div><div class="brand-copy"><h1>WingmanKVM</h1></div></div>
+      <div class="brand"><div class="mark">W</div><div class="brand-copy"><h1>Wingman</h1></div></div>
       <button id="diagnostics-toggle" class="topbar-center" type="button" aria-expanded="false" aria-controls="diagnostics-popover" title="点击查看连接与设备诊断"><span id="status-dot" class="status-dot"></span><span id="status-label">正在建立视频链路</span><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6l4 4 4-4"/></svg></button>
       <div class="topbar-actions">
         <div class="power-menu-container">
