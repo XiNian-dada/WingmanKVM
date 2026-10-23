@@ -3,6 +3,7 @@ use std::{
     ffi::OsString,
     fs::{self, File, OpenOptions},
     io::{self, Write},
+    net::IpAddr,
     path::{Path, PathBuf},
 };
 
@@ -118,6 +119,8 @@ pub struct ServerConfig {
     pub listen_address: String,
     pub port: u16,
     pub proxy_protocol: ProxyProtocolMode,
+    /// Exact proxy IPs allowed to supply HTTP client-address headers. Empty by default.
+    pub trusted_http_proxies: Vec<IpAddr>,
 }
 
 impl Default for ServerConfig {
@@ -126,6 +129,7 @@ impl Default for ServerConfig {
             listen_address: "0.0.0.0".to_owned(),
             port: 8080,
             proxy_protocol: proxy_protocol_from_env().unwrap_or_default(),
+            trusted_http_proxies: Vec::new(),
         }
     }
 }
@@ -751,6 +755,19 @@ mod tests {
         let json_omitted = r#"{ "version": 1 }"#;
         let config_omitted: Config = serde_json::from_str(json_omitted).unwrap();
         assert_eq!(config_omitted.server.proxy_protocol, ProxyProtocolMode::Disabled);
+        assert!(config_omitted.server.trusted_http_proxies.is_empty());
+    }
+
+    #[test]
+    fn trusted_http_proxies_require_explicit_ip_addresses() {
+        let server: ServerConfig = serde_json::from_str(r#"{
+            "trusted_http_proxies": ["192.168.1.2", "127.0.0.1", "::1"]
+        }"#).unwrap();
+        assert_eq!(server.trusted_http_proxies.len(), 3);
+        for invalid in ["*", "0.0.0.0/0", "192.168.1.0/24", "proxy.local"] {
+            let value = serde_json::json!({"trusted_http_proxies": [invalid]});
+            assert!(serde_json::from_value::<ServerConfig>(value).is_err());
+        }
     }
 }
 

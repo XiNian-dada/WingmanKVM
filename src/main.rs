@@ -2,6 +2,7 @@ use anyhow::Context;
 use axum::serve::ListenerExt;
 
 mod auth;
+mod client_ip;
 mod config;
 mod devices;
 mod proxy_protocol;
@@ -26,11 +27,12 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("failed to listen on {address}"))?;
     let listener = proxy_protocol::ProxyProtocolListener::with_mode_updates(listener, proxy_updates);
+    let listener = client_ip::ClientIpListener(listener);
 
     tracing::info!(%address, ?proxy_mode, "WingmanKVM is listening");
     axum::serve(
         listener.tap_io(|_| {}),
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        app.into_make_service_with_connect_info::<client_ip::ClientConnection>(),
     )
     .await
     .context("HTTP server failed")

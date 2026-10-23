@@ -30,6 +30,7 @@ use tokio::{fs, io::AsyncWriteExt};
 use webauthn_rs::prelude::*;
 
 use crate::proxy_protocol::ProxyProtocolMode;
+use crate::client_ip::{self, ClientAddress, ClientConnection};
 
 use crate::{
     auth::{AuthError, AuthRecord, AuthStore, PasswordPolicyError, SessionStore},
@@ -178,6 +179,11 @@ impl AppState {
 
     pub fn proxy_protocol_updates(&self) -> watch::Receiver<ProxyProtocolMode> {
         self.proxy_protocol_updates.subscribe()
+    }
+
+    async fn client_address(&self, connection: ClientConnection, headers: &HeaderMap) -> ClientAddress {
+        let config = self.config.read().await;
+        client_ip::resolve(connection, headers, &config.server.trusted_http_proxies)
     }
 }
 
@@ -373,6 +379,7 @@ struct BootstrapResponse {
     has_passkeys: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     client_ip: Option<String>,
+    client: ClientAddress,
     config: Option<Config>,
     video: Option<crate::devices::video::VideoStatus>,
     webrtc: Option<WebRtcStatus>,
@@ -398,9 +405,10 @@ struct Capabilities {
 
 async fn bootstrap(
     State(state): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
     headers: HeaderMap,
 ) -> Response {
+    let client = state.client_address(connection, &headers).await;
     let setup_required = !state.auth.is_initialized().unwrap_or(false);
     let authenticated = !setup_required && is_authenticated(&state, &headers);
     let has_passkeys = state
@@ -427,7 +435,8 @@ async fn bootstrap(
         token_required: setup_required,
         authenticated,
         has_passkeys,
-        client_ip: Some(peer.ip().to_string()),
+        client_ip: Some(client.ip.to_string()),
+        client,
         config,
         video,
         webrtc,
@@ -878,10 +887,12 @@ struct LoginRequest {
 
 async fn login(
     State(state): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
+    headers: HeaderMap,
     Json(request): Json<LoginRequest>,
 ) -> Result<Response, ApiError> {
-    if !state.login_limiter.allowed(peer.ip()) {
+    let client_ip = state.client_address(connection, &headers).await.ip;
+    if !state.login_limiter.allowed(client_ip) {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "登录尝试过多，请稍后再试",
@@ -902,7 +913,7 @@ async fn login(
     .map_err(map_auth_error)?;
 
     if !valid {
-        state.login_limiter.record_failure(peer.ip());
+        state.login_limiter.record_failure(client_ip);
         return Err(ApiError::new(
             StatusCode::UNAUTHORIZED,
             "用户名或密码不正确",
@@ -914,7 +925,7 @@ async fn login(
     // plaintext password is available again, so repair those installations
     // before issuing a terminal-capable session.
     sync_system_password(&password).await?;
-    state.login_limiter.clear(peer.ip());
+    state.login_limiter.clear(client_ip);
     let session = state.sessions.create().map_err(ApiError::internal)?;
     Ok(with_session_cookie(
         Json(json!({"ok": true})).into_response(),
@@ -984,10 +995,11 @@ fn build_webauthn(headers: &HeaderMap) -> Result<(Webauthn, String, Url), ApiErr
 
 async fn passkey_login_start(
     State(state): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    if !state.login_limiter.allowed(peer.ip()) {
+    let client_ip = state.client_address(connection, &headers).await.ip;
+    if !state.login_limiter.allowed(client_ip) {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "登录尝试过多，请稍后再试",
@@ -1042,14 +1054,15 @@ struct PasskeyLoginFinishRequest {
 
 async fn passkey_login_finish(
     State(state): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
     headers: HeaderMap,
     Json(request): Json<PasskeyLoginFinishRequest>,
 ) -> Result<Response, ApiError> {
     if !origin_matches_host(&headers) {
         return Err(ApiError::new(StatusCode::FORBIDDEN, "Origin 与 Host 不符"));
     }
-    if !state.login_limiter.allowed(peer.ip()) {
+    let client_ip = state.client_address(connection, &headers).await.ip;
+    if !state.login_limiter.allowed(client_ip) {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "登录尝试过多，请稍后再试",
@@ -1067,12 +1080,12 @@ async fn passkey_login_finish(
         rp_origin,
         expires_at,
     }) = challenge_state else {
-        state.login_limiter.record_failure(peer.ip());
+        state.login_limiter.record_failure(client_ip);
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "无效或已过期的认证挑战"));
     };
 
     if Instant::now() > expires_at {
-        state.login_limiter.record_failure(peer.ip());
+        state.login_limiter.record_failure(client_ip);
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "认证挑战已过期"));
     }
 
@@ -1088,7 +1101,7 @@ async fn passkey_login_finish(
         Ok(res) => res,
         Err(e) => {
             tracing::warn!(error = %e, "WebAuthn authentication failed");
-            state.login_limiter.record_failure(peer.ip());
+            state.login_limiter.record_failure(client_ip);
             return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Passkey 验证失败"));
         }
     };
@@ -1099,7 +1112,7 @@ async fn passkey_login_finish(
         Ok(record.username.clone())
     }).map_err(map_auth_error)?;
 
-    state.login_limiter.clear(peer.ip());
+    state.login_limiter.clear(client_ip);
     let session = state.sessions.create().map_err(ApiError::internal)?;
     Ok(with_session_cookie(
         Json(json!({"ok": true, "username": username})).into_response(),
@@ -1285,8 +1298,10 @@ async fn passkey_delete_path(
 
 async fn status(
     State(state): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
+    let client = state.client_address(connection, &headers).await;
     let config = state.config.read().await.clone();
     let webrtc = state.webrtc.status();
     no_store(Json(json!({
@@ -1298,8 +1313,9 @@ async fn status(
             "keyboard_leds": state.hid.leds(),
         },
         "client": {
-            "ip": peer.ip().to_string(),
-            "port": peer.port(),
+            "ip": client.ip.to_string(),
+            "port": client.port,
+            "source": client.source,
             "proxy_protocol": config.server.proxy_protocol,
         },
     })))
@@ -1342,6 +1358,7 @@ struct ConfigPatch {
 #[derive(Deserialize)]
 struct ServerPatch {
     proxy_protocol: Option<ProxyProtocolMode>,
+    trusted_http_proxies: Option<Vec<IpAddr>>,
 }
 
 #[derive(Deserialize)]
@@ -1465,6 +1482,9 @@ async fn patch_config(
 fn apply_server_patch(config: &mut config::ServerConfig, patch: ServerPatch) {
     if let Some(proxy_protocol) = patch.proxy_protocol {
         config.proxy_protocol = proxy_protocol;
+    }
+    if let Some(proxies) = patch.trusted_http_proxies {
+        config.trusted_http_proxies = proxies;
     }
 }
 
@@ -2230,6 +2250,11 @@ async fn commit_config(state: &AppState, config: &Config) -> Result<(), ApiError
 fn validate_config(config: &Config) -> Result<(), ApiError> {
     if config.version != CONFIG_VERSION {
         return Err(ApiError::bad_request("配置版本不受支持"));
+    }
+    if config.server.trusted_http_proxies.len() > 64
+        || config.server.trusted_http_proxies.iter().any(|ip| ip.is_unspecified() || ip.is_multicast())
+    {
+        return Err(ApiError::bad_request("可信 HTTP 代理最多配置 64 个明确的单播 IP 地址"));
     }
     if let (Some(width), Some(height)) = (config.video.width, config.video.height)
         && (!(160..=7680).contains(&width) || !(120..=4320).contains(&height))
@@ -3332,6 +3357,32 @@ mod tests {
         assert!(origin_matches_host(&headers));
         headers.insert(ORIGIN, HeaderValue::from_static("http://evil.invalid"));
         assert!(!origin_matches_host(&headers));
+    }
+
+    #[test]
+    fn proxy_settings_patch_preserves_trust_unless_explicitly_changed() {
+        let mut config = config::ServerConfig::default();
+        config.trusted_http_proxies.push("127.0.0.1".parse().unwrap());
+        let patch = serde_json::from_value(json!({"proxy_protocol": "auto"})).unwrap();
+        apply_server_patch(&mut config, patch);
+        assert_eq!(config.proxy_protocol, ProxyProtocolMode::Auto);
+        assert_eq!(config.trusted_http_proxies.len(), 1);
+        let patch = serde_json::from_value(json!({"trusted_http_proxies": []})).unwrap();
+        apply_server_patch(&mut config, patch);
+        assert!(config.trusted_http_proxies.is_empty());
+    }
+
+    #[test]
+    fn proxy_trust_list_rejects_unspecified_multicast_and_unbounded_lists() {
+        let mut config = Config::default();
+        for invalid in ["0.0.0.0", "::", "224.0.0.1", "ff02::1"] {
+            config.server.trusted_http_proxies = vec![invalid.parse().unwrap()];
+            assert!(validate_config(&config).is_err());
+        }
+        config.server.trusted_http_proxies = vec!["127.0.0.1".parse().unwrap(); 65];
+        assert!(validate_config(&config).is_err());
+        config.server.trusted_http_proxies = vec!["127.0.0.1".parse().unwrap(), "192.168.1.2".parse().unwrap()];
+        assert!(validate_config(&config).is_ok());
     }
 
     #[test]
