@@ -370,3 +370,33 @@ done
 - 在 Caddy/Nginx 后终止 HTTPS，并限制来源网络。
 
 不要把控制台端口直接映射到公网。
+
+### 反向代理、内网穿透与客户端 IP
+
+`server.proxy_protocol` 支持 `disabled`、`auto` 和 `required`，处理的是 TCP 连接前的 PROXY Protocol v2。它不会自动让 HTTP `Host` 与浏览器 `Origin` 一致。Nginx HTTP 反代应保留公网 Host：
+
+```nginx
+proxy_set_header Host $http_host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+```
+
+如果链路是“浏览器 → Nginx → 本机隧道端口 → 内网隧道 → KVM”，PPv2 可能只携带 Nginx 的 `127.0.0.1`，而浏览器的公网出口 IP 在 HTTP 转发头中。可在状态目录的 `config.json` 中显式配置：
+
+```json
+{
+  "server": {
+    "proxy_protocol": "auto",
+    "trusted_http_proxies": ["192.168.1.2", "127.0.0.1"]
+  }
+}
+```
+
+这是应合并进现有配置的片段，不要覆盖整个配置文件。地址必须替换为实际 TCP 隧道对端与 PPv2 中的代理地址；只支持明确的 IPv4/IPv6 地址，不支持域名、CIDR 或通配符。默认空列表，不信任任何 HTTP 转发头。通过文件修改后重启主服务；已登录管理员也可通过 `POST /api/config` 的 `server.trusted_http_proxies` 更新或清空名单。
+
+程序同时检查实际 TCP 对端和 PPv2 地址，再从右向左解析 `X-Forwarded-For`，选择首个不在名单内的地址；只有该头不存在时才使用 `X-Real-IP`。重复、无效或过长的头会安全回退到连接地址。IPv4-mapped IPv6 会规范化，避免同一来源以不同表示绕过登录限速。名单只应包含受控代理，Nginx 必须按上面的配置覆盖/追加来源头，不能原样信任浏览器提供的值。
+
+该地址统一用于网页诊断、`/api/bootstrap`、`/api/status` 和密码/Passkey 登录限速。HTTP 头不提供浏览器的 TCP 源端口，因此这类地址的 `client.port` 为 `null`；`client.source` 表示 `x_forwarded_for`、`x_real_ip`、`proxy_protocol` 或 `socket`。使用 VPN 或其他代理的访客显示的是其公网出口 IP，而非 NAT 后的设备地址。
+
+可信 HTTP 名单不会改变已有 PPv2 的接受策略；启用 PPv2 的 KVM 监听端口仍应只允许可信隧道/管理网访问，不能暴露给不受信任的客户端。它也不会放宽 Origin/Host 校验。
