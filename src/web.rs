@@ -35,11 +35,10 @@ use crate::{
     auth::{AuthError, AuthRecord, AuthStore, PasswordPolicyError, SessionStore},
     config::{
         self, CONFIG_VERSION, Config, GpioBias, GpioInputConfig, GpioPulseConfig, H264Encoder,
-        HidConfig, PointerMode, VideoConfig, VideoEncoding, VirtualMonitorMode,
+        HidConfig, PointerMode, VideoEncoding,
     },
     devices::{
         discovery,
-        display::{DisplayError, DisplayManager, DisplayStatus},
         hid::{
             AbsolutePointerRequest, HidError, HidManager, KeyRequest, MouseClickRequest,
             MouseMoveRequest, MouseScrollRequest,
@@ -60,7 +59,6 @@ const XTERM_JS: &str = include_str!("../web/vendor/xterm/xterm.js");
 const XTERM_FIT_JS: &str = include_str!("../web/vendor/xterm/addon-fit.js");
 const XTERM_CSS: &str = include_str!("../web/vendor/xterm/xterm.css");
 const GPIO_TEST_PULSE_MS: u64 = 150;
-const VIDEO_PAUSE_TIMEOUT: Duration = Duration::from_secs(5);
 const PASSKEY_CHALLENGE_TTL: Duration = Duration::from_secs(120);
 
 #[derive(Clone)]
@@ -104,7 +102,6 @@ pub struct AppState {
     power: PowerManager,
     media: Arc<MediaManager>,
     media_upload: Arc<AsyncMutex<()>>,
-    display: DisplayManager,
     video: VideoManager,
     webrtc: WebRtcManager,
 }
@@ -126,16 +123,7 @@ impl AppState {
             );
             Some(token)
         };
-        let display = DisplayManager::new();
-        if config.display.virtual_monitor != VirtualMonitorMode::Unmanaged
-            && let Err(error) = display.apply(&config.display, config.video.device.as_deref())
-        {
-            tracing::error!(%error, "failed to restore configured virtual monitor at startup");
-        }
-        let video = VideoManager::new(effective_video_config(
-            &config,
-            display.status().applied_mode,
-        ));
+        let video = VideoManager::new(config.video.clone());
         let webrtc = WebRtcManager::new(video.clone(), config.video.h264.clone());
         let power = PowerManager::new();
         let power_led = power_led_snapshot(&config.power);
@@ -158,7 +146,7 @@ impl AppState {
 
         let hid = HidManager::with_keyboard_device(config.hid.keyboard_device.clone());
 
-        let state = Self {
+        Ok(Self {
             proxy_protocol_updates: watch::channel(config.server.proxy_protocol).0,
             config: Arc::new(RwLock::new(config)),
             config_path: Arc::new(config_path),
@@ -173,12 +161,9 @@ impl AppState {
             power,
             media: Arc::new(MediaManager::default()),
             media_upload: Arc::new(AsyncMutex::new(())),
-            display,
             video,
             webrtc,
-        };
-        state.start_display_monitor();
-        Ok(state)
+        })
     }
 
     pub async fn server_address(&self) -> anyhow::Result<SocketAddr> {
@@ -193,39 +178,6 @@ impl AppState {
 
     pub fn proxy_protocol_updates(&self) -> watch::Receiver<ProxyProtocolMode> {
         self.proxy_protocol_updates.subscribe()
-    }
-
-    fn start_display_monitor(&self) {
-        let state = self.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(10));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            // `interval` ticks immediately once. Startup restoration already ran
-            // before V4L2 was opened, so only monitor later USB generations.
-            interval.tick().await;
-            loop {
-                interval.tick().await;
-                let config = state.config.read().await.clone();
-                if !state
-                    .display
-                    .needs_reapply(&config.display, config.video.device.as_deref())
-                {
-                    continue;
-                }
-                let _update_guard = state.config_update.lock().await;
-                let config = state.config.read().await.clone();
-                if !state
-                    .display
-                    .needs_reapply(&config.display, config.video.device.as_deref())
-                {
-                    continue;
-                }
-                tracing::warn!("MS2130 re-enumerated; restoring volatile EDID RAM");
-                if let Err(error) = reapply_display_after_usb_reset(&state, &config).await {
-                    tracing::error!(message = %error.message, "failed to restore EDID after USB reset");
-                }
-            }
-        });
     }
 }
 
@@ -422,7 +374,6 @@ struct BootstrapResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     client_ip: Option<String>,
     config: Option<Config>,
-    display: Option<DisplayStatus>,
     video: Option<crate::devices::video::VideoStatus>,
     webrtc: Option<WebRtcStatus>,
     capabilities: Option<Capabilities>,
@@ -458,19 +409,18 @@ async fn bootstrap(
         .ok()
         .flatten()
         .is_some_and(|record| !record.passkeys.is_empty());
-    let (config, display, video, webrtc, capabilities) = if authenticated {
+    let (config, video, webrtc, capabilities) = if authenticated {
         let config = state.config.read().await.clone();
         let webrtc = state.webrtc.status();
         let capabilities = capabilities_with_webrtc(&config, webrtc.available);
         (
             Some(config),
-            Some(state.display.status()),
             Some(state.video.status()),
             Some(webrtc),
             Some(capabilities),
         )
     } else {
-        (None, None, None, None, None)
+        (None, None, None, None)
     };
     no_store(Json(BootstrapResponse {
         setup_required,
@@ -479,7 +429,6 @@ async fn bootstrap(
         has_passkeys,
         client_ip: Some(peer.ip().to_string()),
         config,
-        display,
         video,
         webrtc,
         capabilities,
@@ -1341,7 +1290,6 @@ async fn status(
     let config = state.config.read().await.clone();
     let webrtc = state.webrtc.status();
     no_store(Json(json!({
-        "display": state.display.status(),
         "video": state.video.status(),
         "power": state.power.status().await,
         "webrtc": webrtc,
@@ -1385,7 +1333,6 @@ async fn update_config(
 #[derive(Default, Deserialize)]
 struct ConfigPatch {
     server: Option<ServerPatch>,
-    display: Option<DisplayPatch>,
     video: Option<VideoPatch>,
     hid: Option<HidPatch>,
     power: Option<PowerPatch>,
@@ -1398,17 +1345,9 @@ struct ServerPatch {
 }
 
 #[derive(Deserialize)]
-struct DisplayPatch {
-    virtual_monitor: Option<VirtualMonitorMode>,
-    #[serde(default, deserialize_with = "deserialize_optional_field")]
-    control_device: Option<Option<PathBuf>>,
-}
-
-#[derive(Deserialize)]
 struct VideoPatch {
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     device: Option<Option<PathBuf>>,
-    follow_display: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     width: Option<Option<u32>>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
@@ -1506,9 +1445,6 @@ async fn patch_config(
     if let Some(server) = patch.server {
         apply_server_patch(&mut config.server, server);
     }
-    if let Some(display) = patch.display {
-        apply_display_patch(&mut config.display, display);
-    }
     if let Some(video) = patch.video {
         apply_video_patch(&mut config.video, video);
     }
@@ -1532,21 +1468,9 @@ fn apply_server_patch(config: &mut config::ServerConfig, patch: ServerPatch) {
     }
 }
 
-fn apply_display_patch(config: &mut config::DisplayConfig, patch: DisplayPatch) {
-    if let Some(virtual_monitor) = patch.virtual_monitor {
-        config.virtual_monitor = virtual_monitor;
-    }
-    if let Some(control_device) = patch.control_device {
-        config.control_device = control_device;
-    }
-}
-
 fn apply_video_patch(config: &mut config::VideoConfig, patch: VideoPatch) {
     if let Some(device) = patch.device {
         config.device = device;
-    }
-    if let Some(follow_display) = patch.follow_display {
-        config.follow_display = follow_display;
     }
     if let Some(width) = patch.width {
         config.width = width;
@@ -2285,67 +2209,9 @@ async fn persist_config(path: &Path, config: &Config) -> Result<(), ApiError> {
 
 async fn commit_config(state: &AppState, config: &Config) -> Result<(), ApiError> {
     let previous = state.config.read().await.clone();
-    let current_display = state.display.status();
-    let apply_display = config.display.virtual_monitor != VirtualMonitorMode::Unmanaged
-        && (config.display != previous.display
-            || config.video.device != previous.video.device
-            || current_display.applied_mode != Some(config.display.virtual_monitor));
-
-    let rollback = if apply_display {
-        pause_video(&state.video).await?;
-        let display = state.display.clone();
-        let display_config = config.display.clone();
-        let video_device = config.video.device.clone();
-        let apply_result = tokio::task::spawn_blocking(move || {
-            display.apply(&display_config, video_device.as_deref())
-        })
-        .await;
-        match apply_result {
-            Ok(Ok(rollback)) => rollback,
-            Ok(Err(error)) => {
-                resume_video(
-                    &state.video,
-                    effective_video_config(&previous, current_display.applied_mode),
-                )?;
-                return Err(map_display_error(error));
-            }
-            Err(error) => {
-                state
-                    .display
-                    .mark_unapplied("EDID 切换任务异常退出，已恢复旧采集配置");
-                resume_video(
-                    &state.video,
-                    effective_video_config(&previous, current_display.applied_mode),
-                )?;
-                return Err(ApiError::internal(error));
-            }
-        }
-    } else {
-        None
-    };
-
-    if let Err(error) = persist_config(state.config_path.as_ref(), config).await {
-        if let Some(rollback) = rollback {
-            rollback_display(state, rollback, previous.display.virtual_monitor).await;
-        }
-        if apply_display {
-            let _ = resume_video(
-                &state.video,
-                effective_video_config(&previous, current_display.applied_mode),
-            );
-        }
-        return Err(error);
-    }
-
-    if config.display.virtual_monitor == VirtualMonitorMode::Unmanaged {
-        state.display.set_unmanaged();
-    }
-    let video = effective_video_config(config, state.display.status().applied_mode);
-    if let Err(error) = state.video.reconfigure(video) {
-        tracing::error!(%error, "failed to resume video after saving configuration");
-        if let Some(rollback) = rollback {
-            rollback_display(state, rollback, previous.display.virtual_monitor).await;
-        }
+    persist_config(state.config_path.as_ref(), config).await?;
+    if let Err(error) = state.video.reconfigure(config.video.clone()) {
+        tracing::error!(%error, "failed to reconfigure video after saving configuration");
         if let Err(restore_error) = persist_config(state.config_path.as_ref(), &previous).await {
             tracing::error!(message = %restore_error.message, "failed to restore previous configuration");
         }
@@ -2359,103 +2225,6 @@ async fn commit_config(state: &AppState, config: &Config) -> Result<(), ApiError
     state.power.set_power_led_config(power_led).await;
     state.hid.set_keyboard_device(config.hid.keyboard_device.clone());
     Ok(())
-}
-
-async fn pause_video(video: &VideoManager) -> Result<(), ApiError> {
-    let video = video.clone();
-    tokio::task::spawn_blocking(move || video.pause(VIDEO_PAUSE_TIMEOUT))
-        .await
-        .map_err(ApiError::internal)?
-        .map_err(|error| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error))
-}
-
-fn resume_video(video: &VideoManager, config: VideoConfig) -> Result<(), ApiError> {
-    video.reconfigure(config).map_err(ApiError::internal)
-}
-
-async fn rollback_display(
-    state: &AppState,
-    rollback: crate::devices::display::DisplayRollback,
-    previous_mode: VirtualMonitorMode,
-) {
-    let display = state.display.clone();
-    match tokio::task::spawn_blocking(move || display.rollback(rollback, previous_mode)).await {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => tracing::error!(%error, "failed to roll back MS2130 EDID"),
-        Err(error) => tracing::error!(%error, "MS2130 EDID rollback task failed"),
-    }
-}
-
-async fn reapply_display_after_usb_reset(
-    state: &AppState,
-    config: &Config,
-) -> Result<(), ApiError> {
-    pause_video(&state.video).await?;
-    let display = state.display.clone();
-    let display_config = config.display.clone();
-    let video_device = config.video.device.clone();
-    let task_result = tokio::task::spawn_blocking(move || {
-        display.apply(&display_config, video_device.as_deref())
-    })
-    .await;
-    let result = match task_result {
-        Ok(result) => result,
-        Err(error) => {
-            state
-                .display
-                .mark_unapplied("采集卡重新枚举后的 EDID 恢复任务异常退出");
-            let _ = resume_video(&state.video, effective_video_config(config, None));
-            return Err(ApiError::internal(error));
-        }
-    };
-    if let Err(error) = result {
-        let message = format!("采集卡重新枚举后 EDID 恢复失败: {error}");
-        state.display.mark_unapplied(message.clone());
-        let _ = resume_video(&state.video, effective_video_config(config, None));
-        return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, message));
-    }
-    resume_video(
-        &state.video,
-        effective_video_config(config, state.display.status().applied_mode),
-    )
-}
-
-fn effective_video_config(
-    config: &Config,
-    applied_mode: Option<VirtualMonitorMode>,
-) -> VideoConfig {
-    let mut video = config.video.clone();
-    if video.follow_display {
-        if applied_mode == Some(config.display.virtual_monitor)
-            && let Some((width, height, frames_per_second)) =
-                config.display.virtual_monitor.timing()
-        {
-            video.width = Some(width);
-            video.height = Some(height);
-            video.frames_per_second = Some(frames_per_second);
-        } else {
-            // Never pretend capture is native when the EDID was not confirmed.
-            video.width = None;
-            video.height = None;
-            video.frames_per_second = None;
-        }
-    }
-    video
-}
-
-fn map_display_error(error: DisplayError) -> ApiError {
-    let status = match &error {
-        DisplayError::VideoDeviceRequired
-        | DisplayError::DeviceMismatch { .. }
-        | DisplayError::DescriptorMismatch { .. } => StatusCode::UNPROCESSABLE_ENTITY,
-        #[cfg(not(target_os = "linux"))]
-        DisplayError::Unsupported => StatusCode::SERVICE_UNAVAILABLE,
-        DisplayError::ControlDeviceNotFound
-        | DisplayError::AmbiguousControlDevice
-        | DisplayError::Io { .. }
-        | DisplayError::Protocol(_) => StatusCode::SERVICE_UNAVAILABLE,
-    };
-    ApiError::new(status, error.to_string())
 }
 
 fn validate_config(config: &Config) -> Result<(), ApiError> {
@@ -2485,22 +2254,7 @@ fn validate_config(config: &Config) -> Result<(), ApiError> {
     if !(1..=4).contains(&config.video.h264.max_sessions) {
         return Err(ApiError::bad_request("H.264 同时会话数必须在 1 到 4 之间"));
     }
-    if config.video.follow_display
-        && config.display.virtual_monitor == VirtualMonitorMode::Unmanaged
-    {
-        return Err(ApiError::bad_request(
-            "原生采集需要先选择一个受管的虚拟显示器模式",
-        ));
-    }
-    if config.video.follow_display
-        && (config.video.width.is_some() || config.video.height.is_some())
-    {
-        return Err(ApiError::bad_request(
-            "原生采集不能同时指定固定采集宽度或高度",
-        ));
-    }
     for path in [
-        config.display.control_device.as_ref(),
         config.video.device.as_ref(),
         config.video.h264.ffmpeg_path.as_ref(),
         config.hid.keyboard_device.as_ref(),
@@ -3145,57 +2899,29 @@ mod tests {
         let mut config = Config::default();
         config.media.max_upload_bytes = 0;
         assert!(validate_config(&config).is_err());
-
-        let mut config = Config::default();
-        config.video.follow_display = true;
-        assert!(validate_config(&config).is_err());
-
-        let mut config = Config::default();
-        config.display.virtual_monitor = VirtualMonitorMode::Hd720p60;
-        config.video.follow_display = true;
-        config.video.width = Some(1280);
-        assert!(validate_config(&config).is_err());
     }
 
     #[test]
-    fn native_capture_uses_only_a_confirmed_display_mode() {
-        let mut config = Config::default();
-        config.display.virtual_monitor = VirtualMonitorMode::Hd720p60;
-        config.video.follow_display = true;
-
-        let pending = effective_video_config(&config, None);
-        assert_eq!(
-            (pending.width, pending.height, pending.frames_per_second),
-            (None, None, None)
-        );
-
-        let applied = effective_video_config(&config, Some(VirtualMonitorMode::Hd720p60));
-        assert_eq!(
-            (applied.width, applied.height, applied.frames_per_second),
-            (Some(1280), Some(720), Some(60))
-        );
-    }
-
-    #[test]
-    fn display_patch_preserves_omitted_fields_and_accepts_null() {
+    fn legacy_display_patch_does_not_override_capture_settings() {
         let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
-            "display": {"virtual_monitor": "hd720p60"}
+            "display": {"virtual_monitor": "hd720p60", "control_device": "/dev/hidraw0"},
+            "video": {"follow_display": true, "jpeg_quality": 75}
         }))
         .unwrap();
-        let mut display = config::DisplayConfig {
-            control_device: Some(PathBuf::from("/dev/hidraw0")),
-            ..config::DisplayConfig::default()
+        let mut config = Config::default();
+        config.video = config::VideoConfig {
+            device: Some(PathBuf::from("/dev/video5")),
+            width: Some(1920),
+            height: Some(1080),
+            frames_per_second: Some(60),
+            ..config::VideoConfig::default()
         };
-        apply_display_patch(&mut display, patch.display.unwrap());
-        assert_eq!(display.virtual_monitor, VirtualMonitorMode::Hd720p60);
-        assert_eq!(display.control_device, Some(PathBuf::from("/dev/hidraw0")));
-
-        let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
-            "display": {"control_device": null}
-        }))
-        .unwrap();
-        apply_display_patch(&mut display, patch.display.unwrap());
-        assert_eq!(display.control_device, None);
+        apply_video_patch(&mut config.video, patch.video.unwrap());
+        assert!(validate_config(&config).is_ok());
+        assert_eq!(config.video.width, Some(1920));
+        assert_eq!(config.video.height, Some(1080));
+        assert_eq!(config.video.frames_per_second, Some(60));
+        assert_eq!(config.video.jpeg_quality, 75);
     }
 
     #[test]

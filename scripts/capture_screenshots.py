@@ -129,13 +129,11 @@ mock_bootstrap_main = {
     "config": {
         "version": 1,
         "server": {"listen_address": "0.0.0.0", "port": 8080, "proxy_protocol": "disabled"},
-        "display": {"edid_management": True},
-        "video": {"device": "/dev/video0", "width": 1920, "height": 1080, "fps": 60, "jpeg_quality": 85},
+        "video": {"device": "/dev/video0", "width": 1920, "height": 1080, "frames_per_second": 60, "jpeg_quality": 85},
         "hid": {"keyboard_device": "/dev/hidg0", "mouse_device": "/dev/hidg1", "absolute_pointer_device": "/dev/hidg2", "pointer_mode": "absolute"},
         "power": {"enabled": True, "gpio_chip": "/dev/gpiochip1", "gpio_line": 7, "active_high": True},
         "media": {"enabled": True, "lun_path": "/sys/kernel/config/usb_gadget/wingmankvm/functions/mass_storage.usb0/lun.0", "image_directory": "/var/lib/wingmankvm/images"}
     },
-    "display": {"supported": True, "current_mode": "1920x1080@60Hz"},
     "video": {
         "state": "ready",
         "message": "",
@@ -149,7 +147,6 @@ mock_bootstrap_main = {
         "hid": True,
         "power": True,
         "mass_storage": True,
-        "display": True,
         "terminal": True
     }
 }
