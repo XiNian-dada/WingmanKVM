@@ -180,18 +180,22 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       .brand p{display:none!important}
       .topbar-center{display:inline-flex!important;align-items:center!important;gap:5px!important;height:26px!important;padding:0 8px!important;font-size:11px!important;border-radius:999px!important;flex-shrink:0!important}
       #status-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .topbar-actions{display:flex!important;align-items:center!important;gap:6px!important;flex-shrink:0!important}
+      .topbar-actions{display:flex!important;align-items:center!important;height:32px!important;gap:6px!important;flex-shrink:0!important}
+      .power-menu-container{position:relative;display:inline-flex!important;align-items:center!important;height:32px!important;margin:0!important}
       .topbar-actions .icon-button{min-height:32px;height:32px}
       #lang-toggle{display:none!important}
       #theme-toggle{display:none!important}
       #settings-toggle{display:none!important}
       .user-pill{display:none!important}
-      #power-menu-toggle{display:inline-flex!important;width:32px!important;height:32px!important;min-height:32px!important;padding:0!important;justify-content:center!important;align-items:center!important;border-radius:6px!important;flex-shrink:0!important}
+      #power-menu-toggle{display:inline-flex!important;align-items:center!important;justify-content:center!important;width:auto!important;min-width:44px!important;height:32px!important;min-height:32px!important;padding:0 10px!important;gap:6px!important;border-radius:8px!important;flex-shrink:0!important;box-sizing:border-box!important}
       #power-menu-toggle span[data-i18n="power"]{display:none!important}
       #power-menu-toggle svg.power-chevron{display:none!important}
-      #keyboard-toggle{display:inline-flex!important;width:32px!important;height:32px!important;min-height:32px!important;padding:0!important;justify-content:center!important;align-items:center!important;border-radius:6px!important;flex-shrink:0!important}
+      #power-menu-toggle .status-dot{margin:0!important}
+      #power-menu-toggle .power-menu-icon{margin:0!important}
+      #keyboard-toggle{display:inline-flex!important;align-items:center!important;justify-content:center!important;width:34px!important;min-width:34px!important;height:32px!important;min-height:32px!important;padding:0!important;border-radius:8px!important;flex-shrink:0!important;box-sizing:border-box!important}
       #keyboard-toggle span[data-i18n="keyboard"]{display:none!important}
-      #inspector-toggle{display:inline-flex!important;height:32px!important;min-height:32px!important;padding:0 12px!important;border-radius:999px!important;font-size:12px!important;font-weight:500!important;white-space:nowrap!important;flex-shrink:0!important}
+      #keyboard-toggle svg{margin:0!important}
+      #inspector-toggle{display:inline-flex!important;align-items:center!important;justify-content:center!important;height:32px!important;min-height:32px!important;padding:0 13px!important;border-radius:8px!important;font-size:12px!important;font-weight:500!important;line-height:1!important;white-space:nowrap!important;flex-shrink:0!important;box-sizing:border-box!important}
       .shell,#app:not(.inspector-open) .shell{display:block}
       .workspace{height:100%;min-height:0;background:#050505;overflow:hidden}
       .console{position:absolute!important;inset:0!important;left:0!important;top:0!important;width:100%!important;height:100%!important;min-width:0!important;min-height:0!important;max-width:none!important;max-height:none!important;border:0!important;border-radius:0!important;box-shadow:none!important;resize:none!important}
@@ -329,7 +333,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       <button id="diagnostics-toggle" class="topbar-center" type="button" aria-expanded="false" aria-controls="diagnostics-popover" title="点击查看连接与设备诊断"><span id="status-dot" class="status-dot"></span><span id="status-label">正在建立视频链路</span><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6l4 4 4-4"/></svg></button>
       <div class="topbar-actions">
         <div class="power-menu-container">
-          <button id="power-menu-toggle" class="icon-button" type="button" aria-expanded="false" aria-controls="power-menu" title="电源与系统控制"><span data-power-led-dot class="status-dot"></span><svg class="power-menu-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:1px;"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg><span data-i18n="power">电源</span><svg class="power-chevron" width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6l4 4 4-4"/></svg></button>
+          <button id="power-menu-toggle" class="icon-button" type="button" aria-expanded="false" aria-controls="power-menu" title="电源与系统控制"><span data-power-led-dot class="status-dot"></span><svg class="power-menu-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg><span data-i18n="power">电源</span><svg class="power-chevron" width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6l4 4 4-4"/></svg></button>
           <div id="power-menu" class="dropdown-menu" hidden>
             <div class="dropdown-header"><span data-i18n="power_status">电源状态</span>: <span data-power-led-state>读取中…</span></div>
             <button class="dropdown-item" type="button" data-power-action="press"><span data-i18n="short_press">短按电源开机/关机</span></button>
