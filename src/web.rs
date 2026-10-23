@@ -52,7 +52,7 @@ use crate::{
         video::VideoManager,
         webrtc::{WebRtcError, WebRtcManager, WebRtcOfferRequest, WebRtcStatus},
     },
-    web_ui::INDEX_HTML,
+    web_ui::{ICON_SVG, INDEX_HTML},
 };
 
 const SESSION_COOKIE: &str = "wingman_session";
@@ -230,6 +230,8 @@ pub fn router(state: AppState) -> Router {
 
     Router::new()
         .route("/", get(index))
+        .route("/favicon.ico", get(favicon))
+        .route("/assets/icon.svg", get(favicon))
         .route("/healthz", get(health))
         .route("/assets/xterm.js", get(xterm_js))
         .route("/assets/xterm-fit.js", get(xterm_fit_js))
@@ -365,6 +367,10 @@ async fn handle_terminal(mut socket: WebSocket) {
 
 async fn index() -> impl IntoResponse {
     no_store(Html(INDEX_HTML))
+}
+
+async fn favicon() -> impl IntoResponse {
+    ([(CONTENT_TYPE, "image/svg+xml")], ICON_SVG)
 }
 
 async fn health() -> impl IntoResponse {
@@ -3535,5 +3541,15 @@ mod tests {
             }
         });
         assert_eq!(status_json["hid"]["keyboard_leds"]["caps_lock"], true);
+    }
+
+    #[tokio::test]
+    async fn favicon_and_icon_endpoints_return_svg() {
+        let resp = favicon().await.into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get("content-type").unwrap(),
+            "image/svg+xml"
+        );
     }
 }

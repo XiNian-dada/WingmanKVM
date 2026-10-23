@@ -18,7 +18,7 @@ with open(SRC_WEB_UI, "r", encoding="utf-8") as f:
 start_marker = 'pub static INDEX_HTML: &str = r##"'
 end_marker = '"##;'
 s_idx = rust_src.index(start_marker) + len(start_marker)
-e_idx = rust_src.rindex(end_marker)
+e_idx = rust_src.index(end_marker, s_idx)
 raw_html = rust_src[s_idx:e_idx]
 
 with open(os.path.join(VENDOR_DIR, "xterm.css"), "r", encoding="utf-8") as f:
@@ -142,6 +142,8 @@ def setup_routes(page):
             route.fulfill(status=200, content_type="application/javascript", body=xterm_fit_js)
         elif "/assets/xterm.js" in url:
             route.fulfill(status=200, content_type="application/javascript", body=xterm_js)
+        elif "/assets/icon.svg" in url or "/favicon.ico" in url:
+            route.fulfill(status=200, content_type="image/svg+xml", body='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 348 252"></svg>')
         elif "/api/bootstrap" in url:
             route.fulfill(status=200, content_type="application/json", body=json.dumps(mock_bootstrap_main))
         elif "/api/status" in url:
