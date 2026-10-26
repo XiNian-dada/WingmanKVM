@@ -6,6 +6,7 @@ mod client_ip;
 mod config;
 mod devices;
 mod proxy_protocol;
+mod system;
 mod web;
 mod web_ui;
 

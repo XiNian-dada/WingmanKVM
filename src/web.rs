@@ -105,6 +105,7 @@ pub struct AppState {
     media_upload: Arc<AsyncMutex<()>>,
     video: VideoManager,
     webrtc: WebRtcManager,
+    system: Arc<crate::system::SystemMonitor>,
 }
 
 impl AppState {
@@ -164,6 +165,7 @@ impl AppState {
             media_upload: Arc::new(AsyncMutex::new(())),
             video,
             webrtc,
+            system: Arc::new(crate::system::SystemMonitor::new()),
         })
     }
 
@@ -191,6 +193,7 @@ pub fn router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/video_feed", get(video_feed))
         .route("/api/status", get(status))
+        .route("/api/system", get(system_status))
         .route("/api/devices/scan", get(scan_devices).post(scan_devices))
         .route(
             "/api/config",
@@ -1302,6 +1305,10 @@ async fn passkey_delete_path(
     passkey_delete(State(state), Json(PasskeyDeleteRequest { id })).await
 }
 
+async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
+    no_store(Json(state.system.snapshot()))
+}
+
 async fn status(
     State(state): State<AppState>,
     ConnectInfo(connection): ConnectInfo<ClientConnection>,
@@ -1310,6 +1317,7 @@ async fn status(
     let client = state.client_address(connection, &headers).await;
     let config = state.config.read().await.clone();
     let webrtc = state.webrtc.status();
+    let system = state.system.snapshot();
     no_store(Json(json!({
         "video": state.video.status(),
         "power": state.power.status().await,
@@ -1318,6 +1326,7 @@ async fn status(
         "hid": {
             "keyboard_leds": state.hid.leds(),
         },
+        "system": system,
         "client": {
             "ip": client.ip.to_string(),
             "port": client.port,

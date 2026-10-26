@@ -32,6 +32,9 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     :root[data-theme="dark"] .auth-guide-item,:root[data-theme="dark"] .feature-chip{background:rgba(30,30,30,0.8);border-color:var(--line)}
     :root[data-theme="dark"] .guide-back,:root[data-theme="dark"] .guide-help{background:var(--soft-2);color:var(--muted);border-color:var(--line-strong)}
     :root[data-theme="dark"] .diagnostics-card{background:var(--soft-2)}
+    :root[data-theme="dark"] .host-perf-card{background:var(--soft-2)}
+    :root[data-theme="dark"] .perf-badge{background:rgba(50,145,255,0.18);border-color:rgba(50,145,255,0.35);color:var(--blue)}
+    :root[data-theme="dark"] .perf-badge.warning{background:rgba(255,85,85,0.22);border-color:rgba(255,85,85,0.45);color:var(--red)}
     :root[data-theme="dark"] .tab-button.active,:root[data-theme="dark"] .workspace-tab.active{background:var(--canvas);color:var(--ink)}
     :root[data-theme="dark"] .video-message{background:rgba(20,20,20,0.92);border-color:#ffffff1a}
     :root[data-theme="dark"] .input-badge.active,:root[data-theme="dark"] .media-badge{color:#60a5fa;background:#172554}
@@ -144,6 +147,21 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     .preset-chip{min-height:28px;padding:0 10px;border:1px solid var(--line);border-radius:999px;background:var(--soft);color:var(--body);font-size:11px;font-weight:500;cursor:pointer;transition:background-color 140ms,border-color 140ms,color 140ms,transform 120ms}
     .preset-chip:hover{background:var(--soft-2);border-color:var(--line-strong);color:var(--ink)}
     .preset-chip:active{transform:scale(0.96)}
+    .host-perf-card{padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--soft);margin:0 0 14px}
+    .host-perf-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}
+    .host-perf-head strong{font-size:12px;font-weight:600;letter-spacing:-.2px;color:var(--ink)}
+    .perf-head-meta{display:flex;align-items:center;gap:6px}
+    .perf-badge{display:inline-flex;align-items:center;padding:1px 7px;border-radius:999px;font:500 10px/16px "Geist Mono",ui-monospace,monospace;color:var(--blue);background:#edf6ff;border:1px solid rgba(0,112,243,0.2)}
+    .perf-badge.warning{color:var(--red);background:var(--red-soft);border-color:#f2c7c7}
+    .perf-uptime{font:10px/16px "Geist Mono",ui-monospace,monospace;color:var(--muted)}
+    .perf-metrics-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+    .perf-metric{display:flex;flex-direction:column;gap:4px;min-width:0}
+    .perf-metric-meta{display:flex;align-items:baseline;justify-content:space-between;gap:4px}
+    .perf-metric-meta span{font-size:11px;color:var(--muted);font-weight:500}
+    .perf-metric-meta strong{font:600 13px/16px "Geist Mono",ui-monospace,monospace;color:var(--ink)}
+    .perf-bar{height:5px;width:100%;background:var(--line-strong);border-radius:999px;overflow:hidden}
+    .perf-bar i{display:block;height:100%;width:0%;border-radius:999px;background:var(--blue);transition:width 240ms ease,background-color 240ms ease}
+    .perf-sub{font:10px/14px "Geist Mono",ui-monospace,monospace;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px}
     #settings-dialog{position:fixed;inset:0;width:100vw;height:100dvh;max-width:none;max-height:none;margin:0;padding:0;border:0;background:transparent;display:grid;place-items:center;overflow:hidden;outline:none;z-index:90;contain:strict;isolation:isolate}
     #settings-dialog:not([open]){display:none}
     #settings-dialog::backdrop{background:#00000055;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);animation:settings-backdrop-fade 160ms ease forwards;will-change:opacity}
@@ -414,6 +432,12 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         <div id="diag-h264-failure-card" class="diagnostics-card hidden" style="grid-column:1/-1;"><span data-i18n="diag_h264_failure">H.264 回退原因</span><strong id="diag-h264-failure" style="white-space:normal;overflow-wrap:anywhere;">--</strong></div>
         <div class="diagnostics-card"><span data-i18n="diag_input">键鼠控制模式</span><strong id="diag-input-mode">转发已暂停</strong></div>
         <div class="diagnostics-card"><span data-i18n="diag_power_led">被控机电源 LED</span><strong id="diag-power-led">读取中…</strong></div>
+        <div class="diagnostics-card"><span data-i18n="cpu_usage">主控机 CPU</span><strong id="diag-cpu">--</strong></div>
+        <div class="diagnostics-card"><span data-i18n="load_average">系统负载 (1/5/15)</span><strong id="diag-load">--</strong></div>
+        <div class="diagnostics-card"><span data-i18n="memory_usage">主控机内存</span><strong id="diag-mem">--</strong></div>
+        <div class="diagnostics-card"><span data-i18n="disk_usage">主控机存储</span><strong id="diag-disk">--</strong></div>
+        <div id="diag-temp-card" class="diagnostics-card hidden"><span data-i18n="temperature">主控机温度</span><strong id="diag-temp">--</strong></div>
+        <div class="diagnostics-card"><span data-i18n="uptime">运行时间</span><strong id="diag-uptime">--</strong></div>
         <div class="diagnostics-card" style="grid-column:1/-1;"><span data-i18n="diag_client_ip">客户端来源地址</span><strong id="diag-client-ip">--</strong></div>
       </div>
       <div class="diagnostics-actions">
@@ -479,6 +503,32 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
           </section>
           <section class="inspector-panel" data-panel="video" hidden>
             <h3 class="panel-title" data-i18n="tab_video">视频</h3>
+            <div class="host-perf-card">
+              <div class="host-perf-head">
+                <strong data-i18n="host_performance">主控机性能</strong>
+                <div class="perf-head-meta">
+                  <span id="perf-temp-badge" class="perf-badge hidden"><span id="perf-temp-val">--</span>°C</span>
+                  <span id="perf-uptime" class="perf-uptime">--</span>
+                </div>
+              </div>
+              <div class="perf-metrics-grid">
+                <div class="perf-metric">
+                  <div class="perf-metric-meta"><span data-i18n="cpu_usage">CPU</span><strong id="perf-cpu-val">--%</strong></div>
+                  <div class="perf-bar"><i id="perf-cpu-bar"></i></div>
+                  <div class="perf-sub"><span id="perf-cpu-cores">-- 核</span> · <span id="perf-load">负载: --</span></div>
+                </div>
+                <div class="perf-metric">
+                  <div class="perf-metric-meta"><span data-i18n="memory_usage">内存</span><strong id="perf-mem-val">--%</strong></div>
+                  <div class="perf-bar"><i id="perf-mem-bar"></i></div>
+                  <div class="perf-sub"><span id="perf-mem-detail">-- / --</span></div>
+                </div>
+                <div class="perf-metric">
+                  <div class="perf-metric-meta"><span data-i18n="disk_usage">存储</span><strong id="perf-disk-val">--%</strong></div>
+                  <div class="perf-bar"><i id="perf-disk-bar"></i></div>
+                  <div class="perf-sub"><span id="perf-disk-detail">-- / --</span></div>
+                </div>
+              </div>
+            </div>
             <div class="video-preset-chips" aria-label="视频预设模式">
               <button type="button" class="preset-chip" data-video-preset="desktop" data-i18n="preset_desktop">桌面优化 (1080p 60fps 8M)</button>
               <button type="button" class="preset-chip" data-video-preset="bios" data-i18n="preset_bios">BIOS / UEFI (720p 30fps MJPEG)</button>
@@ -682,6 +732,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         settings_reset_btn:'恢复默认设置',settings_reset_desc:'清除所有保存在本机的偏好设置并还原为初始默认值',
         settings_reset_action:'还原',settings_reset_confirm:'确定要恢复所有全局偏好设置为默认值吗？',settings_reset_done:'已恢复默认设置',settings_saved:'设置已保存',
         keyboard_leds_title:'键盘锁定状态',keyboard_leds_desc:'远程主机键盘锁定指示灯（点击快速切换）',
+        host_performance:'主控机性能',cpu_usage:'CPU 占用',cpu_cores:'核',load:'负载',load_average:'系统负载',memory_usage:'内存占用',disk_usage:'存储空间',temperature:'主机温度',uptime:'运行时间',
         led_num:'数字锁定 (Num Lock)',led_caps:'大写锁定 (Caps Lock)',led_scroll:'滚动锁定 (Scroll Lock)'
       },
       'zh-TW': {
@@ -718,6 +769,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         settings_reset_btn:'恢復預設設定',settings_reset_desc:'清除所有保存在本機的偏好設定並還原為初始預設值',
         settings_reset_action:'還原',settings_reset_confirm:'確定要恢復所有全局偏好設定為預設值嗎？',settings_reset_done:'已恢復預設設定',settings_saved:'設定已儲存',
         keyboard_leds_title:'鍵盤鎖定狀態',keyboard_leds_desc:'遠端主機鍵盤鎖定指示燈（點擊快速切換）',
+        host_performance:'主控機效能',cpu_usage:'CPU 佔用',cpu_cores:'核',load:'負載',load_average:'系統負載',memory_usage:'記憶體佔用',disk_usage:'儲存空間',temperature:'主機溫度',uptime:'運行時間',
         led_num:'數字鎖定 (Num Lock)',led_caps:'大寫鎖定 (Caps Lock)',led_scroll:'捲動鎖定 (Scroll Lock)'
       },
       'en': {
@@ -754,6 +806,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         settings_reset_btn:'Reset to Defaults',settings_reset_desc:'Clear all locally stored preferences and restore initial default values',
         settings_reset_action:'Reset',settings_reset_confirm:'Are you sure you want to reset all preferences to defaults?',settings_reset_done:'Preferences reset to defaults',settings_saved:'Settings saved',
         keyboard_leds_title:'Keyboard Lock LEDs',keyboard_leds_desc:'Remote host lock indicators (click to toggle)',
+        host_performance:'Host Performance',cpu_usage:'CPU Usage',cpu_cores:'Cores',load:'Load',load_average:'Load Average',memory_usage:'Memory',disk_usage:'Storage',temperature:'Temperature',uptime:'Uptime',
         led_num:'Num Lock',led_caps:'Caps Lock',led_scroll:'Scroll Lock'
       }
     };
@@ -968,7 +1021,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     }
     let bootstrap = {}, remoteWanted = false, pageActive = !document.hidden, reconnectTimer = 0, reconnectDelay = 500;
     let videoGeneration = 0, videoWorkspace = 'video', videoPreference = 'auto', activeVideoTransport = 'none', videoUiState = 'paused', videoFallback = false, videoFallbackReason = '';
-    let webrtcPeer = null, webrtcSessionId = null, webrtcAbort = null, videoFirstFrameTimer = 0, statusTimer = 0, latestVideoStatus = null, latestPowerStatus = null, videoConfigRequestId = 0;
+    let webrtcPeer = null, webrtcSessionId = null, webrtcAbort = null, videoFirstFrameTimer = 0, statusTimer = 0, latestVideoStatus = null, latestPowerStatus = null, latestSystemStatus = null, videoConfigRequestId = 0;
     let toastTimer = 0, mouseX = 0, mouseY = 0, absolutePending = null, mouseBusy = false, mouseTimer = 0, lastMouseSend = 0, gpioTestBusy = false;
     const setupGuides={account:{kicker:'01 / 管理员',title:'账号只设置一次',items:[['网页与终端','管理员密码也会同步给本机终端用户 wingman。'],['强密码','至少 12 位，并包含大小写字母、数字和符号。'],['一次性链接','初始化令牌会从地址中自动读取并立即清除。']]},devices:{kicker:'02 / 连接',title:'先自动检测',items:[['唯一候选','验证通过且只有一个设备时直接采用。'],['多个设备','只在存在多个可用候选时让你选择。'],['手动配置','设备路径只留给自定义 Gadget 和特殊板卡。']]},video:{kicker:'视频采集',title:'认准视频节点',items:[['插在 Host 口','采集卡是输入设备，不要接到 OTG Device 口。'],['检查能力','选择同时支持 Video Capture 和 MJPG 的 USB 节点。'],['排除 metadata','只有 Metadata Capture 的 /dev/videoN 不会输出画面。']]},input:{kicker:'USB 控制',title:'优先精准同步',items:[['OTG Device 口','键盘、鼠标和虚拟 U 盘从这里连接被控机。'],['绝对指针','网页位置会直接映射到远端位置，默认优先使用。'],['相对鼠标','保留给只支持 Boot Mouse 的 BIOS 或 UEFI。']]},media:{kicker:'虚拟介质',title:'镜像就是一只 U 盘',items:[['ISO','始终按只读光驱挂载。'],['IMG','可作为读写 U 盘，但弹出前先在被控机卸载。'],['避免双写','同一镜像不要同时被 RK3399 和被控机写入。']]},power:{kicker:'GPIO 电源',title:'接线必须人工确认',items:[['使用继电器','用干接点并联被控机电源按钮，不要让 GPIO 直接承受外部电压。'],['线路与极性','软件能发现 gpiochip，但不能猜出 line 和高低电平。'],['可以跳过','先完成 KVM，确认原理图和接线后再启用电源控制。']]}};
 
@@ -1173,6 +1226,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       const ledOn=led?.state==='on'||led?.active===true;
       const ledOff=led?.state==='off'||led?.active===false;
       $('#diag-power-led').textContent=ledOn?'已开机 (LED 亮)':ledOff?'已关机 (LED 灭)':led?.configured===false?'未配置':'未知';
+      if(latestSystemStatus)renderSystemMetrics(latestSystemStatus);
     }
     diagToggle?.addEventListener('click',event=>{
       event.stopPropagation();
@@ -1643,12 +1697,14 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     $('#inspector-float-open')?.addEventListener('click',()=>setInspectorOpen(true));
     window.addEventListener('keydown',event=>{if(event.key==='Escape'&&!inputEnabled()&&app.classList.contains('inspector-open')&&!keyboardDialog?.open&&!settingsDialog?.open){setInspectorOpen(false);}});
 
-    async function refreshStatus(){if(statusTimer===-1)return;if(statusTimer>0)clearTimeout(statusTimer);if(app.classList.contains('hidden')||document.hidden){statusTimer=0;renderVideoUi();return;}statusTimer=-1;try{const status=await request('/api/status');latestVideoStatus=status.video||null;latestPowerStatus=status.power||null;renderPowerLed(latestPowerStatus);if(status.hid?.keyboard_leds)renderKeyboardLeds(status.hid.keyboard_leds);if(status.client)renderClientInfo(status.client);renderVideoUi();}catch{latestVideoStatus={state:'offline',message:'连接失败'};latestPowerStatus={power_led:{configured:true,state:'unknown',sense_error:'连接失败'}};renderPowerLed(latestPowerStatus);renderVideoUi();}finally{statusTimer=app.classList.contains('hidden')||document.hidden?0:setTimeout(()=>{statusTimer=0;refreshStatus();},3000);}}
+    async function refreshStatus(){if(statusTimer===-1)return;if(statusTimer>0)clearTimeout(statusTimer);if(app.classList.contains('hidden')||document.hidden){statusTimer=0;renderVideoUi();return;}statusTimer=-1;try{const status=await request('/api/status');latestVideoStatus=status.video||null;latestPowerStatus=status.power||null;latestSystemStatus=status.system||null;renderPowerLed(latestPowerStatus);if(status.hid?.keyboard_leds)renderKeyboardLeds(status.hid.keyboard_leds);if(status.client)renderClientInfo(status.client);if(latestSystemStatus)renderSystemMetrics(latestSystemStatus);renderVideoUi();}catch{latestVideoStatus={state:'offline',message:'连接失败'};latestPowerStatus={power_led:{configured:true,state:'unknown',sense_error:'连接失败'}};renderPowerLed(latestPowerStatus);renderVideoUi();}finally{statusTimer=app.classList.contains('hidden')||document.hidden?0:setTimeout(()=>{statusTimer=0;refreshStatus();},3000);}}
     const mediaChoices=new Map();let mediaBusy=false,mediaServerBusy=false,mediaStatus={};
     function mediaItems(data){return Array.isArray(data)?data:(data?.items||data?.images||[]);}
     function mediaTypeLabel(type){return type==='cdrom'?'光驱':type==='disk'?'U 盘':'自动';}
     function mediaStateLabel(state){return ({attached:'已挂载',mounted:'已挂载',detached:'未挂载',attaching:'正在挂载',detaching:'正在弹出',ejecting:'正在弹出',error:'状态异常'})[state]||'';}
     function formatBytes(value){const bytes=Number(value);if(!Number.isFinite(bytes)||bytes<0)return '';if(bytes<1024)return `${bytes} B`;const units=['KB','MB','GB','TB'];let size=bytes,index=-1;do{size/=1024;index++;}while(size>=1024&&index<units.length-1);return `${size>=10?size.toFixed(0):size.toFixed(1)} ${units[index]}`;}
+    function formatUptime(seconds){const s=Math.floor(Number(seconds)||0);if(s<=0)return '--';const days=Math.floor(s/86400);const hours=Math.floor((s%86400)/3600);const mins=Math.floor((s%3600)/60);if(days>0)return `${days}d ${hours}h`;if(hours>0)return `${hours}h ${mins}m`;return `${mins}m ${s%60}s`;}
+    function renderSystemMetrics(sys){if(!sys)return;latestSystemStatus=sys;const cpu=sys.cpu,mem=sys.memory,disk=sys.disk;if(cpu){const cpuPct=Math.min(100,Math.max(0,Number(cpu.percent)||0));const cpuEl=$('#perf-cpu-val'),bar=$('#perf-cpu-bar');if(cpuEl)cpuEl.textContent=`${cpuPct.toFixed(1)}%`;if(bar){bar.style.width=`${cpuPct}%`;bar.style.backgroundColor=cpuPct>85?'var(--red)':cpuPct>70?'var(--amber)':'var(--blue)';}const coresEl=$('#perf-cpu-cores');if(coresEl)coresEl.textContent=`${cpu.cores||1} ${t('cpu_cores','核')}`;const diagCpu=$('#diag-cpu');if(diagCpu)diagCpu.textContent=`${cpuPct.toFixed(1)}% (${cpu.cores||1} ${t('cpu_cores','核')})`;}if(sys.load_avg&&Array.isArray(sys.load_avg)){const loadStr=sys.load_avg.map(v=>Number(v).toFixed(2)).join(', ');const loadEl=$('#perf-load');if(loadEl)loadEl.textContent=`${t('load','负载')}: ${loadStr}`;const diagLoad=$('#diag-load');if(diagLoad)diagLoad.textContent=loadStr;}if(mem){const memPct=Math.min(100,Math.max(0,Number(mem.percent)||0));const memEl=$('#perf-mem-val'),bar=$('#perf-mem-bar');if(memEl)memEl.textContent=`${memPct.toFixed(0)}%`;if(bar){bar.style.width=`${memPct}%`;bar.style.backgroundColor=memPct>85?'var(--red)':memPct>70?'var(--amber)':'var(--blue)';}const memDetail=$('#perf-mem-detail');if(memDetail)memDetail.textContent=mem.total_bytes>0?`${formatBytes(mem.used_bytes)} / ${formatBytes(mem.total_bytes)}`:'--';const diagMem=$('#diag-mem');if(diagMem)diagMem.textContent=mem.total_bytes>0?`${formatBytes(mem.used_bytes)} / ${formatBytes(mem.total_bytes)} (${memPct.toFixed(0)}%)`:'--';}if(disk){const diskPct=Math.min(100,Math.max(0,Number(disk.percent)||0));const diskEl=$('#perf-disk-val'),bar=$('#perf-disk-bar');if(diskEl)diskEl.textContent=`${diskPct.toFixed(0)}%`;if(bar){bar.style.width=`${diskPct}%`;bar.style.backgroundColor=diskPct>85?'var(--red)':diskPct>70?'var(--amber)':'var(--blue)';}const diskDetail=$('#perf-disk-detail');if(diskDetail)diskDetail.textContent=disk.total_bytes>0?`${formatBytes(disk.used_bytes)} / ${formatBytes(disk.total_bytes)}`:'--';const diagDisk=$('#diag-disk');if(diagDisk)diagDisk.textContent=disk.total_bytes>0?`${formatBytes(disk.used_bytes)} / ${formatBytes(disk.total_bytes)} (${diskPct.toFixed(0)}%)`:'--';}if(sys.temperature!==null&&sys.temperature!==undefined){const temp=Number(sys.temperature);const tempBadge=$('#perf-temp-badge'),tempVal=$('#perf-temp-val');if(tempBadge&&tempVal){tempBadge.classList.remove('hidden');tempVal.textContent=temp.toFixed(1);tempBadge.classList.toggle('warning',temp>=75);}const diagTempCard=$('#diag-temp-card'),diagTemp=$('#diag-temp');if(diagTempCard&&diagTemp){diagTempCard.classList.remove('hidden');diagTemp.textContent=`${temp.toFixed(1)} °C`;}}else{$('#perf-temp-badge')?.classList.add('hidden');$('#diag-temp-card')?.classList.add('hidden');}if(sys.uptime_seconds){const upStr=formatUptime(sys.uptime_seconds);const upEl=$('#perf-uptime'),diagUp=$('#diag-uptime');if(upEl)upEl.textContent=upStr;if(diagUp)diagUp.textContent=upStr;}}
     function mountedMediaName(status,items){return status?.mounted_name||items.find(item=>typeof item!=='string'&&(item.mounted||item.attached))?.name||'';}
     function writableMountedDisk(status,name){return !!name&&status?.read_only===false&&status?.media_type==='disk';}
     function syncMediaBusy(){const locked=mediaBusy||mediaServerBusy;$$('.media-operation').forEach(control=>control.disabled=locked||control.dataset.mediaLocked==='true');$$('#media-upload input,#media-upload button').forEach(control=>control.disabled=mediaBusy);$('#media-refresh').disabled=mediaBusy;$('#media-list').setAttribute('aria-busy',String(locked));}
@@ -2316,6 +2372,22 @@ mod tests {
         assert!(!INDEX_HTML.contains("#app.inspector-open .console-actions #mode-button .mode-text"));
         assert!(!INDEX_HTML.contains("#app.inspector-open .keyboard-led-strip .led-name"));
         assert!(!INDEX_HTML.contains("#app.inspector-open .console-actions #pan-toggle .pan-text"));
+    }
+
+    #[test]
+    fn host_performance_monitoring_ui_and_scripts_present() {
+        assert!(INDEX_HTML.contains("host-perf-card"));
+        assert!(INDEX_HTML.contains("perf-cpu-val"));
+        assert!(INDEX_HTML.contains("perf-mem-val"));
+        assert!(INDEX_HTML.contains("perf-disk-val"));
+        assert!(INDEX_HTML.contains("id=\"diag-cpu\""));
+        assert!(INDEX_HTML.contains("id=\"diag-mem\""));
+        assert!(INDEX_HTML.contains("id=\"diag-disk\""));
+        assert!(INDEX_HTML.contains("id=\"diag-load\""));
+        assert!(INDEX_HTML.contains("renderSystemMetrics"));
+        assert!(INDEX_HTML.contains("formatUptime"));
+        assert!(INDEX_HTML.contains("host_performance"));
+        assert!(INDEX_HTML.contains("cpu_usage"));
     }
 }
 
