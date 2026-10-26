@@ -35,6 +35,10 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     :root[data-theme="dark"] .host-perf-card{background:var(--soft-2)}
     :root[data-theme="dark"] .perf-badge{background:rgba(50,145,255,0.18);border-color:rgba(50,145,255,0.35);color:var(--blue)}
     :root[data-theme="dark"] .perf-badge.warning{background:rgba(255,85,85,0.22);border-color:rgba(255,85,85,0.45);color:var(--red)}
+    :root[data-theme="dark"] .console-perf-btn{background:var(--soft);color:var(--muted);border-color:var(--line)}
+    :root[data-theme="dark"] .console-perf-btn:hover{background:var(--soft-2);color:var(--ink);border-color:var(--line-strong)}
+    :root[data-theme="dark"] .console-perf-btn.active{background:rgba(50,145,255,0.18);border-color:rgba(50,145,255,0.45);color:var(--blue);box-shadow:0 0 0 1px rgba(50,145,255,0.3)}
+    :root[data-theme="dark"] .console-perf-popover{background:rgba(20,20,20,0.94);border-color:rgba(255,255,255,0.12);box-shadow:0 16px 36px rgba(0,0,0,0.65)}
     :root[data-theme="dark"] .tab-button.active,:root[data-theme="dark"] .workspace-tab.active{background:var(--canvas);color:var(--ink)}
     :root[data-theme="dark"] .video-message{background:rgba(20,20,20,0.92);border-color:#ffffff1a}
     :root[data-theme="dark"] .input-badge.active,:root[data-theme="dark"] .media-badge{color:#60a5fa;background:#172554}
@@ -65,6 +69,13 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       :root:not([data-theme="light"]) .auth-guide-item,:root:not([data-theme="light"]) .feature-chip{background:rgba(30,30,30,0.8);border-color:var(--line)}
       :root:not([data-theme="light"]) .guide-back,:root:not([data-theme="light"]) .guide-help{background:var(--soft-2);color:var(--muted);border-color:var(--line-strong)}
       :root:not([data-theme="light"]) .diagnostics-card{background:var(--soft-2)}
+      :root:not([data-theme="light"]) .host-perf-card{background:var(--soft-2)}
+      :root:not([data-theme="light"]) .perf-badge{background:rgba(50,145,255,0.18);border-color:rgba(50,145,255,0.35);color:var(--blue)}
+      :root:not([data-theme="light"]) .perf-badge.warning{background:rgba(255,85,85,0.22);border-color:rgba(255,85,85,0.45);color:var(--red)}
+      :root:not([data-theme="light"]) .console-perf-btn{background:var(--soft);color:var(--muted);border-color:var(--line)}
+      :root:not([data-theme="light"]) .console-perf-btn:hover{background:var(--soft-2);color:var(--ink);border-color:var(--line-strong)}
+      :root:not([data-theme="light"]) .console-perf-btn.active{background:rgba(50,145,255,0.18);border-color:rgba(50,145,255,0.45);color:var(--blue);box-shadow:0 0 0 1px rgba(50,145,255,0.3)}
+      :root:not([data-theme="light"]) .console-perf-popover{background:rgba(20,20,20,0.94);border-color:rgba(255,255,255,0.12);box-shadow:0 16px 36px rgba(0,0,0,0.65)}
       :root:not([data-theme="light"]) .tab-button.active,:root:not([data-theme="light"]) .workspace-tab.active{background:var(--canvas);color:var(--ink)}
       :root:not([data-theme="light"]) .video-message{background:rgba(20,20,20,0.92);border-color:#ffffff1a}
       :root:not([data-theme="light"]) .input-badge.active,:root:not([data-theme="light"]) .media-badge{color:#60a5fa;background:#172554}
@@ -162,6 +173,36 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     .perf-bar{height:5px;width:100%;background:var(--line-strong);border-radius:999px;overflow:hidden}
     .perf-bar i{display:block;height:100%;width:0%;border-radius:999px;background:var(--blue);transition:width 240ms ease,background-color 240ms ease}
     .perf-sub{font:10px/14px "Geist Mono",ui-monospace,monospace;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px}
+    .console-perf{position:relative;display:inline-flex;align-items:center;flex-shrink:0}
+    .console-perf-btn{display:inline-flex;align-items:center;gap:6px;min-height:28px;height:28px;padding:0 9px;border:1px solid var(--line);border-radius:999px;background:var(--soft);color:var(--muted);font:500 11px/16px "Geist Mono",ui-monospace,monospace;cursor:pointer;transition:all 140ms ease;user-select:none;white-space:nowrap}
+    .console-perf-btn:hover{background:var(--soft-2);border-color:var(--line-strong);color:var(--ink)}
+    .console-perf-btn.active{color:#0761d1;background:#edf6ff;border-color:var(--blue);box-shadow:0 0 0 1px rgba(0,112,243,0.3)}
+    .perf-chip-pulse{display:inline-flex;align-items:center;justify-content:center}
+    .perf-chip-icon{display:block;opacity:.85}
+    .perf-chip-full{display:inline-flex;align-items:center;gap:4px}
+    .perf-chip-seg{display:inline-flex;align-items:center;gap:3px}
+    .perf-chip-seg strong{color:var(--ink);font-weight:600}
+    .perf-chip-sep{color:var(--muted);opacity:.5;margin:0 1px}
+    .perf-chip-compact{display:none}
+    .console-perf-popover{position:absolute;top:calc(100% + 8px);left:0;z-index:90;width:310px;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--canvas);box-shadow:var(--shadow-5);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);animation:dropdown-drop 140ms cubic-bezier(.16,1,.3,1);will-change:transform,opacity;contain:layout}
+    .console-perf-popover[hidden]{display:none!important}
+    .perf-pop-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-bottom:10px;margin-bottom:10px;border-bottom:1px solid var(--line)}
+    .perf-pop-title{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--ink);letter-spacing:-.2px}
+    .perf-pop-meta{display:flex;align-items:center;gap:6px}
+    .perf-pop-close{width:22px;height:22px;padding:0;border:0;border-radius:4px;background:transparent;color:var(--muted);font-size:12px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:background-color 140ms,color 140ms}
+    .perf-pop-close:hover{background:var(--soft-2);color:var(--ink)}
+    .perf-pop-body{display:flex;flex-direction:column;gap:11px}
+    .perf-pop-row{display:flex;flex-direction:column;gap:5px}
+    .perf-pop-row-meta{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+    .perf-pop-row-title{display:flex;align-items:baseline;gap:6px}
+    .perf-pop-row-title span{font-size:12px;font-weight:600;color:var(--ink)}
+    .perf-pop-sub{font:10px/14px "Geist Mono",ui-monospace,monospace;color:var(--muted)}
+    .perf-pop-row-footer{display:flex;align-items:center;justify-content:space-between;font:10px/14px "Geist Mono",ui-monospace,monospace;color:var(--muted);margin-top:2px}
+    .perf-pop-actions{display:flex;justify-content:flex-end;margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
+    .perf-pop-more{border:0;background:transparent;color:var(--blue);font-size:11px;font-weight:500;padding:4px 6px;cursor:pointer;border-radius:4px;transition:background-color 140ms}
+    .perf-pop-more:hover{background:var(--soft-2);text-decoration:underline}
+    @container (max-width:880px){.perf-chip-full{display:none!important}.perf-chip-compact{display:inline-flex!important}.console-perf-btn{padding:0 7px;gap:4px}}
+    @container (max-width:580px){.console-perf-btn{padding:0 6px}}
     #settings-dialog{position:fixed;inset:0;width:100vw;height:100dvh;max-width:none;max-height:none;margin:0;padding:0;border:0;background:transparent;display:grid;place-items:center;overflow:hidden;outline:none;z-index:90;contain:strict;isolation:isolate}
     #settings-dialog:not([open]){display:none}
     #settings-dialog::backdrop{background:#00000055;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);animation:settings-backdrop-fade 160ms ease forwards;will-change:opacity}
@@ -448,7 +489,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     <div class="shell">
       <section id="workspace" class="workspace">
         <div id="console" class="console mode-fit render-pixelated">
-          <div id="console-head" class="console-head"><div class="workspace-tabs"><button class="workspace-tab active" type="button" data-workspace="video" data-i18n="tab_remote_screen">远程画面</button><button class="workspace-tab" type="button" data-workspace="terminal" data-i18n="tab_terminal">终端</button></div><div class="quick-keys" aria-label="常用快捷键"><button class="icon-button-sm" type="button" data-quick-key="cad" title="发送 Ctrl+Alt+Del">Ctrl+Alt+Del</button><button class="icon-button-sm" type="button" data-quick-key="win" title="发送 Win 徽标键">Win</button><button class="icon-button-sm" type="button" data-quick-key="alttab" title="发送 Alt+Tab">Alt+Tab</button><button class="icon-button-sm" type="button" data-quick-key="esc" title="发送 Esc">Esc</button></div><span id="video-transport-label" class="console-meta">MJPEG</span><div class="console-actions"><div id="console-leds" class="keyboard-led-strip" aria-label="键盘指示灯" title="键盘锁定指示灯（点击切换）"><button id="led-num" class="led-badge" type="button" data-led="NumLock" title="Num Lock"><span class="led-dot"></span><span class="led-text">1<span class="led-name"> NUM</span></span></button><button id="led-caps" class="led-badge" type="button" data-led="CapsLock" title="Caps Lock"><span class="led-dot"></span><span class="led-text">A<span class="led-name"> CAPS</span></span></button><button id="led-scroll" class="led-badge" type="button" data-led="ScrollLock" title="Scroll Lock"><span class="led-dot"></span><span class="led-text">⤓<span class="led-name"> SCRL</span></span></button></div><button id="input-release" class="icon-button-sm danger hidden" type="button" data-i18n="release_keys" title="紧急释放所有按键与鼠标锁定">释放按键</button><button id="input-state" class="input-badge clickable" type="button" role="status" title="点击切换键鼠转发状态"><svg class="input-mouse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="2" width="14" height="20" rx="7"/><line x1="12" y1="6" x2="12" y2="10"/></svg><span class="input-text">输入已暂停</span></button><button id="terminal-reconnect" class="secondary hidden" type="button" data-i18n="reconnect">重连</button><button id="terminal-clear" class="secondary hidden" type="button" data-i18n="clear">清空</button><button id="mode-button" class="secondary icon-button-sm" type="button" data-i18n="mode_fit" title="切换画面比例：适应窗口 / 1:1 像素 / 填满窗口" aria-label="显示比例"><svg class="mode-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg><span class="mode-text">适应</span></button><button id="pan-toggle" class="secondary icon-button-sm hidden" type="button" data-i18n="pan_mode" title="平移画面 (按住拖拽画面，双击居中)" aria-label="平移画面"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg><span class="pan-text">平移</span></button><button id="fullscreen" class="secondary icon-button-sm" type="button" data-i18n="fullscreen" title="全屏 (F11)" aria-label="全屏"><svg class="fullscreen-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg><svg class="fullscreen-exit-icon hidden" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg></button></div></div>
+          <div id="console-head" class="console-head"><div class="workspace-tabs"><button class="workspace-tab active" type="button" data-workspace="video" data-i18n="tab_remote_screen">远程画面</button><button class="workspace-tab" type="button" data-workspace="terminal" data-i18n="tab_terminal">终端</button></div><div class="quick-keys" aria-label="常用快捷键"><button class="icon-button-sm" type="button" data-quick-key="cad" title="发送 Ctrl+Alt+Del">Ctrl+Alt+Del</button><button class="icon-button-sm" type="button" data-quick-key="win" title="发送 Win 徽标键">Win</button><button class="icon-button-sm" type="button" data-quick-key="alttab" title="发送 Alt+Tab">Alt+Tab</button><button class="icon-button-sm" type="button" data-quick-key="esc" title="发送 Esc">Esc</button></div><span id="video-transport-label" class="console-meta">MJPEG</span><div class="console-actions"><div id="console-perf" class="console-perf"><button id="console-perf-btn" class="console-perf-btn" type="button" aria-expanded="false" aria-haspopup="dialog" title="主控机性能 (点击查看详情)"><span class="perf-chip-pulse"><svg class="perf-chip-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg></span><span class="perf-chip-full"><span class="perf-chip-seg"><span class="perf-k">CPU</span> <strong id="hud-cpu-val">--%</strong></span><span class="perf-chip-sep">·</span><span class="perf-chip-seg"><span class="perf-k" data-i18n="mem_short">内存</span> <strong id="hud-mem-val">--%</strong></span><span id="hud-temp-seg" class="perf-chip-seg"><span class="perf-chip-sep">·</span><strong id="hud-temp-val">--°C</strong></span></span><span class="perf-chip-compact"><strong id="hud-compact-val">--%</strong></span></button><div id="console-perf-popover" class="console-perf-popover" role="dialog" aria-label="主控机性能" hidden><div class="perf-pop-header"><div class="perf-pop-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg><span data-i18n="host_performance">主控机性能</span></div><div class="perf-pop-meta"><span id="pop-temp-badge" class="perf-badge hidden"><span id="pop-temp-val">--</span>°C</span><span id="pop-uptime-val" class="perf-uptime">--</span><button id="perf-pop-close" class="perf-pop-close" type="button" aria-label="关闭" title="关闭"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 4L4 12M4 4l8 8"/></svg></button></div></div><div class="perf-pop-body"><div class="perf-pop-row"><div class="perf-pop-row-meta"><div class="perf-pop-row-title"><span>CPU</span><span id="pop-cpu-cores" class="perf-pop-sub">-- 核</span></div><strong id="pop-cpu-val" class="mono">--%</strong></div><div class="perf-bar"><i id="pop-cpu-bar" style="width:0%"></i></div><div class="perf-pop-row-footer"><span data-i18n="load_average">系统负载</span><span id="pop-load-val" class="mono">--</span></div></div><div class="perf-pop-row"><div class="perf-pop-row-meta"><div class="perf-pop-row-title"><span data-i18n="memory_usage">内存</span><span id="pop-mem-detail" class="perf-pop-sub">--</span></div><strong id="pop-mem-val" class="mono">--%</strong></div><div class="perf-bar"><i id="pop-mem-bar" style="width:0%"></i></div></div><div class="perf-pop-row"><div class="perf-pop-row-meta"><div class="perf-pop-row-title"><span data-i18n="disk_usage">存储</span><span id="pop-disk-detail" class="perf-pop-sub">--</span></div><strong id="pop-disk-val" class="mono">--%</strong></div><div class="perf-bar"><i id="pop-disk-bar" style="width:0%"></i></div></div></div><div class="perf-pop-actions"><button id="pop-more-diag" type="button" class="perf-pop-more" data-i18n="full_diagnostics">完整诊断 ↗</button></div></div></div><div id="console-leds" class="keyboard-led-strip" aria-label="键盘指示灯" title="键盘锁定指示灯（点击切换）"><button id="led-num" class="led-badge" type="button" data-led="NumLock" title="Num Lock"><span class="led-dot"></span><span class="led-text">1<span class="led-name"> NUM</span></span></button><button id="led-caps" class="led-badge" type="button" data-led="CapsLock" title="Caps Lock"><span class="led-dot"></span><span class="led-text">A<span class="led-name"> CAPS</span></span></button><button id="led-scroll" class="led-badge" type="button" data-led="ScrollLock" title="Scroll Lock"><span class="led-dot"></span><span class="led-text">⤓<span class="led-name"> SCRL</span></span></button></div><button id="input-release" class="icon-button-sm danger hidden" type="button" data-i18n="release_keys" title="紧急释放所有按键与鼠标锁定">释放按键</button><button id="input-state" class="input-badge clickable" type="button" role="status" title="点击切换键鼠转发状态"><svg class="input-mouse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="2" width="14" height="20" rx="7"/><line x1="12" y1="6" x2="12" y2="10"/></svg><span class="input-text">输入已暂停</span></button><button id="terminal-reconnect" class="secondary hidden" type="button" data-i18n="reconnect">重连</button><button id="terminal-clear" class="secondary hidden" type="button" data-i18n="clear">清空</button><button id="mode-button" class="secondary icon-button-sm" type="button" data-i18n="mode_fit" title="切换画面比例：适应窗口 / 1:1 像素 / 填满窗口" aria-label="显示比例"><svg class="mode-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg><span class="mode-text">适应</span></button><button id="pan-toggle" class="secondary icon-button-sm hidden" type="button" data-i18n="pan_mode" title="平移画面 (按住拖拽画面，双击居中)" aria-label="平移画面"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg><span class="pan-text">平移</span></button><button id="fullscreen" class="secondary icon-button-sm" type="button" data-i18n="fullscreen" title="全屏 (F11)" aria-label="全屏"><svg class="fullscreen-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg><svg class="fullscreen-exit-icon hidden" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg></button></div></div>
           <div id="video-viewport" tabindex="0" aria-label="远程视频与鼠标控制区域">
             <img id="video-feed" class="video-surface" alt="远程设备视频" draggable="false"><video id="webrtc-feed" class="video-surface hidden" autoplay muted playsinline aria-label="远程设备视频"></video><span id="video-message" class="video-message" role="status" aria-live="polite">正在连接视频…</span>
           </div>
@@ -732,7 +773,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         settings_reset_btn:'恢复默认设置',settings_reset_desc:'清除所有保存在本机的偏好设置并还原为初始默认值',
         settings_reset_action:'还原',settings_reset_confirm:'确定要恢复所有全局偏好设置为默认值吗？',settings_reset_done:'已恢复默认设置',settings_saved:'设置已保存',
         keyboard_leds_title:'键盘锁定状态',keyboard_leds_desc:'远程主机键盘锁定指示灯（点击快速切换）',
-        host_performance:'主控机性能',cpu_usage:'CPU',cpu_cores:'核',load:'负载',load_average:'系统负载',memory_usage:'内存',disk_usage:'存储',temperature:'主机温度',uptime:'运行时间',
+        host_performance:'主控机性能',cpu_usage:'CPU',cpu_cores:'核',load:'负载',load_average:'系统负载',memory_usage:'内存',mem_short:'内存',disk_usage:'存储',temperature:'主机温度',uptime:'运行时间',full_diagnostics:'完整诊断 ↗',perf_hud_title:'主控机性能 (点击查看详情)',
         led_num:'数字锁定 (Num Lock)',led_caps:'大写锁定 (Caps Lock)',led_scroll:'滚动锁定 (Scroll Lock)'
       },
       'zh-TW': {
@@ -769,7 +810,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         settings_reset_btn:'恢復預設設定',settings_reset_desc:'清除所有保存在本機的偏好設定並還原為初始預設值',
         settings_reset_action:'還原',settings_reset_confirm:'確定要恢復所有全局偏好設定為預設值嗎？',settings_reset_done:'已恢復預設設定',settings_saved:'設定已儲存',
         keyboard_leds_title:'鍵盤鎖定狀態',keyboard_leds_desc:'遠端主機鍵盤鎖定指示燈（點擊快速切換）',
-        host_performance:'主控機效能',cpu_usage:'CPU',cpu_cores:'核',load:'負載',load_average:'系統負載',memory_usage:'記憶體',disk_usage:'儲存',temperature:'主機溫度',uptime:'運行時間',
+        host_performance:'主控機效能',cpu_usage:'CPU',cpu_cores:'核',load:'負載',load_average:'系統負載',memory_usage:'記憶體',mem_short:'記憶體',disk_usage:'儲存',temperature:'主機溫度',uptime:'運行時間',full_diagnostics:'完整診斷 ↗',perf_hud_title:'主控機效能 (點擊查看詳情)',
         led_num:'數字鎖定 (Num Lock)',led_caps:'大寫鎖定 (Caps Lock)',led_scroll:'捲動鎖定 (Scroll Lock)'
       },
       'en': {
@@ -806,7 +847,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         settings_reset_btn:'Reset to Defaults',settings_reset_desc:'Clear all locally stored preferences and restore initial default values',
         settings_reset_action:'Reset',settings_reset_confirm:'Are you sure you want to reset all preferences to defaults?',settings_reset_done:'Preferences reset to defaults',settings_saved:'Settings saved',
         keyboard_leds_title:'Keyboard Lock LEDs',keyboard_leds_desc:'Remote host lock indicators (click to toggle)',
-        host_performance:'Host Performance',cpu_usage:'CPU Usage',cpu_cores:'Cores',load:'Load',load_average:'Load Average',memory_usage:'Memory',disk_usage:'Storage',temperature:'Temperature',uptime:'Uptime',
+        host_performance:'Host Performance',cpu_usage:'CPU Usage',cpu_cores:'Cores',load:'Load',load_average:'Load Average',memory_usage:'Memory',mem_short:'RAM',disk_usage:'Storage',temperature:'Temperature',uptime:'Uptime',full_diagnostics:'Full Diagnostics ↗',perf_hud_title:'Host Performance (Click to view details)',
         led_num:'Num Lock',led_caps:'Caps Lock',led_scroll:'Scroll Lock'
       }
     };
@@ -832,6 +873,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       $('#inspector-led-num')?.setAttribute('title', numTitle);
       $('#inspector-led-caps')?.setAttribute('title', capsTitle);
       $('#inspector-led-scroll')?.setAttribute('title', scrlTitle);
+      $('#console-perf-btn')?.setAttribute('title', t('perf_hud_title', '主控机性能 (点击查看详情)'));
       const langLabel = $('#lang-current-label');
       if (langLabel) langLabel.textContent = I18N[currentLang]?.lang_name || '简';
       $$('[data-lang]').forEach(btn => btn.classList.toggle('active', btn.dataset.lang === currentLang));
@@ -848,6 +890,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       } else {
         $('#inspector-toggle').textContent = t('open_inspector', '控制面板');
       }
+      if (latestSystemStatus) renderSystemMetrics(latestSystemStatus);
       if (!app.classList.contains('hidden')) {
         refreshPasskeys();
       } else if (!loginForm.classList.contains('hidden')) {
@@ -1241,6 +1284,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       if(!event.target.closest('.power-menu-container')){powerMenu?.setAttribute('hidden','');powerMenuToggle?.setAttribute('aria-expanded','false');}
       if(!event.target.closest('.diagnostics-popover')&&!event.target.closest('#diagnostics-toggle')){diagPopover?.setAttribute('hidden','');diagToggle?.setAttribute('aria-expanded','false');}
       if(!event.target.closest('.lang-menu-container')){langMenu?.setAttribute('hidden','');langToggle?.setAttribute('aria-expanded','false');}
+      if(!event.target.closest('#console-perf')){closePerfPopover();}
     });
     async function executePowerAction(action) {
       const caps=bootstrap.capabilities||{};
@@ -1695,7 +1739,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     $('#inspector-close')?.addEventListener('click',()=>setInspectorOpen(false));
     $('#inspector-backdrop')?.addEventListener('click',()=>setInspectorOpen(false));
     $('#inspector-float-open')?.addEventListener('click',()=>setInspectorOpen(true));
-    window.addEventListener('keydown',event=>{if(event.key==='Escape'&&!inputEnabled()&&app.classList.contains('inspector-open')&&!keyboardDialog?.open&&!settingsDialog?.open){setInspectorOpen(false);}});
+    window.addEventListener('keydown',event=>{if(event.key==='Escape'&&!inputEnabled()){if(perfPopover&&!perfPopover.hasAttribute('hidden')){closePerfPopover();return;}if(app.classList.contains('inspector-open')&&!keyboardDialog?.open&&!settingsDialog?.open){setInspectorOpen(false);}}});
 
     async function refreshStatus(){if(statusTimer===-1)return;if(statusTimer>0)clearTimeout(statusTimer);if(app.classList.contains('hidden')||document.hidden){statusTimer=0;renderVideoUi();return;}statusTimer=-1;try{const status=await request('/api/status');latestVideoStatus=status.video||null;latestPowerStatus=status.power||null;latestSystemStatus=status.system||null;renderPowerLed(latestPowerStatus);if(status.hid?.keyboard_leds)renderKeyboardLeds(status.hid.keyboard_leds);if(status.client)renderClientInfo(status.client);if(latestSystemStatus)renderSystemMetrics(latestSystemStatus);renderVideoUi();}catch{latestVideoStatus={state:'offline',message:'连接失败'};latestPowerStatus={power_led:{configured:true,state:'unknown',sense_error:'连接失败'}};renderPowerLed(latestPowerStatus);renderVideoUi();}finally{statusTimer=app.classList.contains('hidden')||document.hidden?0:setTimeout(()=>{statusTimer=0;refreshStatus();},3000);}}
     const mediaChoices=new Map();let mediaBusy=false,mediaServerBusy=false,mediaStatus={};
@@ -1704,7 +1748,140 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     function mediaStateLabel(state){return ({attached:'已挂载',mounted:'已挂载',detached:'未挂载',attaching:'正在挂载',detaching:'正在弹出',ejecting:'正在弹出',error:'状态异常'})[state]||'';}
     function formatBytes(value){const bytes=Number(value);if(!Number.isFinite(bytes)||bytes<0)return '';if(bytes<1024)return `${bytes} B`;const units=['KB','MB','GB','TB'];let size=bytes,index=-1;do{size/=1024;index++;}while(size>=1024&&index<units.length-1);return `${size>=10?size.toFixed(0):size.toFixed(1)} ${units[index]}`;}
     function formatUptime(seconds){const s=Math.floor(Number(seconds)||0);if(s<=0)return '--';const days=Math.floor(s/86400);const hours=Math.floor((s%86400)/3600);const mins=Math.floor((s%3600)/60);if(days>0)return `${days}d ${hours}h`;if(hours>0)return `${hours}h ${mins}m`;return `${mins}m ${s%60}s`;}
-    function renderSystemMetrics(sys){if(!sys)return;latestSystemStatus=sys;const cpu=sys.cpu,mem=sys.memory,disk=sys.disk;if(cpu){const cpuPct=Math.min(100,Math.max(0,Number(cpu.percent)||0));const cpuEl=$('#perf-cpu-val'),bar=$('#perf-cpu-bar');if(cpuEl)cpuEl.textContent=`${cpuPct.toFixed(1)}%`;if(bar){bar.style.width=`${cpuPct}%`;bar.style.backgroundColor=cpuPct>85?'var(--red)':cpuPct>70?'var(--amber)':'var(--blue)';}const coresEl=$('#perf-cpu-cores');if(coresEl)coresEl.textContent=`${cpu.cores||1} ${t('cpu_cores','核')}`;const diagCpu=$('#diag-cpu');if(diagCpu)diagCpu.textContent=`${cpuPct.toFixed(1)}% (${cpu.cores||1} ${t('cpu_cores','核')})`;}if(sys.load_avg&&Array.isArray(sys.load_avg)){const load1=sys.load_avg.length>0?Number(sys.load_avg[0]).toFixed(2):'--';const loadStr=sys.load_avg.map(v=>Number(v).toFixed(2)).join(', ');const loadEl=$('#perf-load');if(loadEl){loadEl.textContent=`${t('load','负载')} ${load1}`;loadEl.title=`${t('load_average','系统负载')}: ${loadStr}`;}const diagLoad=$('#diag-load');if(diagLoad)diagLoad.textContent=loadStr;}if(mem){const memPct=Math.min(100,Math.max(0,Number(mem.percent)||0));const memEl=$('#perf-mem-val'),bar=$('#perf-mem-bar');if(memEl)memEl.textContent=`${memPct.toFixed(0)}%`;if(bar){bar.style.width=`${memPct}%`;bar.style.backgroundColor=memPct>85?'var(--red)':memPct>70?'var(--amber)':'var(--blue)';}const memDetail=$('#perf-mem-detail');if(memDetail)memDetail.textContent=mem.total_bytes>0?`${formatBytes(mem.used_bytes)} / ${formatBytes(mem.total_bytes)}`:'--';const diagMem=$('#diag-mem');if(diagMem)diagMem.textContent=mem.total_bytes>0?`${formatBytes(mem.used_bytes)} / ${formatBytes(mem.total_bytes)} (${memPct.toFixed(0)}%)`:'--';}if(disk){const diskPct=Math.min(100,Math.max(0,Number(disk.percent)||0));const diskEl=$('#perf-disk-val'),bar=$('#perf-disk-bar');if(diskEl)diskEl.textContent=`${diskPct.toFixed(0)}%`;if(bar){bar.style.width=`${diskPct}%`;bar.style.backgroundColor=diskPct>85?'var(--red)':diskPct>70?'var(--amber)':'var(--blue)';}const diskDetail=$('#perf-disk-detail');if(diskDetail)diskDetail.textContent=disk.total_bytes>0?`${formatBytes(disk.used_bytes)} / ${formatBytes(disk.total_bytes)}`:'--';const diagDisk=$('#diag-disk');if(diagDisk)diagDisk.textContent=disk.total_bytes>0?`${formatBytes(disk.used_bytes)} / ${formatBytes(disk.total_bytes)} (${diskPct.toFixed(0)}%)`:'--';}if(sys.temperature!==null&&sys.temperature!==undefined){const temp=Number(sys.temperature);const tempBadge=$('#perf-temp-badge'),tempVal=$('#perf-temp-val');if(tempBadge&&tempVal){tempBadge.classList.remove('hidden');tempVal.textContent=temp.toFixed(1);tempBadge.classList.toggle('warning',temp>=75);}const diagTempCard=$('#diag-temp-card'),diagTemp=$('#diag-temp');if(diagTempCard&&diagTemp){diagTempCard.classList.remove('hidden');diagTemp.textContent=`${temp.toFixed(1)} °C`;}}else{$('#perf-temp-badge')?.classList.add('hidden');$('#diag-temp-card')?.classList.add('hidden');}if(sys.uptime_seconds){const upStr=formatUptime(sys.uptime_seconds);const upEl=$('#perf-uptime'),diagUp=$('#diag-uptime');if(upEl)upEl.textContent=upStr;if(diagUp)diagUp.textContent=upStr;}}
+    const perfBtn=$('#console-perf-btn'),perfPopover=$('#console-perf-popover');
+    let perfPopoverPinned=false,perfHoverTimer=0,perfLeaveTimer=0;
+    function openPerfPopover(pinned=false){
+      if(!perfPopover)return;
+      perfPopover.removeAttribute('hidden');
+      perfBtn?.setAttribute('aria-expanded','true');
+      perfBtn?.classList.add('active');
+      perfPopoverPinned=!!pinned;
+      positionPerfPopover();
+      $('#power-menu')?.setAttribute('hidden','');$('#power-menu-toggle')?.setAttribute('aria-expanded','false');
+      $('#lang-menu')?.setAttribute('hidden','');$('#lang-toggle')?.setAttribute('aria-expanded','false');
+      $('#diagnostics-popover')?.setAttribute('hidden','');$('#diagnostics-toggle')?.setAttribute('aria-expanded','false');
+      if(latestSystemStatus)renderSystemMetrics(latestSystemStatus);
+    }
+    function closePerfPopover(){
+      if(!perfPopover)return;
+      perfPopover.setAttribute('hidden','');
+      perfBtn?.setAttribute('aria-expanded','false');
+      perfBtn?.classList.remove('active');
+      perfPopoverPinned=false;
+      clearTimeout(perfHoverTimer);
+      clearTimeout(perfLeaveTimer);
+    }
+    function togglePerfPopover(pinned=true){
+      if(!perfPopover||perfPopover.hasAttribute('hidden'))openPerfPopover(pinned);
+      else closePerfPopover();
+    }
+    function positionPerfPopover(){
+      if(!perfPopover||perfPopover.hasAttribute('hidden')||!perfBtn||!consoleBox)return;
+      const btnRect=perfBtn.getBoundingClientRect(),consoleRect=consoleBox.getBoundingClientRect();
+      const popWidth=Math.min(310,Math.max(260,consoleRect.width-24));
+      const containerLeftInConsole=btnRect.left-consoleRect.left;
+      let targetLeftInConsole=containerLeftInConsole;
+      if(targetLeftInConsole+popWidth>consoleRect.width-12){
+        targetLeftInConsole=consoleRect.width-popWidth-12;
+      }
+      if(targetLeftInConsole<12)targetLeftInConsole=12;
+      const relLeft=targetLeftInConsole-containerLeftInConsole;
+      perfPopover.style.left=`${relLeft}px`;
+      perfPopover.style.width=`${popWidth}px`;
+    }
+    perfBtn?.addEventListener('click',event=>{event.stopPropagation();togglePerfPopover(true);});
+    const perfContainer=$('#console-perf');
+    perfContainer?.addEventListener('pointerenter',()=>{
+      if(matchMedia('(pointer:coarse)').matches)return;
+      clearTimeout(perfLeaveTimer);
+      if(perfPopover?.hasAttribute('hidden')){
+        perfHoverTimer=setTimeout(()=>openPerfPopover(false),200);
+      }
+    });
+    perfContainer?.addEventListener('pointerleave',()=>{
+      if(matchMedia('(pointer:coarse)').matches)return;
+      clearTimeout(perfHoverTimer);
+      if(perfPopover&&!perfPopover.hasAttribute('hidden')&&!perfPopoverPinned){
+        perfLeaveTimer=setTimeout(()=>closePerfPopover(),250);
+      }
+    });
+    $('#perf-pop-close')?.addEventListener('click',event=>{event.stopPropagation();closePerfPopover();});
+    $('#pop-more-diag')?.addEventListener('click',event=>{event.stopPropagation();closePerfPopover();$('#diagnostics-toggle')?.click();});
+    window.addEventListener('resize',()=>positionPerfPopover());
+
+    function renderSystemMetrics(sys){
+      if(!sys)return;
+      latestSystemStatus=sys;
+      const cpu=sys.cpu,mem=sys.memory,disk=sys.disk;
+      if(cpu){
+        const cpuPct=Math.min(100,Math.max(0,Number(cpu.percent)||0));
+        const cpuStr=`${cpuPct.toFixed(1)}%`,cpuRoundStr=`${Math.round(cpuPct)}%`;
+        const cpuBarColor=cpuPct>85?'var(--red)':cpuPct>70?'var(--amber)':'var(--blue)';
+        const coresStr=`${cpu.cores||1} ${t('cpu_cores','核')}`;
+        const cpuEl=$('#perf-cpu-val'),bar=$('#perf-cpu-bar');if(cpuEl)cpuEl.textContent=cpuStr;if(bar){bar.style.width=`${cpuPct}%`;bar.style.backgroundColor=cpuBarColor;}
+        const coresEl=$('#perf-cpu-cores');if(coresEl)coresEl.textContent=coresStr;
+        const diagCpu=$('#diag-cpu');if(diagCpu)diagCpu.textContent=`${cpuStr} (${coresStr})`;
+        const hudCpu=$('#hud-cpu-val');if(hudCpu)hudCpu.textContent=cpuStr;
+        const hudCompact=$('#hud-compact-val');if(hudCompact)hudCompact.textContent=cpuRoundStr;
+        const popCpu=$('#pop-cpu-val');if(popCpu)popCpu.textContent=cpuStr;
+        const popBar=$('#pop-cpu-bar');if(popBar){popBar.style.width=`${cpuPct}%`;popBar.style.backgroundColor=cpuBarColor;}
+        const popCores=$('#pop-cpu-cores');if(popCores)popCores.textContent=coresStr;
+      }
+      if(sys.load_avg&&Array.isArray(sys.load_avg)){
+        const load1=sys.load_avg.length>0?Number(sys.load_avg[0]).toFixed(2):'--';
+        const loadStr=sys.load_avg.map(v=>Number(v).toFixed(2)).join(', ');
+        const loadEl=$('#perf-load');if(loadEl){loadEl.textContent=`${t('load','负载')} ${load1}`;loadEl.title=`${t('load_average','系统负载')}: ${loadStr}`;}
+        const diagLoad=$('#diag-load');if(diagLoad)diagLoad.textContent=loadStr;
+        const popLoad=$('#pop-load-val');if(popLoad)popLoad.textContent=loadStr;
+      }
+      if(mem){
+        const memPct=Math.min(100,Math.max(0,Number(mem.percent)||0));
+        const memStr=`${memPct.toFixed(0)}%`;
+        const memBarColor=memPct>85?'var(--red)':memPct>70?'var(--amber)':'var(--blue)';
+        const memDetailStr=mem.total_bytes>0?`${formatBytes(mem.used_bytes)} / ${formatBytes(mem.total_bytes)}`:'--';
+        const memEl=$('#perf-mem-val'),bar=$('#perf-mem-bar');if(memEl)memEl.textContent=memStr;if(bar){bar.style.width=`${memPct}%`;bar.style.backgroundColor=memBarColor;}
+        const memDetail=$('#perf-mem-detail');if(memDetail)memDetail.textContent=memDetailStr;
+        const diagMem=$('#diag-mem');if(diagMem)diagMem.textContent=mem.total_bytes>0?`${memDetailStr} (${memStr})`:'--';
+        const hudMem=$('#hud-mem-val');if(hudMem)hudMem.textContent=memStr;
+        const popMem=$('#pop-mem-val');if(popMem)popMem.textContent=memStr;
+        const popBar=$('#pop-mem-bar');if(popBar){popBar.style.width=`${memPct}%`;popBar.style.backgroundColor=memBarColor;}
+        const popDetail=$('#pop-mem-detail');if(popDetail)popDetail.textContent=memDetailStr;
+      }
+      if(disk){
+        const diskPct=Math.min(100,Math.max(0,Number(disk.percent)||0));
+        const diskStr=`${diskPct.toFixed(0)}%`;
+        const diskBarColor=diskPct>85?'var(--red)':diskPct>70?'var(--amber)':'var(--blue)';
+        const diskDetailStr=disk.total_bytes>0?`${formatBytes(disk.used_bytes)} / ${formatBytes(disk.total_bytes)}`:'--';
+        const diskEl=$('#perf-disk-val'),bar=$('#perf-disk-bar');if(diskEl)diskEl.textContent=diskStr;if(bar){bar.style.width=`${diskPct}%`;bar.style.backgroundColor=diskBarColor;}
+        const diskDetail=$('#perf-disk-detail');if(diskDetail)diskDetail.textContent=diskDetailStr;
+        const diagDisk=$('#diag-disk');if(diagDisk)diagDisk.textContent=disk.total_bytes>0?`${diskDetailStr} (${diskStr})`:'--';
+        const popDisk=$('#pop-disk-val');if(popDisk)popDisk.textContent=diskStr;
+        const popBar=$('#pop-disk-bar');if(popBar){popBar.style.width=`${diskPct}%`;popBar.style.backgroundColor=diskBarColor;}
+        const popDetail=$('#pop-disk-detail');if(popDetail)popDetail.textContent=diskDetailStr;
+      }
+      if(sys.temperature!==null&&sys.temperature!==undefined){
+        const temp=Number(sys.temperature);
+        const tempStr=temp.toFixed(1);
+        const isWarm=temp>=75;
+        const tempBadge=$('#perf-temp-badge'),tempVal=$('#perf-temp-val');if(tempBadge&&tempVal){tempBadge.classList.remove('hidden');tempVal.textContent=tempStr;tempBadge.classList.toggle('warning',isWarm);}
+        const diagTempCard=$('#diag-temp-card'),diagTemp=$('#diag-temp');if(diagTempCard&&diagTemp){diagTempCard.classList.remove('hidden');diagTemp.textContent=`${tempStr} °C`;}
+        const hudTempSeg=$('#hud-temp-seg'),hudTempVal=$('#hud-temp-val');if(hudTempSeg&&hudTempVal){hudTempSeg.classList.remove('hidden');hudTempVal.textContent=`${tempStr}°C`;}
+        const popTempBadge=$('#pop-temp-badge'),popTempVal=$('#pop-temp-val');if(popTempBadge&&popTempVal){popTempBadge.classList.remove('hidden');popTempVal.textContent=tempStr;popTempBadge.classList.toggle('warning',isWarm);}
+      }else{
+        $('#perf-temp-badge')?.classList.add('hidden');
+        $('#diag-temp-card')?.classList.add('hidden');
+        $('#hud-temp-seg')?.classList.add('hidden');
+        $('#pop-temp-badge')?.classList.add('hidden');
+      }
+      if(sys.uptime_seconds){
+        const upStr=formatUptime(sys.uptime_seconds);
+        const upEl=$('#perf-uptime'),diagUp=$('#diag-uptime'),popUp=$('#pop-uptime-val');
+        if(upEl)upEl.textContent=upStr;
+        if(diagUp)diagUp.textContent=upStr;
+        if(popUp)popUp.textContent=upStr;
+      }
+      if(perfPopover&&!perfPopover.hasAttribute('hidden'))positionPerfPopover();
+    }
     function mountedMediaName(status,items){return status?.mounted_name||items.find(item=>typeof item!=='string'&&(item.mounted||item.attached))?.name||'';}
     function writableMountedDisk(status,name){return !!name&&status?.read_only===false&&status?.media_type==='disk';}
     function syncMediaBusy(){const locked=mediaBusy||mediaServerBusy;$$('.media-operation').forEach(control=>control.disabled=locked||control.dataset.mediaLocked==='true');$$('#media-upload input,#media-upload button').forEach(control=>control.disabled=mediaBusy);$('#media-refresh').disabled=mediaBusy;$('#media-list').setAttribute('aria-busy',String(locked));}
@@ -2384,6 +2561,12 @@ mod tests {
         assert!(INDEX_HTML.contains("id=\"diag-mem\""));
         assert!(INDEX_HTML.contains("id=\"diag-disk\""));
         assert!(INDEX_HTML.contains("id=\"diag-load\""));
+        assert!(INDEX_HTML.contains("id=\"console-perf\""));
+        assert!(INDEX_HTML.contains("id=\"console-perf-btn\""));
+        assert!(INDEX_HTML.contains("id=\"console-perf-popover\""));
+        assert!(INDEX_HTML.contains("id=\"hud-cpu-val\""));
+        assert!(INDEX_HTML.contains("id=\"pop-cpu-val\""));
+        assert!(INDEX_HTML.contains("togglePerfPopover"));
         assert!(INDEX_HTML.contains("renderSystemMetrics"));
         assert!(INDEX_HTML.contains("formatUptime"));
         assert!(INDEX_HTML.contains("host_performance"));
