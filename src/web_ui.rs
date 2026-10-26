@@ -411,6 +411,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       <div class="diagnostics-grid">
         <div class="diagnostics-card"><span data-i18n="diag_transport">视频传输链路</span><strong id="diag-transport">MJPEG</strong></div>
         <div class="diagnostics-card"><span data-i18n="diag_resolution">采集画面分辨率</span><strong id="diag-resolution">--</strong></div>
+        <div id="diag-h264-failure-card" class="diagnostics-card hidden" style="grid-column:1/-1;"><span data-i18n="diag_h264_failure">H.264 回退原因</span><strong id="diag-h264-failure" style="white-space:normal;overflow-wrap:anywhere;">--</strong></div>
         <div class="diagnostics-card"><span data-i18n="diag_input">键鼠控制模式</span><strong id="diag-input-mode">转发已暂停</strong></div>
         <div class="diagnostics-card"><span data-i18n="diag_power_led">被控机电源 LED</span><strong id="diag-power-led">读取中…</strong></div>
         <div class="diagnostics-card" style="grid-column:1/-1;"><span data-i18n="diag_client_ip">客户端来源地址</span><strong id="diag-client-ip">--</strong></div>
@@ -650,7 +651,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       'zh-CN': {
         power:'电源',power_status:'电源状态',short_press:'短按电源开机/关机',reset_pc:'复位重启 (Reset)',force_off:'强制关机 (长按 5 秒)',
         keyboard:'键盘',inspector:'控制面板',inspector_close:'收起',
-        diag_title:'连接与设备诊断',diag_transport:'视频传输链路',diag_resolution:'采集画面分辨率',diag_input:'键鼠控制模式',diag_power_led:'被控机电源 LED',diag_client_ip:'客户端来源地址',diag_reconnect:'重连视频',diag_scan:'扫描设备',
+        diag_title:'连接与设备诊断',diag_transport:'视频传输链路',diag_h264_failure:'H.264 回退原因',diag_resolution:'采集画面分辨率',diag_input:'键鼠控制模式',diag_power_led:'被控机电源 LED',diag_client_ip:'客户端来源地址',diag_reconnect:'重连视频',diag_scan:'扫描设备',
         tab_remote_screen:'远程画面',tab_terminal:'终端',release_keys:'释放按键',reconnect:'重连',clear:'清空',mode_fit:'适应',pan_mode:'平移',fullscreen:'全屏',exit_fullscreen:'退出全屏',mode_prefix:'画面比例: ',
         tab_control:'控制',tab_video:'视频',tab_devices:'设备',tab_media:'介质',remote_control:'远程控制',forward_input:'转发键鼠',
         short_press_btn:'短按电源',reset_btn:'复位',force_off_btn:'强制关机',refresh:'刷新',
@@ -686,7 +687,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       'zh-TW': {
         power:'電源',power_status:'電源狀態',short_press:'短按電源開機/關機',reset_pc:'重置重啟 (Reset)',force_off:'強制關機 (長按 5 秒)',
         keyboard:'鍵盤',inspector:'控制面板',inspector_close:'收起',
-        diag_title:'連線與設備診斷',diag_transport:'視訊傳輸鏈路',diag_resolution:'採集畫面解析度',diag_input:'鍵鼠控制模式',diag_power_led:'被控機電源 LED',diag_client_ip:'客戶端來源位址',diag_reconnect:'重新連線視訊',diag_scan:'掃描設備',
+        diag_title:'連線與設備診斷',diag_transport:'視訊傳輸鏈路',diag_h264_failure:'H.264 回退原因',diag_resolution:'採集畫面解析度',diag_input:'鍵鼠控制模式',diag_power_led:'被控機電源 LED',diag_client_ip:'客戶端來源位址',diag_reconnect:'重新連線視訊',diag_scan:'掃描設備',
         tab_remote_screen:'遠端畫面',tab_terminal:'終端機',release_keys:'釋放按鍵',reconnect:'重新連線',clear:'清除',mode_fit:'適應',pan_mode:'平移',fullscreen:'全螢幕',exit_fullscreen:'退出全螢幕',mode_prefix:'畫面比例: ',
         tab_control:'控制',tab_video:'視訊',tab_devices:'設備',tab_media:'媒體',remote_control:'遠端控制',forward_input:'轉發鍵鼠',
         short_press_btn:'短按電源',reset_btn:'重置',force_off_btn:'強制關機',refresh:'重新整理',
@@ -722,7 +723,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       'en': {
         power:'Power',power_status:'Power Status',short_press:'Power On / Off (Short Press)',reset_pc:'System Reset (Reset)',force_off:'Force Power Off (Hold 5s)',
         keyboard:'Keyboard',inspector:'Inspector',inspector_close:'Collapse',
-        diag_title:'Diagnostics',diag_transport:'Video Transport',diag_resolution:'Capture Resolution',diag_input:'Input Mode',diag_power_led:'Target Power LED',diag_client_ip:'Client Address',diag_reconnect:'Reconnect Video',diag_scan:'Scan Devices',
+        diag_title:'Diagnostics',diag_transport:'Video Transport',diag_h264_failure:'H.264 Fallback Reason',diag_resolution:'Capture Resolution',diag_input:'Input Mode',diag_power_led:'Target Power LED',diag_client_ip:'Client Address',diag_reconnect:'Reconnect Video',diag_scan:'Scan Devices',
         tab_remote_screen:'Remote Screen',tab_terminal:'Terminal',release_keys:'Release Keys',reconnect:'Reconnect',clear:'Clear',mode_fit:'Fit',pan_mode:'Pan',fullscreen:'Fullscreen',exit_fullscreen:'Exit Fullscreen',mode_prefix:'Display Mode: ',
         tab_control:'Control',tab_video:'Video',tab_devices:'Devices',tab_media:'Media',remote_control:'Remote Control',forward_input:'Forward Input',
         short_press_btn:'Power',reset_btn:'Reset',force_off_btn:'Force Off',refresh:'Refresh',
@@ -966,7 +967,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       invalidateSurfaceBox();
     }
     let bootstrap = {}, remoteWanted = false, pageActive = !document.hidden, reconnectTimer = 0, reconnectDelay = 500;
-    let videoGeneration = 0, videoWorkspace = 'video', videoPreference = 'auto', activeVideoTransport = 'none', videoUiState = 'paused', videoFallback = false;
+    let videoGeneration = 0, videoWorkspace = 'video', videoPreference = 'auto', activeVideoTransport = 'none', videoUiState = 'paused', videoFallback = false, videoFallbackReason = '';
     let webrtcPeer = null, webrtcSessionId = null, webrtcAbort = null, videoFirstFrameTimer = 0, statusTimer = 0, latestVideoStatus = null, latestPowerStatus = null, videoConfigRequestId = 0;
     let toastTimer = 0, mouseX = 0, mouseY = 0, absolutePending = null, mouseBusy = false, mouseTimer = 0, lastMouseSend = 0, gpioTestBusy = false;
     const setupGuides={account:{kicker:'01 / 管理员',title:'账号只设置一次',items:[['网页与终端','管理员密码也会同步给本机终端用户 wingman。'],['强密码','至少 12 位，并包含大小写字母、数字和符号。'],['一次性链接','初始化令牌会从地址中自动读取并立即清除。']]},devices:{kicker:'02 / 连接',title:'先自动检测',items:[['唯一候选','验证通过且只有一个设备时直接采用。'],['多个设备','只在存在多个可用候选时让你选择。'],['手动配置','设备路径只留给自定义 Gadget 和特殊板卡。']]},video:{kicker:'视频采集',title:'认准视频节点',items:[['插在 Host 口','采集卡是输入设备，不要接到 OTG Device 口。'],['检查能力','选择同时支持 Video Capture 和 MJPG 的 USB 节点。'],['排除 metadata','只有 Metadata Capture 的 /dev/videoN 不会输出画面。']]},input:{kicker:'USB 控制',title:'优先精准同步',items:[['OTG Device 口','键盘、鼠标和虚拟 U 盘从这里连接被控机。'],['绝对指针','网页位置会直接映射到远端位置，默认优先使用。'],['相对鼠标','保留给只支持 Boot Mouse 的 BIOS 或 UEFI。']]},media:{kicker:'虚拟介质',title:'镜像就是一只 U 盘',items:[['ISO','始终按只读光驱挂载。'],['IMG','可作为读写 U 盘，但弹出前先在被控机卸载。'],['避免双写','同一镜像不要同时被 RK3399 和被控机写入。']]},power:{kicker:'GPIO 电源',title:'接线必须人工确认',items:[['使用继电器','用干接点并联被控机电源按钮，不要让 GPIO 直接承受外部电压。'],['线路与极性','软件能发现 gpiochip，但不能猜出 line 和高低电平。'],['可以跳过','先完成 KVM，确认原理图和接线后再启用电源控制。']]}};
@@ -1164,6 +1165,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     function updateDiagnosticsCard(){
       if(!diagPopover||diagPopover.hasAttribute('hidden'))return;
       $('#diag-transport').textContent=activeVideoTransport==='webrtc_h264'?'WebRTC (H.264)':activeVideoTransport==='mjpeg'?'MJPEG':'未连接';
+      $('#diag-h264-failure-card').classList.toggle('hidden',!videoFallbackReason);$('#diag-h264-failure').textContent=videoFallbackReason||'--';
       const w=latestVideoStatus?.width,h=latestVideoStatus?.height,fps=latestVideoStatus?.frames_per_second;
       $('#diag-resolution').textContent=w&&h?`${w} × ${h}${fps?` @ ${Math.round(fps)} FPS`:''}`:'--';
       $('#diag-input-mode').textContent=!inputEnabled()?'已暂停':absoluteMode()?'绝对指针 (USB Tablet)':relativeCaptured()?'相对鼠标 (已捕获)':'相对鼠标 (未捕获)';
@@ -1308,11 +1310,11 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       if(videoUiState==='fallback'){label.textContent='MJPEG · H.264 回退';meta.textContent='MJPEG';return;}
       label.textContent=videoUiState==='connecting'?`正在连接 ${mode}…`:'视频连接中';meta.textContent=mode;updateDiagnosticsCard();
     }
-    function setVideoState(state,transport=activeVideoTransport){activeVideoTransport=transport;videoUiState=state;renderVideoUi();}
+    function setVideoState(state,transport=activeVideoTransport){activeVideoTransport=transport;videoUiState=state;renderVideoUi();updateDiagnosticsCard();}
     function clearVideoTimers(){clearTimeout(reconnectTimer);clearTimeout(videoFirstFrameTimer);reconnectTimer=0;videoFirstFrameTimer=0;}
     function closeWebrtcSession(sessionId){if(!sessionId)return;fetch('/api/webrtc/close',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session_id:sessionId}),credentials:'same-origin',keepalive:true}).catch(()=>{});}
     function cleanupWebrtc(){const peer=webrtcPeer,sessionId=webrtcSessionId,abort=webrtcAbort;webrtcPeer=null;webrtcSessionId=null;webrtcAbort=null;abort?.abort();if(peer){peer.ontrack=null;peer.onconnectionstatechange=null;peer.oniceconnectionstatechange=null;peer.getReceivers().forEach(receiver=>receiver.track?.stop());peer.close();}if(sessionId)closeWebrtcSession(sessionId);webrtcFeed.onplaying=null;webrtcFeed.onloadedmetadata=null;webrtcFeed.pause();webrtcFeed.srcObject=null;}
-    function stopVideo(showPaused=true){videoGeneration++;clearVideoTimers();reconnectDelay=500;cleanupWebrtc();feed.onload=null;feed.onerror=null;feed.removeAttribute('src');showVideoSurface('none');activeVideoTransport='none';videoFallback=false;videoUiState='paused';if(showPaused)renderVideoUi();}
+    function stopVideo(showPaused=true){videoGeneration++;clearVideoTimers();reconnectDelay=500;cleanupWebrtc();feed.onload=null;feed.onerror=null;feed.removeAttribute('src');showVideoSurface('none');activeVideoTransport='none';videoFallback=false;videoFallbackReason='';videoUiState='paused';if(showPaused)renderVideoUi();updateDiagnosticsCard();}
     function restartVideo(){stopVideo(false);if(shouldVideoRun())startVideo();}
     function markVideoPlaying(generation,transport){if(generation!==videoGeneration||!shouldVideoRun()||activeVideoTransport!==transport)return;clearTimeout(videoFirstFrameTimer);setVideoState('playing',transport);setVideoMessage('',false);}
     function startMjpeg(generation,fallback=false){
@@ -1323,8 +1325,8 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       const onError=()=>{if(generation!==videoGeneration||!shouldVideoRun()||feed.getAttribute('src')!==url)return;feed.onload=null;feed.onerror=null;feed.removeAttribute('src');setVideoState(videoFallback?'fallback':'connecting','mjpeg');setVideoMessage('视频断开，正在重连…');clearTimeout(reconnectTimer);const delay=reconnectDelay;reconnectTimer=setTimeout(()=>{if(generation===videoGeneration&&shouldVideoRun())startMjpeg(generation,videoFallback);},delay);reconnectDelay=Math.min(reconnectDelay*2,10000);};
       feed.onload=onLoad;feed.onerror=onError;feed.setAttribute('src',url);clearTimeout(videoFirstFrameTimer);videoFirstFrameTimer=setTimeout(onError,6000);
     }
-    function waitForIceGathering(peer,signal,timeout=2500){if(peer.iceGatheringState==='complete')return Promise.resolve();return new Promise((resolve,reject)=>{let timer=0;const finish=(error)=>{clearTimeout(timer);peer.removeEventListener('icegatheringstatechange',changed);signal?.removeEventListener('abort',aborted);error?reject(error):resolve();};const changed=()=>{if(peer.iceGatheringState==='complete')finish();};const aborted=()=>finish(new Error('视频连接已取消'));peer.addEventListener('icegatheringstatechange',changed);signal?.addEventListener('abort',aborted,{once:true});timer=setTimeout(()=>finish(new Error('视频连接超时')),timeout);});}
-    function fallbackToMjpeg(generation){if(generation!==videoGeneration||!shouldVideoRun()||activeVideoTransport!=='webrtc_h264')return;cleanupWebrtc();startMjpeg(generation,true);}
+    function waitForIceGathering(peer,signal,timeout=2500){if(peer.iceGatheringState==='complete')return Promise.resolve();return new Promise((resolve,reject)=>{let timer=0;const finish=(error)=>{clearTimeout(timer);peer.removeEventListener('icegatheringstatechange',changed);signal?.removeEventListener('abort',aborted);error?reject(error):resolve();};const changed=()=>{if(peer.iceGatheringState==='complete')finish();};const aborted=()=>finish(new Error('视频连接已取消'));peer.addEventListener('icegatheringstatechange',changed);signal?.addEventListener('abort',aborted,{once:true});timer=setTimeout(()=>finish(new Error('WebRTC 本地 ICE 候选收集超时')),timeout);});}
+    function fallbackToMjpeg(generation,reason='H.264 连接未能建立'){if(generation!==videoGeneration||!shouldVideoRun()||activeVideoTransport!=='webrtc_h264')return;videoFallbackReason=String(reason);console.warn('H.264 回退到 MJPEG:',videoFallbackReason);cleanupWebrtc();startMjpeg(generation,true);}
     async function startWebrtc(generation){
       if(generation!==videoGeneration||!shouldVideoRun())return;
       activeVideoTransport='webrtc_h264';setVideoState('connecting','webrtc_h264');setVideoMessage('正在连接 H.264…');showVideoSurface('webrtc_h264');
@@ -1332,14 +1334,14 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       try {
         peer=new RTCPeerConnection({iceServers:bootstrap.ice_servers||[]});if(generation!==videoGeneration||!shouldVideoRun()){peer.close();return;}webrtcPeer=peer;
         const transceiver=peer.addTransceiver('video',{direction:'recvonly'});if(transceiver?.setCodecPreferences&&globalThis.RTCRtpReceiver?.getCapabilities){const codecs=RTCRtpReceiver.getCapabilities('video')?.codecs||[],h264=codecs.filter(codec=>String(codec.mimeType||'').toLowerCase()==='video/h264');if(h264.length)transceiver.setCodecPreferences([...h264,...codecs.filter(codec=>!h264.includes(codec))]);}
-        peer.ontrack=event=>{if(generation!==videoGeneration||!shouldVideoRun()||activeVideoTransport!=='webrtc_h264'||event.track.kind!=='video')return;const stream=event.streams?.[0]||new MediaStream([event.track]);webrtcFeed.srcObject=stream;webrtcFeed.onplaying=()=>markVideoPlaying(generation,'webrtc_h264');webrtcFeed.onloadedmetadata=()=>{setDisplayScale(displayModes[modeIndex][0]);fitConsoleToVideo();};webrtcFeed.onresize=()=>fitConsoleToVideo();event.track.onended=()=>fallbackToMjpeg(generation);showVideoSurface('webrtc_h264');webrtcFeed.play().catch(()=>{});};
-        peer.onconnectionstatechange=()=>{if(generation!==videoGeneration||peer!==webrtcPeer)return;if(peer.connectionState==='failed'||peer.connectionState==='closed')fallbackToMjpeg(generation);else if(peer.connectionState==='disconnected'){clearTimeout(reconnectTimer);reconnectTimer=setTimeout(()=>{if(generation===videoGeneration&&peer===webrtcPeer&&peer.connectionState==='disconnected')fallbackToMjpeg(generation);},2000);}else clearTimeout(reconnectTimer);};
-        peer.oniceconnectionstatechange=()=>{if(generation!==videoGeneration||peer!==webrtcPeer)return;if(peer.iceConnectionState==='failed')fallbackToMjpeg(generation);};
+        peer.ontrack=event=>{if(generation!==videoGeneration||!shouldVideoRun()||activeVideoTransport!=='webrtc_h264'||event.track.kind!=='video')return;const stream=event.streams?.[0]||new MediaStream([event.track]);webrtcFeed.srcObject=stream;webrtcFeed.onplaying=()=>markVideoPlaying(generation,'webrtc_h264');webrtcFeed.onloadedmetadata=()=>{setDisplayScale(displayModes[modeIndex][0]);fitConsoleToVideo();};webrtcFeed.onresize=()=>fitConsoleToVideo();event.track.onended=()=>fallbackToMjpeg(generation,'H.264 视频轨道已结束');showVideoSurface('webrtc_h264');webrtcFeed.play().catch(()=>{});};
+        peer.onconnectionstatechange=()=>{if(generation!==videoGeneration||peer!==webrtcPeer)return;if(peer.connectionState==='failed'||peer.connectionState==='closed')fallbackToMjpeg(generation,`WebRTC 连接状态：${peer.connectionState}`);else if(peer.connectionState==='disconnected'){clearTimeout(reconnectTimer);reconnectTimer=setTimeout(()=>{if(generation===videoGeneration&&peer===webrtcPeer&&peer.connectionState==='disconnected')fallbackToMjpeg(generation,'WebRTC 媒体连接已断开');},2000);}else clearTimeout(reconnectTimer);};
+        peer.oniceconnectionstatechange=()=>{if(generation!==videoGeneration||peer!==webrtcPeer)return;if(peer.iceConnectionState==='failed')fallbackToMjpeg(generation,'WebRTC ICE 连通性检查失败');};
         const offer=await peer.createOffer();await peer.setLocalDescription(offer);await waitForIceGathering(peer,controller.signal);if(generation!==videoGeneration||!shouldVideoRun())return;
-        signalTimer=setTimeout(()=>controller.abort(),8000);const answer=await request('/api/webrtc/offer',{method:'POST',body:JSON.stringify({type:'offer',sdp:peer.localDescription?.sdp||''}),signal:controller.signal});clearTimeout(signalTimer);signalTimer=0;if(generation!==videoGeneration||!shouldVideoRun()){closeWebrtcSession(answer?.session_id);return;}webrtcSessionId=answer?.session_id||null;if(!answer?.sdp||!/H264\/90000/i.test(answer.sdp))throw new Error('未协商 H.264');clearTimeout(videoFirstFrameTimer);videoFirstFrameTimer=setTimeout(()=>fallbackToMjpeg(generation),6000);await peer.setRemoteDescription({type:answer.type||'answer',sdp:answer.sdp});
-      } catch(error) {clearTimeout(signalTimer);if(generation!==videoGeneration||!shouldVideoRun()){if(peer&&peer!==webrtcPeer)peer.close();return;}fallbackToMjpeg(generation);}
+        signalTimer=setTimeout(()=>controller.abort(),8000);const answer=await request('/api/webrtc/offer',{method:'POST',body:JSON.stringify({type:'offer',sdp:peer.localDescription?.sdp||''}),signal:controller.signal});clearTimeout(signalTimer);signalTimer=0;if(generation!==videoGeneration||!shouldVideoRun()){closeWebrtcSession(answer?.session_id);return;}webrtcSessionId=answer?.session_id||null;if(!answer?.sdp||!/H264\/90000/i.test(answer.sdp))throw new Error('未协商 H.264');clearTimeout(videoFirstFrameTimer);videoFirstFrameTimer=setTimeout(()=>fallbackToMjpeg(generation,`等待 H.264 首帧超时（连接：${peer.connectionState}，ICE：${peer.iceConnectionState}）`),6000);await peer.setRemoteDescription({type:answer.type||'answer',sdp:answer.sdp});
+      } catch(error) {clearTimeout(signalTimer);if(generation!==videoGeneration||!shouldVideoRun()){if(peer&&peer!==webrtcPeer)peer.close();return;}fallbackToMjpeg(generation,error?.name==='AbortError'?'H.264 信令请求超时':error?.message||String(error));}
     }
-    function startVideo(force=false){if(!shouldVideoRun())return;if(force)stopVideo(false);else if(videoUiState!=='paused')return;const generation=++videoGeneration,canH264=h264Available();clearVideoTimers();videoFallback=false;reconnectDelay=500;showVideoSurface('none');setVideoMessage('正在连接视频…');if(videoPreference==='mjpeg'||!canH264)startMjpeg(generation,videoPreference==='webrtc_h264'&&!canH264);else startWebrtc(generation);}
+    function startVideo(force=false){if(!shouldVideoRun())return;if(force)stopVideo(false);else if(videoUiState!=='paused')return;const generation=++videoGeneration,canH264=h264Available();clearVideoTimers();videoFallback=false;videoFallbackReason=videoPreference==='webrtc_h264'&&!canH264?(bootstrap.webrtc?.message||'当前浏览器不支持 H.264 WebRTC'):'';reconnectDelay=500;showVideoSurface('none');setVideoMessage('正在连接视频…');if(videoPreference==='mjpeg'||!canH264)startMjpeg(generation,videoPreference==='webrtc_h264'&&!canH264);else startWebrtc(generation);}
     $('#mode-button').addEventListener('click',()=>{
       const nextIndex=(modeIndex+1)%displayModes.length;
       setDisplayScale(displayModes[nextIndex][0],true);
