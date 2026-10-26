@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
     process::Stdio,
     sync::{Arc, Mutex},
@@ -12,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    net::{UdpSocket, lookup_host},
     process::Command,
     sync::Mutex as AsyncMutex,
     task::JoinHandle,
@@ -21,7 +23,14 @@ use webrtc::{
         APIBuilder,
         interceptor_registry::register_default_interceptors,
         media_engine::{MIME_TYPE_H264, MediaEngine},
+        setting_engine::SettingEngine,
     },
+    ice::{
+        network_type::NetworkType,
+        udp_mux::{UDPMux, UDPMuxDefault, UDPMuxParams},
+        udp_network::UDPNetwork,
+    },
+    ice_transport::ice_candidate_type::RTCIceCandidateType,
     interceptor::registry::Registry,
     media::Sample,
     peer_connection::{
@@ -94,12 +103,18 @@ struct Session {
     encoder_task: JoinHandle<()>,
 }
 
+struct UdpBinding {
+    address: SocketAddr,
+    mux: Arc<UDPMuxDefault>,
+}
+
 struct Inner {
     video: VideoManager,
     config: Mutex<H264Config>,
     encoder: Mutex<Result<EncoderSpec, String>>,
     sessions: Mutex<HashMap<String, Session>>,
     offer_lock: AsyncMutex<()>,
+    udp_binding: AsyncMutex<Option<UdpBinding>>,
 }
 
 #[derive(Clone)]
@@ -120,6 +135,7 @@ impl WebRtcManager {
                 encoder: Mutex::new(encoder),
                 sessions: Mutex::new(HashMap::new()),
                 offer_lock: AsyncMutex::new(()),
+                udp_binding: AsyncMutex::new(None),
             }),
         }
     }
@@ -166,6 +182,8 @@ impl WebRtcManager {
     }
 
     pub async fn reconfigure(&self, config: H264Config) {
+        let _offer_guard = self.inner.offer_lock.lock().await;
+        let udp_bind_address = config.udp_bind_address;
         let probe_config = config.clone();
         let encoder = tokio::task::spawn_blocking(move || probe_encoder(&probe_config))
             .await
@@ -193,6 +211,36 @@ impl WebRtcManager {
         for session_id in session_ids {
             self.close(&session_id).await;
         }
+        let mut binding = self.inner.udp_binding.lock().await;
+        if binding
+            .as_ref()
+            .is_some_and(|binding| Some(binding.address) != udp_bind_address)
+            && let Some(binding) = binding.take()
+        {
+            let _ = binding.mux.close().await;
+        }
+    }
+
+    async fn udp_mux(&self, address: SocketAddr) -> Result<Arc<UDPMuxDefault>, WebRtcError> {
+        let mut binding = self.inner.udp_binding.lock().await;
+        if let Some(binding) = binding.as_ref() {
+            if binding.address != address {
+                return Err(WebRtcError::Unavailable(
+                    "WebRTC UDP 监听配置尚未切换".to_owned(),
+                ));
+            }
+            return Ok(binding.mux.clone());
+        }
+        let socket = UdpSocket::bind(address).await.map_err(|error| {
+            WebRtcError::Unavailable(format!("无法监听 WebRTC UDP {address}：{error}"))
+        })?;
+        let mux = UDPMuxDefault::new(UDPMuxParams::new(socket));
+        *binding = Some(UdpBinding {
+            address,
+            mux: mux.clone(),
+        });
+        tracing::info!(%address, "WebRTC shared UDP listener is ready");
+        Ok(mux)
     }
 
     pub async fn offer(
@@ -241,6 +289,40 @@ impl WebRtcManager {
             ));
         }
 
+        let mut settings = SettingEngine::default();
+        let mut public_endpoint = None;
+        if let Some(bind_address) = config.udp_bind_address {
+            settings.set_udp_network(UDPNetwork::Muxed(self.udp_mux(bind_address).await?));
+            settings.set_network_types(vec![if bind_address.is_ipv4() {
+                NetworkType::Udp4
+            } else {
+                NetworkType::Udp6
+            }]);
+            if let Some(endpoint) = config.public_udp_endpoint.as_deref() {
+                let address = tokio::time::timeout(Duration::from_secs(3), lookup_host(endpoint))
+                    .await
+                    .map_err(|_| {
+                        WebRtcError::Unavailable("解析 WebRTC 公网 UDP 地址超时".to_owned())
+                    })?
+                    .map_err(|error| {
+                        WebRtcError::Unavailable(format!("无法解析 WebRTC 公网 UDP 地址：{error}"))
+                    })?
+                    .find(|address| {
+                        address.is_ipv4() == bind_address.is_ipv4()
+                            && !address.ip().is_unspecified()
+                            && !address.ip().is_multicast()
+                    })
+                    .ok_or_else(|| {
+                        WebRtcError::Unavailable(
+                            "WebRTC 公网地址与 UDP 监听地址的 IP 协议不一致".to_owned(),
+                        )
+                    })?;
+                settings
+                    .set_nat_1to1_ips(vec![address.ip().to_string()], RTCIceCandidateType::Host);
+                public_endpoint = Some((address, bind_address.port()));
+            }
+        }
+
         let mut media_engine = MediaEngine::default();
         media_engine
             .register_default_codecs()
@@ -250,6 +332,7 @@ impl WebRtcManager {
         let api = APIBuilder::new()
             .with_media_engine(media_engine)
             .with_interceptor_registry(registry)
+            .with_setting_engine(settings)
             .build();
         let peer = Arc::new(
             api.new_peer_connection(RTCConfiguration::default())
@@ -280,7 +363,7 @@ impl WebRtcManager {
             let _ = peer.close().await;
             return Err(WebRtcError::InvalidOffer(error.to_string()));
         }
-        let local = match async {
+        let mut local = match async {
             let mut gathering_complete = peer.gathering_complete_promise().await;
             let answer = peer.create_answer(None).await.map_err(internal_error)?;
             peer.set_local_description(answer)
@@ -301,6 +384,19 @@ impl WebRtcManager {
                 return Err(error);
             }
         };
+
+        if let Some((endpoint, local_port)) = public_endpoint {
+            // The library's 1:1 NAT option rewrites IPs, but does not support
+            // a DNAT port change. Advertise that port only in the wire SDP;
+            // the ICE agent continues to receive on its shared local socket.
+            match advertise_udp_endpoint(&local.sdp, endpoint, local_port) {
+                Ok(sdp) => local.sdp = sdp,
+                Err(error) => {
+                    let _ = peer.close().await;
+                    return Err(error);
+                }
+            }
+        }
 
         let session_id = generate_session_id()?;
         install_connection_cleanup(&self.inner, &peer, &session_id);
@@ -347,6 +443,42 @@ impl WebRtcManager {
     }
 }
 
+fn advertise_udp_endpoint(
+    sdp: &str,
+    endpoint: SocketAddr,
+    local_port: u16,
+) -> Result<String, WebRtcError> {
+    let mut mapped = 0;
+    let mut lines = Vec::new();
+    for line in sdp.lines() {
+        if let Some(candidate) = line.strip_prefix("a=candidate:") {
+            let mut fields = candidate
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            if fields.len() >= 8
+                && fields[2].eq_ignore_ascii_case("udp")
+                && fields[4].parse::<IpAddr>().ok() == Some(endpoint.ip())
+                && fields[5].parse::<u16>().ok() == Some(local_port)
+                && fields[6] == "typ"
+                && fields[7] == "host"
+            {
+                fields[5] = endpoint.port().to_string();
+                lines.push(format!("a=candidate:{}", fields.join(" ")));
+                mapped += 1;
+                continue;
+            }
+        }
+        lines.push(line.to_owned());
+    }
+    if mapped == 0 {
+        return Err(WebRtcError::Internal(
+            "WebRTC 未生成可映射的固定 UDP 候选".to_owned(),
+        ));
+    }
+    Ok(format!("{}\r\n", lines.join("\r\n")))
+}
+
 fn install_connection_cleanup(inner: &Arc<Inner>, peer: &Arc<RTCPeerConnection>, session_id: &str) {
     let weak = Arc::downgrade(inner);
     let session_id = session_id.to_owned();
@@ -354,6 +486,7 @@ fn install_connection_cleanup(inner: &Arc<Inner>, peer: &Arc<RTCPeerConnection>,
         let weak = weak.clone();
         let session_id = session_id.clone();
         Box::pin(async move {
+            tracing::info!(%session_id, ?state, "WebRTC connection state changed");
             if matches!(
                 state,
                 RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
@@ -395,6 +528,7 @@ fn generate_session_id() -> Result<String, WebRtcError> {
 }
 
 fn probe_encoder(config: &H264Config) -> Result<EncoderSpec, String> {
+    config.validate_udp_mapping().map_err(str::to_owned)?;
     let executable = config
         .ffmpeg_path
         .clone()
@@ -680,6 +814,34 @@ fn annex_b_nal_units(bytes: &[u8]) -> Vec<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advertises_udp_dnat_port_without_changing_other_sdp_fields() {
+        let sdp = concat!(
+            "v=0\r\n",
+            "a=ice-pwd:keep-this-value\r\n",
+            "a=candidate:1 1 udp 100 203.0.113.10 8080 typ host generation 0\r\n",
+            "a=candidate:2 1 tcp 90 203.0.113.10 8080 typ host tcptype passive\r\n",
+            "a=candidate:3 1 udp 80 192.168.1.50 8080 typ host\r\n",
+            "a=candidate:4 1 udp 70 203.0.113.10 9000 typ host\r\n",
+        );
+        let mapped =
+            advertise_udp_endpoint(sdp, "203.0.113.10:38319".parse().unwrap(), 8080).unwrap();
+        assert_eq!(
+            mapped,
+            sdp.replacen(
+                "203.0.113.10 8080 typ host generation",
+                "203.0.113.10 38319 typ host generation",
+                1
+            )
+        );
+    }
+
+    #[test]
+    fn refuses_to_advertise_an_endpoint_without_a_matching_udp_candidate() {
+        let sdp = "v=0\r\na=candidate:1 1 udp 100 192.168.1.50 8080 typ host\r\n";
+        assert!(advertise_udp_endpoint(sdp, "203.0.113.10:38319".parse().unwrap(), 8080).is_err());
+    }
 
     #[test]
     fn splits_annex_b_stream_at_aud_boundaries() {

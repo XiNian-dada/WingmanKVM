@@ -400,3 +400,22 @@ proxy_set_header X-Forwarded-Proto $scheme;
 该地址统一用于网页诊断、`/api/bootstrap`、`/api/status` 和密码/Passkey 登录限速。HTTP 头不提供浏览器的 TCP 源端口，因此这类地址的 `client.port` 为 `null`；`client.source` 表示 `x_forwarded_for`、`x_real_ip`、`proxy_protocol` 或 `socket`。使用 VPN 或其他代理的访客显示的是其公网出口 IP，而非 NAT 后的设备地址。
 
 可信 HTTP 名单不会改变已有 PPv2 的接受策略；启用 PPv2 的 KVM 监听端口仍应只允许可信隧道/管理网访问，不能暴露给不受信任的客户端。它也不会放宽 Origin/Host 校验。
+
+### WebRTC H.264 的固定 UDP 端口
+
+HTTP 信令使用 TCP，WebRTC 媒体使用独立的 UDP socket。TCP 和 UDP 可以使用相同端口号。例如路由器已配置公网 `38319/TCP、UDP → KVM 8080/TCP、UDP`，可合并以下片段到现有配置：
+
+```json
+{
+  "video": {
+    "h264": {
+      "udp_bind_address": "0.0.0.0:8080",
+      "public_udp_endpoint": "kvm.example.com:38319"
+    }
+  }
+}
+```
+
+将域名替换为指向该映射公网地址的真实域名，也可使用 `公网IP:端口`。程序在每次协商时从 KVM 主机解析域名，将公网 IP 和映射后的端口写入 ICE 候选；所有 WebRTC 会话通过 UDP mux 共用本地监听端口。IP 协议必须与监听地址一致。
+
+这两个字段也支持通过 `POST /api/config` 的 `video.h264` 更新。省略字段会保留当前设置，显式将两项设为 `null` 可恢复默认的随机 UDP 端口。普通视频表单保存不会清除映射设置。此配置要求对应的 UDP 转发可达；只有 HTTP 反向代理的链路仍需要独立的媒体通道或 TURN 中继。

@@ -3,7 +3,7 @@ use std::{
     ffi::OsString,
     fs::{self, File, OpenOptions},
     io::{self, Write},
-    net::IpAddr,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
 };
 
@@ -162,6 +162,10 @@ pub struct H264Config {
     pub allow_software: bool,
     pub ffmpeg_path: Option<PathBuf>,
     pub max_sessions: u8,
+    /// Optional shared ICE UDP socket; independent of the HTTP TCP listener.
+    pub udp_bind_address: Option<SocketAddr>,
+    /// Public host:port forwarded to udp_bind_address, including DNAT port changes.
+    pub public_udp_endpoint: Option<String>,
 }
 
 impl Default for H264Config {
@@ -172,7 +176,54 @@ impl Default for H264Config {
             allow_software: false,
             ffmpeg_path: None,
             max_sessions: 1,
+            udp_bind_address: None,
+            public_udp_endpoint: None,
         }
+    }
+}
+
+impl H264Config {
+    pub fn validate_udp_mapping(&self) -> Result<(), &'static str> {
+        if self
+            .udp_bind_address
+            .is_some_and(|address| address.port() == 0)
+        {
+            return Err("WebRTC 固定 UDP 监听端口不能为 0");
+        }
+        let Some(endpoint) = self.public_udp_endpoint.as_deref() else {
+            return Ok(());
+        };
+        if self.udp_bind_address.is_none() {
+            return Err("WebRTC 公网 UDP 地址需要同时配置固定 UDP 监听地址");
+        }
+        let (host, port) = endpoint
+            .rsplit_once(':')
+            .ok_or("WebRTC 公网 UDP 地址必须是 host:port")?;
+        if port.parse::<u16>().ok().is_none_or(|port| port == 0) {
+            return Err("WebRTC 公网 UDP 端口必须在 1 到 65535 之间");
+        }
+        if let Ok(address) = endpoint.parse::<SocketAddr>() {
+            if address.ip().is_unspecified() || address.ip().is_multicast() {
+                return Err("WebRTC 公网 UDP 地址不能是未指定或组播地址");
+            }
+            return Ok(());
+        }
+        let host = host.strip_suffix('.').unwrap_or(host);
+        if host.is_empty()
+            || host.len() > 253
+            || !host.split('.').all(|label| {
+                !label.is_empty()
+                    && label.len() <= 63
+                    && !label.starts_with('-')
+                    && !label.ends_with('-')
+                    && label
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            })
+        {
+            return Err("WebRTC 公网 UDP 地址必须使用有效的 IP 或域名");
+        }
+        Ok(())
     }
 }
 
@@ -463,6 +514,39 @@ fn sync_directory(path: &Path) -> Result<(), ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_udp_mapping_validates_ports_and_public_endpoints() {
+        let mut config = H264Config::default();
+        assert!(config.validate_udp_mapping().is_ok());
+        config.public_udp_endpoint = Some("kvm.example.com:38319".into());
+        assert!(config.validate_udp_mapping().is_err());
+        config.udp_bind_address = Some("0.0.0.0:8080".parse().unwrap());
+        for endpoint in [
+            "kvm.example.com:38319",
+            "203.0.113.10:38319",
+            "[2001:db8::1]:38319",
+        ] {
+            config.public_udp_endpoint = Some(endpoint.into());
+            assert!(config.validate_udp_mapping().is_ok(), "{endpoint}");
+        }
+        for endpoint in [
+            "kvm.example.com:0",
+            "0.0.0.0:38319",
+            "[ff02::1]:38319",
+            "kvm.example.com:65536",
+            "http://kvm.example.com:38319",
+            "user@kvm.example.com:38319",
+            "bad host:38319",
+            "2001:db8::1:38319",
+        ] {
+            config.public_udp_endpoint = Some(endpoint.into());
+            assert!(config.validate_udp_mapping().is_err(), "{endpoint}");
+        }
+        config.public_udp_endpoint = None;
+        config.udp_bind_address = Some("0.0.0.0:0".parse().unwrap());
+        assert!(config.validate_udp_mapping().is_err());
+    }
 
     struct TestDirectory(PathBuf);
 

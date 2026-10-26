@@ -1390,6 +1390,10 @@ struct H264Patch {
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     ffmpeg_path: Option<Option<PathBuf>>,
     max_sessions: Option<u8>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    udp_bind_address: Option<Option<SocketAddr>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    public_udp_endpoint: Option<Option<String>>,
 }
 
 #[derive(Deserialize)]
@@ -1528,6 +1532,12 @@ fn apply_video_patch(config: &mut config::VideoConfig, patch: VideoPatch) {
         }
         if let Some(max_sessions) = h264.max_sessions {
             config.h264.max_sessions = max_sessions;
+        }
+        if let Some(address) = h264.udp_bind_address {
+            config.h264.udp_bind_address = address;
+        }
+        if let Some(endpoint) = h264.public_udp_endpoint {
+            config.h264.public_udp_endpoint = endpoint;
         }
     }
     config.auto_detect = config.device.is_none();
@@ -2285,6 +2295,11 @@ fn validate_config(config: &Config) -> Result<(), ApiError> {
     if !(1..=4).contains(&config.video.h264.max_sessions) {
         return Err(ApiError::bad_request("H.264 同时会话数必须在 1 到 4 之间"));
     }
+    config
+        .video
+        .h264
+        .validate_udp_mapping()
+        .map_err(ApiError::bad_request)?;
     for path in [
         config.video.device.as_ref(),
         config.video.h264.ffmpeg_path.as_ref(),
@@ -2645,6 +2660,34 @@ impl LoginLimiter {
 mod tests {
     use super::*;
     use crate::devices::hid::KeyboardLeds;
+
+    #[test]
+    fn video_form_updates_preserve_udp_mapping_and_null_clears_it() {
+        let mut video = config::VideoConfig::default();
+        let patch = serde_json::from_value(json!({"h264": {
+            "udp_bind_address": "0.0.0.0:8080",
+            "public_udp_endpoint": "kvm.example.com:38319"
+        }}))
+        .unwrap();
+        apply_video_patch(&mut video, patch);
+        let patch = serde_json::from_value(json!({"h264": {"bitrate_kbps": 8000}})).unwrap();
+        apply_video_patch(&mut video, patch);
+        assert_eq!(
+            video.h264.udp_bind_address,
+            Some("0.0.0.0:8080".parse().unwrap())
+        );
+        assert_eq!(
+            video.h264.public_udp_endpoint.as_deref(),
+            Some("kvm.example.com:38319")
+        );
+        let patch = serde_json::from_value(
+            json!({"h264": {"udp_bind_address": null, "public_udp_endpoint": null}}),
+        )
+        .unwrap();
+        apply_video_patch(&mut video, patch);
+        assert!(video.h264.udp_bind_address.is_none());
+        assert!(video.h264.public_udp_endpoint.is_none());
+    }
 
     #[cfg(unix)]
     use std::{
