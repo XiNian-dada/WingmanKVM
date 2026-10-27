@@ -22,10 +22,10 @@ use axum::{
     routing::{delete, get, post},
 };
 use bytes::Bytes;
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
-use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc, watch};
+use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, RwLock, Semaphore, mpsc, watch};
 use tokio::{fs, io::AsyncWriteExt};
 use webauthn_rs::prelude::*;
 
@@ -33,7 +33,7 @@ use crate::proxy_protocol::ProxyProtocolMode;
 use crate::client_ip::{self, ClientAddress, ClientConnection};
 
 use crate::{
-    auth::{AuthError, AuthRecord, AuthStore, PasswordPolicyError, SessionStore},
+    auth::{AuthError, AuthRecord, AuthStore, PasswordPolicyError, SessionGuard, SessionStore},
     config::{
         self, CONFIG_VERSION, Config, GpioBias, GpioInputConfig, GpioPulseConfig, H264Encoder,
         HidConfig, PointerMode, VideoEncoding,
@@ -268,9 +268,86 @@ async fn xterm_css() -> impl IntoResponse {
 }
 
 /// Authenticated interactive shell on the RK3399. The PTY is intentionally
-/// short-lived and is torn down as soon as the browser disconnects.
-async fn terminal_ws(ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(handle_terminal)
+/// short-lived and is torn down as soon as the browser disconnects, the
+/// session is revoked, or the session deadline passes.
+async fn terminal_ws(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let public_origin = state.config.read().await.server.public_origin.clone();
+    terminal_ws_with_command(
+        state.sessions.clone(),
+        headers,
+        ws,
+        public_origin,
+        terminal_command(),
+    )
+    .await
+}
+
+async fn terminal_ws_with_command(
+    sessions: SessionStore,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+    public_origin: Option<String>,
+    command: CommandBuilder,
+) -> Response {
+    // Browser Origin is checked before authentication and before on_upgrade.
+    // Forwarded scheme headers are deliberately ignored: only the exact
+    // configured public origin or the direct HTTP Host can authorize a PTY.
+    if let Err(error) = validate_terminal_origin(&headers, public_origin.as_deref()) {
+        return error.into_response();
+    }
+    // Re-validate under the session lock so a logout that raced the auth
+    // middleware cannot leave an upgrade with no cancellable session binding.
+    let Some(guard) =
+        session_token(&headers).and_then(|token| sessions.validate_guard(token))
+    else {
+        return ApiError::new(StatusCode::UNAUTHORIZED, "需要登录").into_response();
+    };
+    ws.max_message_size(64 * 1024)
+        .max_frame_size(64 * 1024)
+        .on_upgrade(move |socket| handle_terminal(socket, guard, command))
+}
+
+fn validate_terminal_origin(
+    headers: &HeaderMap,
+    public_origin: Option<&str>,
+) -> Result<(), ApiError> {
+    let forbidden = || ApiError::new(StatusCode::FORBIDDEN, "终端 WebSocket 来源校验失败");
+
+    let mut origins = headers.get_all(ORIGIN).iter();
+    let Some(origin_header) = origins.next() else {
+        return Err(forbidden());
+    };
+    if origins.next().is_some() {
+        return Err(forbidden());
+    }
+    let origin = origin_header
+        .to_str()
+        .map_err(|_| forbidden())
+        .and_then(|value| config::NormalizedOrigin::parse(value).map_err(|_| forbidden()))?;
+
+    let mut hosts = headers.get_all(HOST).iter();
+    let Some(host_header) = hosts.next() else {
+        return Err(forbidden());
+    };
+    if hosts.next().is_some() {
+        return Err(forbidden());
+    }
+    let host = host_header.to_str().map_err(|_| forbidden())?;
+
+    if let Some(configured) = public_origin {
+        let expected =
+            config::NormalizedOrigin::parse(configured).map_err(|_| forbidden())?;
+        if origin != expected || !expected.host_matches(host) {
+            return Err(forbidden());
+        }
+    } else if !origin.is_http() || !origin.host_matches(host) {
+        return Err(forbidden());
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -279,22 +356,47 @@ enum TerminalClientMessage {
     Resize { cols: u16, rows: u16 },
 }
 
-async fn handle_terminal(mut socket: WebSocket) {
-    let pty = native_pty_system();
-    let pair = match pty.openpty(PtySize {
-        rows: 32,
-        cols: 120,
-        pixel_width: 0,
-        pixel_height: 0,
-    }) {
-        Ok(pair) => pair,
-        Err(err) => {
-            let _ = socket
-                .send(Message::Text(format!("\r\nPTY error: {err}\r\n").into()))
-                .await;
-            return;
-        }
-    };
+struct TerminalSession {
+    child: Box<dyn Child + Send + Sync>,
+    reader_task: tokio::task::JoinHandle<()>,
+    reader_rx: mpsc::Receiver<Vec<u8>>,
+    writer_tx: mpsc::Sender<Vec<u8>>,
+    writer_task: tokio::task::JoinHandle<()>,
+    master: Box<dyn MasterPty + Send>,
+}
+
+impl TerminalSession {
+    /// Kill and reap the child, then close every PTY endpoint so the blocking
+    /// reader thread can observe EOF/EIO and return.
+    async fn stop(self) -> bool {
+        let Self {
+            child,
+            reader_task,
+            reader_rx,
+            writer_tx,
+            writer_task,
+            master,
+        } = self;
+        drop(writer_tx);
+        drop(master);
+        drop(reader_rx);
+        let reaped = reap_terminal_child(child).await;
+        let _ = reader_task.await;
+        let _ = writer_task.await;
+        reaped
+    }
+}
+
+async fn reap_terminal_child(mut child: Box<dyn Child + Send + Sync>) -> bool {
+    tokio::task::spawn_blocking(move || {
+        let _ = child.kill();
+        child.wait().is_ok()
+    })
+    .await
+    .unwrap_or(false)
+}
+
+fn terminal_command() -> CommandBuilder {
     let mut cmd = if std::path::Path::new("/usr/bin/sudo").exists() {
         let mut c = CommandBuilder::new("sudo");
         c.args(["-n", "-u", "wingman", "/bin/bash", "-l"]);
@@ -305,26 +407,41 @@ async fn handle_terminal(mut socket: WebSocket) {
     cmd.env("TERM", "xterm-256color");
     cmd.env("HOME", "/home/wingman");
     cmd.cwd("/");
-    let mut child = match pair.slave.spawn_command(cmd) {
-        Ok(c) => c,
-        Err(err) => {
-            let _ = socket
-                .send(Message::Text(format!("\r\nspawn error: {err}\r\n").into()))
-                .await;
-            return;
-        }
-    };
+    cmd
+}
+
+async fn spawn_terminal_session(command: CommandBuilder) -> Result<TerminalSession, String> {
+    let pty = native_pty_system();
+    let pair = pty
+        .openpty(PtySize {
+            rows: 32,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|err| format!("PTY error: {err}"))?;
+    let child = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|err| format!("spawn error: {err}"))?;
     drop(pair.slave);
     let mut reader = match pair.master.try_clone_reader() {
-        Ok(r) => r,
-        Err(_) => return,
+        Ok(reader) => reader,
+        Err(err) => {
+            reap_terminal_child(child).await;
+            return Err(format!("PTY reader error: {err}"));
+        }
     };
     let mut writer = match pair.master.take_writer() {
-        Ok(w) => w,
-        Err(_) => return,
+        Ok(writer) => writer,
+        Err(err) => {
+            reap_terminal_child(child).await;
+            return Err(format!("PTY writer error: {err}"));
+        }
     };
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(32);
-    tokio::task::spawn_blocking(move || {
+    let master = pair.master;
+    let (tx, reader_rx) = mpsc::channel::<Vec<u8>>(32);
+    let reader_task = tokio::task::spawn_blocking(move || {
         let mut buf = [0u8; 4096];
         loop {
             match reader.read(&mut buf) {
@@ -337,9 +454,48 @@ async fn handle_terminal(mut socket: WebSocket) {
             }
         }
     });
+    let (writer_tx, mut writer_rx) = mpsc::channel::<Vec<u8>>(32);
+    let writer_task = tokio::task::spawn_blocking(move || {
+        while let Some(data) = writer_rx.blocking_recv() {
+            if std::io::Write::write_all(&mut writer, &data).is_err() {
+                break;
+            }
+        }
+    });
+    Ok(TerminalSession {
+        child,
+        reader_task,
+        reader_rx,
+        writer_tx,
+        writer_task,
+        master,
+    })
+}
+
+async fn handle_terminal(mut socket: WebSocket, guard: SessionGuard, command: CommandBuilder) {
+    // Revocation or expiry may have won the race between the HTTP check and
+    // this task being scheduled. Never spawn a PTY for a dead session.
+    if !guard.is_active() {
+        return;
+    }
+    let mut session = match spawn_terminal_session(command).await {
+        Ok(session) => session,
+        Err(message) => {
+            let send = socket.send(Message::Text(format!("\r\n{message}\r\n").into()));
+            tokio::pin!(send);
+            tokio::select! {
+                biased;
+                _ = guard.wait_for_end() => {}
+                _ = &mut send => {}
+            }
+            return;
+        }
+    };
     loop {
         tokio::select! {
-            Some(data) = rx.recv() => { if socket.send(Message::Binary(data.into())).await.is_err() { break; } }
+            biased;
+            _ = guard.wait_for_end() => break,
+            _ = session.writer_tx.closed() => break,
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Text(text))) => {
                     if let Ok(TerminalClientMessage::Resize { cols, rows }) =
@@ -347,7 +503,7 @@ async fn handle_terminal(mut socket: WebSocket) {
                         && (2..=1000).contains(&cols)
                         && (1..=500).contains(&rows)
                     {
-                        let _ = pair.master.resize(PtySize {
+                        let _ = session.master.resize(PtySize {
                             rows,
                             cols,
                             pixel_width: 0,
@@ -356,16 +512,39 @@ async fn handle_terminal(mut socket: WebSocket) {
                     }
                 }
                 Some(Ok(Message::Binary(data))) => {
-                    if std::io::Write::write_all(&mut writer, &data).is_err() {
-                        break;
+                    tokio::select! {
+                        biased;
+                        _ = guard.wait_for_end() => break,
+                        result = session.writer_tx.send(data.to_vec()) => {
+                            if result.is_err() { break; }
+                        }
                     }
                 }
                 Some(Ok(Message::Close(_))) | None => break,
                 _ => {}
-            }
+            },
+            maybe = session.reader_rx.recv() => match maybe {
+                Some(data) => {
+                    // The send itself must be cancellable: a stalled browser must
+                    // not keep a revoked terminal alive indefinitely.
+                    let send = socket.send(Message::Binary(data.into()));
+                    tokio::pin!(send);
+                    tokio::select! {
+                        biased;
+                        _ = guard.wait_for_end() => break,
+                        result = &mut send => {
+                            if result.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                None => break,
+            },
         }
     }
-    let _ = child.kill();
+    drop(socket);
+    session.stop().await;
 }
 
 async fn index() -> impl IntoResponse {
@@ -507,7 +686,7 @@ async fn setup(
     }
 
     let discovered = discovery::scan().await;
-    let mut new_config = Config::default();
+    let mut new_config = state.config.read().await.clone();
     new_config.video.device =
         resolve_setup_video(optional_path(request.video_device), &discovered.video)?;
     new_config.video.auto_detect = new_config.video.device.is_none();
@@ -901,28 +1080,27 @@ async fn login(
     Json(request): Json<LoginRequest>,
 ) -> Result<Response, ApiError> {
     let client_ip = state.client_address(connection, &headers).await.ip;
-    if !state.login_limiter.allowed(client_ip) {
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "登录尝试过多，请稍后再试",
-        ));
+    // Reserve at admission so a burst cannot retry around the per-IP budget
+    // merely because the global password workers are busy.
+    if !state.login_limiter.try_reserve(client_ip) {
+        return Err(too_many_login_attempts());
     }
+    let Some(password_slot) = state.login_limiter.try_acquire_password_slot() else {
+        return Err(too_many_login_attempts());
+    };
     let auth = state.auth.clone();
     let username = request.username;
     let password = request.password;
     let password_for_verification = password.clone();
-    let valid = tokio::task::spawn_blocking(move || {
+    let valid = run_with_password_slot(password_slot, move || {
         let Some(record) = auth.load()? else {
             return Ok(false);
         };
         record.verify_credentials(&username, &password_for_verification)
     })
-    .await
-    .map_err(ApiError::internal)?
-    .map_err(map_auth_error)?;
+    .await?;
 
     if !valid {
-        state.login_limiter.record_failure(client_ip);
         return Err(ApiError::new(
             StatusCode::UNAUTHORIZED,
             "用户名或密码不正确",
@@ -934,12 +1112,38 @@ async fn login(
     // plaintext password is available again, so repair those installations
     // before issuing a terminal-capable session.
     sync_system_password(&password).await?;
-    state.login_limiter.clear(client_ip);
     let session = state.sessions.create().map_err(ApiError::internal)?;
     Ok(with_session_cookie(
         Json(json!({"ok": true})).into_response(),
         &session,
     ))
+}
+
+fn too_many_login_attempts() -> ApiError {
+    ApiError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "登录尝试过多，请稍后再试",
+    )
+}
+
+/// Run password verification on the blocking pool while keeping the global
+/// verification permit inside the blocking closure. Aborting or dropping the
+/// HTTP task therefore cannot release the slot while Argon2 is still running.
+async fn run_with_password_slot<T, F>(
+    password_slot: OwnedSemaphorePermit,
+    verify: F,
+) -> Result<T, ApiError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, AuthError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let _password_slot = password_slot;
+        verify()
+    })
+    .await
+    .map_err(ApiError::internal)?
+    .map_err(map_auth_error)
 }
 
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -1008,11 +1212,10 @@ async fn passkey_login_start(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let client_ip = state.client_address(connection, &headers).await.ip;
-    if !state.login_limiter.allowed(client_ip) {
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "登录尝试过多，请稍后再试",
-        ));
+    // Starting authentication is not an authentication submission: check the
+    // current budget without reserving an attempt. Finish reserves exactly one.
+    if !state.login_limiter.has_capacity(client_ip) {
+        return Err(too_many_login_attempts());
     }
     let Some(record) = state.auth.load().map_err(map_auth_error)? else {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "系统尚未初始化"));
@@ -1071,11 +1274,10 @@ async fn passkey_login_finish(
         return Err(ApiError::new(StatusCode::FORBIDDEN, "Origin 与 Host 不符"));
     }
     let client_ip = state.client_address(connection, &headers).await.ip;
-    if !state.login_limiter.allowed(client_ip) {
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "登录尝试过多，请稍后再试",
-        ));
+    // Completing authentication is the submitted attempt: reserve once before
+    // validating the challenge. Success and every failure keep the reservation.
+    if !state.login_limiter.try_reserve(client_ip) {
+        return Err(too_many_login_attempts());
     }
 
     let challenge_state = {
@@ -1089,12 +1291,10 @@ async fn passkey_login_finish(
         rp_origin,
         expires_at,
     }) = challenge_state else {
-        state.login_limiter.record_failure(client_ip);
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "无效或已过期的认证挑战"));
     };
 
     if Instant::now() > expires_at {
-        state.login_limiter.record_failure(client_ip);
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "认证挑战已过期"));
     }
 
@@ -1110,7 +1310,6 @@ async fn passkey_login_finish(
         Ok(res) => res,
         Err(e) => {
             tracing::warn!(error = %e, "WebAuthn authentication failed");
-            state.login_limiter.record_failure(client_ip);
             return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Passkey 验证失败"));
         }
     };
@@ -1121,7 +1320,6 @@ async fn passkey_login_finish(
         Ok(record.username.clone())
     }).map_err(map_auth_error)?;
 
-    state.login_limiter.clear(client_ip);
     let session = state.sessions.create().map_err(ApiError::internal)?;
     Ok(with_session_cookie(
         Json(json!({"ok": true, "username": username})).into_response(),
@@ -1374,6 +1572,8 @@ struct ConfigPatch {
 struct ServerPatch {
     proxy_protocol: Option<ProxyProtocolMode>,
     trusted_http_proxies: Option<Vec<IpAddr>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    public_origin: Option<Option<String>>,
 }
 
 #[derive(Deserialize)]
@@ -1504,6 +1704,9 @@ fn apply_server_patch(config: &mut config::ServerConfig, patch: ServerPatch) {
     }
     if let Some(proxies) = patch.trusted_http_proxies {
         config.trusted_http_proxies = proxies;
+    }
+    if let Some(public_origin) = patch.public_origin {
+        config.public_origin = public_origin.map(|value| value.trim().to_owned());
     }
 }
 
@@ -2276,6 +2479,10 @@ fn validate_config(config: &Config) -> Result<(), ApiError> {
     if config.version != CONFIG_VERSION {
         return Err(ApiError::bad_request("配置版本不受支持"));
     }
+    if let Some(origin) = &config.server.public_origin {
+        config::NormalizedOrigin::parse(origin)
+            .map_err(|reason| ApiError::bad_request(format!("无效的 server.public_origin: {reason}")))?;
+    }
     if config.server.trusted_http_proxies.len() > 64
         || config.server.trusted_http_proxies.iter().any(|ip| ip.is_unspecified() || ip.is_multicast())
     {
@@ -2631,44 +2838,215 @@ impl IntoResponse for ApiError {
     }
 }
 
-#[derive(Clone, Default)]
+const LOGIN_ATTEMPT_WINDOW: Duration = Duration::from_secs(60);
+const MAX_LOGIN_ATTEMPTS_PER_IP: usize = 5;
+const MAX_LOGIN_LIMITER_RECORDS: usize = 4096;
+const MAX_CONCURRENT_PASSWORD_VERIFICATIONS: usize = 2;
+
+#[derive(Clone)]
 struct LoginLimiter {
-    failures: Arc<Mutex<HashMap<IpAddr, VecDeque<Instant>>>>,
+    attempts: Arc<Mutex<HashMap<IpAddr, VecDeque<Instant>>>>,
+    password_slots: Arc<Semaphore>,
+}
+
+impl Default for LoginLimiter {
+    fn default() -> Self {
+        Self {
+            attempts: Arc::new(Mutex::new(HashMap::new())),
+            password_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_PASSWORD_VERIFICATIONS)),
+        }
+    }
 }
 
 impl LoginLimiter {
-    fn allowed(&self, ip: IpAddr) -> bool {
-        let now = Instant::now();
-        let mut failures = self
-            .failures
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let attempts = failures.entry(ip).or_default();
-        attempts.retain(|attempt| now.duration_since(*attempt) < Duration::from_secs(60));
-        attempts.len() < 5
+    /// Atomically admit one authentication submission for `ip`.
+    ///
+    /// At most five admissions are recorded per client IP in the rolling
+    /// 60-second window. Every admitted password attempt and Passkey finish is
+    /// counted exactly once, regardless of whether it succeeds; a successful
+    /// login never clears earlier in-flight admissions. Expired timestamps are
+    /// pruned during every admission, and the record map is bounded to 4096
+    /// entries: an unseen IP at capacity fails closed.
+    fn try_reserve(&self, ip: IpAddr) -> bool {
+        self.try_reserve_at(ip, Instant::now())
     }
 
-    fn record_failure(&self, ip: IpAddr) {
-        self.failures
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .entry(ip)
-            .or_default()
-            .push_back(Instant::now());
+    fn try_reserve_at(&self, ip: IpAddr, now: Instant) -> bool {
+        let mut attempts = self.attempts.lock().unwrap_or_else(|p| p.into_inner());
+        prune_login_attempts(&mut attempts, now);
+        if let Some(timestamps) = attempts.get_mut(&ip) {
+            if timestamps.len() >= MAX_LOGIN_ATTEMPTS_PER_IP {
+                return false;
+            }
+            timestamps.push_back(now);
+            true
+        } else if attempts.len() >= MAX_LOGIN_LIMITER_RECORDS {
+            false
+        } else {
+            attempts.insert(ip, VecDeque::from([now]));
+            true
+        }
     }
 
-    fn clear(&self, ip: IpAddr) {
-        self.failures
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&ip);
+    /// Check admission capacity without recording an attempt or allocating a
+    /// new per-IP record. Also prunes expired records.
+    fn has_capacity(&self, ip: IpAddr) -> bool {
+        self.has_capacity_at(ip, Instant::now())
     }
+
+    fn has_capacity_at(&self, ip: IpAddr, now: Instant) -> bool {
+        let mut attempts = self.attempts.lock().unwrap_or_else(|p| p.into_inner());
+        prune_login_attempts(&mut attempts, now);
+        attempts.get(&ip).map_or(
+            attempts.len() < MAX_LOGIN_LIMITER_RECORDS,
+            |timestamps| timestamps.len() < MAX_LOGIN_ATTEMPTS_PER_IP,
+        )
+    }
+
+    fn try_acquire_password_slot(&self) -> Option<OwnedSemaphorePermit> {
+        self.password_slots.clone().try_acquire_owned().ok()
+    }
+}
+
+fn prune_login_attempts(attempts: &mut HashMap<IpAddr, VecDeque<Instant>>, now: Instant) {
+    attempts.retain(|_, timestamps| {
+        // Concurrent callers can sample time before acquiring the mutex in a
+        // different order, so expired entries need not be at the front.
+        timestamps.retain(|at| now.saturating_duration_since(*at) < LOGIN_ATTEMPT_WINDOW);
+        !timestamps.is_empty()
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::devices::hid::KeyboardLeds;
+
+    #[test]
+    fn twelve_concurrent_reservations_admit_exactly_five() {
+        let limiter = LoginLimiter::default();
+        let ip: IpAddr = "203.0.113.10".parse().unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(13));
+        let admitted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut workers = Vec::new();
+        for _ in 0..12 {
+            let limiter = limiter.clone();
+            let barrier = Arc::clone(&barrier);
+            let admitted = Arc::clone(&admitted);
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                if limiter.try_reserve_at(ip, Instant::now()) {
+                    admitted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }));
+        }
+        barrier.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(
+            admitted.load(std::sync::atomic::Ordering::SeqCst),
+            MAX_LOGIN_ATTEMPTS_PER_IP
+        );
+    }
+
+    #[test]
+    fn per_ip_budgets_are_independent_and_refill_after_the_window() {
+        let limiter = LoginLimiter::default();
+        let first: IpAddr = "198.51.100.1".parse().unwrap();
+        let second: IpAddr = "198.51.100.2".parse().unwrap();
+        let start = Instant::now();
+        for _ in 0..MAX_LOGIN_ATTEMPTS_PER_IP {
+            assert!(limiter.try_reserve_at(first, start));
+        }
+        assert!(!limiter.has_capacity_at(first, start));
+        assert!(!limiter.try_reserve_at(first, start));
+        assert!(limiter.try_reserve_at(second, start));
+
+        let just_before = start + LOGIN_ATTEMPT_WINDOW - Duration::from_millis(1);
+        assert!(!limiter.try_reserve_at(first, just_before));
+        let refilled = start + LOGIN_ATTEMPT_WINDOW;
+        assert!(limiter.try_reserve_at(first, refilled));
+        assert!(limiter.has_capacity_at(first, refilled));
+
+        let reordered = LoginLimiter::default();
+        assert!(reordered.try_reserve_at(first, refilled));
+        for _ in 1..MAX_LOGIN_ATTEMPTS_PER_IP {
+            assert!(reordered.try_reserve_at(first, start));
+        }
+        assert!(reordered.try_reserve_at(first, refilled));
+    }
+
+    #[test]
+    fn limiter_record_cap_fails_closed_and_prunes_expired_entries() {
+        let limiter = LoginLimiter::default();
+        let start = Instant::now();
+        for index in 0..MAX_LOGIN_LIMITER_RECORDS {
+            let ip = IpAddr::V4(std::net::Ipv4Addr::from(index as u32 + 1));
+            assert!(limiter.try_reserve_at(ip, start));
+        }
+        let new_ip: IpAddr = "203.0.113.250".parse().unwrap();
+        assert!(!limiter.has_capacity_at(new_ip, start));
+        assert!(!limiter.try_reserve_at(new_ip, start));
+
+        let after_window = start + LOGIN_ATTEMPT_WINDOW;
+        assert!(limiter.try_reserve_at(new_ip, after_window));
+        assert_eq!(limiter.attempts.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn global_password_slots_cap_verification_across_ips_and_release() {
+        let limiter = LoginLimiter::default();
+        let now = Instant::now();
+        assert!(limiter.try_reserve_at("198.51.100.1".parse().unwrap(), now));
+        assert!(limiter.try_reserve_at("198.51.100.2".parse().unwrap(), now));
+
+        let first = limiter.try_acquire_password_slot().expect("first slot");
+        let second = limiter.try_acquire_password_slot().expect("second slot");
+        assert!(limiter.try_acquire_password_slot().is_none());
+        drop(first);
+        let replacement = limiter
+            .try_acquire_password_slot()
+            .expect("released slot");
+        assert!(limiter.try_acquire_password_slot().is_none());
+        drop((second, replacement));
+        assert_eq!(limiter.password_slots.available_permits(), 2);
+    }
+
+    #[tokio::test]
+    async fn aborting_the_http_task_keeps_the_slot_until_blocking_verification_ends() {
+        let limiter = LoginLimiter::default();
+        let held = limiter.try_acquire_password_slot().expect("held slot");
+        let moved = limiter
+            .try_acquire_password_slot()
+            .expect("verification slot");
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let task = tokio::spawn(run_with_password_slot(moved, move || {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+            Ok::<bool, AuthError>(true)
+        }));
+
+        started_rx.await.expect("verification should start");
+        task.abort();
+        let _ = task.await;
+        // The HTTP task is gone, but the blocking work still owns its permit.
+        assert!(limiter.try_acquire_password_slot().is_none());
+
+        release_tx.send(()).expect("release blocking verification");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if limiter.try_acquire_password_slot().is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("slot should be released when blocking verification finishes");
+        drop(held);
+    }
 
     #[test]
     fn video_form_updates_preserve_udp_mapping_and_null_clears_it() {
@@ -2981,6 +3359,12 @@ mod tests {
 
         let mut config = Config::default();
         config.media.max_upload_bytes = 0;
+        assert!(validate_config(&config).is_err());
+
+        let mut config = Config::default();
+        config.server.public_origin = Some("https://kvm.example.com".to_owned());
+        assert!(validate_config(&config).is_ok());
+        config.server.public_origin = Some("https://user@kvm.example.com".to_owned());
         assert!(validate_config(&config).is_err());
     }
 
@@ -3428,6 +3812,23 @@ mod tests {
         let patch = serde_json::from_value(json!({"trusted_http_proxies": []})).unwrap();
         apply_server_patch(&mut config, patch);
         assert!(config.trusted_http_proxies.is_empty());
+
+        let patch =
+            serde_json::from_value(json!({"public_origin": "https://kvm.example.com"})).unwrap();
+        apply_server_patch(&mut config, patch);
+        assert_eq!(
+            config.public_origin.as_deref(),
+            Some("https://kvm.example.com")
+        );
+        let patch = serde_json::from_value(json!({"proxy_protocol": "auto"})).unwrap();
+        apply_server_patch(&mut config, patch);
+        assert_eq!(
+            config.public_origin.as_deref(),
+            Some("https://kvm.example.com")
+        );
+        let patch = serde_json::from_value(json!({"public_origin": null})).unwrap();
+        apply_server_patch(&mut config, patch);
+        assert_eq!(config.public_origin, None);
     }
 
     #[test]
@@ -3602,6 +4003,419 @@ mod tests {
         assert_eq!(
             resp.headers().get("content-type").unwrap(),
             "image/svg+xml"
+        );
+    }
+
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::{
+        Error as WsError, Message as WsMessage, client::IntoClientRequest,
+    };
+
+    type TerminalTestSocket =
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+    struct TerminalTestServer {
+        address: SocketAddr,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for TerminalTestServer {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    #[derive(Clone)]
+    struct TerminalTestState {
+        sessions: SessionStore,
+        public_origin: Option<String>,
+        program: &'static str,
+    }
+
+    async fn terminal_test_ws(
+        State(state): State<TerminalTestState>,
+        headers: HeaderMap,
+        ws: WebSocketUpgrade,
+    ) -> Response {
+        terminal_ws_with_command(
+            state.sessions,
+            headers,
+            ws,
+            state.public_origin,
+            CommandBuilder::new(state.program),
+        )
+        .await
+    }
+
+    async fn spawn_terminal_test_server(
+        sessions: SessionStore,
+        public_origin: Option<String>,
+    ) -> TerminalTestServer {
+        spawn_terminal_test_server_with_program(sessions, public_origin, "/bin/cat").await
+    }
+
+    async fn spawn_terminal_test_server_with_program(
+        sessions: SessionStore,
+        public_origin: Option<String>,
+        program: &'static str,
+    ) -> TerminalTestServer {
+        let app = Router::new()
+            .route("/terminal", get(terminal_test_ws))
+            .with_state(TerminalTestState {
+                sessions,
+                public_origin,
+                program,
+            });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local terminal test listener");
+        let address = listener.local_addr().expect("local test address");
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        TerminalTestServer { address, task }
+    }
+
+    fn terminal_request_with_origins(
+        address: SocketAddr,
+        token: &str,
+        origins: &[&str],
+    ) -> tokio_tungstenite::tungstenite::handshake::client::Request {
+        let uri = format!("ws://{address}/terminal")
+            .parse::<axum::http::Uri>()
+            .expect("valid terminal test URI");
+        let mut request: tokio_tungstenite::tungstenite::handshake::client::Request = uri
+            .into_client_request()
+            .expect("valid terminal upgrade request");
+        request.headers_mut().insert(
+            "cookie",
+            format!("{SESSION_COOKIE}={token}")
+                .parse::<HeaderValue>()
+                .expect("valid session cookie"),
+        );
+        request.headers_mut().remove(ORIGIN);
+        for origin in origins {
+            request.headers_mut().append(
+                ORIGIN,
+                HeaderValue::from_str(origin).expect("valid test origin"),
+            );
+        }
+        request
+    }
+
+    fn terminal_request(
+        address: SocketAddr,
+        token: &str,
+    ) -> tokio_tungstenite::tungstenite::handshake::client::Request {
+        let origin = format!("http://{address}");
+        terminal_request_with_origins(address, token, &[origin.as_str()])
+    }
+
+    fn with_host(
+        mut request: tokio_tungstenite::tungstenite::handshake::client::Request,
+        host: &str,
+    ) -> tokio_tungstenite::tungstenite::handshake::client::Request {
+        request.headers_mut().insert(
+            HOST,
+            HeaderValue::from_str(host).expect("valid test host"),
+        );
+        request
+    }
+
+    fn with_header(
+        mut request: tokio_tungstenite::tungstenite::handshake::client::Request,
+        name: &'static str,
+        value: &'static str,
+    ) -> tokio_tungstenite::tungstenite::handshake::client::Request {
+        request
+            .headers_mut()
+            .insert(name, HeaderValue::from_static(value));
+        request
+    }
+
+    async fn terminal_upgrade_status(
+        request: tokio_tungstenite::tungstenite::handshake::client::Request,
+    ) -> StatusCode {
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(request))
+                .await
+                .expect("terminal upgrade should not time out");
+        match result {
+            Ok((_socket, response)) => response.status(),
+            Err(WsError::Http(response)) => response.status(),
+            Err(error) => panic!("unexpected terminal upgrade error: {error}"),
+        }
+    }
+
+    async fn connect_terminal(
+        address: SocketAddr,
+        token: &str,
+    ) -> TerminalTestSocket {
+        let request = terminal_request(address, token);
+        let (socket, response) =
+            tokio::time::timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(request))
+                .await
+                .expect("terminal upgrade should not time out")
+                .expect("terminal upgrade should succeed");
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        socket
+    }
+
+    async fn send_terminal(socket: &mut TerminalTestSocket, data: &[u8]) {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            socket.send(WsMessage::Binary(data.to_vec().into())),
+        )
+        .await
+        .expect("terminal send should not time out")
+        .expect("terminal send should succeed");
+    }
+
+    async fn read_terminal_until(socket: &mut TerminalTestSocket, needle: &str) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut output = String::new();
+        while !output.contains(needle) {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let message = tokio::time::timeout(remaining, socket.next())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("timed out waiting for {needle:?}; received {output:?}")
+                })
+                .unwrap_or_else(|| {
+                    panic!("terminal closed before {needle:?}; received {output:?}")
+                })
+                .unwrap_or_else(|error| {
+                    panic!("terminal error before {needle:?}: {error}; received {output:?}")
+                });
+            match message {
+                WsMessage::Text(text) => output.push_str(text.as_str()),
+                WsMessage::Binary(data) => {
+                    output.push_str(&String::from_utf8_lossy(&data));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    async fn expect_terminal_closed(socket: &mut TerminalTestSocket) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            match tokio::time::timeout(remaining, socket.next()).await {
+                Ok(Some(Ok(WsMessage::Close(_))) | None) | Ok(Some(Err(_))) => return true,
+                Ok(Some(Ok(_))) => {}
+                Err(_) => return false,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_input_interrupts_a_continuously_writing_child() {
+        let sessions = SessionStore::new(Duration::from_secs(60));
+        let token = sessions.create().unwrap();
+        let server =
+            spawn_terminal_test_server_with_program(sessions, None, "/usr/bin/yes").await;
+        let mut socket = connect_terminal(server.address, &token).await;
+        read_terminal_until(&mut socket, "y").await;
+        send_terminal(&mut socket, &[3]).await;
+        assert!(
+            expect_terminal_closed(&mut socket).await,
+            "Ctrl-C must reach the PTY even while terminal output stays ready"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_websocket_closes_pre_existing_connections_on_revocation() {
+        let sessions = SessionStore::new(Duration::from_secs(60));
+        let revoked_token = sessions.create().unwrap();
+        let live_token = sessions.create().unwrap();
+        let server = spawn_terminal_test_server(sessions.clone(), None).await;
+
+        let mut first = connect_terminal(server.address, &revoked_token).await;
+        let mut second = connect_terminal(server.address, &revoked_token).await;
+        let mut unrelated = connect_terminal(server.address, &live_token).await;
+
+        send_terminal(&mut first, b"first\n").await;
+        read_terminal_until(&mut first, "first").await;
+        send_terminal(&mut second, b"second\n").await;
+        read_terminal_until(&mut second, "second").await;
+        send_terminal(&mut unrelated, b"unrelated\n").await;
+        read_terminal_until(&mut unrelated, "unrelated").await;
+
+        assert!(sessions.revoke(&revoked_token));
+        assert!(
+            expect_terminal_closed(&mut first).await,
+            "first terminal for the revoked session must close"
+        );
+        assert!(
+            expect_terminal_closed(&mut second).await,
+            "second terminal for the revoked session must close"
+        );
+
+        // An unrelated authenticated session must keep working.
+        send_terminal(&mut unrelated, b"still-live\n").await;
+        read_terminal_until(&mut unrelated, "still-live").await;
+
+        let _ = unrelated.send(WsMessage::Close(None)).await;
+    }
+
+    #[tokio::test]
+    async fn terminal_websocket_closes_at_natural_session_expiry() {
+        let sessions = SessionStore::new(Duration::from_secs(1));
+        let token = sessions.create().unwrap();
+        let server = spawn_terminal_test_server(sessions.clone(), None).await;
+        let mut socket = connect_terminal(server.address, &token).await;
+
+        assert!(
+            expect_terminal_closed(&mut socket).await,
+            "an existing terminal must close at the session deadline without pruning"
+        );
+        // The expired entry may remain until validation or pruning removes it.
+        assert!(sessions.validate_guard(&token).is_none());
+    }
+
+    #[tokio::test]
+    async fn terminal_websocket_rejects_revoked_before_upgrade() {
+        let sessions = SessionStore::new(Duration::from_secs(60));
+        let token = sessions.create().unwrap();
+        assert!(sessions.revoke(&token));
+        let server = spawn_terminal_test_server(sessions.clone(), None).await;
+        let request = terminal_request(server.address, &token);
+
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(request))
+                .await
+                .expect("revoked upgrade should not time out");
+        match result {
+            Err(WsError::Http(response)) => {
+                assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            }
+            Err(error) => panic!("unexpected revoked upgrade error: {error}"),
+            Ok(_) => panic!("revoked session must not receive a terminal upgrade"),
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_websocket_requires_strict_same_origin_without_public_origin() {
+        let sessions = SessionStore::new(Duration::from_secs(60));
+        let token = sessions.create().unwrap();
+        let server = spawn_terminal_test_server(sessions.clone(), None).await;
+        let address = server.address;
+        let legitimate = format!("http://{address}");
+        let https_origin = format!("https://{address}");
+        let different_port = format!("http://127.0.0.1:{}", address.port() + 1);
+        let comma_separated = format!("{legitimate},{legitimate}");
+
+        assert_eq!(
+            terminal_upgrade_status(terminal_request(address, &token)).await,
+            StatusCode::SWITCHING_PROTOCOLS
+        );
+        for origins in [
+            Vec::<&str>::new(),
+            vec!["null"],
+            vec!["not-an-origin"],
+            vec!["http://[2001:db8::1"],
+            vec![different_port.as_str()],
+            vec![https_origin.as_str()],
+            vec![legitimate.as_str(), legitimate.as_str()],
+            vec![comma_separated.as_str()],
+        ] {
+            assert_eq!(
+                terminal_upgrade_status(terminal_request_with_origins(
+                    address, &token, &origins
+                ))
+                .await,
+                StatusCode::FORBIDDEN,
+                "untrusted origin must be rejected: {origins:?}"
+            );
+        }
+
+        let spoofed_scheme = with_header(
+            terminal_request_with_origins(address, &token, &[https_origin.as_str()]),
+            "x-forwarded-proto",
+            "https",
+        );
+        assert_eq!(
+            terminal_upgrade_status(spoofed_scheme).await,
+            StatusCode::FORBIDDEN
+        );
+
+        let mismatched_host = with_host(terminal_request(address, &token), "evil.invalid");
+        assert_eq!(
+            terminal_upgrade_status(mismatched_host).await,
+            StatusCode::FORBIDDEN
+        );
+
+        let invalid_host = with_host(terminal_request(address, &token), "bad_host");
+        assert_eq!(
+            terminal_upgrade_status(invalid_host).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_websocket_requires_exact_configured_public_origin() {
+        let sessions = SessionStore::new(Duration::from_secs(60));
+        let token = sessions.create().unwrap();
+        let server = spawn_terminal_test_server(
+            sessions.clone(),
+            Some("HTTPS://KVM.Example.COM:443".to_owned()),
+        )
+        .await;
+        let address = server.address;
+        let direct_origin = format!("http://{address}");
+
+        let exact = with_host(
+            terminal_request_with_origins(
+                address,
+                &token,
+                &["https://kvm.example.com"],
+            ),
+            "kvm.example.com",
+        );
+        assert_eq!(
+            terminal_upgrade_status(exact).await,
+            StatusCode::SWITCHING_PROTOCOLS
+        );
+
+        for (origin, host) in [
+            ("http://kvm.example.com", "kvm.example.com"),
+            ("https://other.example.com", "kvm.example.com"),
+            ("https://kvm.example.com:8443", "kvm.example.com:8443"),
+            ("https://kvm.example.com", "other.example.com"),
+        ] {
+            let request = with_host(
+                terminal_request_with_origins(address, &token, &[origin]),
+                host,
+            );
+            assert_eq!(
+                terminal_upgrade_status(request).await,
+                StatusCode::FORBIDDEN,
+                "configured origin mismatch must be rejected: {origin} / {host}"
+            );
+        }
+
+        let direct = with_host(
+            terminal_request_with_origins(address, &token, &[direct_origin.as_str()]),
+            &address.to_string(),
+        );
+        assert_eq!(
+            terminal_upgrade_status(direct).await,
+            StatusCode::FORBIDDEN,
+            "a plain direct origin must not bypass a configured public origin"
+        );
+
+        let duplicate = with_host(
+            terminal_request_with_origins(
+                address,
+                &token,
+                &["https://kvm.example.com", "https://kvm.example.com"],
+            ),
+            "kvm.example.com",
+        );
+        assert_eq!(
+            terminal_upgrade_status(duplicate).await,
+            StatusCode::FORBIDDEN
         );
     }
 }

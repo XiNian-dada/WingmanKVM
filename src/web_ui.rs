@@ -1128,8 +1128,9 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         if(bootstrap.capabilities?.mass_storage)refreshMedia();else $('#media-list').textContent='虚拟介质尚未配置';
         refreshPasskeys();
         requestAnimationFrame(()=>{fitConsoleToVideo(true);viewport.focus({preventScroll:true});});
+        if(videoWorkspace==='terminal'){terminalReset();terminalConnect();}
       }
-      else { stopInput(); stopVideo(); if (state === 'login') updateLoginPasskeyUI(); requestAnimationFrame(()=>$(state==='setup'?'#setup-form h2':'#login-form h2')?.focus()); }
+      else { terminalDisconnect(); stopInput(); stopVideo(); if (state === 'login') updateLoginPasskeyUI(); requestAnimationFrame(()=>$(state==='setup'?'#setup-form h2':'#login-form h2')?.focus()); }
     }
     function consumeSetupToken() { const params=new URLSearchParams(location.hash.slice(1)),token=params.get('setup');if(!token)return;setupForm.elements.setup_token.value=token;$('#setup-token-field').classList.add('hidden');history.replaceState(null,'',`${location.pathname}${location.search}`); }
     async function start() {
@@ -1753,11 +1754,12 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       if(terminalSocket&&terminalSocket.readyState<=WebSocket.OPEN)return;
       const scheme=location.protocol==='https:'?'wss':'ws';const socket=new WebSocket(`${scheme}://${location.host}/api/terminal/ws`);terminalSocket=socket;terminalLastSize='';socket.binaryType='arraybuffer';
       socket.onopen=()=>{if(terminalSocket!==socket)return;$('#terminal-reconnect')?.classList.add('hidden');scheduleTerminalFit();requestAnimationFrame(()=>{terminalResize(terminal.cols,terminal.rows);terminal.focus();});};
-      socket.onmessage=event=>terminal.write(typeof event.data==='string'?event.data:new Uint8Array(event.data));
-      socket.onerror=()=>terminal.writeln('\r\n\x1b[31m终端连接失败\x1b[0m');
+      socket.onmessage=event=>{if(terminalSocket!==socket)return;terminal.write(typeof event.data==='string'?event.data:new Uint8Array(event.data));};
+      socket.onerror=()=>{if(terminalSocket!==socket)return;terminal.writeln('\r\n\x1b[31m终端连接失败\x1b[0m');};
       socket.onclose=()=>{if(terminalSocket!==socket)return;terminalSocket=null;if(videoWorkspace==='terminal')$('#terminal-reconnect')?.classList.remove('hidden');};
     }
-    function terminalDisconnect(){if(terminalSocket){const socket=terminalSocket;terminalSocket=null;socket.close();}$('#terminal-reconnect')?.classList.remove('hidden');}
+    function terminalReset(){if(!terminal)return;terminalLastSize='';terminal.reset();}
+    function terminalDisconnect(){if(terminalSocket){const socket=terminalSocket;terminalSocket=null;socket.close();}terminalReset();$('#terminal-reconnect')?.classList.remove('hidden');}
     $('#terminal-reconnect')?.addEventListener('click',terminalConnect);
     $('#terminal-clear')?.addEventListener('click',()=>terminal?.clear());
     const keyboardDialog=$('#keyboard-dialog');$$('#keyboard-toggle,#keyboard-toggle-mobile').forEach(button=>button.addEventListener('click',()=>{if(keyboardDialog.open){resetVirtualModifiers();keyboardDialog.close();}else keyboardDialog.show();}));$('[data-close]',keyboardDialog).addEventListener('click',()=>{resetVirtualModifiers();keyboardDialog.close();});keyboardDialog.addEventListener('close',resetVirtualModifiers);

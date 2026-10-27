@@ -32,6 +32,10 @@ openssl = { version = "0.10", features = ["vendored"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 v4l = "0.14"
 
+[dev-dependencies]
+futures-util = { version = "0.3", features = ["sink"] }
+tokio-tungstenite = "0.29"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
