@@ -686,7 +686,7 @@ async fn setup(
     }
 
     let discovered = discovery::scan().await;
-    let mut new_config = Config::default();
+    let mut new_config = state.config.read().await.clone();
     new_config.video.device =
         resolve_setup_video(optional_path(request.video_device), &discovered.video)?;
     new_config.video.auto_detect = new_config.video.device.is_none();

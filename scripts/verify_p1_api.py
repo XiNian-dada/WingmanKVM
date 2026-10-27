@@ -34,7 +34,8 @@ class Runner:
         self.secrets = [PASSWORD, WRONG_PASSWORD]
         self.proc = self.logf = None; self.setup_status = self.cookie = None
         self.expected = {"listen_address": "127.0.0.1", "port": self.port,
-                         "proxy_protocol": "disabled", "trusted_http_proxies": ["127.0.0.2"]}
+                         "proxy_protocol": "disabled", "trusted_http_proxies": ["127.0.0.2"],
+                         "public_origin": self.origin}
         self.checks = {}
     def redact(self, text):
         for secret in self.secrets:
