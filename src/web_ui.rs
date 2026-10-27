@@ -35,10 +35,10 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     :root[data-theme="dark"] .host-perf-card{background:var(--soft-2)}
     :root[data-theme="dark"] .perf-badge{background:rgba(50,145,255,0.18);border-color:rgba(50,145,255,0.35);color:var(--blue)}
     :root[data-theme="dark"] .perf-badge.warning{background:rgba(255,85,85,0.22);border-color:rgba(255,85,85,0.45);color:var(--red)}
-    :root[data-theme="dark"] .console-perf-btn{background:var(--soft);color:var(--muted);border-color:var(--line)}
-    :root[data-theme="dark"] .console-perf-btn:hover{background:var(--soft-2);color:var(--ink);border-color:var(--line-strong)}
-    :root[data-theme="dark"] .console-perf-btn.active{background:rgba(50,145,255,0.18);border-color:rgba(50,145,255,0.45);color:var(--blue);box-shadow:0 0 0 1px rgba(50,145,255,0.3)}
-    :root[data-theme="dark"] .console-perf-popover{background:rgba(20,20,20,0.94);border-color:rgba(255,255,255,0.12);box-shadow:0 16px 36px rgba(0,0,0,0.65)}
+    :root[data-theme="dark"] .topbar-perf-btn{background:var(--soft);color:var(--ink);border-color:var(--line)}
+    :root[data-theme="dark"] .topbar-perf-btn:hover{background:var(--soft-2);border-color:var(--line-strong)}
+    :root[data-theme="dark"] .topbar-perf-btn.active{background:rgba(50,145,255,0.18);border-color:rgba(50,145,255,0.45);color:var(--blue);box-shadow:0 0 0 1px rgba(50,145,255,0.3)}
+    :root[data-theme="dark"] .topbar-perf-popover{background:rgba(20,20,20,0.94);border-color:rgba(255,255,255,0.12);box-shadow:0 16px 36px rgba(0,0,0,0.65)}
     :root[data-theme="dark"] .tab-button.active,:root[data-theme="dark"] .workspace-tab.active{background:var(--canvas);color:var(--ink)}
     :root[data-theme="dark"] .video-message{background:rgba(20,20,20,0.92);border-color:#ffffff1a}
     :root[data-theme="dark"] .input-badge.active,:root[data-theme="dark"] .media-badge{color:#60a5fa;background:#172554}
@@ -72,10 +72,10 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       :root:not([data-theme="light"]) .host-perf-card{background:var(--soft-2)}
       :root:not([data-theme="light"]) .perf-badge{background:rgba(50,145,255,0.18);border-color:rgba(50,145,255,0.35);color:var(--blue)}
       :root:not([data-theme="light"]) .perf-badge.warning{background:rgba(255,85,85,0.22);border-color:rgba(255,85,85,0.45);color:var(--red)}
-      :root:not([data-theme="light"]) .console-perf-btn{background:var(--soft);color:var(--muted);border-color:var(--line)}
-      :root:not([data-theme="light"]) .console-perf-btn:hover{background:var(--soft-2);color:var(--ink);border-color:var(--line-strong)}
-      :root:not([data-theme="light"]) .console-perf-btn.active{background:rgba(50,145,255,0.18);border-color:rgba(50,145,255,0.45);color:var(--blue);box-shadow:0 0 0 1px rgba(50,145,255,0.3)}
-      :root:not([data-theme="light"]) .console-perf-popover{background:rgba(20,20,20,0.94);border-color:rgba(255,255,255,0.12);box-shadow:0 16px 36px rgba(0,0,0,0.65)}
+      :root:not([data-theme="light"]) .topbar-perf-btn{background:var(--soft);color:var(--ink);border-color:var(--line)}
+      :root:not([data-theme="light"]) .topbar-perf-btn:hover{background:var(--soft-2);border-color:var(--line-strong)}
+      :root:not([data-theme="light"]) .topbar-perf-btn.active{background:rgba(50,145,255,0.18);border-color:rgba(50,145,255,0.45);color:var(--blue);box-shadow:0 0 0 1px rgba(50,145,255,0.3)}
+      :root:not([data-theme="light"]) .topbar-perf-popover{background:rgba(20,20,20,0.94);border-color:rgba(255,255,255,0.12);box-shadow:0 16px 36px rgba(0,0,0,0.65)}
       :root:not([data-theme="light"]) .tab-button.active,:root:not([data-theme="light"]) .workspace-tab.active{background:var(--canvas);color:var(--ink)}
       :root:not([data-theme="light"]) .video-message{background:rgba(20,20,20,0.92);border-color:#ffffff1a}
       :root:not([data-theme="light"]) .input-badge.active,:root:not([data-theme="light"]) .media-badge{color:#60a5fa;background:#172554}
@@ -173,10 +173,12 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     .perf-bar{height:5px;width:100%;background:var(--line-strong);border-radius:999px;overflow:hidden}
     .perf-bar i{display:block;height:100%;width:0%;border-radius:999px;background:var(--blue);transition:width 240ms ease,background-color 240ms ease}
     .perf-sub{font:10px/14px "Geist Mono",ui-monospace,monospace;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px}
-    .console-perf{position:relative;display:inline-flex;align-items:center;flex-shrink:0}
-    .console-perf-btn{display:inline-flex;align-items:center;gap:6px;min-height:28px;height:28px;padding:0 9px;border:1px solid var(--line);border-radius:999px;background:var(--soft);color:var(--muted);font:500 11px/16px "Geist Mono",ui-monospace,monospace;cursor:pointer;transition:all 140ms ease;user-select:none;white-space:nowrap}
-    .console-perf-btn:hover{background:var(--soft-2);border-color:var(--line-strong);color:var(--ink)}
-    .console-perf-btn.active{color:#0761d1;background:#edf6ff;border-color:var(--blue);box-shadow:0 0 0 1px rgba(0,112,243,0.3)}
+    .topbar-center-wrap{display:flex;align-items:center;justify-content:center;gap:8px}
+    .topbar-perf-btn{display:inline-flex;align-items:center;gap:7px;height:32px;min-height:32px;padding:0 12px;border:1px solid var(--line);border-radius:999px;background:var(--soft);color:var(--ink);font:500 12px/16px "Geist Mono",ui-monospace,monospace;cursor:pointer;transition:background-color 160ms,border-color 160ms,color 160ms,box-shadow 160ms;white-space:nowrap;user-select:none;box-sizing:border-box}
+    .topbar-perf-btn:hover{background:var(--soft-2);border-color:var(--line-strong)}
+    .topbar-perf-btn.active{color:#0761d1;background:#edf6ff;border-color:var(--blue);box-shadow:0 0 0 1px rgba(0,112,243,0.25)}
+    .topbar-perf-btn svg.perf-chevron{opacity:.6;transition:transform 160ms}
+    .topbar-perf-btn[aria-expanded="true"] svg.perf-chevron{transform:rotate(180deg)}
     .perf-chip-pulse{display:inline-flex;align-items:center;justify-content:center}
     .perf-chip-icon{display:block;opacity:.85}
     .perf-chip-full{display:inline-flex;align-items:center;gap:4px}
@@ -184,8 +186,8 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     .perf-chip-seg strong{color:var(--ink);font-weight:600}
     .perf-chip-sep{color:var(--muted);opacity:.5;margin:0 1px}
     .perf-chip-compact{display:none}
-    .console-perf-popover{position:absolute;top:calc(100% + 8px);left:0;z-index:90;width:310px;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--canvas);box-shadow:var(--shadow-5);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);animation:dropdown-drop 140ms cubic-bezier(.16,1,.3,1);will-change:transform,opacity;contain:layout}
-    .console-perf-popover[hidden]{display:none!important}
+    .topbar-perf-popover{position:fixed;left:50%;top:64px;transform:translate3d(-50%,0,0);z-index:90;width:min(340px,calc(100vw - 32px));padding:16px 18px;border:1px solid var(--line);border-radius:14px;background:var(--canvas);box-shadow:var(--shadow-5);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);animation:popover-drop 150ms cubic-bezier(.16,1,.3,1);will-change:transform,opacity;contain:layout}
+    .topbar-perf-popover[hidden]{display:none!important}
     .perf-pop-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-bottom:10px;margin-bottom:10px;border-bottom:1px solid var(--line)}
     .perf-pop-title{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--ink);letter-spacing:-.2px}
     .perf-pop-meta{display:flex;align-items:center;gap:6px}
@@ -201,8 +203,6 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     .perf-pop-actions{display:flex;justify-content:flex-end;margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
     .perf-pop-more{border:0;background:transparent;color:var(--blue);font-size:11px;font-weight:500;padding:4px 6px;cursor:pointer;border-radius:4px;transition:background-color 140ms}
     .perf-pop-more:hover{background:var(--soft-2);text-decoration:underline}
-    @container (max-width:880px){.perf-chip-full{display:none!important}.perf-chip-compact{display:inline-flex!important}.console-perf-btn{padding:0 7px;gap:4px}}
-    @container (max-width:580px){.console-perf-btn{padding:0 6px}}
     #settings-dialog{position:fixed;inset:0;width:100vw;height:100dvh;max-width:none;max-height:none;margin:0;padding:0;border:0;background:transparent;display:grid;place-items:center;overflow:hidden;outline:none;z-index:90;contain:strict;isolation:isolate}
     #settings-dialog:not([open]){display:none}
     #settings-dialog::backdrop{background:#00000055;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);animation:settings-backdrop-fade 160ms ease forwards;will-change:opacity}
@@ -220,6 +220,9 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     .power-menu-icon{display:inline-block;vertical-align:middle;flex-shrink:0}
     .inspector-backdrop{display:none}
     @media(max-width:1180px){
+      .perf-chip-full{display:none!important}
+      .perf-chip-compact{display:inline-flex!important}
+      .topbar-perf-btn{padding:0 9px!important;gap:5px!important}
       #settings-toggle span[data-i18n="settings"]{display:none}
       #keyboard-toggle span[data-i18n="keyboard"]{display:none}
       #settings-toggle,#keyboard-toggle{width:34px;min-width:34px;padding:0;display:inline-flex;align-items:center;justify-content:center}
@@ -246,7 +249,9 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       .brand{display:inline-flex!important;align-items:center!important;min-width:0!important;flex-shrink:0!important}
       .brand-logo-full{display:none!important}
       .brand-logo-icon{display:block!important;height:22px!important;width:auto!important;aspect-ratio:348/252!important}
-      .topbar-center{display:inline-flex!important;align-items:center!important;gap:6px!important;max-width:210px!important;min-width:0!important;flex-shrink:1!important;overflow:hidden!important}
+      .topbar-center-wrap{display:inline-flex!important;align-items:center!important;gap:6px!important;min-width:0!important;flex-shrink:1!important}
+      .topbar-center{display:inline-flex!important;align-items:center!important;gap:6px!important;max-width:170px!important;min-width:0!important;flex-shrink:1!important;overflow:hidden!important}
+      .topbar-perf-btn{height:30px!important;min-height:30px!important;padding:0 8px!important}
       #status-label{overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important}
       .topbar-actions{display:flex!important;align-items:center!important;gap:6px!important;flex-shrink:0!important;margin-left:auto!important}
       #power-menu-toggle{padding:0 9px!important;gap:5px!important}
@@ -262,7 +267,10 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       .brand-copy{display:flex!important;align-items:center!important;min-width:0!important}
       .brand h1{font-size:14px!important;letter-spacing:-.3px!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}
       .brand p{display:none!important}
-      .topbar-center{display:inline-flex!important;align-items:center!important;gap:5px!important;height:26px!important;padding:0 8px!important;font-size:11px!important;border-radius:999px!important;flex-shrink:0!important}
+      .topbar-center-wrap{gap:5px!important}
+      .topbar-center{display:inline-flex!important;align-items:center!important;gap:5px!important;height:26px!important;padding:0 8px!important;font-size:11px!important;border-radius:999px!important;flex-shrink:0!important;max-width:130px!important}
+      .topbar-perf-btn{height:26px!important;min-height:26px!important;padding:0 7px!important;font-size:11px!important}
+      .topbar-perf-btn svg.perf-chevron{display:none!important}
       #status-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .topbar-actions{display:flex!important;align-items:center!important;height:32px!important;gap:6px!important;flex-shrink:0!important}
       .power-menu-container{position:relative;display:inline-flex!important;align-items:center!important;height:32px!important;margin:0!important}
@@ -323,7 +331,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       .keyboard-row{gap:4px}
       .keyboard button{min-width:34px;height:38px;font-size:11px}
       .keyboard .grow{min-width:110px}
-      .diagnostics-popover{top:54px!important;left:10px!important;right:10px!important;transform:none!important;width:auto!important;max-width:none!important;padding:14px!important;border-radius:14px!important}
+      .diagnostics-popover,.topbar-perf-popover{top:54px!important;left:10px!important;right:10px!important;transform:none!important;width:auto!important;max-width:none!important;padding:14px!important;border-radius:14px!important}
       .diagnostics-grid{grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
       .settings-modal{width:calc(100vw - 20px)!important;max-height:min(88dvh,660px)!important;border-radius:16px!important}
       .settings-dialog-body{padding:14px 14px 20px!important;gap:14px!important}
@@ -428,7 +436,15 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
   <main id="app" class="hidden inspector-open">
     <header class="topbar">
       <div class="brand" aria-label="WingmanKVM"><svg class="brand-logo-full" role="img" aria-label="WingmanKVM"><use href="#logo-full"/></svg><svg class="brand-logo-icon" role="img" aria-label="WingmanKVM"><use href="#logo-icon"/></svg></div>
-      <button id="diagnostics-toggle" class="topbar-center" type="button" aria-expanded="false" aria-controls="diagnostics-popover" title="点击查看连接与设备诊断"><span id="status-dot" class="status-dot"></span><span id="status-label">正在建立视频链路</span><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6l4 4 4-4"/></svg></button>
+      <div class="topbar-center-wrap">
+        <button id="diagnostics-toggle" class="topbar-center" type="button" aria-expanded="false" aria-controls="diagnostics-popover" title="点击查看连接与设备诊断"><span id="status-dot" class="status-dot"></span><span id="status-label">正在建立视频链路</span><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6l4 4 4-4"/></svg></button>
+        <button id="topbar-perf-btn" class="topbar-perf-btn" type="button" aria-expanded="false" aria-haspopup="dialog" aria-controls="topbar-perf-popover" title="主控机性能 (点击查看详情)">
+          <span class="perf-chip-pulse"><svg class="perf-chip-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg></span>
+          <span class="perf-chip-full"><span class="perf-chip-seg"><span class="perf-k">CPU</span> <strong id="topbar-cpu-val">--%</strong></span><span class="perf-chip-sep">·</span><span class="perf-chip-seg"><span class="perf-k" data-i18n="mem_short">内存</span> <strong id="topbar-mem-val">--%</strong></span><span id="topbar-temp-seg" class="perf-chip-seg"><span class="perf-chip-sep">·</span><strong id="topbar-temp-val">--°C</strong></span></span>
+          <span class="perf-chip-compact"><strong id="topbar-compact-val">--%</strong></span>
+          <svg class="perf-chevron" width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6l4 4 4-4"/></svg>
+        </button>
+      </div>
       <div class="topbar-actions">
         <div class="power-menu-container">
           <button id="power-menu-toggle" class="icon-button" type="button" aria-expanded="false" aria-controls="power-menu" title="电源与系统控制"><span data-power-led-dot class="status-dot"></span><svg class="power-menu-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg><span data-i18n="power">电源</span><svg class="power-chevron" width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6l4 4 4-4"/></svg></button>
@@ -462,6 +478,22 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         <button id="inspector-toggle" class="icon-button" type="button" aria-expanded="true" data-i18n="inspector">控制面板</button>
       </div>
     </header>
+    <div id="topbar-perf-popover" class="topbar-perf-popover" role="dialog" aria-label="主控机性能" hidden>
+      <div class="perf-pop-header">
+        <div class="perf-pop-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg><span data-i18n="host_performance">主控机性能</span></div>
+        <div class="perf-pop-meta">
+          <span id="pop-temp-badge" class="perf-badge hidden"><span id="pop-temp-val">--</span>°C</span>
+          <span id="pop-uptime-val" class="perf-uptime">--</span>
+          <button id="perf-pop-close" class="perf-pop-close" type="button" aria-label="关闭" title="关闭"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 4L4 12M4 4l8 8"/></svg></button>
+        </div>
+      </div>
+      <div class="perf-pop-body">
+        <div class="perf-pop-row"><div class="perf-pop-row-meta"><div class="perf-pop-row-title"><span>CPU</span><span id="pop-cpu-cores" class="perf-pop-sub">-- 核</span></div><strong id="pop-cpu-val" class="mono">--%</strong></div><div class="perf-bar"><i id="pop-cpu-bar" style="width:0%"></i></div><div class="perf-pop-row-footer"><span data-i18n="load_average">系统负载</span><span id="pop-load-val" class="mono">--</span></div></div>
+        <div class="perf-pop-row"><div class="perf-pop-row-meta"><div class="perf-pop-row-title"><span data-i18n="memory_usage">内存</span><span id="pop-mem-detail" class="perf-pop-sub">--</span></div><strong id="pop-mem-val" class="mono">--%</strong></div><div class="perf-bar"><i id="pop-mem-bar" style="width:0%"></i></div></div>
+        <div class="perf-pop-row"><div class="perf-pop-row-meta"><div class="perf-pop-row-title"><span data-i18n="disk_usage">存储</span><span id="pop-disk-detail" class="perf-pop-sub">--</span></div><strong id="pop-disk-val" class="mono">--%</strong></div><div class="perf-bar"><i id="pop-disk-bar" style="width:0%"></i></div></div>
+      </div>
+      <div class="perf-pop-actions"><button id="pop-more-diag" type="button" class="perf-pop-more" data-i18n="full_diagnostics">完整诊断 ↗</button></div>
+    </div>
     <div id="diagnostics-popover" class="diagnostics-popover" hidden>
       <div class="diagnostics-head">
         <h3 data-i18n="diag_title">连接与设备诊断</h3>
@@ -489,7 +521,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     <div class="shell">
       <section id="workspace" class="workspace">
         <div id="console" class="console mode-fit render-pixelated">
-          <div id="console-head" class="console-head"><div class="workspace-tabs"><button class="workspace-tab active" type="button" data-workspace="video" data-i18n="tab_remote_screen">远程画面</button><button class="workspace-tab" type="button" data-workspace="terminal" data-i18n="tab_terminal">终端</button></div><div class="quick-keys" aria-label="常用快捷键"><button class="icon-button-sm" type="button" data-quick-key="cad" title="发送 Ctrl+Alt+Del">Ctrl+Alt+Del</button><button class="icon-button-sm" type="button" data-quick-key="win" title="发送 Win 徽标键">Win</button><button class="icon-button-sm" type="button" data-quick-key="alttab" title="发送 Alt+Tab">Alt+Tab</button><button class="icon-button-sm" type="button" data-quick-key="esc" title="发送 Esc">Esc</button></div><span id="video-transport-label" class="console-meta">MJPEG</span><div class="console-actions"><div id="console-perf" class="console-perf"><button id="console-perf-btn" class="console-perf-btn" type="button" aria-expanded="false" aria-haspopup="dialog" title="主控机性能 (点击查看详情)"><span class="perf-chip-pulse"><svg class="perf-chip-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg></span><span class="perf-chip-full"><span class="perf-chip-seg"><span class="perf-k">CPU</span> <strong id="hud-cpu-val">--%</strong></span><span class="perf-chip-sep">·</span><span class="perf-chip-seg"><span class="perf-k" data-i18n="mem_short">内存</span> <strong id="hud-mem-val">--%</strong></span><span id="hud-temp-seg" class="perf-chip-seg"><span class="perf-chip-sep">·</span><strong id="hud-temp-val">--°C</strong></span></span><span class="perf-chip-compact"><strong id="hud-compact-val">--%</strong></span></button><div id="console-perf-popover" class="console-perf-popover" role="dialog" aria-label="主控机性能" hidden><div class="perf-pop-header"><div class="perf-pop-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg><span data-i18n="host_performance">主控机性能</span></div><div class="perf-pop-meta"><span id="pop-temp-badge" class="perf-badge hidden"><span id="pop-temp-val">--</span>°C</span><span id="pop-uptime-val" class="perf-uptime">--</span><button id="perf-pop-close" class="perf-pop-close" type="button" aria-label="关闭" title="关闭"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 4L4 12M4 4l8 8"/></svg></button></div></div><div class="perf-pop-body"><div class="perf-pop-row"><div class="perf-pop-row-meta"><div class="perf-pop-row-title"><span>CPU</span><span id="pop-cpu-cores" class="perf-pop-sub">-- 核</span></div><strong id="pop-cpu-val" class="mono">--%</strong></div><div class="perf-bar"><i id="pop-cpu-bar" style="width:0%"></i></div><div class="perf-pop-row-footer"><span data-i18n="load_average">系统负载</span><span id="pop-load-val" class="mono">--</span></div></div><div class="perf-pop-row"><div class="perf-pop-row-meta"><div class="perf-pop-row-title"><span data-i18n="memory_usage">内存</span><span id="pop-mem-detail" class="perf-pop-sub">--</span></div><strong id="pop-mem-val" class="mono">--%</strong></div><div class="perf-bar"><i id="pop-mem-bar" style="width:0%"></i></div></div><div class="perf-pop-row"><div class="perf-pop-row-meta"><div class="perf-pop-row-title"><span data-i18n="disk_usage">存储</span><span id="pop-disk-detail" class="perf-pop-sub">--</span></div><strong id="pop-disk-val" class="mono">--%</strong></div><div class="perf-bar"><i id="pop-disk-bar" style="width:0%"></i></div></div></div><div class="perf-pop-actions"><button id="pop-more-diag" type="button" class="perf-pop-more" data-i18n="full_diagnostics">完整诊断 ↗</button></div></div></div><div id="console-leds" class="keyboard-led-strip" aria-label="键盘指示灯" title="键盘锁定指示灯（点击切换）"><button id="led-num" class="led-badge" type="button" data-led="NumLock" title="Num Lock"><span class="led-dot"></span><span class="led-text">1<span class="led-name"> NUM</span></span></button><button id="led-caps" class="led-badge" type="button" data-led="CapsLock" title="Caps Lock"><span class="led-dot"></span><span class="led-text">A<span class="led-name"> CAPS</span></span></button><button id="led-scroll" class="led-badge" type="button" data-led="ScrollLock" title="Scroll Lock"><span class="led-dot"></span><span class="led-text">⤓<span class="led-name"> SCRL</span></span></button></div><button id="input-release" class="icon-button-sm danger hidden" type="button" data-i18n="release_keys" title="紧急释放所有按键与鼠标锁定">释放按键</button><button id="input-state" class="input-badge clickable" type="button" role="status" title="点击切换键鼠转发状态"><svg class="input-mouse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="2" width="14" height="20" rx="7"/><line x1="12" y1="6" x2="12" y2="10"/></svg><span class="input-text">输入已暂停</span></button><button id="terminal-reconnect" class="secondary hidden" type="button" data-i18n="reconnect">重连</button><button id="terminal-clear" class="secondary hidden" type="button" data-i18n="clear">清空</button><button id="mode-button" class="secondary icon-button-sm" type="button" data-i18n="mode_fit" title="切换画面比例：适应窗口 / 1:1 像素 / 填满窗口" aria-label="显示比例"><svg class="mode-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg><span class="mode-text">适应</span></button><button id="pan-toggle" class="secondary icon-button-sm hidden" type="button" data-i18n="pan_mode" title="平移画面 (按住拖拽画面，双击居中)" aria-label="平移画面"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg><span class="pan-text">平移</span></button><button id="fullscreen" class="secondary icon-button-sm" type="button" data-i18n="fullscreen" title="全屏 (F11)" aria-label="全屏"><svg class="fullscreen-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg><svg class="fullscreen-exit-icon hidden" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg></button></div></div>
+          <div id="console-head" class="console-head"><div class="workspace-tabs"><button class="workspace-tab active" type="button" data-workspace="video" data-i18n="tab_remote_screen">远程画面</button><button class="workspace-tab" type="button" data-workspace="terminal" data-i18n="tab_terminal">终端</button></div><div class="quick-keys" aria-label="常用快捷键"><button class="icon-button-sm" type="button" data-quick-key="cad" title="发送 Ctrl+Alt+Del">Ctrl+Alt+Del</button><button class="icon-button-sm" type="button" data-quick-key="win" title="发送 Win 徽标键">Win</button><button class="icon-button-sm" type="button" data-quick-key="alttab" title="发送 Alt+Tab">Alt+Tab</button><button class="icon-button-sm" type="button" data-quick-key="esc" title="发送 Esc">Esc</button></div><span id="video-transport-label" class="console-meta">MJPEG</span><div class="console-actions"><div id="console-leds" class="keyboard-led-strip" aria-label="键盘指示灯" title="键盘锁定指示灯（点击切换）"><button id="led-num" class="led-badge" type="button" data-led="NumLock" title="Num Lock"><span class="led-dot"></span><span class="led-text">1<span class="led-name"> NUM</span></span></button><button id="led-caps" class="led-badge" type="button" data-led="CapsLock" title="Caps Lock"><span class="led-dot"></span><span class="led-text">A<span class="led-name"> CAPS</span></span></button><button id="led-scroll" class="led-badge" type="button" data-led="ScrollLock" title="Scroll Lock"><span class="led-dot"></span><span class="led-text">⤓<span class="led-name"> SCRL</span></span></button></div><button id="input-release" class="icon-button-sm danger hidden" type="button" data-i18n="release_keys" title="紧急释放所有按键与鼠标锁定">释放按键</button><button id="input-state" class="input-badge clickable" type="button" role="status" title="点击切换键鼠转发状态"><svg class="input-mouse-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="2" width="14" height="20" rx="7"/><line x1="12" y1="6" x2="12" y2="10"/></svg><span class="input-text">输入已暂停</span></button><button id="terminal-reconnect" class="secondary hidden" type="button" data-i18n="reconnect">重连</button><button id="terminal-clear" class="secondary hidden" type="button" data-i18n="clear">清空</button><button id="mode-button" class="secondary icon-button-sm" type="button" data-i18n="mode_fit" title="切换画面比例：适应窗口 / 1:1 像素 / 填满窗口" aria-label="显示比例"><svg class="mode-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg><span class="mode-text">适应</span></button><button id="pan-toggle" class="secondary icon-button-sm hidden" type="button" data-i18n="pan_mode" title="平移画面 (按住拖拽画面，双击居中)" aria-label="平移画面"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg><span class="pan-text">平移</span></button><button id="fullscreen" class="secondary icon-button-sm" type="button" data-i18n="fullscreen" title="全屏 (F11)" aria-label="全屏"><svg class="fullscreen-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg><svg class="fullscreen-exit-icon hidden" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg></button></div></div>
           <div id="video-viewport" tabindex="0" aria-label="远程视频与鼠标控制区域">
             <img id="video-feed" class="video-surface" alt="远程设备视频" draggable="false"><video id="webrtc-feed" class="video-surface hidden" autoplay muted playsinline aria-label="远程设备视频"></video><span id="video-message" class="video-message" role="status" aria-live="polite">正在连接视频…</span>
           </div>
@@ -873,7 +905,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       $('#inspector-led-num')?.setAttribute('title', numTitle);
       $('#inspector-led-caps')?.setAttribute('title', capsTitle);
       $('#inspector-led-scroll')?.setAttribute('title', scrlTitle);
-      $('#console-perf-btn')?.setAttribute('title', t('perf_hud_title', '主控机性能 (点击查看详情)'));
+      $('#topbar-perf-btn')?.setAttribute('title', t('perf_hud_title', '主控机性能 (点击查看详情)'));
       const langLabel = $('#lang-current-label');
       if (langLabel) langLabel.textContent = I18N[currentLang]?.lang_name || '简';
       $$('[data-lang]').forEach(btn => btn.classList.toggle('active', btn.dataset.lang === currentLang));
@@ -1284,7 +1316,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       if(!event.target.closest('.power-menu-container')){powerMenu?.setAttribute('hidden','');powerMenuToggle?.setAttribute('aria-expanded','false');}
       if(!event.target.closest('.diagnostics-popover')&&!event.target.closest('#diagnostics-toggle')){diagPopover?.setAttribute('hidden','');diagToggle?.setAttribute('aria-expanded','false');}
       if(!event.target.closest('.lang-menu-container')){langMenu?.setAttribute('hidden','');langToggle?.setAttribute('aria-expanded','false');}
-      if(!event.target.closest('#console-perf')){closePerfPopover();}
+      if(!event.target.closest('#topbar-perf-btn')&&!event.target.closest('#topbar-perf-popover')){closeTopbarPerf();}
     });
     async function executePowerAction(action) {
       const caps=bootstrap.capabilities||{};
@@ -1739,7 +1771,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     $('#inspector-close')?.addEventListener('click',()=>setInspectorOpen(false));
     $('#inspector-backdrop')?.addEventListener('click',()=>setInspectorOpen(false));
     $('#inspector-float-open')?.addEventListener('click',()=>setInspectorOpen(true));
-    window.addEventListener('keydown',event=>{if(event.key==='Escape'&&!inputEnabled()){if(perfPopover&&!perfPopover.hasAttribute('hidden')){closePerfPopover();return;}if(app.classList.contains('inspector-open')&&!keyboardDialog?.open&&!settingsDialog?.open){setInspectorOpen(false);}}});
+    window.addEventListener('keydown',event=>{if(event.key==='Escape'&&!inputEnabled()){if(topbarPerfPopover&&!topbarPerfPopover.hasAttribute('hidden')){closeTopbarPerf();return;}if(app.classList.contains('inspector-open')&&!keyboardDialog?.open&&!settingsDialog?.open){setInspectorOpen(false);}}});
 
     async function refreshStatus(){if(statusTimer===-1)return;if(statusTimer>0)clearTimeout(statusTimer);if(app.classList.contains('hidden')||document.hidden){statusTimer=0;renderVideoUi();return;}statusTimer=-1;try{const status=await request('/api/status');latestVideoStatus=status.video||null;latestPowerStatus=status.power||null;latestSystemStatus=status.system||null;renderPowerLed(latestPowerStatus);if(status.hid?.keyboard_leds)renderKeyboardLeds(status.hid.keyboard_leds);if(status.client)renderClientInfo(status.client);if(latestSystemStatus)renderSystemMetrics(latestSystemStatus);renderVideoUi();}catch{latestVideoStatus={state:'offline',message:'连接失败'};latestPowerStatus={power_led:{configured:true,state:'unknown',sense_error:'连接失败'}};renderPowerLed(latestPowerStatus);renderVideoUi();}finally{statusTimer=app.classList.contains('hidden')||document.hidden?0:setTimeout(()=>{statusTimer=0;refreshStatus();},3000);}}
     const mediaChoices=new Map();let mediaBusy=false,mediaServerBusy=false,mediaStatus={};
@@ -1748,66 +1780,59 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     function mediaStateLabel(state){return ({attached:'已挂载',mounted:'已挂载',detached:'未挂载',attaching:'正在挂载',detaching:'正在弹出',ejecting:'正在弹出',error:'状态异常'})[state]||'';}
     function formatBytes(value){const bytes=Number(value);if(!Number.isFinite(bytes)||bytes<0)return '';if(bytes<1024)return `${bytes} B`;const units=['KB','MB','GB','TB'];let size=bytes,index=-1;do{size/=1024;index++;}while(size>=1024&&index<units.length-1);return `${size>=10?size.toFixed(0):size.toFixed(1)} ${units[index]}`;}
     function formatUptime(seconds){const s=Math.floor(Number(seconds)||0);if(s<=0)return '--';const days=Math.floor(s/86400);const hours=Math.floor((s%86400)/3600);const mins=Math.floor((s%3600)/60);if(days>0)return `${days}d ${hours}h`;if(hours>0)return `${hours}h ${mins}m`;return `${mins}m ${s%60}s`;}
-    const perfBtn=$('#console-perf-btn'),perfPopover=$('#console-perf-popover');
+    const topbarPerfBtn=$('#topbar-perf-btn'),topbarPerfPopover=$('#topbar-perf-popover');
     let perfPopoverPinned=false,perfHoverTimer=0,perfLeaveTimer=0;
-    function openPerfPopover(pinned=false){
-      if(!perfPopover)return;
-      perfPopover.removeAttribute('hidden');
-      perfBtn?.setAttribute('aria-expanded','true');
-      perfBtn?.classList.add('active');
+    function openTopbarPerf(pinned=false){
+      if(!topbarPerfPopover)return;
+      topbarPerfPopover.removeAttribute('hidden');
+      topbarPerfBtn?.setAttribute('aria-expanded','true');
+      topbarPerfBtn?.classList.add('active');
       perfPopoverPinned=!!pinned;
-      positionPerfPopover();
       $('#power-menu')?.setAttribute('hidden','');$('#power-menu-toggle')?.setAttribute('aria-expanded','false');
       $('#lang-menu')?.setAttribute('hidden','');$('#lang-toggle')?.setAttribute('aria-expanded','false');
       $('#diagnostics-popover')?.setAttribute('hidden','');$('#diagnostics-toggle')?.setAttribute('aria-expanded','false');
       if(latestSystemStatus)renderSystemMetrics(latestSystemStatus);
     }
-    function closePerfPopover(){
-      if(!perfPopover)return;
-      perfPopover.setAttribute('hidden','');
-      perfBtn?.setAttribute('aria-expanded','false');
-      perfBtn?.classList.remove('active');
+    function closeTopbarPerf(){
+      if(!topbarPerfPopover)return;
+      topbarPerfPopover.setAttribute('hidden','');
+      topbarPerfBtn?.setAttribute('aria-expanded','false');
+      topbarPerfBtn?.classList.remove('active');
       perfPopoverPinned=false;
       clearTimeout(perfHoverTimer);
       clearTimeout(perfLeaveTimer);
     }
-    function togglePerfPopover(pinned=true){
-      if(!perfPopover||perfPopover.hasAttribute('hidden'))openPerfPopover(pinned);
-      else closePerfPopover();
+    function toggleTopbarPerf(pinned=true){
+      if(!topbarPerfPopover||topbarPerfPopover.hasAttribute('hidden'))openTopbarPerf(pinned);
+      else closeTopbarPerf();
     }
-    function positionPerfPopover(){
-      if(!perfPopover||perfPopover.hasAttribute('hidden')||!perfBtn||!consoleBox)return;
-      const btnRect=perfBtn.getBoundingClientRect(),consoleRect=consoleBox.getBoundingClientRect();
-      const popWidth=Math.min(310,Math.max(260,consoleRect.width-24));
-      const containerLeftInConsole=btnRect.left-consoleRect.left;
-      let targetLeftInConsole=containerLeftInConsole;
-      if(targetLeftInConsole+popWidth>consoleRect.width-12){
-        targetLeftInConsole=consoleRect.width-popWidth-12;
-      }
-      if(targetLeftInConsole<12)targetLeftInConsole=12;
-      const relLeft=targetLeftInConsole-containerLeftInConsole;
-      perfPopover.style.left=`${relLeft}px`;
-      perfPopover.style.width=`${popWidth}px`;
-    }
-    perfBtn?.addEventListener('click',event=>{event.stopPropagation();togglePerfPopover(true);});
-    const perfContainer=$('#console-perf');
-    perfContainer?.addEventListener('pointerenter',()=>{
+    topbarPerfBtn?.addEventListener('click',event=>{event.stopPropagation();toggleTopbarPerf(true);});
+    topbarPerfBtn?.addEventListener('pointerenter',()=>{
       if(matchMedia('(pointer:coarse)').matches)return;
       clearTimeout(perfLeaveTimer);
-      if(perfPopover?.hasAttribute('hidden')){
-        perfHoverTimer=setTimeout(()=>openPerfPopover(false),200);
+      if(topbarPerfPopover?.hasAttribute('hidden')){
+        perfHoverTimer=setTimeout(()=>openTopbarPerf(false),200);
       }
     });
-    perfContainer?.addEventListener('pointerleave',()=>{
+    topbarPerfBtn?.addEventListener('pointerleave',()=>{
       if(matchMedia('(pointer:coarse)').matches)return;
       clearTimeout(perfHoverTimer);
-      if(perfPopover&&!perfPopover.hasAttribute('hidden')&&!perfPopoverPinned){
-        perfLeaveTimer=setTimeout(()=>closePerfPopover(),250);
+      if(topbarPerfPopover&&!topbarPerfPopover.hasAttribute('hidden')&&!perfPopoverPinned){
+        perfLeaveTimer=setTimeout(()=>closeTopbarPerf(),250);
       }
     });
-    $('#perf-pop-close')?.addEventListener('click',event=>{event.stopPropagation();closePerfPopover();});
-    $('#pop-more-diag')?.addEventListener('click',event=>{event.stopPropagation();closePerfPopover();$('#diagnostics-toggle')?.click();});
-    window.addEventListener('resize',()=>positionPerfPopover());
+    topbarPerfPopover?.addEventListener('pointerenter',()=>{
+      if(matchMedia('(pointer:coarse)').matches)return;
+      clearTimeout(perfLeaveTimer);
+    });
+    topbarPerfPopover?.addEventListener('pointerleave',()=>{
+      if(matchMedia('(pointer:coarse)').matches)return;
+      if(topbarPerfPopover&&!topbarPerfPopover.hasAttribute('hidden')&&!perfPopoverPinned){
+        perfLeaveTimer=setTimeout(()=>closeTopbarPerf(),250);
+      }
+    });
+    $('#perf-pop-close')?.addEventListener('click',event=>{event.stopPropagation();closeTopbarPerf();});
+    $('#pop-more-diag')?.addEventListener('click',event=>{event.stopPropagation();closeTopbarPerf();$('#diagnostics-toggle')?.click();});
 
     function renderSystemMetrics(sys){
       if(!sys)return;
@@ -1821,8 +1846,8 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         const cpuEl=$('#perf-cpu-val'),bar=$('#perf-cpu-bar');if(cpuEl)cpuEl.textContent=cpuStr;if(bar){bar.style.width=`${cpuPct}%`;bar.style.backgroundColor=cpuBarColor;}
         const coresEl=$('#perf-cpu-cores');if(coresEl)coresEl.textContent=coresStr;
         const diagCpu=$('#diag-cpu');if(diagCpu)diagCpu.textContent=`${cpuStr} (${coresStr})`;
-        const hudCpu=$('#hud-cpu-val');if(hudCpu)hudCpu.textContent=cpuStr;
-        const hudCompact=$('#hud-compact-val');if(hudCompact)hudCompact.textContent=cpuRoundStr;
+        const topbarCpu=$('#topbar-cpu-val');if(topbarCpu)topbarCpu.textContent=cpuStr;
+        const topbarCompact=$('#topbar-compact-val');if(topbarCompact)topbarCompact.textContent=cpuRoundStr;
         const popCpu=$('#pop-cpu-val');if(popCpu)popCpu.textContent=cpuStr;
         const popBar=$('#pop-cpu-bar');if(popBar){popBar.style.width=`${cpuPct}%`;popBar.style.backgroundColor=cpuBarColor;}
         const popCores=$('#pop-cpu-cores');if(popCores)popCores.textContent=coresStr;
@@ -1842,7 +1867,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         const memEl=$('#perf-mem-val'),bar=$('#perf-mem-bar');if(memEl)memEl.textContent=memStr;if(bar){bar.style.width=`${memPct}%`;bar.style.backgroundColor=memBarColor;}
         const memDetail=$('#perf-mem-detail');if(memDetail)memDetail.textContent=memDetailStr;
         const diagMem=$('#diag-mem');if(diagMem)diagMem.textContent=mem.total_bytes>0?`${memDetailStr} (${memStr})`:'--';
-        const hudMem=$('#hud-mem-val');if(hudMem)hudMem.textContent=memStr;
+        const topbarMem=$('#topbar-mem-val');if(topbarMem)topbarMem.textContent=memStr;
         const popMem=$('#pop-mem-val');if(popMem)popMem.textContent=memStr;
         const popBar=$('#pop-mem-bar');if(popBar){popBar.style.width=`${memPct}%`;popBar.style.backgroundColor=memBarColor;}
         const popDetail=$('#pop-mem-detail');if(popDetail)popDetail.textContent=memDetailStr;
@@ -1865,12 +1890,12 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         const isWarm=temp>=75;
         const tempBadge=$('#perf-temp-badge'),tempVal=$('#perf-temp-val');if(tempBadge&&tempVal){tempBadge.classList.remove('hidden');tempVal.textContent=tempStr;tempBadge.classList.toggle('warning',isWarm);}
         const diagTempCard=$('#diag-temp-card'),diagTemp=$('#diag-temp');if(diagTempCard&&diagTemp){diagTempCard.classList.remove('hidden');diagTemp.textContent=`${tempStr} °C`;}
-        const hudTempSeg=$('#hud-temp-seg'),hudTempVal=$('#hud-temp-val');if(hudTempSeg&&hudTempVal){hudTempSeg.classList.remove('hidden');hudTempVal.textContent=`${tempStr}°C`;}
+        const topbarTempSeg=$('#topbar-temp-seg'),topbarTempVal=$('#topbar-temp-val');if(topbarTempSeg&&topbarTempVal){topbarTempSeg.classList.remove('hidden');topbarTempVal.textContent=`${tempStr}°C`;}
         const popTempBadge=$('#pop-temp-badge'),popTempVal=$('#pop-temp-val');if(popTempBadge&&popTempVal){popTempBadge.classList.remove('hidden');popTempVal.textContent=tempStr;popTempBadge.classList.toggle('warning',isWarm);}
       }else{
         $('#perf-temp-badge')?.classList.add('hidden');
         $('#diag-temp-card')?.classList.add('hidden');
-        $('#hud-temp-seg')?.classList.add('hidden');
+        $('#topbar-temp-seg')?.classList.add('hidden');
         $('#pop-temp-badge')?.classList.add('hidden');
       }
       if(sys.uptime_seconds){
@@ -1880,7 +1905,6 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
         if(diagUp)diagUp.textContent=upStr;
         if(popUp)popUp.textContent=upStr;
       }
-      if(perfPopover&&!perfPopover.hasAttribute('hidden'))positionPerfPopover();
     }
     function mountedMediaName(status,items){return status?.mounted_name||items.find(item=>typeof item!=='string'&&(item.mounted||item.attached))?.name||'';}
     function writableMountedDisk(status,name){return !!name&&status?.read_only===false&&status?.media_type==='disk';}
@@ -2561,12 +2585,11 @@ mod tests {
         assert!(INDEX_HTML.contains("id=\"diag-mem\""));
         assert!(INDEX_HTML.contains("id=\"diag-disk\""));
         assert!(INDEX_HTML.contains("id=\"diag-load\""));
-        assert!(INDEX_HTML.contains("id=\"console-perf\""));
-        assert!(INDEX_HTML.contains("id=\"console-perf-btn\""));
-        assert!(INDEX_HTML.contains("id=\"console-perf-popover\""));
-        assert!(INDEX_HTML.contains("id=\"hud-cpu-val\""));
+        assert!(INDEX_HTML.contains("id=\"topbar-perf-btn\""));
+        assert!(INDEX_HTML.contains("id=\"topbar-perf-popover\""));
+        assert!(INDEX_HTML.contains("id=\"topbar-cpu-val\""));
         assert!(INDEX_HTML.contains("id=\"pop-cpu-val\""));
-        assert!(INDEX_HTML.contains("togglePerfPopover"));
+        assert!(INDEX_HTML.contains("toggleTopbarPerf"));
         assert!(INDEX_HTML.contains("renderSystemMetrics"));
         assert!(INDEX_HTML.contains("formatUptime"));
         assert!(INDEX_HTML.contains("host_performance"));

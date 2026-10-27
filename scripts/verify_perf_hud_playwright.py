@@ -200,26 +200,24 @@ with sync_playwright() as p:
             feed.classList.remove('hidden');
         }}
         document.querySelector('#video-message')?.classList.add('hidden');
-        document.querySelector('#status-dot')?.setAttribute('class', 'status-dot online');
-        document.querySelector('#status-label')?.setAttribute('textContent', 'MJPEG · 60fps');
-        document.querySelector('#video-transport-label')?.setAttribute('textContent', 'LIVE');
+        const dot = document.querySelector('#status-dot');
+        if (dot) dot.className = 'status-dot online';
+        const statusLabel = document.querySelector('#status-label');
+        if (statusLabel) statusLabel.textContent = 'MJPEG · 60 FPS';
+        const transLabel = document.querySelector('#video-transport-label');
+        if (transLabel) transLabel.textContent = 'LIVE';
         if (typeof setLanguage === 'function') setLanguage('zh-TW');
         if (typeof renderSystemMetrics === 'function') renderSystemMetrics({json.dumps(mock_metrics)});
     }}""")
     page.wait_for_timeout(400)
 
-    # Close inspector if open initially to focus on the video window
-    if page.query_selector('#app.inspector-open'):
-        page.click('#inspector-toggle')
-        page.wait_for_timeout(300)
-
-    # Capture 1: Wide Desktop showing the sleek HUD chip in console-head
+    # Capture 1: Wide Desktop showing the sleek HUD chip in the main topbar alongside MJPEG 60FPS
     wide_hud_path = os.path.join(ARTIFACT_DIR, "verified_perf_hud_wide.png")
     page.screenshot(path=wide_hud_path)
     print(f"Captured: {wide_hud_path}")
 
-    # Capture 2: Click the HUD button to pop out the NAS Resource Monitor widget
-    page.click("#console-perf-btn")
+    # Capture 2: Click the topbar perf button to pop out the NAS Resource Monitor widget
+    page.click("#topbar-perf-btn")
     page.wait_for_timeout(400)
     popover_open_path = os.path.join(ARTIFACT_DIR, "verified_perf_popover_open.png")
     page.screenshot(path=popover_open_path)
@@ -229,17 +227,20 @@ with sync_playwright() as p:
     page.click("#perf-pop-close")
     page.wait_for_timeout(300)
 
-    # 2. Narrow Screen View (760x900) - Compact chip in console-head
+    # 2. Narrow Screen View (760x900) - Compact chip in topbar
     page.set_viewport_size({"width": 760, "height": 900})
-    page.wait_for_timeout(500)
+    if page.query_selector('#app.inspector-open'):
+        page.click('#inspector-close')
+        page.wait_for_timeout(400)
+    page.wait_for_timeout(200)
 
-    # Capture 3: Narrow screen collapsed chip
+    # Capture 3: Narrow screen collapsed chip in topbar
     narrow_collapsed_path = os.path.join(ARTIFACT_DIR, "verified_perf_hud_narrow_collapsed.png")
     page.screenshot(path=narrow_collapsed_path)
     print(f"Captured: {narrow_collapsed_path}")
 
     # Capture 4: Click the collapsed button in narrow screen to pop out the widget
-    page.click("#console-perf-btn")
+    page.click("#topbar-perf-btn")
     page.wait_for_timeout(400)
     narrow_open_path = os.path.join(ARTIFACT_DIR, "verified_perf_popover_narrow_open.png")
     page.screenshot(path=narrow_open_path)
