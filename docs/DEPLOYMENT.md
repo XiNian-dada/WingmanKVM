@@ -382,6 +382,18 @@ proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header X-Forwarded-Proto $scheme;
 ```
 
+浏览器终端 WebSocket 在升级前强制校验 `Origin`，不会信任 `X-Forwarded-Proto`、`Forwarded` 或其他转发头来决定协议。直接 HTTP 部署只接受与请求 `Host` 相同的 `http` 来源。若反向代理终止 HTTPS，必须在状态目录的 `config.json` 中配置唯一的公网来源（scheme + 主机 + 端口，默认端口可省略）：
+
+```json
+{
+  "server": {
+    "public_origin": "https://kvm.example.com"
+  }
+}
+```
+
+配置后终端只接受该精确来源，并要求请求 `Host` 与其主机和端口一致；反向代理必须像上面的 Nginx 示例一样保留浏览器访问的外部 `Host`。不要把内网直连地址当作旁路，也不要在代理改写 `Host` 后继续使用旧配置。缺失、`null`、多个、逗号分隔或格式错误的 `Origin` 都会被拒绝；未配置 `public_origin` 时 HTTPS 来源同样会被拒绝。该字段也可通过 `POST /api/config` 的 `server.public_origin` 设置，显式传入 `null` 可清除。
+
 如果链路是“浏览器 → Nginx → 本机隧道端口 → 内网隧道 → KVM”，PPv2 可能只携带 Nginx 的 `127.0.0.1`，而浏览器的公网出口 IP 在 HTTP 转发头中。可在状态目录的 `config.json` 中显式配置：
 
 ```json

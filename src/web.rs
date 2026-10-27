@@ -275,15 +275,30 @@ async fn terminal_ws(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    terminal_ws_with_command(state.sessions.clone(), headers, ws, terminal_command()).await
+    let public_origin = state.config.read().await.server.public_origin.clone();
+    terminal_ws_with_command(
+        state.sessions.clone(),
+        headers,
+        ws,
+        public_origin,
+        terminal_command(),
+    )
+    .await
 }
 
 async fn terminal_ws_with_command(
     sessions: SessionStore,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
+    public_origin: Option<String>,
     command: CommandBuilder,
 ) -> Response {
+    // Browser Origin is checked before authentication and before on_upgrade.
+    // Forwarded scheme headers are deliberately ignored: only the exact
+    // configured public origin or the direct HTTP Host can authorize a PTY.
+    if let Err(error) = validate_terminal_origin(&headers, public_origin.as_deref()) {
+        return error.into_response();
+    }
     // Re-validate under the session lock so a logout that raced the auth
     // middleware cannot leave an upgrade with no cancellable session binding.
     let Some(guard) =
@@ -294,6 +309,45 @@ async fn terminal_ws_with_command(
     ws.max_message_size(64 * 1024)
         .max_frame_size(64 * 1024)
         .on_upgrade(move |socket| handle_terminal(socket, guard, command))
+}
+
+fn validate_terminal_origin(
+    headers: &HeaderMap,
+    public_origin: Option<&str>,
+) -> Result<(), ApiError> {
+    let forbidden = || ApiError::new(StatusCode::FORBIDDEN, "终端 WebSocket 来源校验失败");
+
+    let mut origins = headers.get_all(ORIGIN).iter();
+    let Some(origin_header) = origins.next() else {
+        return Err(forbidden());
+    };
+    if origins.next().is_some() {
+        return Err(forbidden());
+    }
+    let origin = origin_header
+        .to_str()
+        .map_err(|_| forbidden())
+        .and_then(|value| config::NormalizedOrigin::parse(value).map_err(|_| forbidden()))?;
+
+    let mut hosts = headers.get_all(HOST).iter();
+    let Some(host_header) = hosts.next() else {
+        return Err(forbidden());
+    };
+    if hosts.next().is_some() {
+        return Err(forbidden());
+    }
+    let host = host_header.to_str().map_err(|_| forbidden())?;
+
+    if let Some(configured) = public_origin {
+        let expected =
+            config::NormalizedOrigin::parse(configured).map_err(|_| forbidden())?;
+        if origin != expected || !expected.host_matches(host) {
+            return Err(forbidden());
+        }
+    } else if !origin.is_http() || !origin.host_matches(host) {
+        return Err(forbidden());
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -1499,6 +1553,8 @@ struct ConfigPatch {
 struct ServerPatch {
     proxy_protocol: Option<ProxyProtocolMode>,
     trusted_http_proxies: Option<Vec<IpAddr>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    public_origin: Option<Option<String>>,
 }
 
 #[derive(Deserialize)]
@@ -1629,6 +1685,9 @@ fn apply_server_patch(config: &mut config::ServerConfig, patch: ServerPatch) {
     }
     if let Some(proxies) = patch.trusted_http_proxies {
         config.trusted_http_proxies = proxies;
+    }
+    if let Some(public_origin) = patch.public_origin {
+        config.public_origin = public_origin.map(|value| value.trim().to_owned());
     }
 }
 
@@ -2401,6 +2460,10 @@ fn validate_config(config: &Config) -> Result<(), ApiError> {
     if config.version != CONFIG_VERSION {
         return Err(ApiError::bad_request("配置版本不受支持"));
     }
+    if let Some(origin) = &config.server.public_origin {
+        config::NormalizedOrigin::parse(origin)
+            .map_err(|reason| ApiError::bad_request(format!("无效的 server.public_origin: {reason}")))?;
+    }
     if config.server.trusted_http_proxies.len() > 64
         || config.server.trusted_http_proxies.iter().any(|ip| ip.is_unspecified() || ip.is_multicast())
     {
@@ -3107,6 +3170,12 @@ mod tests {
         let mut config = Config::default();
         config.media.max_upload_bytes = 0;
         assert!(validate_config(&config).is_err());
+
+        let mut config = Config::default();
+        config.server.public_origin = Some("https://kvm.example.com".to_owned());
+        assert!(validate_config(&config).is_ok());
+        config.server.public_origin = Some("https://user@kvm.example.com".to_owned());
+        assert!(validate_config(&config).is_err());
     }
 
     #[test]
@@ -3553,6 +3622,23 @@ mod tests {
         let patch = serde_json::from_value(json!({"trusted_http_proxies": []})).unwrap();
         apply_server_patch(&mut config, patch);
         assert!(config.trusted_http_proxies.is_empty());
+
+        let patch =
+            serde_json::from_value(json!({"public_origin": "https://kvm.example.com"})).unwrap();
+        apply_server_patch(&mut config, patch);
+        assert_eq!(
+            config.public_origin.as_deref(),
+            Some("https://kvm.example.com")
+        );
+        let patch = serde_json::from_value(json!({"proxy_protocol": "auto"})).unwrap();
+        apply_server_patch(&mut config, patch);
+        assert_eq!(
+            config.public_origin.as_deref(),
+            Some("https://kvm.example.com")
+        );
+        let patch = serde_json::from_value(json!({"public_origin": null})).unwrap();
+        apply_server_patch(&mut config, patch);
+        assert_eq!(config.public_origin, None);
     }
 
     #[test]
@@ -3749,18 +3835,37 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct TerminalTestState {
+        sessions: SessionStore,
+        public_origin: Option<String>,
+    }
+
     async fn terminal_test_ws(
-        State(sessions): State<SessionStore>,
+        State(state): State<TerminalTestState>,
         headers: HeaderMap,
         ws: WebSocketUpgrade,
     ) -> Response {
-        terminal_ws_with_command(sessions, headers, ws, CommandBuilder::new("/bin/cat")).await
+        terminal_ws_with_command(
+            state.sessions,
+            headers,
+            ws,
+            state.public_origin,
+            CommandBuilder::new("/bin/cat"),
+        )
+        .await
     }
 
-    async fn spawn_terminal_test_server(sessions: SessionStore) -> TerminalTestServer {
+    async fn spawn_terminal_test_server(
+        sessions: SessionStore,
+        public_origin: Option<String>,
+    ) -> TerminalTestServer {
         let app = Router::new()
             .route("/terminal", get(terminal_test_ws))
-            .with_state(sessions);
+            .with_state(TerminalTestState {
+                sessions,
+                public_origin,
+            });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind local terminal test listener");
@@ -3771,9 +3876,10 @@ mod tests {
         TerminalTestServer { address, task }
     }
 
-    fn terminal_request(
+    fn terminal_request_with_origins(
         address: SocketAddr,
         token: &str,
+        origins: &[&str],
     ) -> tokio_tungstenite::tungstenite::handshake::client::Request {
         let uri = format!("ws://{address}/terminal")
             .parse::<axum::http::Uri>()
@@ -3787,7 +3893,58 @@ mod tests {
                 .parse::<HeaderValue>()
                 .expect("valid session cookie"),
         );
+        request.headers_mut().remove(ORIGIN);
+        for origin in origins {
+            request.headers_mut().append(
+                ORIGIN,
+                HeaderValue::from_str(origin).expect("valid test origin"),
+            );
+        }
         request
+    }
+
+    fn terminal_request(
+        address: SocketAddr,
+        token: &str,
+    ) -> tokio_tungstenite::tungstenite::handshake::client::Request {
+        let origin = format!("http://{address}");
+        terminal_request_with_origins(address, token, &[origin.as_str()])
+    }
+
+    fn with_host(
+        mut request: tokio_tungstenite::tungstenite::handshake::client::Request,
+        host: &str,
+    ) -> tokio_tungstenite::tungstenite::handshake::client::Request {
+        request.headers_mut().insert(
+            HOST,
+            HeaderValue::from_str(host).expect("valid test host"),
+        );
+        request
+    }
+
+    fn with_header(
+        mut request: tokio_tungstenite::tungstenite::handshake::client::Request,
+        name: &'static str,
+        value: &'static str,
+    ) -> tokio_tungstenite::tungstenite::handshake::client::Request {
+        request
+            .headers_mut()
+            .insert(name, HeaderValue::from_static(value));
+        request
+    }
+
+    async fn terminal_upgrade_status(
+        request: tokio_tungstenite::tungstenite::handshake::client::Request,
+    ) -> StatusCode {
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(request))
+                .await
+                .expect("terminal upgrade should not time out");
+        match result {
+            Ok((_socket, response)) => response.status(),
+            Err(WsError::Http(response)) => response.status(),
+            Err(error) => panic!("unexpected terminal upgrade error: {error}"),
+        }
     }
 
     async fn connect_terminal(
@@ -3857,7 +4014,7 @@ mod tests {
         let sessions = SessionStore::new(Duration::from_secs(60));
         let revoked_token = sessions.create().unwrap();
         let live_token = sessions.create().unwrap();
-        let server = spawn_terminal_test_server(sessions.clone()).await;
+        let server = spawn_terminal_test_server(sessions.clone(), None).await;
 
         let mut first = connect_terminal(server.address, &revoked_token).await;
         let mut second = connect_terminal(server.address, &revoked_token).await;
@@ -3891,7 +4048,7 @@ mod tests {
     async fn terminal_websocket_closes_at_natural_session_expiry() {
         let sessions = SessionStore::new(Duration::from_secs(1));
         let token = sessions.create().unwrap();
-        let server = spawn_terminal_test_server(sessions.clone()).await;
+        let server = spawn_terminal_test_server(sessions.clone(), None).await;
         let mut socket = connect_terminal(server.address, &token).await;
 
         assert!(
@@ -3907,7 +4064,7 @@ mod tests {
         let sessions = SessionStore::new(Duration::from_secs(60));
         let token = sessions.create().unwrap();
         assert!(sessions.revoke(&token));
-        let server = spawn_terminal_test_server(sessions.clone()).await;
+        let server = spawn_terminal_test_server(sessions.clone(), None).await;
         let request = terminal_request(server.address, &token);
 
         let result =
@@ -3921,5 +4078,129 @@ mod tests {
             Err(error) => panic!("unexpected revoked upgrade error: {error}"),
             Ok(_) => panic!("revoked session must not receive a terminal upgrade"),
         }
+    }
+
+    #[tokio::test]
+    async fn terminal_websocket_requires_strict_same_origin_without_public_origin() {
+        let sessions = SessionStore::new(Duration::from_secs(60));
+        let token = sessions.create().unwrap();
+        let server = spawn_terminal_test_server(sessions.clone(), None).await;
+        let address = server.address;
+        let legitimate = format!("http://{address}");
+        let https_origin = format!("https://{address}");
+        let different_port = format!("http://127.0.0.1:{}", address.port() + 1);
+        let comma_separated = format!("{legitimate},{legitimate}");
+
+        assert_eq!(
+            terminal_upgrade_status(terminal_request(address, &token)).await,
+            StatusCode::SWITCHING_PROTOCOLS
+        );
+        for origins in [
+            Vec::<&str>::new(),
+            vec!["null"],
+            vec!["not-an-origin"],
+            vec!["http://[2001:db8::1"],
+            vec![different_port.as_str()],
+            vec![https_origin.as_str()],
+            vec![legitimate.as_str(), legitimate.as_str()],
+            vec![comma_separated.as_str()],
+        ] {
+            assert_eq!(
+                terminal_upgrade_status(terminal_request_with_origins(
+                    address, &token, &origins
+                ))
+                .await,
+                StatusCode::FORBIDDEN,
+                "untrusted origin must be rejected: {origins:?}"
+            );
+        }
+
+        let spoofed_scheme = with_header(
+            terminal_request_with_origins(address, &token, &[https_origin.as_str()]),
+            "x-forwarded-proto",
+            "https",
+        );
+        assert_eq!(
+            terminal_upgrade_status(spoofed_scheme).await,
+            StatusCode::FORBIDDEN
+        );
+
+        let mismatched_host = with_host(terminal_request(address, &token), "evil.invalid");
+        assert_eq!(
+            terminal_upgrade_status(mismatched_host).await,
+            StatusCode::FORBIDDEN
+        );
+
+        let invalid_host = with_host(terminal_request(address, &token), "bad_host");
+        assert_eq!(
+            terminal_upgrade_status(invalid_host).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_websocket_requires_exact_configured_public_origin() {
+        let sessions = SessionStore::new(Duration::from_secs(60));
+        let token = sessions.create().unwrap();
+        let server = spawn_terminal_test_server(
+            sessions.clone(),
+            Some("HTTPS://KVM.Example.COM:443".to_owned()),
+        )
+        .await;
+        let address = server.address;
+        let direct_origin = format!("http://{address}");
+
+        let exact = with_host(
+            terminal_request_with_origins(
+                address,
+                &token,
+                &["https://kvm.example.com"],
+            ),
+            "kvm.example.com",
+        );
+        assert_eq!(
+            terminal_upgrade_status(exact).await,
+            StatusCode::SWITCHING_PROTOCOLS
+        );
+
+        for (origin, host) in [
+            ("http://kvm.example.com", "kvm.example.com"),
+            ("https://other.example.com", "kvm.example.com"),
+            ("https://kvm.example.com:8443", "kvm.example.com:8443"),
+            ("https://kvm.example.com", "other.example.com"),
+        ] {
+            let request = with_host(
+                terminal_request_with_origins(address, &token, &[origin]),
+                host,
+            );
+            assert_eq!(
+                terminal_upgrade_status(request).await,
+                StatusCode::FORBIDDEN,
+                "configured origin mismatch must be rejected: {origin} / {host}"
+            );
+        }
+
+        let direct = with_host(
+            terminal_request_with_origins(address, &token, &[direct_origin.as_str()]),
+            &address.to_string(),
+        );
+        assert_eq!(
+            terminal_upgrade_status(direct).await,
+            StatusCode::FORBIDDEN,
+            "a plain direct origin must not bypass a configured public origin"
+        );
+
+        let duplicate = with_host(
+            terminal_request_with_origins(
+                address,
+                &token,
+                &["https://kvm.example.com", "https://kvm.example.com"],
+            ),
+            "kvm.example.com",
+        );
+        assert_eq!(
+            terminal_upgrade_status(duplicate).await,
+            StatusCode::FORBIDDEN
+        );
     }
 }

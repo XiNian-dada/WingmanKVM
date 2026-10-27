@@ -3,7 +3,7 @@ use std::{
     ffi::OsString,
     fs::{self, File, OpenOptions},
     io::{self, Write},
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
 };
 
@@ -61,6 +61,7 @@ impl Config {
             source,
         })?;
         config.validate_version()?;
+        config.validate_public_origin()?;
         if let Some(mode) = proxy_protocol_from_env() {
             config.server.proxy_protocol = mode;
         }
@@ -84,6 +85,7 @@ impl Config {
 
     pub fn save_atomic(&self, path: impl AsRef<Path>) -> Result<(), ConfigError> {
         self.validate_version()?;
+        self.validate_public_origin()?;
         let path = path.as_ref();
         let mut contents = serde_json::to_vec_pretty(self).map_err(ConfigError::Serialize)?;
         contents.push(b'\n');
@@ -99,6 +101,16 @@ impl Config {
                 supported: CONFIG_VERSION,
             })
         }
+    }
+
+    fn validate_public_origin(&self) -> Result<(), ConfigError> {
+        if let Some(origin) = &self.server.public_origin {
+            NormalizedOrigin::parse(origin).map_err(|reason| ConfigError::InvalidPublicOrigin {
+                value: origin.clone(),
+                reason,
+            })?;
+        }
+        Ok(())
     }
 }
 
@@ -121,6 +133,10 @@ pub struct ServerConfig {
     pub proxy_protocol: ProxyProtocolMode,
     /// Exact proxy IPs allowed to supply HTTP client-address headers. Empty by default.
     pub trusted_http_proxies: Vec<IpAddr>,
+    /// Exact browser-facing HTTP(S) origin for terminal WebSocket upgrades.
+    /// Set this behind a reverse proxy and preserve the external Host header.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_origin: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -130,8 +146,162 @@ impl Default for ServerConfig {
             port: 8080,
             proxy_protocol: proxy_protocol_from_env().unwrap_or_default(),
             trusted_http_proxies: Vec::new(),
+            public_origin: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OriginScheme {
+    Http,
+    Https,
+}
+
+impl OriginScheme {
+    fn default_port(self) -> u16 {
+        match self {
+            Self::Http => 80,
+            Self::Https => 443,
+        }
+    }
+}
+
+/// A strict, normalized HTTP(S) origin. Browser Origin headers and the
+/// configured public origin are compared as scheme, host and effective port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormalizedOrigin {
+    scheme: OriginScheme,
+    host: String,
+    port: u16,
+}
+
+impl NormalizedOrigin {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        let value = value.trim();
+        if value.is_empty() {
+            return Err("origin 不能为空".to_owned());
+        }
+        if value.eq_ignore_ascii_case("null") {
+            return Err("不接受 null origin".to_owned());
+        }
+        let (scheme, rest) = value
+            .split_once("://")
+            .ok_or_else(|| "origin 必须包含 http:// 或 https://".to_owned())?;
+        let scheme = match scheme.to_ascii_lowercase().as_str() {
+            "http" => OriginScheme::Http,
+            "https" => OriginScheme::Https,
+            _ => return Err("origin 只允许 http 或 https".to_owned()),
+        };
+        if rest
+            .chars()
+            .any(|character| matches!(character, '?' | '#' | '@') || character.is_whitespace())
+        {
+            return Err("origin 不能包含用户信息、查询或片段".to_owned());
+        }
+        let (authority, path) = match rest.find('/') {
+            Some(index) => (&rest[..index], &rest[index..]),
+            None => (rest, ""),
+        };
+        if !(path.is_empty() || path == "/") {
+            return Err("origin 不能包含非根路径".to_owned());
+        }
+        let (host, port) = parse_authority(authority, scheme.default_port())?;
+        Ok(Self { scheme, host, port })
+    }
+
+    pub fn is_http(&self) -> bool {
+        self.scheme == OriginScheme::Http
+    }
+
+    pub fn host_matches(&self, value: &str) -> bool {
+        parse_authority(value, self.scheme.default_port())
+            .is_ok_and(|(host, port)| host == self.host && port == self.port)
+    }
+}
+
+fn parse_authority(authority: &str, default_port: u16) -> Result<(String, u16), String> {
+    if authority.is_empty()
+        || authority.chars().any(|character| {
+            character.is_whitespace()
+                || character.is_control()
+                || matches!(character, '@' | '?' | '#' | '/' | '\\' | ',')
+        })
+    {
+        return Err("无效的 origin 主机".to_owned());
+    }
+
+    if let Some(rest) = authority.strip_prefix('[') {
+        let (host, suffix) = rest
+            .split_once(']')
+            .ok_or_else(|| "IPv6 主机缺少右方括号".to_owned())?;
+        let host = host
+            .parse::<Ipv6Addr>()
+            .map_err(|_| "无效的 IPv6 主机".to_owned())?;
+        let port = if suffix.is_empty() {
+            default_port
+        } else if let Some(port) = suffix.strip_prefix(':') {
+            parse_port(port)?
+        } else {
+            return Err("无效的 IPv6 主机端口".to_owned());
+        };
+        return Ok((format!("[{host}]"), port));
+    }
+
+    if authority.matches(':').count() > 1 {
+        return Err("IPv6 主机必须使用方括号".to_owned());
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => (host, Some(parse_port(port)?)),
+        None => (authority, None),
+    };
+    Ok((normalize_host(host)?, port.unwrap_or(default_port)))
+}
+
+fn parse_port(value: &str) -> Result<u16, String> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("origin 端口必须由十进制数字组成".to_owned());
+    }
+    value
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .ok_or_else(|| "origin 端口必须在 1 到 65535 之间".to_owned())
+}
+
+fn normalize_host(value: &str) -> Result<String, String> {
+    let original = value;
+    let value = value.strip_suffix('.').unwrap_or(value);
+    if value.is_empty() {
+        return Err("origin 主机不能为空".to_owned());
+    }
+    if let Ok(address) = value.parse::<Ipv4Addr>() {
+        return Ok(if original.ends_with('.') {
+            format!("{address}.")
+        } else {
+            address.to_string()
+        });
+    }
+    if value
+        .chars()
+        .all(|character| character.is_ascii_digit() || character == '.')
+    {
+        return Err("无效的 IPv4 主机".to_owned());
+    }
+    if value.len() > 253
+        || !value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+    {
+        return Err("无效的 origin 主机名".to_owned());
+    }
+    // A DNS-equivalent spelling is still a distinct browser origin.
+    Ok(original.to_ascii_lowercase())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -421,6 +591,8 @@ pub enum ConfigError {
     Serialize(#[source] serde_json::Error),
     #[error("unsupported configuration version {found}; this build supports version {supported}")]
     UnsupportedVersion { found: u32, supported: u32 },
+    #[error("invalid server.public_origin {value:?}: {reason}")]
+    InvalidPublicOrigin { value: String, reason: String },
     #[error("failed to obtain secure randomness for an atomic write: {0}")]
     Randomness(String),
 }
@@ -852,6 +1024,110 @@ mod tests {
             let value = serde_json::json!({"trusted_http_proxies": [invalid]});
             assert!(serde_json::from_value::<ServerConfig>(value).is_err());
         }
+    }
+
+    #[test]
+    fn public_origin_parser_normalizes_and_rejects_untrusted_values() {
+        let origin = NormalizedOrigin::parse("HTTPS://KVM.Example.COM:443").unwrap();
+        assert_eq!(origin.scheme, OriginScheme::Https);
+        assert_eq!(origin.host, "kvm.example.com");
+        assert_eq!(origin.port, 443);
+        assert!(origin.host_matches("KVM.example.com"));
+        assert!(origin.host_matches("kvm.example.com:443"));
+
+        let origin = NormalizedOrigin::parse("http://[2001:DB8::1]:8080/").unwrap();
+        assert_eq!(origin.scheme, OriginScheme::Http);
+        assert_eq!(origin.host, "[2001:db8::1]");
+        assert_eq!(origin.port, 8080);
+        assert!(origin.host_matches("[2001:db8::1]:8080"));
+
+        let origin = NormalizedOrigin::parse("http://127.0.0.1").unwrap();
+        assert_eq!(origin.host, "127.0.0.1");
+        assert_eq!(origin.port, 80);
+        assert!(origin.host_matches("127.0.0.1:80"));
+
+        let origin = NormalizedOrigin::parse("http://KVM.Example.COM:80").unwrap();
+        assert_eq!(origin.host, "kvm.example.com");
+        assert_eq!(origin.port, 80);
+        assert!(origin.host_matches("kvm.example.com"));
+
+        assert!(!origin.host_matches("kvm.example.com."));
+        let dotted = NormalizedOrigin::parse("http://kvm.example.com.").unwrap();
+        assert_ne!(dotted, origin);
+        assert!(dotted.host_matches("KVM.EXAMPLE.COM.:80"));
+
+        for invalid in [
+            "",
+            "null",
+            "ftp://kvm.example.com",
+            "kvm.example.com",
+            "https://user@kvm.example.com",
+            "https://kvm.example.com/path",
+            "https://kvm.example.com/?query",
+            "https://kvm.example.com/#fragment",
+            "https://kvm.example.com:0",
+            "https://kvm.example.com:65536",
+            "https://kvm.example.com:not-a-port",
+            "https://kvm.example.com:+443",
+            "https://[2001:db8::1",
+            "https://2001:db8::1",
+            "https://kvm.example.com,https://other.example.com",
+            "https://bad_host.example.com",
+        ] {
+            assert!(
+                NormalizedOrigin::parse(invalid).is_err(),
+                "unexpectedly accepted {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn public_origin_is_optional_and_roundtrips() {
+        let config: Config =
+            serde_json::from_value(serde_json::json!({"version": CONFIG_VERSION})).unwrap();
+        assert_eq!(config.server.public_origin, None);
+
+        let mut config = Config::default();
+        config.server.public_origin = Some("https://kvm.example.com".to_owned());
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            value["server"]["public_origin"],
+            serde_json::json!("https://kvm.example.com")
+        );
+        assert_eq!(serde_json::from_value::<Config>(value).unwrap(), config);
+
+        let without: ServerConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(without.public_origin, None);
+    }
+
+    #[test]
+    fn invalid_public_origin_fails_configuration_load_and_save() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("config.json");
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "version": CONFIG_VERSION,
+                "server": {"public_origin": "https://user@kvm.example.com"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            Config::load(&path),
+            Err(ConfigError::InvalidPublicOrigin { .. })
+        ));
+        assert!(matches!(
+            Config::load_or_default(&path),
+            Err(ConfigError::InvalidPublicOrigin { .. })
+        ));
+
+        let mut config = Config::default();
+        config.server.public_origin = Some("ftp://kvm.example.com".to_owned());
+        assert!(matches!(
+            config.save_atomic(&path),
+            Err(ConfigError::InvalidPublicOrigin { .. })
+        ));
     }
 }
 
