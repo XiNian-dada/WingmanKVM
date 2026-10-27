@@ -15,6 +15,7 @@ use argon2::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
+use tokio::sync::watch;
 use webauthn_rs::prelude::*;
 
 #[cfg(unix)]
@@ -430,10 +431,74 @@ pub struct SessionStore {
     sessions: Arc<RwLock<HashMap<String, StoredSession>>>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct StoredSession {
     info: SessionInfo,
     expires_at: Instant,
+    cancellation: watch::Sender<bool>,
+}
+
+impl StoredSession {
+    fn cancel(&self) {
+        let _ = self.cancellation.send(false);
+    }
+}
+
+/// A live subscription to one authenticated session.
+///
+/// The guard is obtained atomically with validation. It ends when the session
+/// is revoked, expires on its monotonic deadline, or the store drops it.
+#[derive(Clone)]
+pub struct SessionGuard {
+    info: SessionInfo,
+    expires_at: Instant,
+    cancellation: watch::Receiver<bool>,
+}
+
+impl SessionGuard {
+    pub fn info(&self) -> SessionInfo {
+        self.info
+    }
+
+    pub fn expires_at(&self) -> Instant {
+        self.expires_at
+    }
+
+    pub fn is_active(&self) -> bool {
+        Instant::now() < self.expires_at
+            && *self.cancellation.borrow()
+            && self.cancellation.has_changed().is_ok()
+    }
+
+    /// Wait until this exact session is revoked, reaches its deadline, or the
+    /// owning store is dropped.
+    ///
+    /// Expiry is driven by the stored monotonic deadline rather than the
+    /// periodic pruning task, so a terminal closes on time even when no other
+    /// request touches the session map.
+    pub async fn wait_for_end(&self) {
+        if !self.is_active() {
+            return;
+        }
+        let mut cancellation = self.cancellation.clone();
+        let deadline = tokio::time::Instant::from_std(self.expires_at);
+        tokio::select! {
+            biased;
+            _ = cancellation.changed() => {}
+            _ = tokio::time::sleep_until(deadline) => {}
+        }
+    }
+}
+
+impl fmt::Debug for SessionGuard {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SessionGuard")
+            .field("info", &self.info)
+            .field("expires_at", &self.expires_at)
+            .field("active", &self.is_active())
+            .finish()
+    }
 }
 
 impl SessionStore {
@@ -456,24 +521,39 @@ impl SessionStore {
         let expires_at = Instant::now()
             .checked_add(self.ttl)
             .ok_or(AuthError::TimeOverflow)?;
+        let (cancellation, _) = watch::channel(true);
         let session = StoredSession {
             info: SessionInfo {
                 created_at,
                 expires_at: expires_at_system,
             },
             expires_at,
+            cancellation,
         };
         write_sessions(&self.sessions).insert(token.clone(), session);
         Ok(token)
     }
 
     pub fn validate(&self, token: &str) -> Option<SessionInfo> {
+        self.validate_guard(token).map(|guard| guard.info())
+    }
+
+    /// Validate a token and subscribe to its cancellation in one critical
+    /// section, closing the revoke-before-upgrade race.
+    pub fn validate_guard(&self, token: &str) -> Option<SessionGuard> {
         let now = Instant::now();
         let mut sessions = write_sessions(&self.sessions);
-        match sessions.get(token).copied() {
-            Some(session) if session.expires_at > now => Some(session.info),
+        let session = sessions.get(token).cloned();
+        match session {
+            Some(session) if session.expires_at > now => Some(SessionGuard {
+                info: session.info,
+                expires_at: session.expires_at,
+                cancellation: session.cancellation.subscribe(),
+            }),
             Some(_) => {
-                sessions.remove(token);
+                if let Some(session) = sessions.remove(token) {
+                    session.cancel();
+                }
                 None
             }
             None => None,
@@ -481,20 +561,46 @@ impl SessionStore {
     }
 
     pub fn revoke(&self, token: &str) -> bool {
-        write_sessions(&self.sessions).remove(token).is_some()
+        let removed = write_sessions(&self.sessions).remove(token);
+        match removed {
+            Some(session) => {
+                session.cancel();
+                true
+            }
+            None => false,
+        }
     }
 
     #[allow(dead_code)]
     pub fn revoke_all(&self) {
-        write_sessions(&self.sessions).clear();
+        let removed: Vec<_> = {
+            let mut sessions = write_sessions(&self.sessions);
+            sessions.drain().map(|(_, session)| session).collect()
+        };
+        for session in removed {
+            session.cancel();
+        }
     }
 
     pub fn prune_expired(&self) -> usize {
         let now = Instant::now();
-        let mut sessions = write_sessions(&self.sessions);
-        let before = sessions.len();
-        sessions.retain(|_, session| session.expires_at > now);
-        before - sessions.len()
+        let removed: Vec<_> = {
+            let mut sessions = write_sessions(&self.sessions);
+            let mut removed = Vec::new();
+            sessions.retain(|_, session| {
+                let keep = session.expires_at > now;
+                if !keep {
+                    removed.push(session.clone());
+                }
+                keep
+            });
+            removed
+        };
+        let count = removed.len();
+        for session in removed {
+            session.cancel();
+        }
+        count
     }
 
     pub fn len(&self) -> usize {
@@ -783,6 +889,122 @@ mod tests {
         let token = expired.create().unwrap();
         assert!(expired.validate(&token).is_none());
         assert!(expired.is_empty());
+    }
+
+    #[tokio::test]
+    async fn revoking_a_session_ends_every_guard_but_not_other_sessions() {
+        let sessions = SessionStore::new(Duration::from_secs(60));
+        let token = sessions.create().unwrap();
+        let other_token = sessions.create().unwrap();
+        let first_guard = sessions.validate_guard(&token).unwrap();
+        let second_guard = sessions.validate_guard(&token).unwrap();
+        let other_guard = sessions.validate_guard(&other_token).unwrap();
+
+        assert!(sessions.revoke(&token));
+        assert!(!sessions.revoke(&token));
+        tokio::time::timeout(Duration::from_secs(1), first_guard.wait_for_end())
+            .await
+            .expect("first terminal guard should observe revocation");
+        tokio::time::timeout(Duration::from_secs(1), second_guard.wait_for_end())
+            .await
+            .expect("second terminal guard should observe revocation");
+        assert!(!first_guard.is_active());
+        assert!(!second_guard.is_active());
+        assert!(other_guard.is_active());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), other_guard.wait_for_end())
+                .await
+                .is_err()
+        );
+        assert!(sessions.validate(&other_token).is_some());
+    }
+
+    #[tokio::test]
+    async fn guard_deadline_expires_without_pruning_and_validate_ends_watchers() {
+        let sessions = SessionStore::new(Duration::from_millis(25));
+        let token = sessions.create().unwrap();
+        let guard = sessions.validate_guard(&token).unwrap();
+        let deadline = guard.expires_at();
+
+        tokio::time::timeout(Duration::from_secs(1), guard.wait_for_end())
+            .await
+            .expect("guard should end at its monotonic deadline");
+        assert!(Instant::now() >= deadline);
+        // The background pruning task is not involved: the entry is still
+        // present until it is actively validated or pruned.
+        assert_eq!(sessions.len(), 1);
+        assert!(
+            !guard.is_active(),
+            "a guard must not report active after its monotonic deadline"
+        );
+        assert!(sessions.validate(&token).is_none());
+        assert_eq!(sessions.len(), 0);
+        assert!(!guard.is_active());
+    }
+
+    #[tokio::test]
+    async fn pruning_expired_sessions_ends_their_watchers() {
+        let sessions = SessionStore::new(Duration::from_millis(10));
+        let token = sessions.create().unwrap();
+        let guard = sessions.validate_guard(&token).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert_eq!(sessions.prune_expired(), 1);
+        assert!(!guard.is_active());
+        tokio::time::timeout(Duration::from_secs(1), guard.wait_for_end())
+            .await
+            .expect("pruned session guard should end");
+    }
+
+    #[tokio::test]
+    async fn validate_then_revoke_race_closes_the_acquired_guard() {
+        let sessions = SessionStore::new(Duration::from_secs(60));
+        let token = sessions.create().unwrap();
+        // A request validates, then logout wins before the upgrade runs.
+        let guard = sessions.validate_guard(&token).unwrap();
+        assert!(sessions.revoke(&token));
+        assert!(sessions.validate_guard(&token).is_none());
+        assert!(!guard.is_active());
+        tokio::time::timeout(Duration::from_secs(1), guard.wait_for_end())
+            .await
+            .expect("guard acquired before revocation must still close");
+    }
+
+    #[tokio::test]
+    async fn revoke_all_ends_every_guard() {
+        let sessions = SessionStore::new(Duration::from_secs(60));
+        let first = sessions.create().unwrap();
+        let second = sessions.create().unwrap();
+        let first_guard = sessions.validate_guard(&first).unwrap();
+        let second_guard = sessions.validate_guard(&second).unwrap();
+
+        sessions.revoke_all();
+        assert!(sessions.is_empty());
+        assert!(!first_guard.is_active());
+        assert!(!second_guard.is_active());
+        tokio::time::timeout(Duration::from_secs(1), first_guard.wait_for_end())
+            .await
+            .expect("revoke_all must end the first guard");
+        tokio::time::timeout(Duration::from_secs(1), second_guard.wait_for_end())
+            .await
+            .expect("revoke_all must end the second guard");
+    }
+
+    #[tokio::test]
+    async fn dropping_the_store_ends_surviving_guards() {
+        let sessions = SessionStore::new(Duration::from_secs(60));
+        let token = sessions.create().unwrap();
+        let guard = sessions.validate_guard(&token).unwrap();
+        assert!(guard.is_active());
+
+        drop(sessions);
+        assert!(
+            !guard.is_active(),
+            "a dropped store must no longer authorize its guards"
+        );
+        tokio::time::timeout(Duration::from_secs(1), guard.wait_for_end())
+            .await
+            .expect("dropping the store must end its guards");
     }
 
     #[test]

@@ -22,7 +22,7 @@ use axum::{
     routing::{delete, get, post},
 };
 use bytes::Bytes;
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc, watch};
@@ -33,7 +33,7 @@ use crate::proxy_protocol::ProxyProtocolMode;
 use crate::client_ip::{self, ClientAddress, ClientConnection};
 
 use crate::{
-    auth::{AuthError, AuthRecord, AuthStore, PasswordPolicyError, SessionStore},
+    auth::{AuthError, AuthRecord, AuthStore, PasswordPolicyError, SessionGuard, SessionStore},
     config::{
         self, CONFIG_VERSION, Config, GpioBias, GpioInputConfig, GpioPulseConfig, H264Encoder,
         HidConfig, PointerMode, VideoEncoding,
@@ -268,9 +268,32 @@ async fn xterm_css() -> impl IntoResponse {
 }
 
 /// Authenticated interactive shell on the RK3399. The PTY is intentionally
-/// short-lived and is torn down as soon as the browser disconnects.
-async fn terminal_ws(ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(handle_terminal)
+/// short-lived and is torn down as soon as the browser disconnects, the
+/// session is revoked, or the session deadline passes.
+async fn terminal_ws(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    terminal_ws_with_command(state.sessions.clone(), headers, ws, terminal_command()).await
+}
+
+async fn terminal_ws_with_command(
+    sessions: SessionStore,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+    command: CommandBuilder,
+) -> Response {
+    // Re-validate under the session lock so a logout that raced the auth
+    // middleware cannot leave an upgrade with no cancellable session binding.
+    let Some(guard) =
+        session_token(&headers).and_then(|token| sessions.validate_guard(token))
+    else {
+        return ApiError::new(StatusCode::UNAUTHORIZED, "需要登录").into_response();
+    };
+    ws.max_message_size(64 * 1024)
+        .max_frame_size(64 * 1024)
+        .on_upgrade(move |socket| handle_terminal(socket, guard, command))
 }
 
 #[derive(Deserialize)]
@@ -279,22 +302,47 @@ enum TerminalClientMessage {
     Resize { cols: u16, rows: u16 },
 }
 
-async fn handle_terminal(mut socket: WebSocket) {
-    let pty = native_pty_system();
-    let pair = match pty.openpty(PtySize {
-        rows: 32,
-        cols: 120,
-        pixel_width: 0,
-        pixel_height: 0,
-    }) {
-        Ok(pair) => pair,
-        Err(err) => {
-            let _ = socket
-                .send(Message::Text(format!("\r\nPTY error: {err}\r\n").into()))
-                .await;
-            return;
-        }
-    };
+struct TerminalSession {
+    child: Box<dyn Child + Send + Sync>,
+    reader_task: tokio::task::JoinHandle<()>,
+    reader_rx: mpsc::Receiver<Vec<u8>>,
+    writer_tx: mpsc::Sender<Vec<u8>>,
+    writer_task: tokio::task::JoinHandle<()>,
+    master: Box<dyn MasterPty + Send>,
+}
+
+impl TerminalSession {
+    /// Kill and reap the child, then close every PTY endpoint so the blocking
+    /// reader thread can observe EOF/EIO and return.
+    async fn stop(self) -> bool {
+        let Self {
+            child,
+            reader_task,
+            reader_rx,
+            writer_tx,
+            writer_task,
+            master,
+        } = self;
+        drop(writer_tx);
+        drop(master);
+        drop(reader_rx);
+        let reaped = reap_terminal_child(child).await;
+        let _ = reader_task.await;
+        let _ = writer_task.await;
+        reaped
+    }
+}
+
+async fn reap_terminal_child(mut child: Box<dyn Child + Send + Sync>) -> bool {
+    tokio::task::spawn_blocking(move || {
+        let _ = child.kill();
+        child.wait().is_ok()
+    })
+    .await
+    .unwrap_or(false)
+}
+
+fn terminal_command() -> CommandBuilder {
     let mut cmd = if std::path::Path::new("/usr/bin/sudo").exists() {
         let mut c = CommandBuilder::new("sudo");
         c.args(["-n", "-u", "wingman", "/bin/bash", "-l"]);
@@ -305,26 +353,41 @@ async fn handle_terminal(mut socket: WebSocket) {
     cmd.env("TERM", "xterm-256color");
     cmd.env("HOME", "/home/wingman");
     cmd.cwd("/");
-    let mut child = match pair.slave.spawn_command(cmd) {
-        Ok(c) => c,
-        Err(err) => {
-            let _ = socket
-                .send(Message::Text(format!("\r\nspawn error: {err}\r\n").into()))
-                .await;
-            return;
-        }
-    };
+    cmd
+}
+
+async fn spawn_terminal_session(command: CommandBuilder) -> Result<TerminalSession, String> {
+    let pty = native_pty_system();
+    let pair = pty
+        .openpty(PtySize {
+            rows: 32,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|err| format!("PTY error: {err}"))?;
+    let child = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|err| format!("spawn error: {err}"))?;
     drop(pair.slave);
     let mut reader = match pair.master.try_clone_reader() {
-        Ok(r) => r,
-        Err(_) => return,
+        Ok(reader) => reader,
+        Err(err) => {
+            reap_terminal_child(child).await;
+            return Err(format!("PTY reader error: {err}"));
+        }
     };
     let mut writer = match pair.master.take_writer() {
-        Ok(w) => w,
-        Err(_) => return,
+        Ok(writer) => writer,
+        Err(err) => {
+            reap_terminal_child(child).await;
+            return Err(format!("PTY writer error: {err}"));
+        }
     };
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(32);
-    tokio::task::spawn_blocking(move || {
+    let master = pair.master;
+    let (tx, reader_rx) = mpsc::channel::<Vec<u8>>(32);
+    let reader_task = tokio::task::spawn_blocking(move || {
         let mut buf = [0u8; 4096];
         loop {
             match reader.read(&mut buf) {
@@ -337,9 +400,66 @@ async fn handle_terminal(mut socket: WebSocket) {
             }
         }
     });
+    let (writer_tx, mut writer_rx) = mpsc::channel::<Vec<u8>>(32);
+    let writer_task = tokio::task::spawn_blocking(move || {
+        while let Some(data) = writer_rx.blocking_recv() {
+            if std::io::Write::write_all(&mut writer, &data).is_err() {
+                break;
+            }
+        }
+    });
+    Ok(TerminalSession {
+        child,
+        reader_task,
+        reader_rx,
+        writer_tx,
+        writer_task,
+        master,
+    })
+}
+
+async fn handle_terminal(mut socket: WebSocket, guard: SessionGuard, command: CommandBuilder) {
+    // Revocation or expiry may have won the race between the HTTP check and
+    // this task being scheduled. Never spawn a PTY for a dead session.
+    if !guard.is_active() {
+        return;
+    }
+    let mut session = match spawn_terminal_session(command).await {
+        Ok(session) => session,
+        Err(message) => {
+            let send = socket.send(Message::Text(format!("\r\n{message}\r\n").into()));
+            tokio::pin!(send);
+            tokio::select! {
+                biased;
+                _ = guard.wait_for_end() => {}
+                _ = &mut send => {}
+            }
+            return;
+        }
+    };
     loop {
         tokio::select! {
-            Some(data) = rx.recv() => { if socket.send(Message::Binary(data.into())).await.is_err() { break; } }
+            biased;
+            _ = guard.wait_for_end() => break,
+            _ = session.writer_tx.closed() => break,
+            maybe = session.reader_rx.recv() => match maybe {
+                Some(data) => {
+                    // The send itself must be cancellable: a stalled browser must
+                    // not keep a revoked terminal alive indefinitely.
+                    let send = socket.send(Message::Binary(data.into()));
+                    tokio::pin!(send);
+                    tokio::select! {
+                        biased;
+                        _ = guard.wait_for_end() => break,
+                        result = &mut send => {
+                            if result.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                None => break,
+            },
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Text(text))) => {
                     if let Ok(TerminalClientMessage::Resize { cols, rows }) =
@@ -347,7 +467,7 @@ async fn handle_terminal(mut socket: WebSocket) {
                         && (2..=1000).contains(&cols)
                         && (1..=500).contains(&rows)
                     {
-                        let _ = pair.master.resize(PtySize {
+                        let _ = session.master.resize(PtySize {
                             rows,
                             cols,
                             pixel_width: 0,
@@ -356,8 +476,12 @@ async fn handle_terminal(mut socket: WebSocket) {
                     }
                 }
                 Some(Ok(Message::Binary(data))) => {
-                    if std::io::Write::write_all(&mut writer, &data).is_err() {
-                        break;
+                    tokio::select! {
+                        biased;
+                        _ = guard.wait_for_end() => break,
+                        result = session.writer_tx.send(data.to_vec()) => {
+                            if result.is_err() { break; }
+                        }
                     }
                 }
                 Some(Ok(Message::Close(_))) | None => break,
@@ -365,7 +489,8 @@ async fn handle_terminal(mut socket: WebSocket) {
             }
         }
     }
-    let _ = child.kill();
+    drop(socket);
+    session.stop().await;
 }
 
 async fn index() -> impl IntoResponse {
@@ -3603,5 +3728,198 @@ mod tests {
             resp.headers().get("content-type").unwrap(),
             "image/svg+xml"
         );
+    }
+
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::{
+        Error as WsError, Message as WsMessage, client::IntoClientRequest,
+    };
+
+    type TerminalTestSocket =
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+    struct TerminalTestServer {
+        address: SocketAddr,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for TerminalTestServer {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    async fn terminal_test_ws(
+        State(sessions): State<SessionStore>,
+        headers: HeaderMap,
+        ws: WebSocketUpgrade,
+    ) -> Response {
+        terminal_ws_with_command(sessions, headers, ws, CommandBuilder::new("/bin/cat")).await
+    }
+
+    async fn spawn_terminal_test_server(sessions: SessionStore) -> TerminalTestServer {
+        let app = Router::new()
+            .route("/terminal", get(terminal_test_ws))
+            .with_state(sessions);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local terminal test listener");
+        let address = listener.local_addr().expect("local test address");
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        TerminalTestServer { address, task }
+    }
+
+    fn terminal_request(
+        address: SocketAddr,
+        token: &str,
+    ) -> tokio_tungstenite::tungstenite::handshake::client::Request {
+        let uri = format!("ws://{address}/terminal")
+            .parse::<axum::http::Uri>()
+            .expect("valid terminal test URI");
+        let mut request: tokio_tungstenite::tungstenite::handshake::client::Request = uri
+            .into_client_request()
+            .expect("valid terminal upgrade request");
+        request.headers_mut().insert(
+            "cookie",
+            format!("{SESSION_COOKIE}={token}")
+                .parse::<HeaderValue>()
+                .expect("valid session cookie"),
+        );
+        request
+    }
+
+    async fn connect_terminal(
+        address: SocketAddr,
+        token: &str,
+    ) -> TerminalTestSocket {
+        let request = terminal_request(address, token);
+        let (socket, response) =
+            tokio::time::timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(request))
+                .await
+                .expect("terminal upgrade should not time out")
+                .expect("terminal upgrade should succeed");
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        socket
+    }
+
+    async fn send_terminal(socket: &mut TerminalTestSocket, data: &[u8]) {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            socket.send(WsMessage::Binary(data.to_vec().into())),
+        )
+        .await
+        .expect("terminal send should not time out")
+        .expect("terminal send should succeed");
+    }
+
+    async fn read_terminal_until(socket: &mut TerminalTestSocket, needle: &str) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut output = String::new();
+        while !output.contains(needle) {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let message = tokio::time::timeout(remaining, socket.next())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("timed out waiting for {needle:?}; received {output:?}")
+                })
+                .unwrap_or_else(|| {
+                    panic!("terminal closed before {needle:?}; received {output:?}")
+                })
+                .unwrap_or_else(|error| {
+                    panic!("terminal error before {needle:?}: {error}; received {output:?}")
+                });
+            match message {
+                WsMessage::Text(text) => output.push_str(text.as_str()),
+                WsMessage::Binary(data) => {
+                    output.push_str(&String::from_utf8_lossy(&data));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    async fn expect_terminal_closed(socket: &mut TerminalTestSocket) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            match tokio::time::timeout(remaining, socket.next()).await {
+                Ok(Some(Ok(WsMessage::Close(_))) | None) | Ok(Some(Err(_))) => return true,
+                Ok(Some(Ok(_))) => {}
+                Err(_) => return false,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_websocket_closes_pre_existing_connections_on_revocation() {
+        let sessions = SessionStore::new(Duration::from_secs(60));
+        let revoked_token = sessions.create().unwrap();
+        let live_token = sessions.create().unwrap();
+        let server = spawn_terminal_test_server(sessions.clone()).await;
+
+        let mut first = connect_terminal(server.address, &revoked_token).await;
+        let mut second = connect_terminal(server.address, &revoked_token).await;
+        let mut unrelated = connect_terminal(server.address, &live_token).await;
+
+        send_terminal(&mut first, b"first\n").await;
+        read_terminal_until(&mut first, "first").await;
+        send_terminal(&mut second, b"second\n").await;
+        read_terminal_until(&mut second, "second").await;
+        send_terminal(&mut unrelated, b"unrelated\n").await;
+        read_terminal_until(&mut unrelated, "unrelated").await;
+
+        assert!(sessions.revoke(&revoked_token));
+        assert!(
+            expect_terminal_closed(&mut first).await,
+            "first terminal for the revoked session must close"
+        );
+        assert!(
+            expect_terminal_closed(&mut second).await,
+            "second terminal for the revoked session must close"
+        );
+
+        // An unrelated authenticated session must keep working.
+        send_terminal(&mut unrelated, b"still-live\n").await;
+        read_terminal_until(&mut unrelated, "still-live").await;
+
+        let _ = unrelated.send(WsMessage::Close(None)).await;
+    }
+
+    #[tokio::test]
+    async fn terminal_websocket_closes_at_natural_session_expiry() {
+        let sessions = SessionStore::new(Duration::from_secs(1));
+        let token = sessions.create().unwrap();
+        let server = spawn_terminal_test_server(sessions.clone()).await;
+        let mut socket = connect_terminal(server.address, &token).await;
+
+        assert!(
+            expect_terminal_closed(&mut socket).await,
+            "an existing terminal must close at the session deadline without pruning"
+        );
+        // The expired entry may remain until validation or pruning removes it.
+        assert!(sessions.validate_guard(&token).is_none());
+    }
+
+    #[tokio::test]
+    async fn terminal_websocket_rejects_revoked_before_upgrade() {
+        let sessions = SessionStore::new(Duration::from_secs(60));
+        let token = sessions.create().unwrap();
+        assert!(sessions.revoke(&token));
+        let server = spawn_terminal_test_server(sessions.clone()).await;
+        let request = terminal_request(server.address, &token);
+
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(request))
+                .await
+                .expect("revoked upgrade should not time out");
+        match result {
+            Err(WsError::Http(response)) => {
+                assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            }
+            Err(error) => panic!("unexpected revoked upgrade error: {error}"),
+            Ok(_) => panic!("revoked session must not receive a terminal upgrade"),
+        }
     }
 }
