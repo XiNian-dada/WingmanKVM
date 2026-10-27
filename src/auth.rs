@@ -481,7 +481,7 @@ impl SessionGuard {
             return;
         }
         let mut cancellation = self.cancellation.clone();
-        let deadline = tokio::time::Instant::from_std(self.expires_at);
+        let deadline = tokio::time::Instant::from_std(self.expires_at());
         tokio::select! {
             biased;
             _ = cancellation.changed() => {}

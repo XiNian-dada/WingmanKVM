@@ -496,24 +496,6 @@ async fn handle_terminal(mut socket: WebSocket, guard: SessionGuard, command: Co
             biased;
             _ = guard.wait_for_end() => break,
             _ = session.writer_tx.closed() => break,
-            maybe = session.reader_rx.recv() => match maybe {
-                Some(data) => {
-                    // The send itself must be cancellable: a stalled browser must
-                    // not keep a revoked terminal alive indefinitely.
-                    let send = socket.send(Message::Binary(data.into()));
-                    tokio::pin!(send);
-                    tokio::select! {
-                        biased;
-                        _ = guard.wait_for_end() => break,
-                        result = &mut send => {
-                            if result.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-                None => break,
-            },
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Text(text))) => {
                     if let Ok(TerminalClientMessage::Resize { cols, rows }) =
@@ -540,7 +522,25 @@ async fn handle_terminal(mut socket: WebSocket, guard: SessionGuard, command: Co
                 }
                 Some(Ok(Message::Close(_))) | None => break,
                 _ => {}
-            }
+            },
+            maybe = session.reader_rx.recv() => match maybe {
+                Some(data) => {
+                    // The send itself must be cancellable: a stalled browser must
+                    // not keep a revoked terminal alive indefinitely.
+                    let send = socket.send(Message::Binary(data.into()));
+                    tokio::pin!(send);
+                    tokio::select! {
+                        biased;
+                        _ = guard.wait_for_end() => break,
+                        result = &mut send => {
+                            if result.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                None => break,
+            },
         }
     }
     drop(socket);
@@ -4029,6 +4029,7 @@ mod tests {
     struct TerminalTestState {
         sessions: SessionStore,
         public_origin: Option<String>,
+        program: &'static str,
     }
 
     async fn terminal_test_ws(
@@ -4041,7 +4042,7 @@ mod tests {
             headers,
             ws,
             state.public_origin,
-            CommandBuilder::new("/bin/cat"),
+            CommandBuilder::new(state.program),
         )
         .await
     }
@@ -4050,11 +4051,20 @@ mod tests {
         sessions: SessionStore,
         public_origin: Option<String>,
     ) -> TerminalTestServer {
+        spawn_terminal_test_server_with_program(sessions, public_origin, "/bin/cat").await
+    }
+
+    async fn spawn_terminal_test_server_with_program(
+        sessions: SessionStore,
+        public_origin: Option<String>,
+        program: &'static str,
+    ) -> TerminalTestServer {
         let app = Router::new()
             .route("/terminal", get(terminal_test_ws))
             .with_state(TerminalTestState {
                 sessions,
                 public_origin,
+                program,
             });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -4197,6 +4207,21 @@ mod tests {
                 Err(_) => return false,
             }
         }
+    }
+
+    #[tokio::test]
+    async fn terminal_input_interrupts_a_continuously_writing_child() {
+        let sessions = SessionStore::new(Duration::from_secs(60));
+        let token = sessions.create().unwrap();
+        let server =
+            spawn_terminal_test_server_with_program(sessions, None, "/usr/bin/yes").await;
+        let mut socket = connect_terminal(server.address, &token).await;
+        read_terminal_until(&mut socket, "y").await;
+        send_terminal(&mut socket, &[3]).await;
+        assert!(
+            expect_terminal_closed(&mut socket).await,
+            "Ctrl-C must reach the PTY even while terminal output stays ready"
+        );
     }
 
     #[tokio::test]
