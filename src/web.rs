@@ -25,7 +25,7 @@ use bytes::Bytes;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
-use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc, watch};
+use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, RwLock, Semaphore, mpsc, watch};
 use tokio::{fs, io::AsyncWriteExt};
 use webauthn_rs::prelude::*;
 
@@ -1080,28 +1080,27 @@ async fn login(
     Json(request): Json<LoginRequest>,
 ) -> Result<Response, ApiError> {
     let client_ip = state.client_address(connection, &headers).await.ip;
-    if !state.login_limiter.allowed(client_ip) {
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "登录尝试过多，请稍后再试",
-        ));
+    // Reserve at admission so a burst cannot retry around the per-IP budget
+    // merely because the global password workers are busy.
+    if !state.login_limiter.try_reserve(client_ip) {
+        return Err(too_many_login_attempts());
     }
+    let Some(password_slot) = state.login_limiter.try_acquire_password_slot() else {
+        return Err(too_many_login_attempts());
+    };
     let auth = state.auth.clone();
     let username = request.username;
     let password = request.password;
     let password_for_verification = password.clone();
-    let valid = tokio::task::spawn_blocking(move || {
+    let valid = run_with_password_slot(password_slot, move || {
         let Some(record) = auth.load()? else {
             return Ok(false);
         };
         record.verify_credentials(&username, &password_for_verification)
     })
-    .await
-    .map_err(ApiError::internal)?
-    .map_err(map_auth_error)?;
+    .await?;
 
     if !valid {
-        state.login_limiter.record_failure(client_ip);
         return Err(ApiError::new(
             StatusCode::UNAUTHORIZED,
             "用户名或密码不正确",
@@ -1113,12 +1112,38 @@ async fn login(
     // plaintext password is available again, so repair those installations
     // before issuing a terminal-capable session.
     sync_system_password(&password).await?;
-    state.login_limiter.clear(client_ip);
     let session = state.sessions.create().map_err(ApiError::internal)?;
     Ok(with_session_cookie(
         Json(json!({"ok": true})).into_response(),
         &session,
     ))
+}
+
+fn too_many_login_attempts() -> ApiError {
+    ApiError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "登录尝试过多，请稍后再试",
+    )
+}
+
+/// Run password verification on the blocking pool while keeping the global
+/// verification permit inside the blocking closure. Aborting or dropping the
+/// HTTP task therefore cannot release the slot while Argon2 is still running.
+async fn run_with_password_slot<T, F>(
+    password_slot: OwnedSemaphorePermit,
+    verify: F,
+) -> Result<T, ApiError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, AuthError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let _password_slot = password_slot;
+        verify()
+    })
+    .await
+    .map_err(ApiError::internal)?
+    .map_err(map_auth_error)
 }
 
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -1187,11 +1212,10 @@ async fn passkey_login_start(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let client_ip = state.client_address(connection, &headers).await.ip;
-    if !state.login_limiter.allowed(client_ip) {
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "登录尝试过多，请稍后再试",
-        ));
+    // Starting authentication is not an authentication submission: check the
+    // current budget without reserving an attempt. Finish reserves exactly one.
+    if !state.login_limiter.has_capacity(client_ip) {
+        return Err(too_many_login_attempts());
     }
     let Some(record) = state.auth.load().map_err(map_auth_error)? else {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "系统尚未初始化"));
@@ -1250,11 +1274,10 @@ async fn passkey_login_finish(
         return Err(ApiError::new(StatusCode::FORBIDDEN, "Origin 与 Host 不符"));
     }
     let client_ip = state.client_address(connection, &headers).await.ip;
-    if !state.login_limiter.allowed(client_ip) {
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "登录尝试过多，请稍后再试",
-        ));
+    // Completing authentication is the submitted attempt: reserve once before
+    // validating the challenge. Success and every failure keep the reservation.
+    if !state.login_limiter.try_reserve(client_ip) {
+        return Err(too_many_login_attempts());
     }
 
     let challenge_state = {
@@ -1268,12 +1291,10 @@ async fn passkey_login_finish(
         rp_origin,
         expires_at,
     }) = challenge_state else {
-        state.login_limiter.record_failure(client_ip);
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "无效或已过期的认证挑战"));
     };
 
     if Instant::now() > expires_at {
-        state.login_limiter.record_failure(client_ip);
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "认证挑战已过期"));
     }
 
@@ -1289,7 +1310,6 @@ async fn passkey_login_finish(
         Ok(res) => res,
         Err(e) => {
             tracing::warn!(error = %e, "WebAuthn authentication failed");
-            state.login_limiter.record_failure(client_ip);
             return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Passkey 验证失败"));
         }
     };
@@ -1300,7 +1320,6 @@ async fn passkey_login_finish(
         Ok(record.username.clone())
     }).map_err(map_auth_error)?;
 
-    state.login_limiter.clear(client_ip);
     let session = state.sessions.create().map_err(ApiError::internal)?;
     Ok(with_session_cookie(
         Json(json!({"ok": true, "username": username})).into_response(),
@@ -2819,44 +2838,215 @@ impl IntoResponse for ApiError {
     }
 }
 
-#[derive(Clone, Default)]
+const LOGIN_ATTEMPT_WINDOW: Duration = Duration::from_secs(60);
+const MAX_LOGIN_ATTEMPTS_PER_IP: usize = 5;
+const MAX_LOGIN_LIMITER_RECORDS: usize = 4096;
+const MAX_CONCURRENT_PASSWORD_VERIFICATIONS: usize = 2;
+
+#[derive(Clone)]
 struct LoginLimiter {
-    failures: Arc<Mutex<HashMap<IpAddr, VecDeque<Instant>>>>,
+    attempts: Arc<Mutex<HashMap<IpAddr, VecDeque<Instant>>>>,
+    password_slots: Arc<Semaphore>,
+}
+
+impl Default for LoginLimiter {
+    fn default() -> Self {
+        Self {
+            attempts: Arc::new(Mutex::new(HashMap::new())),
+            password_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_PASSWORD_VERIFICATIONS)),
+        }
+    }
 }
 
 impl LoginLimiter {
-    fn allowed(&self, ip: IpAddr) -> bool {
-        let now = Instant::now();
-        let mut failures = self
-            .failures
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let attempts = failures.entry(ip).or_default();
-        attempts.retain(|attempt| now.duration_since(*attempt) < Duration::from_secs(60));
-        attempts.len() < 5
+    /// Atomically admit one authentication submission for `ip`.
+    ///
+    /// At most five admissions are recorded per client IP in the rolling
+    /// 60-second window. Every admitted password attempt and Passkey finish is
+    /// counted exactly once, regardless of whether it succeeds; a successful
+    /// login never clears earlier in-flight admissions. Expired timestamps are
+    /// pruned during every admission, and the record map is bounded to 4096
+    /// entries: an unseen IP at capacity fails closed.
+    fn try_reserve(&self, ip: IpAddr) -> bool {
+        self.try_reserve_at(ip, Instant::now())
     }
 
-    fn record_failure(&self, ip: IpAddr) {
-        self.failures
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .entry(ip)
-            .or_default()
-            .push_back(Instant::now());
+    fn try_reserve_at(&self, ip: IpAddr, now: Instant) -> bool {
+        let mut attempts = self.attempts.lock().unwrap_or_else(|p| p.into_inner());
+        prune_login_attempts(&mut attempts, now);
+        if let Some(timestamps) = attempts.get_mut(&ip) {
+            if timestamps.len() >= MAX_LOGIN_ATTEMPTS_PER_IP {
+                return false;
+            }
+            timestamps.push_back(now);
+            true
+        } else if attempts.len() >= MAX_LOGIN_LIMITER_RECORDS {
+            false
+        } else {
+            attempts.insert(ip, VecDeque::from([now]));
+            true
+        }
     }
 
-    fn clear(&self, ip: IpAddr) {
-        self.failures
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&ip);
+    /// Check admission capacity without recording an attempt or allocating a
+    /// new per-IP record. Also prunes expired records.
+    fn has_capacity(&self, ip: IpAddr) -> bool {
+        self.has_capacity_at(ip, Instant::now())
     }
+
+    fn has_capacity_at(&self, ip: IpAddr, now: Instant) -> bool {
+        let mut attempts = self.attempts.lock().unwrap_or_else(|p| p.into_inner());
+        prune_login_attempts(&mut attempts, now);
+        attempts.get(&ip).map_or(
+            attempts.len() < MAX_LOGIN_LIMITER_RECORDS,
+            |timestamps| timestamps.len() < MAX_LOGIN_ATTEMPTS_PER_IP,
+        )
+    }
+
+    fn try_acquire_password_slot(&self) -> Option<OwnedSemaphorePermit> {
+        self.password_slots.clone().try_acquire_owned().ok()
+    }
+}
+
+fn prune_login_attempts(attempts: &mut HashMap<IpAddr, VecDeque<Instant>>, now: Instant) {
+    attempts.retain(|_, timestamps| {
+        // Concurrent callers can sample time before acquiring the mutex in a
+        // different order, so expired entries need not be at the front.
+        timestamps.retain(|at| now.saturating_duration_since(*at) < LOGIN_ATTEMPT_WINDOW);
+        !timestamps.is_empty()
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::devices::hid::KeyboardLeds;
+
+    #[test]
+    fn twelve_concurrent_reservations_admit_exactly_five() {
+        let limiter = LoginLimiter::default();
+        let ip: IpAddr = "203.0.113.10".parse().unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(13));
+        let admitted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut workers = Vec::new();
+        for _ in 0..12 {
+            let limiter = limiter.clone();
+            let barrier = Arc::clone(&barrier);
+            let admitted = Arc::clone(&admitted);
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                if limiter.try_reserve_at(ip, Instant::now()) {
+                    admitted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }));
+        }
+        barrier.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(
+            admitted.load(std::sync::atomic::Ordering::SeqCst),
+            MAX_LOGIN_ATTEMPTS_PER_IP
+        );
+    }
+
+    #[test]
+    fn per_ip_budgets_are_independent_and_refill_after_the_window() {
+        let limiter = LoginLimiter::default();
+        let first: IpAddr = "198.51.100.1".parse().unwrap();
+        let second: IpAddr = "198.51.100.2".parse().unwrap();
+        let start = Instant::now();
+        for _ in 0..MAX_LOGIN_ATTEMPTS_PER_IP {
+            assert!(limiter.try_reserve_at(first, start));
+        }
+        assert!(!limiter.has_capacity_at(first, start));
+        assert!(!limiter.try_reserve_at(first, start));
+        assert!(limiter.try_reserve_at(second, start));
+
+        let just_before = start + LOGIN_ATTEMPT_WINDOW - Duration::from_millis(1);
+        assert!(!limiter.try_reserve_at(first, just_before));
+        let refilled = start + LOGIN_ATTEMPT_WINDOW;
+        assert!(limiter.try_reserve_at(first, refilled));
+        assert!(limiter.has_capacity_at(first, refilled));
+
+        let reordered = LoginLimiter::default();
+        assert!(reordered.try_reserve_at(first, refilled));
+        for _ in 1..MAX_LOGIN_ATTEMPTS_PER_IP {
+            assert!(reordered.try_reserve_at(first, start));
+        }
+        assert!(reordered.try_reserve_at(first, refilled));
+    }
+
+    #[test]
+    fn limiter_record_cap_fails_closed_and_prunes_expired_entries() {
+        let limiter = LoginLimiter::default();
+        let start = Instant::now();
+        for index in 0..MAX_LOGIN_LIMITER_RECORDS {
+            let ip = IpAddr::V4(std::net::Ipv4Addr::from(index as u32 + 1));
+            assert!(limiter.try_reserve_at(ip, start));
+        }
+        let new_ip: IpAddr = "203.0.113.250".parse().unwrap();
+        assert!(!limiter.has_capacity_at(new_ip, start));
+        assert!(!limiter.try_reserve_at(new_ip, start));
+
+        let after_window = start + LOGIN_ATTEMPT_WINDOW;
+        assert!(limiter.try_reserve_at(new_ip, after_window));
+        assert_eq!(limiter.attempts.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn global_password_slots_cap_verification_across_ips_and_release() {
+        let limiter = LoginLimiter::default();
+        let now = Instant::now();
+        assert!(limiter.try_reserve_at("198.51.100.1".parse().unwrap(), now));
+        assert!(limiter.try_reserve_at("198.51.100.2".parse().unwrap(), now));
+
+        let first = limiter.try_acquire_password_slot().expect("first slot");
+        let second = limiter.try_acquire_password_slot().expect("second slot");
+        assert!(limiter.try_acquire_password_slot().is_none());
+        drop(first);
+        let replacement = limiter
+            .try_acquire_password_slot()
+            .expect("released slot");
+        assert!(limiter.try_acquire_password_slot().is_none());
+        drop((second, replacement));
+        assert_eq!(limiter.password_slots.available_permits(), 2);
+    }
+
+    #[tokio::test]
+    async fn aborting_the_http_task_keeps_the_slot_until_blocking_verification_ends() {
+        let limiter = LoginLimiter::default();
+        let held = limiter.try_acquire_password_slot().expect("held slot");
+        let moved = limiter
+            .try_acquire_password_slot()
+            .expect("verification slot");
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let task = tokio::spawn(run_with_password_slot(moved, move || {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+            Ok::<bool, AuthError>(true)
+        }));
+
+        started_rx.await.expect("verification should start");
+        task.abort();
+        let _ = task.await;
+        // The HTTP task is gone, but the blocking work still owns its permit.
+        assert!(limiter.try_acquire_password_slot().is_none());
+
+        release_tx.send(()).expect("release blocking verification");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if limiter.try_acquire_password_slot().is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("slot should be released when blocking verification finishes");
+        drop(held);
+    }
 
     #[test]
     fn video_form_updates_preserve_udp_mapping_and_null_clears_it() {
