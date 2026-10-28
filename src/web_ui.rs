@@ -1111,14 +1111,17 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
       const headers = new Headers(options.headers || {}); if (options.body && !(options.body instanceof FormData) && !headers.has('content-type')) headers.set('content-type', 'application/json');
       const response = await fetch(url, {...options, headers, cache: 'no-store', credentials: 'same-origin'});
       const type = response.headers.get('content-type') || ''; const data = type.includes('json') ? await response.json() : await response.text();
-      if (response.status === 401 && url !== '/api/login' && !app.classList.contains('hidden')) { bootstrap.authenticated=false; stopInput(); showState('login'); $('#login-error').textContent='会话已过期，请重新登录。'; }
+      if (response.status === 401 && url !== '/api/login' && !app.classList.contains('hidden')) { clearAuthSecrets({token:true}); bootstrap.authenticated=false; stopInput(); showState('login'); $('#login-error').textContent='会话已过期，请重新登录。'; }
       if (!response.ok) throw new Error((data && (data.error || data.message)) || data || `请求失败 (${response.status})`); return data;
     }
     const rawValue = (form, name) => new FormData(form).get(name)?.toString() || '';
     const value = (form, name) => rawValue(form, name).trim();
+    function clearAuthSecrets(options={}) { if(options.login!==false)loginForm.elements.password.value=''; if(options.setup!==false){setupForm.elements.password.value='';setupForm.elements.confirm_password.value='';} if(options.token){setupForm.elements.setup_token.value='';if(bootstrap?.setup_required&&bootstrap?.token_required!==false)setupForm.elements.setup_token.closest('.field')?.classList.remove('hidden');} }
     const optionalNumber = v => v === '' ? null : Number(v);
     function hardwareFrom(form) { const mouse=value(form,'mouse_device')||null,absolute=value(form,'absolute_pointer_device')||null,selected=value(form,'pointer_mode')==='relative'?'relative':'absolute';return {video_device:value(form,'video_device')||null,keyboard_device:value(form,'keyboard_device')||null,mouse_device:mouse,absolute_pointer_device:absolute,pointer_mode:selected,power_enabled:form.elements.power_enabled.checked,gpio_chip:value(form,'gpio_chip')||null,gpio_line:optionalNumber(value(form,'gpio_line')),active_high:value(form,'active_high')!=='false',media_enabled:form.elements.media_enabled.checked,lun_path:value(form,'lun_path')||null,image_directory:value(form,'image_directory')||null}; }
     function showState(state) {
+      const wasMain=!app.classList.contains('hidden');
+      if(state==='main')clearAuthSecrets({token:true}); else if(state==='login'&&wasMain)clearAuthSecrets({token:true});
       $('#boot-panel').classList.add('hidden'); setupForm.classList.toggle('hidden', state !== 'setup'); loginForm.classList.toggle('hidden', state !== 'login'); authView.classList.toggle('hidden', state === 'main'); app.classList.toggle('hidden', state !== 'main');if(state!=='setup')closeSetupGuide(false);
       if (state === 'main') {
         pageActive=!document.hidden; applyBootstrap(); startVideo(); refreshStatus(); scanDevices();
@@ -1146,15 +1149,15 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     setupForm.elements.confirm_password.addEventListener('input',()=>setupForm.elements.confirm_password.setCustomValidity(''));
     setupForm.addEventListener('submit', async event => {
       event.preventDefault(); if(!validateSetupAccount()){setSetupStep(0);return;} const button = $('button[type=submit]', setupForm), error = $('#setup-error'), label=button.textContent; button.disabled = true; button.textContent='正在初始化…'; setupForm.setAttribute('aria-busy','true'); error.textContent = '';
-      try { const payload = {username:value(setupForm,'username'), password:rawValue(setupForm,'password'), setup_token:rawValue(setupForm,'setup_token'), ...hardwareFrom(setupForm)}; await request('/api/setup',{method:'POST',body:JSON.stringify(payload)}); toast('初始化完成，正在建立控制台'); bootstrap = await request('/api/bootstrap'); showState(bootstrap.authenticated?'main':'login'); }
-      catch (e) { error.textContent = e.message;if(e.message.includes('令牌'))$('#setup-token-field').classList.remove('hidden'); } finally { button.disabled = false; button.textContent=label; setupForm.setAttribute('aria-busy','false'); }
+      try { const payload = {username:value(setupForm,'username'), password:rawValue(setupForm,'password'), setup_token:rawValue(setupForm,'setup_token'), ...hardwareFrom(setupForm)}; await request('/api/setup',{method:'POST',body:JSON.stringify(payload)}); clearAuthSecrets({token:true}); toast('初始化完成，正在建立控制台'); bootstrap = await request('/api/bootstrap'); showState(bootstrap.authenticated?'main':'login'); }
+      catch (e) { error.textContent = e.message;clearAuthSecrets({login:false});if(e.message.includes('令牌'))$('#setup-token-field').classList.remove('hidden'); } finally { button.disabled = false; button.textContent=label; setupForm.setAttribute('aria-busy','false'); }
     });
     loginForm.addEventListener('submit', async event => {
       event.preventDefault(); const button = $('button[type=submit]', loginForm), error = $('#login-error'), label=button.textContent; button.disabled = true; button.textContent='正在连接…'; loginForm.setAttribute('aria-busy','true'); error.textContent = '';
-      try { await request('/api/login',{method:'POST',body:JSON.stringify({username:value(loginForm,'username'),password:rawValue(loginForm,'password')})}); bootstrap = await request('/api/bootstrap'); showState(bootstrap.authenticated?'main':'login'); }
-      catch (e) { error.textContent = e.message; } finally { button.disabled = false; button.textContent=label; loginForm.setAttribute('aria-busy','false'); }
+      try { await request('/api/login',{method:'POST',body:JSON.stringify({username:value(loginForm,'username'),password:rawValue(loginForm,'password')})}); clearAuthSecrets({token:true}); bootstrap = await request('/api/bootstrap'); showState(bootstrap.authenticated?'main':'login'); }
+      catch (e) { error.textContent = e.message;clearAuthSecrets({setup:false}); } finally { button.disabled = false; button.textContent=label; loginForm.setAttribute('aria-busy','false'); }
     });
-    $('#logout').addEventListener('click', async () => { await stopInput(); try { await request('/api/logout',{method:'POST'}); } finally { bootstrap.authenticated=false; try { bootstrap = await request('/api/bootstrap'); } catch(_) {} showState('login'); } });
+    $('#logout').addEventListener('click', async () => { clearAuthSecrets({token:true}); await stopInput(); try { await request('/api/logout',{method:'POST'}); } finally { bootstrap.authenticated=false; try { bootstrap = await request('/api/bootstrap'); } catch(_) {} showState('login'); } });
 
     function unwrapConfig(source) { return source?.config || source || {}; }
     const resolutionPresets = new Set(['3840x2160','2560x1440','1920x1080','1280x720','720x480']);
