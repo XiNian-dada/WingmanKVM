@@ -2456,17 +2456,22 @@ async fn persist_config(path: &Path, config: &Config) -> Result<(), ApiError> {
 }
 
 async fn commit_config(state: &AppState, config: &Config) -> Result<(), ApiError> {
+    validate_config(config)?;
     let previous = state.config.read().await.clone();
+    let video_changed = previous.video != config.video;
     persist_config(state.config_path.as_ref(), config).await?;
-    if let Err(error) = state.video.reconfigure(config.video.clone()) {
-        tracing::error!(%error, "failed to reconfigure video after saving configuration");
-        if let Err(restore_error) = persist_config(state.config_path.as_ref(), &previous).await {
-            tracing::error!(message = %restore_error.message, "failed to restore previous configuration");
+    if video_changed {
+        if let Err(error) = state.video.reconfigure(config.video.clone()) {
+            tracing::error!(%error, "failed to reconfigure video after saving configuration");
+            if let Err(restore_error) = persist_config(state.config_path.as_ref(), &previous).await {
+                tracing::error!(message = %restore_error.message, "failed to restore previous configuration");
+            }
+            return Err(ApiError::internal(error));
         }
-        return Err(ApiError::internal(error));
-    }
 
-    state.webrtc.reconfigure(config.video.h264.clone()).await;
+        // Capture changes also invalidate the H.264 source feeding WebRTC.
+        state.webrtc.reconfigure(config.video.h264.clone()).await;
+    }
     let power_led = power_led_snapshot(&config.power);
     *state.config.write().await = config.clone();
     state.proxy_protocol_updates.send_replace(config.server.proxy_protocol);
