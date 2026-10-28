@@ -1825,9 +1825,24 @@ async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
     no_store(Json(state.config.read().await.clone()))
 }
 
+struct FullConfigUpdate(Config);
+
+impl<'de> Deserialize<'de> for FullConfigUpdate {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        reject_retired_hid_timing_fields(&value).map_err(serde::de::Error::custom)?;
+        serde_json::from_value(value)
+            .map(Self)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 async fn update_config(
     State(state): State<AppState>,
-    Json(config): Json<Config>,
+    Json(FullConfigUpdate(config)): Json<FullConfigUpdate>,
 ) -> Result<impl IntoResponse, ApiError> {
     let _update_guard = state.config_update.lock().await;
     validate_config(&config)?;
@@ -1900,6 +1915,72 @@ struct HidPatch {
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     absolute_pointer_device: Option<Option<PathBuf>>,
     pointer_mode: Option<PointerMode>,
+    #[serde(
+        default,
+        rename = "write_timeout_ms",
+        deserialize_with = "reject_retired_write_timeout_ms"
+    )]
+    #[allow(dead_code)]
+    _write_timeout_ms: Option<serde_json::Value>,
+    #[serde(
+        default,
+        rename = "retry_interval_ms",
+        deserialize_with = "reject_retired_retry_interval_ms"
+    )]
+    #[allow(dead_code)]
+    _retry_interval_ms: Option<serde_json::Value>,
+}
+
+fn retired_hid_timing_error(field: &'static str) -> String {
+    format!(
+        "{field} is deprecated and ignored: HID reports use a fixed 500 ms per-report deadline with readiness-based retry instead of polling; remove this field"
+    )
+}
+
+fn reject_retired_hid_timing<'de, D>(
+    deserializer: D,
+    field: &'static str,
+) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    // Consume any JSON value, including null, so the error is explicit
+    // instead of an opaque type mismatch.
+    let _ = serde_json::Value::deserialize(deserializer)?;
+    Err(serde::de::Error::custom(retired_hid_timing_error(field)))
+}
+
+fn reject_retired_write_timeout_ms<'de, D>(
+    deserializer: D,
+) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    reject_retired_hid_timing(deserializer, "hid.write_timeout_ms")
+}
+
+fn reject_retired_retry_interval_ms<'de, D>(
+    deserializer: D,
+) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    reject_retired_hid_timing(deserializer, "hid.retry_interval_ms")
+}
+
+fn reject_retired_hid_timing_fields(value: &serde_json::Value) -> Result<(), String> {
+    let Some(hid) = value.get("hid").and_then(serde_json::Value::as_object) else {
+        return Ok(());
+    };
+    for (key, field) in [
+        ("write_timeout_ms", "hid.write_timeout_ms"),
+        ("retry_interval_ms", "hid.retry_interval_ms"),
+    ] {
+        if hid.contains_key(key) {
+            return Err(retired_hid_timing_error(field));
+        }
+    }
+    Ok(())
 }
 
 fn deserialize_optional_field<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
@@ -4190,6 +4271,72 @@ mod tests {
         apply_hid_patch(&mut config, patch.hid.unwrap());
         assert_eq!(config.absolute_pointer_device, None);
         assert_eq!(config.keyboard_device, Some(PathBuf::from("/dev/hidg0")));
+    }
+
+    #[test]
+    fn deprecated_hid_timing_patch_fields_are_rejected_even_when_null() {
+        for (field, value) in [
+            ("write_timeout_ms", serde_json::Value::Null),
+            ("write_timeout_ms", serde_json::json!(500)),
+            ("write_timeout_ms", serde_json::json!(2_500)),
+            ("retry_interval_ms", serde_json::Value::Null),
+            ("retry_interval_ms", serde_json::json!(10)),
+            ("retry_interval_ms", serde_json::json!(0)),
+        ] {
+            let mut hid = serde_json::Map::new();
+            hid.insert(field.to_owned(), value);
+            let error = serde_json::from_value::<ConfigPatch>(serde_json::json!({ "hid": hid }))
+                .err()
+                .expect("deprecated HID timing field must be rejected")
+                .to_string();
+            assert!(error.contains(&format!("hid.{field}")), "{error}");
+            assert!(error.contains("deprecated and ignored"), "{error}");
+        }
+    }
+
+    #[test]
+    fn hid_patch_without_retired_timing_fields_still_applies() {
+        let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
+            "hid": { "keyboard_device": "/dev/hidg0", "pointer_mode": "relative" }
+        }))
+        .expect("valid HID patch");
+        let mut config = HidConfig::default();
+        apply_hid_patch(&mut config, patch.hid.expect("hid patch"));
+        assert_eq!(config.keyboard_device, Some(PathBuf::from("/dev/hidg0")));
+        assert_eq!(config.pointer_mode, PointerMode::Relative);
+    }
+
+    #[test]
+    fn full_config_update_rejects_retired_hid_timing_fields_and_accepts_valid_config() {
+        for (field, value) in [
+            ("write_timeout_ms", serde_json::Value::Null),
+            ("write_timeout_ms", serde_json::json!(500)),
+            ("retry_interval_ms", serde_json::Value::Null),
+            ("retry_interval_ms", serde_json::json!(10)),
+        ] {
+            let mut hid = serde_json::Map::new();
+            hid.insert(field.to_owned(), value);
+            let payload = serde_json::json!({
+                "version": CONFIG_VERSION,
+                "hid": hid
+            });
+            let error = serde_json::from_value::<FullConfigUpdate>(payload)
+                .err()
+                .expect("retired HID timing field must fail PUT decoding")
+                .to_string();
+            assert!(error.contains(&format!("hid.{field}")), "{error}");
+            assert!(error.contains("deprecated and ignored"), "{error}");
+        }
+
+        let valid: FullConfigUpdate = serde_json::from_value(serde_json::json!({
+            "version": CONFIG_VERSION,
+            "server": { "port": 9090 },
+            "hid": { "keyboard_device": "/dev/hidg0", "pointer_mode": "relative" }
+        }))
+        .expect("valid full configuration");
+        assert_eq!(valid.0.server.port, 9090);
+        assert_eq!(valid.0.hid.keyboard_device, Some(PathBuf::from("/dev/hidg0")));
+        assert_eq!(valid.0.hid.pointer_mode, PointerMode::Relative);
     }
 
     #[test]

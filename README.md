@@ -76,6 +76,8 @@ http://<你的主机IP>:8080/#setup=...
 
 `server.listen_address` 接受不带方括号的 IPv4 或 IPv6 字面地址，`server.port` 范围为 1–65535；加载与保存使用相同校验。通过完整配置 PUT 修改监听地址或端口后，需要重启服务才会重新绑定；这类成功响应带有 `X-WingmanKVM-Restart-Required: true`。响应头表示本次提交更改了监听设置，不是当前进程监听状态的查询。
 
+HID 的 `write_timeout_ms` 和 `retry_interval_ms` 已弃用：旧配置文件兼容加载并提示，HTTP 配置更新会明确拒绝这两个字段。实际仍使用每份报告 500 ms 的固定期限和就绪等待，详见 [HID 配置迁移](docs/HID_CONFIGURATION.md)。
+
 ---
 
 ## 核心功能与界面一览

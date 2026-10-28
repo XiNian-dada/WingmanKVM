@@ -32,6 +32,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify vendored terminal provenance and integrity
+        run: python3 scripts/verify_xterm_vendor.py
+
       - name: Install system build dependencies
         run: |
           sudo apt-get update
