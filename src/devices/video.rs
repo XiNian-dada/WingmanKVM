@@ -1,10 +1,8 @@
 use std::{
     path::PathBuf,
     sync::{Arc, mpsc},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-
-#[cfg(target_os = "linux")]
-use std::time::Duration;
 
 use bytes::Bytes;
 use serde::Serialize;
@@ -12,19 +10,25 @@ use tokio::sync::watch;
 
 use crate::config::{VideoConfig, VideoEncoding};
 
+/// A camera may legitimately deliver only one frame per second. Waiting five
+/// seconds for a valid JPEG therefore still tolerates a 1 fps source while
+/// surfacing a genuinely dead or malformed stream.
+const FRAME_STALL_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Clone)]
 pub struct VideoFrame {
     pub jpeg: Bytes,
     pub sequence: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[serde(rename_all = "snake_case")]
 pub enum VideoState {
     Unconfigured,
     Starting,
     Ready,
+    Stalled,
     Offline,
     #[cfg(not(target_os = "linux"))]
     Unsupported,
@@ -39,6 +43,12 @@ pub struct VideoStatus {
     pub height: Option<u32>,
     pub frames_per_second: Option<f64>,
     pub encoding: VideoEncoding,
+    /// Wall-clock time of the last valid JPEG frame, if one has arrived.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_frame_unix_ms: Option<u64>,
+    /// Age of the last valid frame at the time this status was read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_frame_age_ms: Option<u64>,
 }
 
 impl VideoStatus {
@@ -51,6 +61,8 @@ impl VideoStatus {
             height: config.height,
             frames_per_second: config.frames_per_second.map(f64::from),
             encoding: config.encoding,
+            last_frame_unix_ms: None,
+            last_frame_age_ms: None,
         }
     }
 }
@@ -86,6 +98,28 @@ impl VideoManager {
         }
     }
 
+    /// Test-only frame source used by sibling lifecycle tests. It deliberately
+    /// starts no capture thread and owns no hardware.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn test_source(
+        initial: VideoConfig,
+    ) -> (Self, watch::Sender<Option<Arc<VideoFrame>>>) {
+        let (command_tx, _command_rx) = mpsc::channel();
+        let (frame_tx, _) = watch::channel(None);
+        let (status_tx, _) = watch::channel(VideoStatus::from_config(
+            &initial,
+            VideoState::Starting,
+            None,
+        ));
+        let manager = Self {
+            command_tx,
+            frame_tx: frame_tx.clone(),
+            status_tx,
+        };
+        (manager, frame_tx)
+    }
+
     pub fn reconfigure(&self, config: VideoConfig) -> Result<(), String> {
         self.command_tx
             .send(VideoCommand::Reconfigure(config))
@@ -97,7 +131,11 @@ impl VideoManager {
     }
 
     pub fn status(&self) -> VideoStatus {
-        self.status_tx.borrow().clone()
+        let mut status = self.status_tx.borrow().clone();
+        // Recompute from the wall clock on every read so polling observes a
+        // growing age instead of a value frozen at the last publish.
+        status.last_frame_age_ms = status.last_frame_unix_ms.and_then(frame_age_ms_now);
+        status
     }
 }
 
@@ -110,6 +148,124 @@ enum SessionExit {
     Reconfigure(VideoConfig),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+enum CapturePhase {
+    Starting,
+    Ready,
+    Stalled,
+}
+
+/// Monotonic capture-health tracker. Tests inject `Instant` values so the
+/// timeout path is exercised without sleeping or touching a real device.
+#[derive(Debug, Clone)]
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+struct CaptureHealth {
+    phase: CapturePhase,
+    started_at: Instant,
+    last_frame_at: Option<Instant>,
+    last_frame_unix_ms: Option<u64>,
+}
+
+impl CaptureHealth {
+    fn new(now: Instant) -> Self {
+        Self {
+            phase: CapturePhase::Starting,
+            started_at: now,
+            last_frame_at: None,
+            last_frame_unix_ms: None,
+        }
+    }
+
+    fn on_valid_frame(&mut self, now: Instant) {
+        self.last_frame_at = Some(now);
+        self.last_frame_unix_ms = unix_ms_now();
+        self.phase = CapturePhase::Ready;
+    }
+
+    /// Ticks the timeout tracker for timeouts and every invalid-frame path.
+    /// Returns true exactly once, when the stream transitions to stalled.
+    fn tick(&mut self, now: Instant) -> bool {
+        if self.phase == CapturePhase::Stalled {
+            return false;
+        }
+        let reference = self.last_frame_at.unwrap_or(self.started_at);
+        if now.saturating_duration_since(reference) >= FRAME_STALL_TIMEOUT {
+            self.phase = CapturePhase::Stalled;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn last_frame_age_ms(&self, now: Instant) -> Option<u64> {
+        self.last_frame_at.map(|at| {
+            u64::try_from(now.saturating_duration_since(at).as_millis()).unwrap_or(u64::MAX)
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+struct VideoGeometry {
+    width: Option<u32>,
+    height: Option<u32>,
+    fps: Option<f64>,
+}
+
+/// Single publish path for capture health used by the Linux capture loop and
+/// unit tests. Starting/Stalled states clear the cached frame so no consumer
+/// can mistake an old image for a live one.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn publish_health(
+    frame_tx: &watch::Sender<Option<Arc<VideoFrame>>>,
+    status_tx: &watch::Sender<VideoStatus>,
+    config: &VideoConfig,
+    health: &CaptureHealth,
+    now: Instant,
+    geometry: VideoGeometry,
+    starting_message: Option<&str>,
+) {
+    let (state, message) = match health.phase {
+        CapturePhase::Starting => (
+            VideoState::Starting,
+            Some(starting_message.unwrap_or("正在等待首帧…").to_owned()),
+        ),
+        CapturePhase::Ready => (VideoState::Ready, None),
+        CapturePhase::Stalled => (
+            VideoState::Stalled,
+            Some(format!(
+                "超过 {} 秒未收到有效视频帧",
+                FRAME_STALL_TIMEOUT.as_secs()
+            )),
+        ),
+    };
+    if matches!(health.phase, CapturePhase::Starting | CapturePhase::Stalled) {
+        frame_tx.send_replace(None);
+    }
+
+    let mut status = VideoStatus::from_config(config, state, message);
+    status.width = geometry.width;
+    status.height = geometry.height;
+    status.frames_per_second = if health.phase == CapturePhase::Ready {
+        geometry.fps
+    } else {
+        None
+    };
+    status.last_frame_unix_ms = health.last_frame_unix_ms;
+    status.last_frame_age_ms = health.last_frame_age_ms(now);
+    status_tx.send_replace(status);
+}
+
+fn unix_ms_now() -> Option<u64> {
+    let millis = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_millis();
+    u64::try_from(millis).ok()
+}
+
+fn frame_age_ms_now(last_frame_unix_ms: u64) -> Option<u64> {
+    Some(unix_ms_now()?.saturating_sub(last_frame_unix_ms))
+}
+
 #[cfg(target_os = "linux")]
 fn video_supervisor(
     mut config: VideoConfig,
@@ -120,8 +276,10 @@ fn video_supervisor(
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     loop {
+        // A new session must never inherit a frame from the previous device or
+        // configuration.
+        frame_tx.send_replace(None);
         let Some(device) = config.device.clone() else {
-            frame_tx.send_replace(None);
             status_tx.send_replace(VideoStatus::from_config(
                 &config,
                 VideoState::Unconfigured,
@@ -225,11 +383,21 @@ fn capture_session(
         MmapStream::with_buffers(&device, Type::VideoCapture, 4).map_err(|e| e.to_string())?;
     stream.set_timeout(Duration::from_secs(1));
 
-    let mut ready = VideoStatus::from_config(config, VideoState::Ready, None);
-    ready.width = Some(actual.width);
-    ready.height = Some(actual.height);
-    ready.frames_per_second = actual_fps;
-    status_tx.send_replace(ready);
+    let geometry = VideoGeometry {
+        width: Some(actual.width),
+        height: Some(actual.height),
+        fps: actual_fps,
+    };
+    let mut health = CaptureHealth::new(Instant::now());
+    publish_health(
+        frame_tx,
+        status_tx,
+        config,
+        &health,
+        Instant::now(),
+        geometry,
+        Some("正在等待首帧…"),
+    );
 
     let mut sequence = 0_u64;
     loop {
@@ -242,26 +410,49 @@ fn capture_session(
         }
         match stream.next() {
             Ok((buffer, metadata)) => {
-                if metadata.flags.contains(Flags::ERROR) {
+                let received_at = Instant::now();
+                let valid = !metadata.flags.contains(Flags::ERROR)
+                    && usize::try_from(metadata.bytesused)
+                        .ok()
+                        .filter(|used| *used > 0 && *used <= buffer.len())
+                        .map(|used| &buffer[..used])
+                        .is_some_and(looks_like_jpeg);
+                if !valid {
+                    if health.tick(received_at) {
+                        publish_health(
+                            frame_tx,
+                            status_tx,
+                            config,
+                            &health,
+                            received_at,
+                            geometry,
+                            None,
+                        );
+                    }
                     continue;
                 }
-                let used = usize::try_from(metadata.bytesused)
-                    .map_err(|_| "invalid V4L2 bytesused value".to_string())?;
-                if used == 0 || used > buffer.len() {
-                    continue;
-                }
+
+                let used = usize::try_from(metadata.bytesused).unwrap_or(0);
                 let source = &buffer[..used];
-                if !looks_like_jpeg(source) {
-                    continue;
-                }
                 let jpeg = match config.encoding {
                     VideoEncoding::MjpegPassthrough => Bytes::copy_from_slice(source),
                     VideoEncoding::TranscodeJpeg => transcode_jpeg(source, config.jpeg_quality)?,
                 };
+                // Sample after the frame has been received, transcoded and
+                // published, so freshness reflects publication rather than the
+                // moment just before a potentially blocking read.
                 sequence = sequence.wrapping_add(1);
                 frame_tx.send_replace(Some(Arc::new(VideoFrame { jpeg, sequence })));
+                let now = Instant::now();
+                health.on_valid_frame(now);
+                publish_health(frame_tx, status_tx, config, &health, now, geometry, None);
             }
-            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+                let now = Instant::now();
+                if health.tick(now) {
+                    publish_health(frame_tx, status_tx, config, &health, now, geometry, None);
+                }
+            }
             Err(error) => return Err(error.to_string()),
         }
     }
@@ -307,6 +498,223 @@ fn transcode_jpeg(source: &[u8], quality: u8) -> Result<Bytes, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_config() -> VideoConfig {
+        VideoConfig {
+            device: Some(PathBuf::from("/dev/video-test")),
+            ..VideoConfig::default()
+        }
+    }
+
+    fn test_geometry() -> VideoGeometry {
+        VideoGeometry {
+            width: Some(1280),
+            height: Some(720),
+            fps: Some(30.0),
+        }
+    }
+
+    fn test_frame(sequence: u64) -> Arc<VideoFrame> {
+        // A synthetic black JPEG still has SOI/EOI markers; content does not
+        // affect validity.
+        Arc::new(VideoFrame {
+            jpeg: Bytes::from_static(&[0xff, 0xd8, 0xff, 0xd9]),
+            sequence,
+        })
+    }
+
+    fn channels(
+        config: &VideoConfig,
+    ) -> (
+        watch::Sender<Option<Arc<VideoFrame>>>,
+        watch::Receiver<Option<Arc<VideoFrame>>>,
+        watch::Sender<VideoStatus>,
+        watch::Receiver<VideoStatus>,
+    ) {
+        let (frame_tx, frame_rx) = watch::channel(None);
+        let (status_tx, status_rx) = watch::channel(VideoStatus::from_config(
+            config,
+            VideoState::Starting,
+            None,
+        ));
+        (frame_tx, frame_rx, status_tx, status_rx)
+    }
+
+    #[test]
+    fn starting_until_first_frame_then_stalls_after_five_seconds() {
+        let config = test_config();
+        let (frame_tx, frame_rx, status_tx, status_rx) = channels(&config);
+        let start = Instant::now();
+        let mut health = CaptureHealth::new(start);
+
+        publish_health(
+            &frame_tx,
+            &status_tx,
+            &config,
+            &health,
+            start,
+            test_geometry(),
+            Some("正在等待首帧…"),
+        );
+        assert_eq!(status_rx.borrow().state, VideoState::Starting);
+        assert_eq!(status_rx.borrow().frames_per_second, None);
+
+        assert!(!health.tick(start + Duration::from_secs(4)));
+        assert_eq!(status_rx.borrow().state, VideoState::Starting);
+
+        assert!(health.tick(start + Duration::from_secs(5)));
+        publish_health(
+            &frame_tx,
+            &status_tx,
+            &config,
+            &health,
+            start + Duration::from_secs(5),
+            test_geometry(),
+            None,
+        );
+        let status = status_rx.borrow().clone();
+        assert_eq!(status.state, VideoState::Stalled);
+        assert_eq!(status.frames_per_second, None);
+        assert!(status.message.as_deref().unwrap_or("").contains('5'));
+        assert!(frame_rx.borrow().is_none());
+    }
+
+    #[test]
+    fn valid_frame_then_stale_clears_cache_and_recovery_restores_ready() {
+        let config = test_config();
+        let (frame_tx, frame_rx, status_tx, status_rx) = channels(&config);
+        let start = Instant::now();
+        let mut health = CaptureHealth::new(start);
+
+        frame_tx.send_replace(Some(test_frame(1)));
+        health.on_valid_frame(start + Duration::from_secs(1));
+        publish_health(
+            &frame_tx,
+            &status_tx,
+            &config,
+            &health,
+            start + Duration::from_secs(1),
+            test_geometry(),
+            None,
+        );
+        let ready = status_rx.borrow().clone();
+        assert_eq!(ready.state, VideoState::Ready);
+        assert_eq!(ready.frames_per_second, Some(30.0));
+        assert!(ready.last_frame_unix_ms.is_some());
+        assert_eq!(ready.last_frame_age_ms, Some(0));
+        assert!(frame_rx.borrow().is_some());
+
+        assert!(!health.tick(start + Duration::from_secs(5)));
+        assert!(health.tick(start + Duration::from_secs(6)));
+        publish_health(
+            &frame_tx,
+            &status_tx,
+            &config,
+            &health,
+            start + Duration::from_secs(6),
+            test_geometry(),
+            None,
+        );
+        let stalled = status_rx.borrow().clone();
+        assert_eq!(stalled.state, VideoState::Stalled);
+        assert_eq!(stalled.frames_per_second, None);
+        assert_eq!(stalled.last_frame_age_ms, Some(5_000));
+        assert!(frame_rx.borrow().is_none());
+
+        frame_tx.send_replace(Some(test_frame(2)));
+        health.on_valid_frame(start + Duration::from_secs(7));
+        publish_health(
+            &frame_tx,
+            &status_tx,
+            &config,
+            &health,
+            start + Duration::from_secs(7),
+            test_geometry(),
+            None,
+        );
+        assert_eq!(status_rx.borrow().state, VideoState::Ready);
+        assert_eq!(status_rx.borrow().frames_per_second, Some(30.0));
+        assert!(frame_rx.borrow().is_some());
+    }
+
+    #[test]
+    fn invalid_frame_progress_does_not_reset_stall_timer() {
+        let start = Instant::now();
+        let mut health = CaptureHealth::new(start);
+        health.on_valid_frame(start);
+        let last_frame = health.last_frame_at;
+
+        for step in 1..=49 {
+            assert!(!health.tick(start + Duration::from_millis(step * 100)));
+        }
+        assert_eq!(health.last_frame_at, last_frame);
+        assert!(health.tick(start + Duration::from_secs(5)));
+        assert_eq!(health.phase, CapturePhase::Stalled);
+    }
+
+    #[test]
+    fn one_fps_source_stays_ready_inside_five_second_window() {
+        let start = Instant::now();
+        let mut health = CaptureHealth::new(start);
+        health.on_valid_frame(start);
+
+        for second in 1..=5 {
+            assert!(!health.tick(start + Duration::from_millis(second * 1000 - 1)));
+            health.on_valid_frame(start + Duration::from_secs(second));
+            assert_eq!(health.phase, CapturePhase::Ready);
+        }
+    }
+
+    #[test]
+    fn reconfigure_reset_starts_fresh_and_clears_cached_frame() {
+        let config = test_config();
+        let (frame_tx, frame_rx, status_tx, status_rx) = channels(&config);
+        let start = Instant::now();
+        let mut old = CaptureHealth::new(start);
+        old.on_valid_frame(start + Duration::from_secs(1));
+        frame_tx.send_replace(Some(test_frame(1)));
+        publish_health(
+            &frame_tx,
+            &status_tx,
+            &config,
+            &old,
+            start + Duration::from_secs(1),
+            test_geometry(),
+            None,
+        );
+        assert_eq!(status_rx.borrow().state, VideoState::Ready);
+        assert!(frame_rx.borrow().is_some());
+
+        let reset_at = start + Duration::from_secs(30);
+        let fresh = CaptureHealth::new(reset_at);
+        publish_health(
+            &frame_tx,
+            &status_tx,
+            &config,
+            &fresh,
+            reset_at,
+            test_geometry(),
+            Some("正在等待首帧…"),
+        );
+        let status = status_rx.borrow().clone();
+        assert_eq!(status.state, VideoState::Starting);
+        assert_eq!(status.frames_per_second, None);
+        assert_eq!(status.last_frame_unix_ms, None);
+        assert_eq!(status.last_frame_age_ms, None);
+        assert!(frame_rx.borrow().is_none());
+    }
+
+    #[test]
+    fn status_read_recomputes_frame_age() {
+        let (manager, _frame_tx) = VideoManager::test_source(test_config());
+        let now = unix_ms_now().expect("system clock after unix epoch");
+        let mut status = VideoStatus::from_config(&test_config(), VideoState::Ready, None);
+        status.last_frame_unix_ms = Some(now.saturating_sub(2_500));
+        manager.status_tx.send_replace(status);
+
+        let age = manager.status().last_frame_age_ms.expect("frame age");
+        assert!((2_400..=5_000).contains(&age), "unexpected age {age}");
+    }
 
     #[test]
     fn rejects_truncated_jpeg_frames() {

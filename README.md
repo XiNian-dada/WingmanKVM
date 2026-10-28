@@ -92,6 +92,10 @@ http://<你的主机IP>:8080/#setup=...
 
 支持日间明亮模式与极客质感的深色模式（Dark Mode），提供常用快捷键（`Ctrl+Alt+Del`、`Win`、`Alt+Tab`、`Esc`）与键盘状态锁指示灯（NumLock、CapsLock、ScrollLock 双向同步）。
 
+- **视频健康状态**：只有收到首个有效 JPEG 帧后才显示 `LIVE`。超过 5 秒没有有效帧（兼容 1 FPS 采集）会标记为“已停止更新”，清除缓存画面与 FPS，并显示最近有效帧的时间；恢复首帧后自动回到 `LIVE`，无需重新配置。
+- **本地退出快捷键**：开启键鼠转发后，按 `Ctrl + Alt + 反引号`（Ctrl+Alt+Backquote）会立即在本地退出转发并释放所有按键与鼠标捕获；该组合键不会发送到被控机。`Tab`、`Shift+Tab` 与 `Esc` 在转发状态下仍照常发送。相对鼠标模式下聚焦画面按 `Enter` 可捕获鼠标，锁定后 `Enter` 恢复为远程按键。
+- **UI 回归验证**：运行 `python3 scripts/verify_p2b_ui.py --repo . --output-dir /tmp/wingmankvm-p2b` 可用 Playwright 驱动真实 Chrome、配合模拟 API 验证上述视频健康状态与本地退出快捷键；`--browser-channel` 可切换浏览器通道，JSON 报告与失败截图写入输出目录。
+
 | 浅色模式 | 深色模式 |
 | :---: | :---: |
 | [![浅色控制台](docs/images/console-desktop.png)](docs/images/console-desktop.png) | [![深色控制台](docs/images/console-dark.png)](docs/images/console-dark.png) |
