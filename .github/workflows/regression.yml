@@ -36,7 +36,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config clang libclang-dev linux-libc-dev libv4l-dev
+            build-essential pkg-config clang libclang-dev linux-libc-dev libv4l-dev python3-venv
 
       - name: Install Rust 1.93.1
         run: |
