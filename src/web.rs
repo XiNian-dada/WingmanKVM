@@ -56,6 +56,7 @@ use crate::{
 };
 
 const SESSION_COOKIE: &str = "wingman_session";
+const SESSION_COOKIE_MAX_AGE_SECONDS: u32 = 43_200;
 const XTERM_JS: &str = include_str!("../web/vendor/xterm/xterm.js");
 const XTERM_FIT_JS: &str = include_str!("../web/vendor/xterm/addon-fit.js");
 const XTERM_CSS: &str = include_str!("../web/vendor/xterm/xterm.css");
@@ -839,6 +840,7 @@ async fn finish_setup(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .take();
     let session = state.sessions.create().map_err(ApiError::internal)?;
+    let session_secure = new_config.server.session_cookie_secure();
     Ok(with_session_cookie(
         Json(json!({
             "ok": true,
@@ -846,7 +848,8 @@ async fn finish_setup(
             "terminal_message": (!terminal_ready).then_some(TERMINAL_DEGRADED_MESSAGE),
         }))
         .into_response(),
-        &session,
+        Some(&session),
+        session_secure,
     ))
 }
 
@@ -1371,6 +1374,7 @@ async fn login(
     let terminal_message = (!terminal_ready).then_some(TERMINAL_DEGRADED_MESSAGE);
 
     let session = state.sessions.create().map_err(ApiError::internal)?;
+    let session_secure = state.config.read().await.server.session_cookie_secure();
     Ok(with_session_cookie(
         Json(json!({
             "ok": true,
@@ -1378,7 +1382,8 @@ async fn login(
             "terminal_message": terminal_message,
         }))
         .into_response(),
-        &session,
+        Some(&session),
+        session_secure,
     ))
 }
 
@@ -1413,12 +1418,12 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Some(token) = session_token(&headers) {
         state.sessions.revoke(token);
     }
-    let mut response = Json(json!({"ok": true})).into_response();
-    response.headers_mut().insert(
-        SET_COOKIE,
-        HeaderValue::from_static("wingman_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"),
-    );
-    response
+    let session_secure = state.config.read().await.server.session_cookie_secure();
+    with_session_cookie(
+        Json(json!({"ok": true})).into_response(),
+        None,
+        session_secure,
+    )
 }
 
 fn build_webauthn(headers: &HeaderMap) -> Result<(Webauthn, String, Url), ApiError> {
@@ -1584,6 +1589,7 @@ async fn passkey_login_finish(
     }).map_err(map_auth_error)?;
 
     let session = state.sessions.create().map_err(ApiError::internal)?;
+    let session_secure = state.config.read().await.server.session_cookie_secure();
     Ok(with_session_cookie(
         Json(json!({
             "ok": true,
@@ -1592,7 +1598,8 @@ async fn passkey_login_finish(
             "terminal_message": (!terminal_ready).then_some(TERMINAL_DEGRADED_MESSAGE),
         }))
         .into_response(),
-        &session,
+        Some(&session),
+        session_secure,
     ))
 }
 
@@ -3102,10 +3109,27 @@ fn constant_time_eq(expected: &str, actual: &str) -> bool {
     difference == 0
 }
 
-fn with_session_cookie(mut response: Response, token: &str) -> Response {
-    let cookie =
-        format!("{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200");
-    if let Ok(value) = HeaderValue::from_str(&cookie) {
+fn session_cookie_value(token: Option<&str>, secure: bool) -> String {
+    let mut cookie = format!("{SESSION_COOKIE}={}", token.unwrap_or_default());
+    cookie.push_str("; HttpOnly; SameSite=Strict; Path=/");
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    let max_age = if token.is_some() {
+        SESSION_COOKIE_MAX_AGE_SECONDS
+    } else {
+        0
+    };
+    cookie.push_str(&format!("; Max-Age={max_age}"));
+    cookie
+}
+
+fn with_session_cookie(
+    mut response: Response,
+    token: Option<&str>,
+    secure: bool,
+) -> Response {
+    if let Ok(value) = HeaderValue::from_str(&session_cookie_value(token, secure)) {
         response.headers_mut().insert(SET_COOKIE, value);
     }
     response
@@ -3732,6 +3756,79 @@ mod tests {
         assert!(constant_time_eq("correct-token", "correct-token"));
         assert!(!constant_time_eq("correct-token", "wrong-token"));
         assert!(!constant_time_eq("correct-token", "correct-token-extra"));
+    }
+
+    #[test]
+    fn session_cookie_issuance_and_deletion_share_attributes() {
+        let issued = session_cookie_value(Some("token"), false);
+        assert_eq!(
+            issued,
+            "wingman_session=token; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200"
+        );
+        assert!(!issued.contains("; Secure"));
+
+        let issued_secure = session_cookie_value(Some("token"), true);
+        assert_eq!(
+            issued_secure,
+            "wingman_session=token; HttpOnly; SameSite=Strict; Path=/; Secure; Max-Age=43200"
+        );
+
+        let deleted = session_cookie_value(None, false);
+        assert_eq!(
+            deleted,
+            "wingman_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
+        );
+        let deleted_secure = session_cookie_value(None, true);
+        assert_eq!(
+            deleted_secure,
+            "wingman_session=; HttpOnly; SameSite=Strict; Path=/; Secure; Max-Age=0"
+        );
+
+        let response = with_session_cookie(StatusCode::OK.into_response(), None, true);
+        assert_eq!(
+            response.headers().get(SET_COOKIE).unwrap(),
+            deleted_secure.as_str()
+        );
+    }
+
+    #[test]
+    fn session_cookie_policy_ignores_host_origin_and_forwarding_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", HeaderValue::from_static("kvm.example.com"));
+        headers.insert("origin", HeaderValue::from_static("https://kvm.example.com"));
+        headers.insert(
+            "x-forwarded-proto",
+            HeaderValue::from_static("https"),
+        );
+        headers.insert("x-forwarded-ssl", HeaderValue::from_static("on"));
+        headers.insert("forwarded", HeaderValue::from_static("proto=https"));
+
+        let mut server = config::ServerConfig::default();
+        assert!(!server.session_cookie_secure());
+        assert!(
+            !session_cookie_value(Some("token"), server.session_cookie_secure())
+                .contains("; Secure")
+        );
+
+        server.public_origin = Some("http://kvm.example.com".to_owned());
+        assert!(!server.session_cookie_secure());
+        assert!(
+            !session_cookie_value(Some("token"), server.session_cookie_secure())
+                .contains("; Secure")
+        );
+
+        // HTTPS stays HTTPS even when every request header tries to downgrade
+        // it. The headers above are never an input to this decision.
+        server.public_origin = Some("https://kvm.example.com".to_owned());
+        headers.insert(
+            "x-forwarded-proto",
+            HeaderValue::from_static("http"),
+        );
+        assert!(server.session_cookie_secure());
+        assert!(
+            session_cookie_value(Some("token"), server.session_cookie_secure())
+                .contains("; Secure")
+        );
     }
 
     #[test]

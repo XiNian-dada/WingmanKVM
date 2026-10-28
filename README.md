@@ -44,6 +44,8 @@ sudo ./deploy/install.sh --binary ./target/release/wingmankvm
 
 安装脚本会自动配置 systemd 服务、USB Gadget 复合设备（键盘、相对鼠标、绝对指针、虚拟介质）、权限规则，并启动监听在 `8080` 端口。
 
+新装默认使用**受限网页终端**，`wingman` 不拥有 sudo 权限。需要主机 root 维护时，由主机管理员显式传入 `--maintenance-mode privileged`；旧版已有 root 授权的升级必须明确选择模式，详见[维护权限模式](docs/MAINTENANCE_MODES.md)。升级会保留整组托管文件的回滚快照，并检查 `/healthz`，详见[升级与恢复](docs/UPGRADE_RECOVERY.md)。
+
 ### 3. 打开网页完成初始化
 
 安装完成后终端会输出一次性初始化地址：
