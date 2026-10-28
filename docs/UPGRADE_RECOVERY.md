@@ -111,9 +111,12 @@ git cleanup. An uncommitted transaction cannot exit successfully merely because
 the shell would otherwise return zero. If the pending marker cannot be cleared,
 the transaction is not reported complete.
 
-`SIGKILL`, power loss, or kernel failure cannot run traps. `PENDING` remains and
-the next installer refuses to change files. Recover with the self-contained
-command in the transaction directory:
+`SIGKILL` cannot run traps; the published `PENDING` marker remains and the next
+installer refuses to change files. Power loss or kernel failure also cannot run
+traps, but this installer does not fsync every snapshot and directory: it does
+not guarantee recovery from storage loss or a filesystem crash. Inspect the
+retained store and managed files after such an event. For an interrupted
+transaction with an intact snapshot, use the self-contained recovery command:
 
 ```bash
 sudo /var/lib/wingmankvm-deploy/txn.<...>/recover.sh
