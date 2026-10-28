@@ -158,6 +158,22 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
+    /// Whether minted and cleared session cookies must carry the `Secure`
+    /// attribute. Only the validated `public_origin` decides this; request
+    /// headers such as `Host`, `Origin` or `X-Forwarded-Proto` never do.
+    ///
+    /// An unset or explicit `http://` origin keeps direct HTTP debug
+    /// compatibility. A parsed `https://` origin enables `Secure`. A malformed
+    /// `Some` value fails closed with `Secure` enabled; configuration loading
+    /// and saving still reject invalid origins.
+    pub fn session_cookie_secure(&self) -> bool {
+        match self.public_origin.as_deref() {
+            None => false,
+            Some(origin) => NormalizedOrigin::parse(origin)
+                .map_or(true, |origin| !origin.is_http()),
+        }
+    }
+
     /// Parse the configured listener into a concrete socket address.
     ///
     /// `listen_address` must be a bare IPv4 or IPv6 literal: hostnames,
@@ -1128,6 +1144,34 @@ mod tests {
 
         let without: ServerConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(without.public_origin, None);
+    }
+
+    #[test]
+    fn session_cookie_secure_uses_only_the_configured_public_origin() {
+        let mut server = ServerConfig::default();
+        assert!(!server.session_cookie_secure());
+
+        for origin in ["http://kvm.example.com", "http://127.0.0.1:8080"] {
+            server.public_origin = Some(origin.to_owned());
+            assert!(!server.session_cookie_secure(), "{origin}");
+        }
+
+        for origin in [
+            "https://kvm.example.com",
+            "HTTPS://KVM.Example.COM:443",
+            "https://127.0.0.1:8443",
+            "https://[2001:db8::1]:443",
+        ] {
+            server.public_origin = Some(origin.to_owned());
+            assert!(server.session_cookie_secure(), "{origin}");
+        }
+
+        // Persisted configuration rejects these values, but if one is present
+        // in memory it must fail closed rather than silently dropping Secure.
+        for origin in ["not-an-origin", "ftp://kvm.example.com", ""] {
+            server.public_origin = Some(origin.to_owned());
+            assert!(server.session_cookie_secure(), "{origin:?}");
+        }
     }
 
     #[test]
