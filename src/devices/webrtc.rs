@@ -1,10 +1,13 @@
 use std::{
     collections::HashMap,
+    future::Future,
+    io::{self, Read},
     net::{IpAddr, SocketAddr},
-    path::PathBuf,
-    process::Stdio,
-    sync::{Arc, Mutex},
-    time::Duration,
+    path::{Path, PathBuf},
+    pin::Pin,
+    process::{Child as StdChild, Command as StdCommand, ExitStatus, Stdio as StdStdio},
+    sync::{Arc, Mutex, Weak},
+    time::{Duration, Instant},
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -14,9 +17,9 @@ use thiserror::Error;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UdpSocket, lookup_host},
-    process::Command,
-    sync::Mutex as AsyncMutex,
-    task::JoinHandle,
+    process::{Child as TokioChild, Command as TokioCommand},
+    sync::{mpsc, watch, Mutex as AsyncMutex},
+    task::AbortHandle,
 };
 use webrtc::{
     api::{
@@ -42,15 +45,49 @@ use webrtc::{
     track::track_local::track_local_static_sample::TrackLocalStaticSample,
 };
 
+#[cfg(unix)]
+use std::os::unix::{
+    io::AsRawFd,
+    process::CommandExt,
+};
+
 use crate::{
+    auth::SessionGuard,
     config::{H264Config, H264Encoder},
     devices::video::VideoManager,
 };
 
 const MAX_OFFER_BYTES: usize = 64 * 1024;
 const ICE_GATHER_TIMEOUT: Duration = Duration::from_secs(5);
-const SESSION_TTL: Duration = Duration::from_secs(10 * 60);
 const MAX_ACCESS_UNIT_BUFFER: usize = 16 * 1024 * 1024;
+
+const DEFAULT_UNCONNECTED_DEADLINE: Duration = Duration::from_secs(30);
+const DEFAULT_DISCONNECTED_GRACE: Duration = Duration::from_secs(15);
+const DEFAULT_MEDIA_IDLE_DEADLINE: Duration = Duration::from_secs(60);
+const SESSION_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
+const ENCODER_EXIT_GRACE: Duration = Duration::from_secs(2);
+const ENCODER_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+
+const PROBE_DEADLINE: Duration = Duration::from_secs(3);
+const PROBE_MAX_OUTPUT: usize = 1024 * 1024;
+const PROBE_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const PROBE_REAP_TIMEOUT: Duration = Duration::from_secs(2);
+const PROBE_READ_CHUNK: usize = 16 * 1024;
+const MAX_RETAINED_PROBES: usize = 4;
+const PROBE_BUSY: &str = "H.264 编码器探测暂时不可用";
+const PROBE_CLEANUP_FAILED: &str = "H.264 编码器探测清理失败";
+
+#[cfg(unix)]
+struct RetainedProbes {
+    children: Vec<StdChild>,
+    reserved: usize,
+}
+
+#[cfg(unix)]
+static RETAINED_PROBES: Mutex<RetainedProbes> = Mutex::new(RetainedProbes {
+    children: Vec::new(),
+    reserved: 0,
+});
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct WebRtcOfferRequest {
@@ -86,6 +123,8 @@ pub enum WebRtcError {
     Unavailable(String),
     #[error("H.264 会话已达到上限")]
     Capacity,
+    #[error("WebRTC 会话授权已失效")]
+    Unauthorized,
     #[error("{0}")]
     Internal(String),
 }
@@ -99,8 +138,53 @@ struct EncoderSpec {
 }
 
 struct Session {
-    peer: Arc<RTCPeerConnection>,
-    encoder_task: JoinHandle<()>,
+    shutdown: watch::Sender<bool>,
+    state: watch::Sender<ConnectionPhase>,
+    closed: watch::Receiver<bool>,
+}
+
+/// Keeps a negotiating peer from outliving a cancelled offer future.
+///
+/// Publication releases the guard. Every other path, including a future
+/// dropped between awaits, closes the peer with the same bounded wait used by
+/// established sessions.
+struct NegotiationGuard {
+    peer: Option<Arc<RTCPeerConnection>>,
+}
+
+impl NegotiationGuard {
+    fn new(peer: Arc<RTCPeerConnection>) -> Self {
+        Self { peer: Some(peer) }
+    }
+
+    async fn close(&mut self) {
+        if let Some(peer) = self.peer.take() {
+            let _ = tokio::time::timeout(SESSION_CLOSE_TIMEOUT, peer.close()).await;
+        }
+    }
+
+    fn publish(&mut self) {
+        self.peer = None;
+    }
+}
+
+impl Drop for NegotiationGuard {
+    fn drop(&mut self) {
+        let Some(peer) = self.peer.take() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        // `close` is async, so a dropped offer must hand the peer to a small
+        // owned task. The regular close path still awaits it explicitly; this
+        // branch only covers cancellation and unexpected early returns.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.spawn(async move {
+                let _ = tokio::time::timeout(SESSION_CLOSE_TIMEOUT, peer.close()).await;
+            });
+        }));
+    }
 }
 
 struct UdpBinding {
@@ -117,9 +201,137 @@ struct Inner {
     udp_binding: AsyncMutex<Option<UdpBinding>>,
 }
 
+impl Drop for Inner {
+    fn drop(&mut self) {
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for session in sessions.values() {
+            let _ = session.shutdown.send_replace(true);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct WebRtcManager {
     inner: Arc<Inner>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConnectionPhase {
+    New,
+    Connecting,
+    Connected,
+    Disconnected,
+    Failed,
+    Closed,
+    Other,
+}
+
+impl ConnectionPhase {
+    fn from_rtc(state: RTCPeerConnectionState) -> Self {
+        match state {
+            RTCPeerConnectionState::New => Self::New,
+            RTCPeerConnectionState::Connecting => Self::Connecting,
+            RTCPeerConnectionState::Connected => Self::Connected,
+            RTCPeerConnectionState::Disconnected => Self::Disconnected,
+            RTCPeerConnectionState::Failed => Self::Failed,
+            RTCPeerConnectionState::Closed => Self::Closed,
+            _ => Self::Other,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LifecyclePolicy {
+    unconnected: Duration,
+    disconnected: Duration,
+    media_idle: Duration,
+    encoder_shutdown: Duration,
+}
+
+impl Default for LifecyclePolicy {
+    fn default() -> Self {
+        Self {
+            unconnected: DEFAULT_UNCONNECTED_DEADLINE,
+            disconnected: DEFAULT_DISCONNECTED_GRACE,
+            media_idle: DEFAULT_MEDIA_IDLE_DEADLINE,
+            encoder_shutdown: ENCODER_CLEANUP_TIMEOUT,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LifecycleExpiry {
+    Unconnected,
+    Disconnected,
+    MediaIdle,
+    ConnectionEnded,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LifecycleDecision {
+    Wait(Instant),
+    Expire(LifecycleExpiry),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EndReason {
+    Auth,
+    Shutdown,
+    Encoder,
+    Watchdog(LifecycleExpiry),
+}
+
+struct LifecycleEnd {
+    reason: EndReason,
+    encoder: Option<Result<(), WebRtcError>>,
+}
+
+type EncoderFuture = Pin<Box<dyn Future<Output = Result<(), WebRtcError>> + Send>>;
+
+/// Pure lifecycle policy used by the supervisor and by deterministic tests.
+///
+/// Connection state deadlines are independent of session wall-clock age. A
+/// connected session is only reclaimed when it has not written an encoded
+/// access unit for `media_idle`; healthy media keeps it alive indefinitely
+/// until the authenticated browser session ends.
+fn lifecycle_decision(
+    now: Instant,
+    started: Instant,
+    phase: ConnectionPhase,
+    phase_since: Instant,
+    last_media: Option<Instant>,
+    policy: &LifecyclePolicy,
+) -> LifecycleDecision {
+    let (base, limit, expiry) = match phase {
+        ConnectionPhase::New | ConnectionPhase::Connecting | ConnectionPhase::Other => (
+            started,
+            policy.unconnected,
+            LifecycleExpiry::Unconnected,
+        ),
+        ConnectionPhase::Disconnected => (
+            phase_since,
+            policy.disconnected,
+            LifecycleExpiry::Disconnected,
+        ),
+        ConnectionPhase::Connected => {
+            let base = last_media
+                .filter(|progress| *progress >= phase_since)
+                .unwrap_or(phase_since);
+            (base, policy.media_idle, LifecycleExpiry::MediaIdle)
+        }
+        ConnectionPhase::Failed | ConnectionPhase::Closed => {
+            return LifecycleDecision::Expire(LifecycleExpiry::ConnectionEnded);
+        }
+    };
+    let due = base.checked_add(limit).unwrap_or(base);
+    if now >= due {
+        LifecycleDecision::Expire(expiry)
+    } else {
+        LifecycleDecision::Wait(due)
+    }
 }
 
 impl WebRtcManager {
@@ -209,7 +421,7 @@ impl WebRtcManager {
             .cloned()
             .collect::<Vec<_>>();
         for session_id in session_ids {
-            self.close(&session_id).await;
+            close_session(&self.inner, &session_id).await;
         }
         let mut binding = self.inner.udp_binding.lock().await;
         if binding
@@ -246,7 +458,11 @@ impl WebRtcManager {
     pub async fn offer(
         &self,
         request: WebRtcOfferRequest,
+        guard: SessionGuard,
     ) -> Result<WebRtcOfferResponse, WebRtcError> {
+        if !guard.is_active() {
+            return Err(WebRtcError::Unauthorized);
+        }
         if !request.sdp_type.eq_ignore_ascii_case("offer") {
             return Err(WebRtcError::InvalidOffer(
                 "WebRTC 请求类型必须是 offer".to_owned(),
@@ -259,6 +475,9 @@ impl WebRtcManager {
         }
 
         let _offer_guard = self.inner.offer_lock.lock().await;
+        if !guard.is_active() {
+            return Err(WebRtcError::Unauthorized);
+        }
         let config = self
             .inner
             .config
@@ -339,6 +558,7 @@ impl WebRtcManager {
                 .await
                 .map_err(internal_error)?,
         );
+        let mut negotiation = NegotiationGuard::new(peer.clone());
         let track = Arc::new(TrackLocalStaticSample::new(
             RTCRtpCodecCapability {
                 mime_type: MIME_TYPE_H264.to_owned(),
@@ -360,7 +580,7 @@ impl WebRtcManager {
         let remote = RTCSessionDescription::offer(request.sdp)
             .map_err(|error| WebRtcError::InvalidOffer(error.to_string()))?;
         if let Err(error) = peer.set_remote_description(remote).await {
-            let _ = peer.close().await;
+            negotiation.close().await;
             return Err(WebRtcError::InvalidOffer(error.to_string()));
         }
         let mut local = match async {
@@ -380,7 +600,7 @@ impl WebRtcManager {
         {
             Ok(local) => local,
             Err(error) => {
-                let _ = peer.close().await;
+                negotiation.close().await;
                 return Err(error);
             }
         };
@@ -392,33 +612,73 @@ impl WebRtcManager {
             match advertise_udp_endpoint(&local.sdp, endpoint, local_port) {
                 Ok(sdp) => local.sdp = sdp,
                 Err(error) => {
-                    let _ = peer.close().await;
+                    negotiation.close().await;
                     return Err(error);
                 }
             }
         }
 
+        if !guard.is_active() {
+            negotiation.close().await;
+            return Err(WebRtcError::Unauthorized);
+        }
+
         let session_id = generate_session_id()?;
-        install_connection_cleanup(&self.inner, &peer, &session_id);
-        let video = self.inner.video.clone();
-        let encoder_id = session_id.clone();
-        let encoder_task = tokio::spawn(async move {
-            if let Err(error) = run_encoder(video, track, encoder, config).await {
-                tracing::warn!(session_id = %encoder_id, %error, "H.264 encoder session stopped");
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (state_tx, state_rx) = watch::channel(ConnectionPhase::New);
+        let (closed_tx, closed_rx) = watch::channel(false);
+        let publication = {
+            let mut sessions = self
+                .inner
+                .sessions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            // Recheck authorization and capacity while the map is locked so a
+            // revoke or another concurrent offer cannot publish a peer that
+            // was never authorized or that exceeds the session limit. All
+            // async closing happens after this lexical lock scope ends.
+            if !guard.is_active() {
+                Err(WebRtcError::Unauthorized)
+            } else if sessions.len() >= usize::from(config.max_sessions) {
+                Err(WebRtcError::Capacity)
+            } else {
+                sessions.insert(
+                    session_id.clone(),
+                    Session {
+                        shutdown: shutdown_tx,
+                        state: state_tx,
+                        closed: closed_rx,
+                    },
+                );
+                Ok(())
             }
-        });
-        self.inner
-            .sessions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(
-                session_id.clone(),
-                Session {
-                    peer: peer.clone(),
-                    encoder_task,
-                },
-            );
-        install_session_ttl(&self.inner, session_id.clone());
+        };
+        if let Err(error) = publication {
+            negotiation.close().await;
+            return Err(error);
+        }
+        // Register only after the map entry exists, so every state transition
+        // can update the supervisor's channel rather than being dropped.
+        install_connection_cleanup(&self.inner, &peer, &session_id);
+        negotiation.publish();
+
+        let inner = Arc::downgrade(&self.inner);
+        let task_session_id = session_id.clone();
+        let video = self.inner.video.clone();
+        tokio::spawn(run_session_supervisor(
+            inner,
+            task_session_id,
+            peer,
+            video,
+            track,
+            encoder,
+            config,
+            guard,
+            shutdown_rx,
+            state_rx,
+            closed_tx,
+            LifecyclePolicy::default(),
+        ));
 
         Ok(WebRtcOfferResponse {
             sdp_type: "answer",
@@ -428,19 +688,34 @@ impl WebRtcManager {
     }
 
     pub async fn close(&self, session_id: &str) -> bool {
-        let session = self
-            .inner
+        close_session(&self.inner, session_id).await
+    }
+}
+
+async fn close_session(inner: &Inner, session_id: &str) -> bool {
+    let (shutdown, mut closed) = {
+        let sessions = inner
             .sessions
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(session_id);
-        let Some(session) = session else {
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(session) = sessions.get(session_id) else {
             return false;
         };
-        session.encoder_task.abort();
-        let _ = session.peer.close().await;
-        true
+        (session.shutdown.clone(), session.closed.clone())
+    };
+    let _ = shutdown.send_replace(true);
+    // The supervisor removes the map entry before closing the peer and then
+    // signals this channel. Bound the wait so an unhealthy peer cannot stall
+    // HTTP configuration updates indefinitely.
+    let _ = tokio::time::timeout(SESSION_CLOSE_TIMEOUT, wait_for_true(&mut closed)).await;
+    true
+}
+
+async fn wait_for_true(receiver: &mut watch::Receiver<bool>) {
+    if *receiver.borrow() {
+        return;
     }
+    let _ = receiver.changed().await;
 }
 
 fn advertise_udp_endpoint(
@@ -487,36 +762,159 @@ fn install_connection_cleanup(inner: &Arc<Inner>, peer: &Arc<RTCPeerConnection>,
         let session_id = session_id.clone();
         Box::pin(async move {
             tracing::info!(%session_id, ?state, "WebRTC connection state changed");
-            if matches!(
-                state,
-                RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
-            ) && let Some(inner) = weak.upgrade()
-            {
-                close_inner(inner, &session_id).await;
+            let phase = ConnectionPhase::from_rtc(state);
+            if let Some(inner) = weak.upgrade() {
+                let sessions = inner
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Some(session) = sessions.get(&session_id) {
+                    session.state.send_replace(phase);
+                    if matches!(phase, ConnectionPhase::Failed | ConnectionPhase::Closed) {
+                        let _ = session.shutdown.send_replace(true);
+                    }
+                }
             }
         })
     }));
 }
 
-fn install_session_ttl(inner: &Arc<Inner>, session_id: String) {
-    let weak = Arc::downgrade(inner);
-    tokio::spawn(async move {
-        tokio::time::sleep(SESSION_TTL).await;
-        if let Some(inner) = weak.upgrade() {
-            close_inner(inner, &session_id).await;
+/// The one lifecycle task for a session. It owns the peer, the encoder future,
+/// the shutdown receiver and the authenticated session guard. The map only
+/// keeps signalling channels, never a strong reference back to `Inner`.
+#[allow(clippy::too_many_arguments)]
+async fn run_session_supervisor(
+    inner: Weak<Inner>,
+    session_id: String,
+    peer: Arc<RTCPeerConnection>,
+    video: VideoManager,
+    track: Arc<TrackLocalStaticSample>,
+    encoder: EncoderSpec,
+    config: H264Config,
+    guard: SessionGuard,
+    shutdown: watch::Receiver<bool>,
+    state: watch::Receiver<ConnectionPhase>,
+    closed: watch::Sender<bool>,
+    policy: LifecyclePolicy,
+) {
+    let (progress_tx, progress_rx) = mpsc::channel(1);
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let encoder_future: EncoderFuture = Box::pin(run_encoder(
+        video,
+        track,
+        encoder,
+        config,
+        cancel_rx,
+        progress_tx,
+    ));
+    let end = supervise_lifecycle(
+        &guard,
+        shutdown,
+        state,
+        progress_rx,
+        encoder_future,
+        cancel_tx,
+        policy,
+    )
+    .await;
+
+    match &end.encoder {
+        Some(Ok(())) => tracing::info!(%session_id, "H.264 encoder session ended"),
+        Some(Err(error)) => {
+            tracing::warn!(%session_id, %error, "H.264 encoder session stopped");
         }
-    });
+        None => {
+            tracing::info!(%session_id, reason = ?end.reason, "WebRTC session lifecycle ended");
+        }
+    }
+
+    // Remove the map entry before closing the peer. The peer state callback
+    // re-enters the map; if it ran during close while the entry still existed
+    // it could signal a session that is already being torn down.
+    if let Some(inner) = inner.upgrade() {
+        inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&session_id);
+    }
+    let _ = tokio::time::timeout(SESSION_CLOSE_TIMEOUT, peer.close()).await;
+    let _ = closed.send_replace(true);
 }
 
-async fn close_inner(inner: Arc<Inner>, session_id: &str) {
-    let session = inner
-        .sessions
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(session_id);
-    if let Some(session) = session {
-        session.encoder_task.abort();
-        let _ = session.peer.close().await;
+async fn supervise_lifecycle(
+    guard: &SessionGuard,
+    mut shutdown: watch::Receiver<bool>,
+    mut state: watch::Receiver<ConnectionPhase>,
+    mut progress: mpsc::Receiver<()>,
+    mut encoder: EncoderFuture,
+    cancel: watch::Sender<bool>,
+    policy: LifecyclePolicy,
+) -> LifecycleEnd {
+    let started = Instant::now();
+    let mut phase = *state.borrow_and_update();
+    let mut phase_since = started;
+    let mut last_media = None;
+    let mut progress_open = true;
+    let mut encoder_done = false;
+    let mut encoder_result = None;
+
+    let reason = loop {
+        if !guard.is_active() {
+            break EndReason::Auth;
+        }
+        let now = Instant::now();
+        let due = match lifecycle_decision(
+            now,
+            started,
+            phase,
+            phase_since,
+            last_media,
+            &policy,
+        ) {
+            LifecycleDecision::Expire(reason) => break EndReason::Watchdog(reason),
+            LifecycleDecision::Wait(due) => due,
+        };
+        let sleep = tokio::time::sleep_until(tokio::time::Instant::from_std(due));
+        tokio::pin!(sleep);
+        tokio::select! {
+            biased;
+            _ = guard.wait_for_end() => break EndReason::Auth,
+            _ = wait_for_true(&mut shutdown) => break EndReason::Shutdown,
+            result = state.changed() => {
+                if result.is_err() {
+                    break EndReason::Shutdown;
+                }
+                let next = *state.borrow_and_update();
+                if next != phase {
+                    phase = next;
+                    phase_since = Instant::now();
+                }
+            }
+            maybe = progress.recv(), if progress_open => match maybe {
+                Some(()) => last_media = Some(Instant::now()),
+                None => progress_open = false,
+            },
+            result = &mut encoder, if !encoder_done => {
+                encoder_done = true;
+                encoder_result = Some(result);
+                break EndReason::Encoder;
+            }
+            _ = &mut sleep => {}
+        }
+    };
+
+    if !encoder_done {
+        // Cooperative cancellation lets `run_encoder` kill and reap its child
+        // and abort the stdin/stdout/stderr tasks. If that takes too long the
+        // RAII guard cancels the child and tasks on drop.
+        let _ = cancel.send_replace(true);
+        let _ = tokio::time::timeout(policy.encoder_shutdown, &mut encoder).await;
+    }
+
+    LifecycleEnd {
+        reason,
+        encoder: encoder_result,
     }
 }
 
@@ -527,25 +925,32 @@ fn generate_session_id() -> Result<String, WebRtcError> {
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
+#[derive(Clone, Copy)]
+struct ProbeLimits {
+    deadline: Duration,
+    max_output: usize,
+}
+
+impl Default for ProbeLimits {
+    fn default() -> Self {
+        Self {
+            deadline: PROBE_DEADLINE,
+            max_output: PROBE_MAX_OUTPUT,
+        }
+    }
+}
+
 fn probe_encoder(config: &H264Config) -> Result<EncoderSpec, String> {
+    probe_encoder_with(config, ProbeLimits::default())
+}
+
+fn probe_encoder_with(config: &H264Config, limits: ProbeLimits) -> Result<EncoderSpec, String> {
     config.validate_udp_mapping().map_err(str::to_owned)?;
     let executable = config
         .ffmpeg_path
         .clone()
         .unwrap_or_else(|| PathBuf::from("ffmpeg"));
-    let output = std::process::Command::new(&executable)
-        .args(["-hide_banner", "-encoders"])
-        .output()
-        .map_err(|error| format!("未找到 FFmpeg：{error}"))?;
-    if !output.status.success() {
-        return Err("FFmpeg 无法列出编码器".to_owned());
-    }
-    let listing = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
+    let listing = run_probe_command(&executable, limits)?;
     let (codec, label, software) = select_encoder(config, &listing)?;
     Ok(EncoderSpec {
         executable,
@@ -553,6 +958,302 @@ fn probe_encoder(config: &H264Config) -> Result<EncoderSpec, String> {
         label,
         software,
     })
+}
+
+#[cfg(unix)]
+struct ProbeReservation;
+
+#[cfg(unix)]
+impl ProbeReservation {
+    /// Poll retained children and reserve one of the bounded slots. The slot is
+    /// held until this probe has either reaped its child or retained it.
+    fn acquire() -> Result<Self, String> {
+        let mut probes = RETAINED_PROBES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut index = 0;
+        while index < probes.children.len() {
+            match probes.children[index].try_wait() {
+                Ok(Some(_)) => {
+                    probes.children.swap_remove(index);
+                }
+                Ok(None) | Err(_) => index += 1,
+            }
+        }
+        if probes.children.len() + probes.reserved >= MAX_RETAINED_PROBES {
+            return Err(PROBE_BUSY.to_owned());
+        }
+        probes.reserved += 1;
+        Ok(Self)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ProbeReservation {
+    fn drop(&mut self) {
+        let mut probes = RETAINED_PROBES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        probes.reserved = probes.reserved.saturating_sub(1);
+    }
+}
+
+#[cfg(unix)]
+struct ProbeProcess {
+    child: Option<StdChild>,
+    _reservation: ProbeReservation,
+}
+
+#[cfg(unix)]
+impl ProbeProcess {
+    fn new(child: StdChild, reservation: ProbeReservation) -> Self {
+        Self {
+            child: Some(child),
+            _reservation: reservation,
+        }
+    }
+
+    fn child_mut(&mut self) -> &mut StdChild {
+        self.child.as_mut().expect("probe child is owned")
+    }
+
+    fn poll_exit(&mut self, deadline: Instant) -> Option<ExitStatus> {
+        loop {
+            let status = match self.child.as_mut()?.try_wait() {
+                Ok(Some(status)) => status,
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        return None;
+                    }
+                    std::thread::sleep(PROBE_POLL_INTERVAL);
+                    continue;
+                }
+                Err(_) => return None,
+            };
+            self.child = None;
+            return Some(status);
+        }
+    }
+
+    /// Kill the private group before the leader is reaped. If SIGKILL cannot
+    /// reap it promptly, hand ownership to the bounded retained-child registry
+    /// instead of waiting without a bound or dropping the handle.
+    fn terminate(&mut self) -> bool {
+        let Some(mut child) = self.child.take() else {
+            return true;
+        };
+        signal_probe_group(&child);
+        let _ = child.kill();
+        if wait_for_probe_reap(&mut child, PROBE_REAP_TIMEOUT) {
+            true
+        } else {
+            retain_probe_child(child);
+            false
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ProbeProcess {
+    fn drop(&mut self) {
+        // Covers panics and a future dropped between ownership transfer and the
+        // explicit termination paths.
+        let _ = self.terminate();
+    }
+}
+
+#[cfg(unix)]
+fn retain_probe_child(child: StdChild) {
+    let mut probes = RETAINED_PROBES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // A reservation was held for this probe, so the registry cannot grow past
+    // MAX_RETAINED_PROBES even when several probes finish concurrently.
+    probes.children.push(child);
+}
+
+#[cfg(unix)]
+fn signal_probe_group(child: &StdChild) {
+    let pid = child.id();
+    if let Ok(pid) = i32::try_from(pid)
+        && pid > 1
+    {
+        // The leader has not been reaped yet, so its private group id cannot
+        // have been reused. Signal the group before the child is reaped.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn wait_for_probe_reap(child: &mut StdChild, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => {}
+            Err(_) => return false,
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(PROBE_POLL_INTERVAL);
+    }
+}
+
+#[cfg(unix)]
+fn probe_failure(message: &str, reaped: bool) -> String {
+    if reaped {
+        message.to_owned()
+    } else {
+        PROBE_CLEANUP_FAILED.to_owned()
+    }
+}
+
+#[cfg(unix)]
+fn run_probe_command(executable: &Path, limits: ProbeLimits) -> Result<String, String> {
+    let reservation = ProbeReservation::acquire()?;
+    let mut command = StdCommand::new(executable);
+    command
+        .args(["-hide_banner", "-encoders"])
+        .stdin(StdStdio::null())
+        .stdout(StdStdio::piped())
+        .stderr(StdStdio::piped());
+    // A private process group lets timeout/limit paths terminate the leader and
+    // every descendant that could still be holding the pipes.
+    command.process_group(0);
+    let child = command
+        .spawn()
+        .map_err(|_| "无法启动 FFmpeg 进行编码器探测".to_owned())?;
+    let mut probe = ProbeProcess::new(child, reservation);
+    let mut stdout = match probe.child_mut().stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            let reaped = probe.terminate();
+            return Err(probe_failure("H.264 编码器探测读取失败", reaped));
+        }
+    };
+    let mut stderr = match probe.child_mut().stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            let reaped = probe.terminate();
+            return Err(probe_failure("H.264 编码器探测读取失败", reaped));
+        }
+    };
+    if set_nonblocking(&stdout).is_err() || set_nonblocking(&stderr).is_err() {
+        let reaped = probe.terminate();
+        return Err(probe_failure("H.264 编码器探测读取失败", reaped));
+    }
+
+    let deadline = Instant::now() + limits.deadline;
+    let mut remaining = limits.max_output;
+    let mut stdout_bytes = Vec::new();
+    let mut stderr_bytes = Vec::new();
+    let mut stdout_open = true;
+    let mut stderr_open = true;
+
+    loop {
+        if stdout_open {
+            match drain_pipe(&mut stdout, &mut stdout_bytes, &mut remaining) {
+                Ok(open) => stdout_open = open,
+                Err(ProbeReadError::Limit) => {
+                    let reaped = probe.terminate();
+                    return Err(probe_failure("H.264 编码器探测输出超过限制", reaped));
+                }
+                Err(ProbeReadError::Io) => {
+                    let reaped = probe.terminate();
+                    return Err(probe_failure("H.264 编码器探测读取失败", reaped));
+                }
+            }
+        }
+        if stderr_open {
+            match drain_pipe(&mut stderr, &mut stderr_bytes, &mut remaining) {
+                Ok(open) => stderr_open = open,
+                Err(ProbeReadError::Limit) => {
+                    let reaped = probe.terminate();
+                    return Err(probe_failure("H.264 编码器探测输出超过限制", reaped));
+                }
+                Err(ProbeReadError::Io) => {
+                    let reaped = probe.terminate();
+                    return Err(probe_failure("H.264 编码器探测读取失败", reaped));
+                }
+            }
+        }
+
+        if !stdout_open && !stderr_open {
+            match probe.poll_exit(deadline) {
+                Some(status) if status.success() => break,
+                Some(_) => return Err("FFmpeg 无法列出编码器".to_owned()),
+                None => {
+                    let reaped = probe.terminate();
+                    return Err(probe_failure("H.264 编码器探测超时", reaped));
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            // A descendant may still hold the pipes after the leader exits.
+            // Kill the whole private group before reaping the leader.
+            let reaped = probe.terminate();
+            return Err(probe_failure("H.264 编码器探测超时", reaped));
+        }
+        std::thread::sleep(PROBE_POLL_INTERVAL);
+    }
+
+    let mut listing = String::from_utf8_lossy(&stdout_bytes).into_owned();
+    listing.push('\n');
+    listing.push_str(&String::from_utf8_lossy(&stderr_bytes));
+    Ok(listing)
+}
+
+#[cfg(not(unix))]
+fn run_probe_command(_executable: &Path, _limits: ProbeLimits) -> Result<String, String> {
+    // The subprocess supervision below relies on Unix nonblocking pipes and
+    // process groups. Prefer an explicit, safe unavailability over an
+    // unbounded `Command::output` fallback.
+    Err("当前平台不支持有界的 H.264 编码器探测".to_owned())
+}
+
+enum ProbeReadError {
+    Limit,
+    Io,
+}
+
+#[cfg(unix)]
+fn drain_pipe<R: Read>(
+    reader: &mut R,
+    output: &mut Vec<u8>,
+    remaining: &mut usize,
+) -> Result<bool, ProbeReadError> {
+    let mut chunk = [0_u8; PROBE_READ_CHUNK];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => return Ok(false),
+            Ok(read) => {
+                if read > *remaining {
+                    return Err(ProbeReadError::Limit);
+                }
+                *remaining -= read;
+                output.extend_from_slice(&chunk[..read]);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(ProbeReadError::Io),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn set_nonblocking<T: AsRawFd>(pipe: &T) -> io::Result<()> {
+    let fd = pipe.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn select_encoder(
@@ -587,11 +1288,89 @@ fn select_encoder(
     })
 }
 
+struct EncoderGuard {
+    child: Option<TokioChild>,
+    tasks: Vec<AbortHandle>,
+}
+
+#[cfg(unix)]
+fn signal_encoder_group(child: &TokioChild) {
+    if let Some(pid) = child.id()
+        && let Ok(pid) = i32::try_from(pid)
+        && pid > 1
+    {
+        // The private group leader has not been reaped. Kill the group before
+        // the leader is waited on so wrapper descendants cannot survive.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn signal_encoder_group(_child: &TokioChild) {}
+
+impl EncoderGuard {
+    fn new(child: TokioChild, tasks: Vec<AbortHandle>) -> Self {
+        Self {
+            child: Some(child),
+            tasks,
+        }
+    }
+
+    async fn wait_for_exit(&mut self, timeout: Duration) -> Option<ExitStatus> {
+        let child = self.child.as_mut()?;
+        match tokio::time::timeout(timeout, child.wait()).await {
+            Ok(Ok(status)) => {
+                self.child = None;
+                Some(status)
+            }
+            Ok(Err(_)) => {
+                self.child = None;
+                None
+            }
+            Err(_) => None,
+        }
+    }
+
+    async fn shutdown(&mut self) {
+        for task in self.tasks.drain(..) {
+            task.abort();
+        }
+        if let Some(mut child) = self.child.take() {
+            signal_encoder_group(&child);
+            let _ = child.start_kill();
+            let _ = tokio::time::timeout(ENCODER_CLEANUP_TIMEOUT, child.wait()).await;
+        }
+    }
+}
+
+impl Drop for EncoderGuard {
+    fn drop(&mut self) {
+        for task in self.tasks.drain(..) {
+            task.abort();
+        }
+        if let Some(child) = self.child.as_mut() {
+            signal_encoder_group(child);
+            let _ = child.start_kill();
+        }
+    }
+}
+
+async fn wait_for_cancel(receiver: &mut watch::Receiver<bool>) {
+    if *receiver.borrow() {
+        return;
+    }
+    let _ = receiver.changed().await;
+}
+
 async fn run_encoder(
     video: VideoManager,
     track: Arc<TrackLocalStaticSample>,
     encoder: EncoderSpec,
     config: H264Config,
+    mut cancel: watch::Receiver<bool>,
+    progress: mpsc::Sender<()>,
 ) -> Result<(), WebRtcError> {
     let fps = video
         .status()
@@ -602,7 +1381,7 @@ async fn run_encoder(
     let bitrate = format!("{}k", config.bitrate_kbps);
     let buffer_size = format!("{}k", config.bitrate_kbps.saturating_mul(2));
     let fps_text = fps.to_string();
-    let mut command = Command::new(&encoder.executable);
+    let mut command = TokioCommand::new(&encoder.executable);
     command.kill_on_drop(true).args([
         "-hide_banner",
         "-loglevel",
@@ -645,29 +1424,36 @@ async fn run_encoder(
     }
     command
         .args(["-bsf:v", "h264_metadata=aud=insert", "-f", "h264", "pipe:1"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdin(StdStdio::piped())
+        .stdout(StdStdio::piped())
+        .stderr(StdStdio::piped());
+    #[cfg(unix)]
+    command.as_std_mut().process_group(0);
 
     let mut child = command
         .spawn()
         .map_err(|error| WebRtcError::Unavailable(format!("无法启动 H.264 编码器：{error}")))?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| WebRtcError::Internal("无法连接 FFmpeg 输入".to_owned()))?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| WebRtcError::Internal("无法连接 FFmpeg 输出".to_owned()))?;
-    if let Some(stderr) = child.stderr.take() {
+
+    let Some(mut stdin) = child.stdin.take() else {
+        signal_encoder_group(&child);
+        let _ = child.start_kill();
+        let _ = tokio::time::timeout(ENCODER_CLEANUP_TIMEOUT, child.wait()).await;
+        return Err(WebRtcError::Internal("无法连接 FFmpeg 输入".to_owned()));
+    };
+    let Some(mut stdout) = child.stdout.take() else {
+        signal_encoder_group(&child);
+        let _ = child.start_kill();
+        let _ = tokio::time::timeout(ENCODER_CLEANUP_TIMEOUT, child.wait()).await;
+        return Err(WebRtcError::Internal("无法连接 FFmpeg 输出".to_owned()));
+    };
+    let stderr_task = child.stderr.take().map(|stderr| {
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 tracing::warn!(message = %line, "FFmpeg H.264 encoder");
             }
-        });
-    }
+        })
+    });
 
     let mut frames = video.subscribe();
     let mut writer = tokio::spawn(async move {
@@ -700,36 +1486,49 @@ async fn run_encoder(
             if read == 0 {
                 if let Some(access_unit) = parser.finish() {
                     write_access_unit(&track, access_unit, frame_duration).await?;
+                    let _ = progress.try_send(());
                 }
                 return Ok::<(), String>(());
             }
             let access_units = parser.push(&chunk[..read])?;
             for access_unit in access_units {
                 write_access_unit(&track, access_unit, frame_duration).await?;
+                // Progress is recorded only after an access unit was actually
+                // accepted by the track, never from the configured FPS alone.
+                let _ = progress.try_send(());
             }
         }
     });
 
+    let mut abort_handles = vec![writer.abort_handle(), reader.abort_handle()];
+    if let Some(task) = stderr_task {
+        abort_handles.push(task.abort_handle());
+    }
+    let mut process = EncoderGuard::new(child, abort_handles);
+
     let result = tokio::select! {
+        biased;
+        _ = wait_for_cancel(&mut cancel) => Ok(()),
         result = &mut writer => match result {
             Ok(Ok(())) => Err(WebRtcError::Internal("FFmpeg 输入意外结束".to_owned())),
             Ok(Err(error)) => Err(WebRtcError::Internal(error)),
             Err(error) => Err(WebRtcError::Internal(error.to_string())),
         },
         result = &mut reader => match result {
-            Ok(Ok(())) => Ok(()),
+            Ok(Ok(())) => match process.wait_for_exit(ENCODER_EXIT_GRACE).await {
+                Some(status) if status.success() => Ok(()),
+                Some(_) => Err(WebRtcError::Unavailable(
+                    "H.264 编码器异常退出".to_owned(),
+                )),
+                None => Err(WebRtcError::Internal(
+                    "H.264 编码器未按预期退出".to_owned(),
+                )),
+            },
             Ok(Err(error)) => Err(WebRtcError::Internal(error)),
             Err(error) => Err(WebRtcError::Internal(error.to_string())),
         },
-        status = child.wait() => match status {
-            Ok(status) if status.success() => Ok(()),
-            Ok(status) => Err(WebRtcError::Unavailable(format!("H.264 编码器退出：{status}"))),
-            Err(error) => Err(WebRtcError::Internal(error.to_string())),
-        },
     };
-    writer.abort();
-    reader.abort();
-    let _ = child.kill().await;
+    process.shutdown().await;
     result
 }
 
@@ -814,6 +1613,18 @@ fn annex_b_nal_units(bytes: &[u8]) -> Vec<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::VideoConfig;
+    use std::{fs, future::pending};
+
+    #[cfg(unix)]
+    static PROBE_FIXTURE_LOCK: Mutex<()> = Mutex::new(());
+
+    #[cfg(unix)]
+    fn serial_probe_fixture() -> std::sync::MutexGuard<'static, ()> {
+        PROBE_FIXTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn advertises_udp_dnat_port_without_changing_other_sdp_fields() {
@@ -903,4 +1714,760 @@ mod tests {
             ("h264_rkmpp", "Rockchip MPP", false)
         );
     }
+
+    #[test]
+    fn lifecycle_policy_allows_healthy_media_past_ten_minutes() {
+        let base = Instant::now();
+        let policy = LifecyclePolicy::default();
+        let eleven_minutes = Duration::from_secs(11 * 60);
+
+        // Healthy connected media continues indefinitely.
+        let decision = lifecycle_decision(
+            base + eleven_minutes,
+            base,
+            ConnectionPhase::Connected,
+            base,
+            Some(base + eleven_minutes - Duration::from_secs(10)),
+            &policy,
+        );
+        assert!(matches!(decision, LifecycleDecision::Wait(_)));
+
+        // The same session with no encoded output for the idle window is
+        // reclaimed, even though it is younger than the old 10 minute TTL.
+        let decision = lifecycle_decision(
+            base + Duration::from_secs(61),
+            base,
+            ConnectionPhase::Connected,
+            base,
+            None,
+            &policy,
+        );
+        assert_eq!(
+            decision,
+            LifecycleDecision::Expire(LifecycleExpiry::MediaIdle)
+        );
+    }
+
+    #[test]
+    fn lifecycle_policy_reclaims_pending_disconnected_and_ended_sessions() {
+        let base = Instant::now();
+        let policy = LifecyclePolicy::default();
+        assert_eq!(
+            lifecycle_decision(
+                base + Duration::from_secs(30),
+                base,
+                ConnectionPhase::Connecting,
+                base,
+                None,
+                &policy,
+            ),
+            LifecycleDecision::Expire(LifecycleExpiry::Unconnected)
+        );
+        assert_eq!(
+            lifecycle_decision(
+                base + Duration::from_secs(16),
+                base,
+                ConnectionPhase::Disconnected,
+                base + Duration::from_secs(1),
+                None,
+                &policy,
+            ),
+            LifecycleDecision::Expire(LifecycleExpiry::Disconnected)
+        );
+        assert_eq!(
+            lifecycle_decision(
+                base,
+                base,
+                ConnectionPhase::Failed,
+                base,
+                None,
+                &policy,
+            ),
+            LifecycleDecision::Expire(LifecycleExpiry::ConnectionEnded)
+        );
+        assert!(matches!(
+            lifecycle_decision(
+                base + Duration::from_secs(29),
+                base,
+                ConnectionPhase::New,
+                base,
+                None,
+                &policy,
+            ),
+            LifecycleDecision::Wait(_)
+        ));
+    }
+
+    fn test_policy() -> LifecyclePolicy {
+        LifecyclePolicy {
+            unconnected: Duration::from_secs(10),
+            disconnected: Duration::from_secs(10),
+            media_idle: Duration::from_secs(10),
+            encoder_shutdown: Duration::ZERO,
+        }
+    }
+
+    fn pending_encoder() -> EncoderFuture {
+        Box::pin(pending())
+    }
+
+    #[tokio::test]
+    async fn supervisor_stops_on_session_revocation() {
+        let sessions = crate::auth::SessionStore::new(Duration::from_secs(60));
+        let token = sessions.create().unwrap();
+        let guard = sessions.validate_guard(&token).unwrap();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (_state_tx, state_rx) = watch::channel(ConnectionPhase::New);
+        let (_progress_tx, progress_rx) = mpsc::channel(1);
+        let (cancel_tx, _cancel_rx) = watch::channel(false);
+        let task = tokio::spawn(async move {
+            supervise_lifecycle(
+                &guard,
+                shutdown_rx,
+                state_rx,
+                progress_rx,
+                pending_encoder(),
+                cancel_tx,
+                test_policy(),
+            )
+            .await
+        });
+
+        assert!(sessions.revoke(&token));
+        let end = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("supervisor should stop")
+            .unwrap();
+        assert_eq!(end.reason, EndReason::Auth);
+    }
+
+    #[tokio::test]
+    async fn supervisor_stops_when_session_expires() {
+        let sessions = crate::auth::SessionStore::new(Duration::from_millis(50));
+        let token = sessions.create().unwrap();
+        let guard = sessions.validate_guard(&token).unwrap();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (_state_tx, state_rx) = watch::channel(ConnectionPhase::New);
+        let (_progress_tx, progress_rx) = mpsc::channel(1);
+        let (cancel_tx, _cancel_rx) = watch::channel(false);
+        let task = tokio::spawn(async move {
+            supervise_lifecycle(
+                &guard,
+                shutdown_rx,
+                state_rx,
+                progress_rx,
+                pending_encoder(),
+                cancel_tx,
+                test_policy(),
+            )
+            .await
+        });
+
+        let end = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("supervisor should observe session expiry")
+            .unwrap();
+        assert_eq!(end.reason, EndReason::Auth);
+    }
+
+    #[tokio::test]
+    async fn supervisor_stops_on_explicit_shutdown_and_reports_encoder_error() {
+        let sessions = crate::auth::SessionStore::new(Duration::from_secs(60));
+        let token = sessions.create().unwrap();
+        let guard = sessions.validate_guard(&token).unwrap();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (_state_tx, state_rx) = watch::channel(ConnectionPhase::New);
+        let (_progress_tx, progress_rx) = mpsc::channel(1);
+        let (cancel_tx, _cancel_rx) = watch::channel(false);
+        let task = tokio::spawn(async move {
+            supervise_lifecycle(
+                &guard,
+                shutdown_rx,
+                state_rx,
+                progress_rx,
+                pending_encoder(),
+                cancel_tx,
+                test_policy(),
+            )
+            .await
+        });
+        let _ = shutdown_tx.send_replace(true);
+        let end = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("supervisor should stop on shutdown")
+            .unwrap();
+        assert_eq!(end.reason, EndReason::Shutdown);
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (_state_tx, state_rx) = watch::channel(ConnectionPhase::New);
+        let (_progress_tx, progress_rx) = mpsc::channel(1);
+        let (cancel_tx, _cancel_rx) = watch::channel(false);
+        let encoder: EncoderFuture = Box::pin(async {
+            Err(WebRtcError::Internal("fixture encoder failure".to_owned()))
+        });
+        let token = sessions.create().unwrap();
+        let guard = sessions.validate_guard(&token).unwrap();
+        let task = tokio::spawn(async move {
+            supervise_lifecycle(
+                &guard,
+                shutdown_rx,
+                state_rx,
+                progress_rx,
+                encoder,
+                cancel_tx,
+                test_policy(),
+            )
+            .await
+        });
+        let _ = shutdown_tx;
+        let end = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("encoder error should end the supervisor")
+            .unwrap();
+        assert_eq!(end.reason, EndReason::Encoder);
+        assert!(end.encoder.is_some_and(|result| result.is_err()));
+    }
+
+    #[tokio::test]
+    async fn supervisor_reclaims_connected_session_without_media_progress() {
+        let sessions = crate::auth::SessionStore::new(Duration::from_secs(60));
+        let token = sessions.create().unwrap();
+        let guard = sessions.validate_guard(&token).unwrap();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (_state_tx, state_rx) = watch::channel(ConnectionPhase::Connected);
+        let (_progress_tx, progress_rx) = mpsc::channel(1);
+        let (cancel_tx, _cancel_rx) = watch::channel(false);
+        let policy = LifecyclePolicy {
+            media_idle: Duration::from_millis(50),
+            ..test_policy()
+        };
+        let task = tokio::spawn(async move {
+            supervise_lifecycle(
+                &guard,
+                shutdown_rx,
+                state_rx,
+                progress_rx,
+                pending_encoder(),
+                cancel_tx,
+                policy,
+            )
+            .await
+        });
+        let end = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("media idle session should be reclaimed")
+            .unwrap();
+        assert_eq!(
+            end.reason,
+            EndReason::Watchdog(LifecycleExpiry::MediaIdle)
+        );
+    }
+
+    #[tokio::test]
+    async fn supervisor_keeps_receiving_media_progress_alive() {
+        let sessions = crate::auth::SessionStore::new(Duration::from_secs(60));
+        let token = sessions.create().unwrap();
+        let guard = sessions.validate_guard(&token).unwrap();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (_state_tx, state_rx) = watch::channel(ConnectionPhase::Connected);
+        let (progress_tx, progress_rx) = mpsc::channel(1);
+        let (cancel_tx, _cancel_rx) = watch::channel(false);
+        let policy = LifecyclePolicy {
+            media_idle: Duration::from_millis(100),
+            ..test_policy()
+        };
+        let mut task = tokio::spawn(async move {
+            supervise_lifecycle(
+                &guard,
+                shutdown_rx,
+                state_rx,
+                progress_rx,
+                pending_encoder(),
+                cancel_tx,
+                policy,
+            )
+            .await
+        });
+        for _ in 0..4 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let _ = progress_tx.try_send(());
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut task)
+                .await
+                .is_err(),
+            "media progress must keep a connected session alive"
+        );
+        let _ = shutdown_tx.send_replace(true);
+        let end = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("supervisor should stop once shutdown is signalled")
+            .unwrap();
+        assert_eq!(end.reason, EndReason::Shutdown);
+    }
+
+    fn test_inner() -> Arc<Inner> {
+        let video = VideoManager::new(VideoConfig::default());
+        Arc::new(Inner {
+            video,
+            config: Mutex::new(H264Config::default()),
+            encoder: Mutex::new(Err("fixture unavailable".to_owned())),
+            sessions: Mutex::new(HashMap::new()),
+            offer_lock: AsyncMutex::new(()),
+            udp_binding: AsyncMutex::new(None),
+        })
+    }
+
+    fn insert_fake_session(inner: &Arc<Inner>, session_id: &str) {
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let (state_tx, _state_rx) = watch::channel(ConnectionPhase::New);
+        let (closed_tx, closed_rx) = watch::channel(false);
+        inner
+            .sessions
+            .lock()
+            .unwrap()
+            .insert(
+                session_id.to_owned(),
+                Session {
+                    shutdown: shutdown_tx,
+                    state: state_tx,
+                    closed: closed_rx,
+                },
+            );
+        let weak = Arc::downgrade(inner);
+        let session_id = session_id.to_owned();
+        tokio::spawn(async move {
+            if !*shutdown_rx.borrow() {
+                let _ = shutdown_rx.changed().await;
+            }
+            if let Some(inner) = weak.upgrade() {
+                inner.sessions.lock().unwrap().remove(&session_id);
+            }
+            let _ = closed_tx.send_replace(true);
+        });
+    }
+
+    #[tokio::test]
+    async fn close_is_idempotent_and_removes_the_session_entry() {
+        let inner = test_inner();
+        insert_fake_session(&inner, "session-a");
+        assert!(close_session(&inner, "session-a").await);
+        assert!(inner.sessions.lock().unwrap().is_empty());
+        assert!(!close_session(&inner, "session-a").await);
+    }
+
+    #[tokio::test]
+    async fn reconfigure_closes_sessions_and_is_idempotent() {
+        let inner = test_inner();
+        insert_fake_session(&inner, "session-a");
+        insert_fake_session(&inner, "session-b");
+        let manager = WebRtcManager {
+            inner: inner.clone(),
+        };
+        let config = H264Config {
+            // A missing executable fails the bounded probe immediately without
+            // depending on a real FFmpeg install.
+            ffmpeg_path: Some(PathBuf::from("/nonexistent-wingmankvm-test-ffmpeg")),
+            ..H264Config::default()
+        };
+        manager.reconfigure(config.clone()).await;
+        assert!(inner.sessions.lock().unwrap().is_empty());
+        manager.reconfigure(config).await;
+        assert!(inner.sessions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn probe_limits_and_policy_defaults_are_bounded() {
+        let limits = ProbeLimits::default();
+        assert_eq!(limits.deadline, Duration::from_secs(3));
+        assert_eq!(limits.max_output, 1024 * 1024);
+        let policy = LifecyclePolicy::default();
+        assert_eq!(policy.unconnected, Duration::from_secs(30));
+        assert_eq!(policy.disconnected, Duration::from_secs(15));
+        assert_eq!(policy.media_idle, Duration::from_secs(60));
+    }
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    #[cfg(unix)]
+    struct ProbeFixture {
+        directory: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl ProbeFixture {
+        fn new() -> Self {
+            let mut random = [0_u8; 8];
+            getrandom::fill(&mut random).unwrap();
+            let directory = std::env::temp_dir().join(format!(
+                "wingmankvm-probe-test-{}-{:016x}",
+                std::process::id(),
+                u64::from_ne_bytes(random)
+            ));
+            fs::create_dir(&directory).unwrap();
+            Self { directory }
+        }
+
+        fn script(&self, name: &str, body: &str) -> PathBuf {
+            let path = self.directory.join(name);
+            fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        }
+
+        fn path(&self, name: &str) -> PathBuf {
+            self.directory.join(name)
+        }
+
+        fn config(&self, script: &Path) -> H264Config {
+            H264Config {
+                ffmpeg_path: Some(script.to_path_buf()),
+                encoder: H264Encoder::Software,
+                allow_software: true,
+                ..H264Config::default()
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ProbeFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    #[cfg(unix)]
+    fn shell_quote(value: &Path) -> String {
+        format!("'{}'", value.to_string_lossy().replace('\'', "'\\''"))
+    }
+
+    #[cfg(unix)]
+    fn read_fixture_pid(path: &Path) -> u32 {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if let Ok(text) = fs::read_to_string(path)
+                && let Some(pid) = text
+                    .lines()
+                    .find_map(|line| line.trim().parse::<u32>().ok())
+            {
+                return pid;
+            }
+            assert!(Instant::now() < deadline, "fixture did not write its pid");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    fn process_exists(pid: u32) -> bool {
+        let result = unsafe { libc::kill(pid as i32, 0) };
+        result == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_accepts_a_normal_encoder_listing() {
+        let _serial = serial_probe_fixture();
+        let fixture = ProbeFixture::new();
+        let script = fixture.script("ffmpeg-ok", "printf 'V....D libx264\\n'");
+        let config = fixture.config(&script);
+        let encoder = probe_encoder_with(&config, ProbeLimits::default()).unwrap();
+        assert_eq!(encoder.codec, "libx264");
+        assert_eq!(encoder.label, "libx264");
+        assert!(encoder.software);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_nonzero_exit_is_generic_and_does_not_leak_output() {
+        let _serial = serial_probe_fixture();
+        let fixture = ProbeFixture::new();
+        let script = fixture.script(
+            "ffmpeg-fail",
+            "printf 'SECRET-PROBE-OUTPUT\\n' >&2\nexit 7",
+        );
+        let config = fixture.config(&script);
+        let error = probe_encoder_with(&config, ProbeLimits::default()).unwrap_err();
+        assert!(error.contains("无法列出编码器"));
+        assert!(!error.contains("SECRET-PROBE-OUTPUT"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_hang_is_killed_and_reaped_within_the_deadline() {
+        let _serial = serial_probe_fixture();
+        let fixture = ProbeFixture::new();
+        let pidfile = fixture.path("hang.pid");
+        let script = fixture.script(
+            "ffmpeg-hang",
+            &format!(
+                "echo $$ > {}\nsleep 3\nprintf 'V....D libx264\\n'",
+                shell_quote(&pidfile)
+            ),
+        );
+        let config = fixture.config(&script);
+        let limits = ProbeLimits {
+            deadline: Duration::from_secs(1),
+            max_output: 1024,
+        };
+        let started = Instant::now();
+        let error = probe_encoder_with(&config, limits).unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(error.contains("超时"));
+        let pid = read_fixture_pid(&pidfile);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while process_exists(pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!process_exists(pid), "hung probe child must be reaped");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_stdout_flood_is_bounded() {
+        let _serial = serial_probe_fixture();
+        let fixture = ProbeFixture::new();
+        let script = fixture.script(
+            "ffmpeg-stdout-flood",
+            "i=0\nwhile [ $i -lt 64 ]; do printf '%1024s' ''; i=$((i+1)); done",
+        );
+        let config = fixture.config(&script);
+        let limits = ProbeLimits {
+            deadline: Duration::from_secs(2),
+            max_output: 4096,
+        };
+        let error = probe_encoder_with(&config, limits).unwrap_err();
+        assert!(error.contains("输出超过限制"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_stderr_flood_is_bounded() {
+        let _serial = serial_probe_fixture();
+        let fixture = ProbeFixture::new();
+        let script = fixture.script(
+            "ffmpeg-stderr-flood",
+            "i=0\nwhile [ $i -lt 64 ]; do printf '%1024s' '' >&2; i=$((i+1)); done",
+        );
+        let config = fixture.config(&script);
+        let limits = ProbeLimits {
+            deadline: Duration::from_secs(2),
+            max_output: 4096,
+        };
+        let error = probe_encoder_with(&config, limits).unwrap_err();
+        assert!(error.contains("输出超过限制"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_kills_a_descendant_that_holds_the_pipes() {
+        let _serial = serial_probe_fixture();
+        let fixture = ProbeFixture::new();
+        let child_pidfile = fixture.path("descendant.pid");
+        let script = fixture.script(
+            "ffmpeg-pipe-holder",
+            &format!(
+                "sleep 3 &\necho $! > {}\nprintf 'V....D libx264\\n'\nexit 0",
+                shell_quote(&child_pidfile)
+            ),
+        );
+        let config = fixture.config(&script);
+        let limits = ProbeLimits {
+            deadline: Duration::from_secs(1),
+            max_output: 1024 * 1024,
+        };
+        let error = probe_encoder_with(&config, limits).unwrap_err();
+        assert!(error.contains("超时"), "{error}");
+        let pid = read_fixture_pid(&child_pidfile);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while process_exists(pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !process_exists(pid),
+            "pipe-holding descendant must be killed with the group"
+        );
+    }
+
+    #[cfg(unix)]
+    fn encoder_group_script(fixture: &ProbeFixture, leader: &Path, child: &Path) -> PathBuf {
+        fixture.script(
+            "encoder-group",
+            &format!(
+                "echo $$ > {}\nsleep 30 &\necho $! > {}\nwait",
+                shell_quote(leader),
+                shell_quote(child)
+            ),
+        )
+    }
+
+    #[cfg(unix)]
+    fn test_encoder_spec(script: &Path) -> EncoderSpec {
+        EncoderSpec {
+            executable: script.to_path_buf(),
+            codec: "libx264",
+            label: "test encoder",
+            software: true,
+        }
+    }
+
+    #[cfg(unix)]
+    fn test_encoder_track() -> Arc<TrackLocalStaticSample> {
+        Arc::new(TrackLocalStaticSample::new(
+            RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_H264.to_owned(),
+                clock_rate: 90_000,
+                ..Default::default()
+            },
+            "video".to_owned(),
+            "test".to_owned(),
+        ))
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_fixture_pid(path: &Path) -> u32 {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(text) = fs::read_to_string(path)
+                && let Some(pid) = text
+                    .lines()
+                    .find_map(|line| line.trim().parse::<u32>().ok())
+            {
+                return pid;
+            }
+            assert!(Instant::now() < deadline, "fixture did not write its pid");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_fixture_exit(pid: u32) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while process_exists(pid) && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!process_exists(pid), "encoder process group member survived");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn encoder_cancel_kills_private_group_and_stops_tasks() {
+        let _serial = serial_probe_fixture();
+        let fixture = ProbeFixture::new();
+        let leader_pidfile = fixture.path("encoder-leader.pid");
+        let child_pidfile = fixture.path("encoder-child.pid");
+        let script = encoder_group_script(&fixture, &leader_pidfile, &child_pidfile);
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let (progress_tx, _progress_rx) = mpsc::channel(1);
+        let task = tokio::spawn(run_encoder(
+            VideoManager::new(VideoConfig::default()),
+            test_encoder_track(),
+            test_encoder_spec(&script),
+            H264Config::default(),
+            cancel_rx,
+            progress_tx,
+        ));
+        let leader = wait_for_fixture_pid(&leader_pidfile).await;
+        let child = wait_for_fixture_pid(&child_pidfile).await;
+        assert_ne!(leader, child);
+        let _ = cancel_tx.send_replace(true);
+        let result = tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .expect("cancelled encoder should stop")
+            .expect("encoder task should not panic");
+        assert!(result.is_ok(), "{result:?}");
+        wait_for_fixture_exit(leader).await;
+        wait_for_fixture_exit(child).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn encoder_drop_kills_private_group_and_stops_tasks() {
+        let _serial = serial_probe_fixture();
+        let fixture = ProbeFixture::new();
+        let leader_pidfile = fixture.path("encoder-drop-leader.pid");
+        let child_pidfile = fixture.path("encoder-drop-child.pid");
+        let script = encoder_group_script(&fixture, &leader_pidfile, &child_pidfile);
+        let (_cancel_tx, cancel_rx) = watch::channel(false);
+        let (progress_tx, _progress_rx) = mpsc::channel(1);
+        let task = tokio::spawn(run_encoder(
+            VideoManager::new(VideoConfig::default()),
+            test_encoder_track(),
+            test_encoder_spec(&script),
+            H264Config::default(),
+            cancel_rx,
+            progress_tx,
+        ));
+        let leader = wait_for_fixture_pid(&leader_pidfile).await;
+        let child = wait_for_fixture_pid(&child_pidfile).await;
+        assert_ne!(leader, child);
+        // Give the encoder future time to reach its select loop; the child is
+        // already owned by the RAII guard at this point.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        task.abort();
+        let _ = task.await;
+        wait_for_fixture_exit(leader).await;
+        wait_for_fixture_exit(child).await;
+    }
+    /// Real loopback ICE/DTLS/SRTP with two viewers sharing one server UDP
+    /// port. The synthetic NAL bytes test transport, not H.264 decoding.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn two_loopback_viewers_share_udp_and_end_on_logout() {
+        let fixture = ProbeFixture::new();
+        let script = fixture.script("loopback-encoder", r"while :; do printf '\000\000\000\001\011\360\000\000\000\001\145\210\204'; sleep 0.05; done");
+        let (video, frames) = VideoManager::test_source(VideoConfig::default());
+        frames.send_replace(Some(Arc::new(crate::devices::video::VideoFrame {
+            jpeg: Bytes::from_static(&[0xff, 0xd8, 0xff, 0xd9]), sequence: 1,
+        })));
+        let reserved = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let address = reserved.local_addr().unwrap();
+        drop(reserved);
+        let manager = WebRtcManager { inner: Arc::new(Inner {
+            video,
+            config: Mutex::new(H264Config { udp_bind_address: Some(address), max_sessions: 2, ..H264Config::default() }),
+            encoder: Mutex::new(Ok(test_encoder_spec(&script))),
+            sessions: Mutex::new(HashMap::new()), offer_lock: AsyncMutex::new(()),
+            udp_binding: AsyncMutex::new(None),
+        }) };
+        let sessions = crate::auth::SessionStore::new(Duration::from_secs(60));
+        let token = sessions.create().unwrap();
+        let mut clients = Vec::new();
+        for _ in 0..2 {
+            let mut media = MediaEngine::default();
+            media.register_default_codecs().unwrap();
+            let mut settings = SettingEngine::default();
+            settings.set_network_types(vec![NetworkType::Udp4]);
+            let client = APIBuilder::new().with_media_engine(media).with_setting_engine(settings)
+                .build().new_peer_connection(RTCConfiguration::default()).await.unwrap();
+            client.add_transceiver_from_kind(webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video, None).await.unwrap();
+            let (packet_tx, mut packet_rx) = mpsc::channel(1);
+            client.on_track(Box::new(move |track, _, _| {
+                let tx = packet_tx.clone();
+                Box::pin(async move {
+                    if let Ok((packet, _)) = track.read_rtp().await {
+                        let _ = tx.send(packet.payload).await;
+                    }
+                })
+            }));
+            let mut gathered = client.gathering_complete_promise().await;
+            let offer = client.create_offer(None).await.unwrap();
+            client.set_local_description(offer).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(6), gathered.recv()).await.unwrap();
+            let offer = client.local_description().await.unwrap();
+            let answer = manager.offer(WebRtcOfferRequest { sdp_type: "offer".into(), sdp: offer.sdp }, sessions.validate_guard(&token).unwrap()).await.unwrap();
+            assert!(answer.sdp.contains(&format!(" {} typ host", address.port())));
+            client.set_remote_description(RTCSessionDescription::answer(answer.sdp).unwrap()).await.unwrap();
+            let packet = tokio::time::timeout(Duration::from_secs(10), packet_rx.recv()).await.expect("loopback SRTP packet").unwrap();
+            assert!(!packet.is_empty());
+            clients.push(client);
+        }
+        assert_eq!(manager.status().sessions, 2);
+        assert!(sessions.revoke(&token));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while manager.status().sessions != 0 { tokio::time::sleep(Duration::from_millis(10)).await; }
+        }).await.unwrap();
+        for client in clients { client.close().await.unwrap(); }
+    }
+
 }

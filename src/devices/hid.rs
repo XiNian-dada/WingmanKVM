@@ -454,7 +454,9 @@ async fn keyboard_led_reader(
             }
         };
 
-        let async_fd = match AsyncFd::new(file) {
+        // SAFETY: AsyncFd takes ownership of this nonblocking File. Its descriptor
+        // stays open and unchanged until AsyncFd deregisters and drops it.
+        let async_fd = match unsafe { AsyncFd::register(file) } {
             Ok(fd) => fd,
             Err(_) => {
                 tokio::select! {
@@ -736,9 +738,11 @@ async fn send_report(path: &Path, report: &[u8]) -> Result<(), HidError> {
             path: path.to_path_buf(),
             source,
         })?;
-    let fd = AsyncFd::new(file).map_err(|source| HidError::Io {
+    // SAFETY: This owned nonblocking File is never closed or replaced while
+    // registered; AsyncFd deregisters it before dropping the File.
+    let fd = unsafe { AsyncFd::register(file) }.map_err(|source| HidError::Io {
         path: path.to_path_buf(),
-        source,
+        source: source.into(),
     })?;
     let deadline = Instant::now() + WRITE_TIMEOUT;
 
