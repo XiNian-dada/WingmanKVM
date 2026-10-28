@@ -184,7 +184,7 @@ sudo journalctl -u wingmankvm -b --no-pager
 sudo ./deploy/install.sh --binary /path/to/new/wingmankvm
 ```
 
-升级前预检并暂存所有托管文件，快照保存在仅 root 可访问的 `/var/lib/wingmankvm-deploy/`，与应用数据分开。新服务未在 15 秒健康窗口内通过 `/healthz` 时，会恢复整组文件及此前服务状态；SIGKILL/断电留下待恢复标记，后续安装会停止并打印独立恢复脚本。`auth.json`、`config.json`、镜像和已有 Gadget 配置不被回滚覆盖。`--no-start` 仅验证文件安装，不宣称运行验收。详见[升级恢复说明](UPGRADE_RECOVERY.md)。
+升级前预检并暂存所有托管文件，快照保存在仅 root 可访问的 `/var/lib/wingmankvm-deploy/`，与应用数据分开。新服务未在 15 秒健康窗口内通过 `/healthz` 时，会恢复整组文件及此前服务状态；SIGKILL 留下待恢复标记，后续安装会停止并打印独立恢复脚本。断电或文件系统崩溃后的快照完整性需人工检查，不保证存储故障恢复。`auth.json`、`config.json`、镜像和已有 Gadget 配置不被回滚覆盖。`--no-start` 仅验证文件安装，不宣称运行验收。详见[升级恢复说明](UPGRADE_RECOVERY.md)。
 
 旧版 sudoers 含 root 维护授权时，上面的命令会要求补充 `--maintenance-mode restricted` 或 `--maintenance-mode privileged`。
 
