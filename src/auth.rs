@@ -194,6 +194,8 @@ pub struct AuthRecord {
     pub password_hash: AdminPasswordHash,
     #[serde(default)]
     pub passkeys: Vec<PasskeyCredential>,
+    #[serde(default)]
+    pub system_password_synced: bool,
     pub created_at_unix_seconds: u64,
     pub updated_at_unix_seconds: u64,
 }
@@ -207,6 +209,7 @@ impl AuthRecord {
             username,
             password_hash: AdminPasswordHash::new(password)?,
             passkeys: Vec::new(),
+            system_password_synced: false,
             created_at_unix_seconds: now,
             updated_at_unix_seconds: now,
         })
@@ -220,6 +223,15 @@ impl AuthRecord {
     #[allow(dead_code)]
     pub fn set_password(&mut self, password: &str) -> Result<(), AuthError> {
         self.password_hash = AdminPasswordHash::new(password)?;
+        // A new web password has not yet been copied to the local maintenance
+        // account. Never carry a previous synchronization claim across it.
+        self.system_password_synced = false;
+        self.updated_at_unix_seconds = unix_time_now()?;
+        Ok(())
+    }
+
+    pub fn mark_system_password_synced(&mut self) -> Result<(), AuthError> {
+        self.system_password_synced = true;
         self.updated_at_unix_seconds = unix_time_now()?;
         Ok(())
     }
@@ -1043,11 +1055,38 @@ mod tests {
         assert_eq!(record.version, 1);
         assert_eq!(record.username, "admin");
         assert!(record.passkeys.is_empty());
+        assert!(!record.system_password_synced);
         assert!(record.validate().is_ok());
 
         // Saving and re-serializing includes the passkeys field
         let serialized = serde_json::to_string(&record).unwrap();
         assert!(serialized.contains(r#""passkeys":[]"#));
+        assert!(serialized.contains(r#""system_password_synced":false"#));
+    }
+
+    #[test]
+    fn system_password_marker_defaults_roundtrips_and_resets_with_password() {
+        assert!(!AuthRecord::new("admin", "Correct-Horse7!")
+            .unwrap()
+            .system_password_synced);
+        let legacy_json = r#"{
+            "version": 1,
+            "username": "admin",
+            "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$7v/f5o0h3oP9x3z7W1Q5AQ$0P9X3Z7W1Q5AQ7v/f5o0h3oP9x3z7W1Q5AQ7v/f5o0g",
+            "passkeys": [],
+            "created_at_unix_seconds": 1700000000,
+            "updated_at_unix_seconds": 1700000000
+        }"#;
+        let mut record: AuthRecord = serde_json::from_str(legacy_json).unwrap();
+        assert!(!record.system_password_synced);
+
+        record.mark_system_password_synced().unwrap();
+        let encoded = serde_json::to_string(&record).unwrap();
+        let mut roundtrip: AuthRecord = serde_json::from_str(&encoded).unwrap();
+        assert!(roundtrip.system_password_synced);
+
+        roundtrip.set_password("Another-Password8@").unwrap();
+        assert!(!roundtrip.system_password_synced);
     }
 
     #[test]

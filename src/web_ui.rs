@@ -1754,6 +1754,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     function terminalResize(cols,rows){const size=`${cols}x${rows}`;if(terminalSocket?.readyState===WebSocket.OPEN&&size!==terminalLastSize){terminalLastSize=size;terminalSocket.send(JSON.stringify({type:'resize',cols,rows}));}}
     function terminalConnect(){
       ensureTerminal();
+      if(bootstrap.terminal_ready===false){terminal.writeln(`\r\n\x1b[31m${bootstrap.terminal_message||'终端当前不可用；请退出后重新登录以重试。KVM 画面与输入不受影响。'}\x1b[0m`);$('#terminal-reconnect')?.classList.remove('hidden');return;}
       if(terminalSocket&&terminalSocket.readyState<=WebSocket.OPEN)return;
       const scheme=location.protocol==='https:'?'wss':'ws';const socket=new WebSocket(`${scheme}://${location.host}/api/terminal/ws`);terminalSocket=socket;terminalLastSize='';socket.binaryType='arraybuffer';
       socket.onopen=()=>{if(terminalSocket!==socket)return;$('#terminal-reconnect')?.classList.add('hidden');scheduleTerminalFit();requestAnimationFrame(()=>{terminalResize(terminal.cols,terminal.rows);terminal.focus();});};
@@ -1763,7 +1764,7 @@ pub static INDEX_HTML: &str = r##"<!doctype html>
     }
     function terminalReset(){if(!terminal)return;terminalLastSize='';terminal.reset();}
     function terminalDisconnect(){if(terminalSocket){const socket=terminalSocket;terminalSocket=null;socket.close();}terminalReset();$('#terminal-reconnect')?.classList.remove('hidden');}
-    $('#terminal-reconnect')?.addEventListener('click',terminalConnect);
+    $('#terminal-reconnect')?.addEventListener('click',async()=>{try{bootstrap=await request('/api/bootstrap');}catch(_){}terminalReset();terminalConnect();});
     $('#terminal-clear')?.addEventListener('click',()=>terminal?.clear());
     const keyboardDialog=$('#keyboard-dialog');$$('#keyboard-toggle,#keyboard-toggle-mobile').forEach(button=>button.addEventListener('click',()=>{if(keyboardDialog.open){resetVirtualModifiers();keyboardDialog.close();}else keyboardDialog.show();}));$('[data-close]',keyboardDialog).addEventListener('click',()=>{resetVirtualModifiers();keyboardDialog.close();});keyboardDialog.addEventListener('close',resetVirtualModifiers);
 

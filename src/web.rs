@@ -96,6 +96,7 @@ pub struct AppState {
     sessions: SessionStore,
     setup: Arc<AsyncMutex<()>>,
     config_update: Arc<AsyncMutex<()>>,
+    password_migration: Arc<AsyncMutex<()>>,
     setup_token: Arc<Mutex<Option<String>>>,
     login_limiter: LoginLimiter,
     passkey_challenges: Arc<Mutex<HashMap<String, PasskeyChallengeState>>>,
@@ -156,6 +157,7 @@ impl AppState {
             sessions,
             setup: Arc::new(AsyncMutex::new(())),
             config_update: Arc::new(AsyncMutex::new(())),
+            password_migration: Arc::new(AsyncMutex::new(())),
             setup_token: Arc::new(Mutex::new(setup_token)),
             login_limiter: LoginLimiter::default(),
             passkey_challenges,
@@ -276,6 +278,19 @@ async fn terminal_ws(
     ws: WebSocketUpgrade,
 ) -> Response {
     let public_origin = state.config.read().await.server.public_origin.clone();
+    // Keep the same origin and authentication ordering as the upgrade path,
+    // then gate PTY creation on the persisted migration marker. The marker is
+    // read from disk rather than trusted from a login reply or session state.
+    if let Err(error) = validate_terminal_origin(&headers, public_origin.as_deref()) {
+        return error.into_response();
+    }
+    if !is_authenticated(&state, &headers) {
+        return ApiError::new(StatusCode::UNAUTHORIZED, "需要登录").into_response();
+    }
+    if !terminal_is_ready(&state) {
+        return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, TERMINAL_DEGRADED_MESSAGE)
+            .into_response();
+    }
     terminal_ws_with_command(
         state.sessions.clone(),
         headers,
@@ -284,6 +299,15 @@ async fn terminal_ws(
         terminal_command(),
     )
     .await
+}
+
+fn terminal_is_ready(state: &AppState) -> bool {
+    state
+        .auth
+        .load()
+        .ok()
+        .flatten()
+        .is_some_and(|record| record.system_password_synced)
 }
 
 async fn terminal_ws_with_command(
@@ -565,6 +589,9 @@ struct BootstrapResponse {
     token_required: bool,
     authenticated: bool,
     has_passkeys: bool,
+    terminal_ready: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    terminal_message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     client_ip: Option<String>,
     client: ClientAddress,
@@ -599,12 +626,16 @@ async fn bootstrap(
     let client = state.client_address(connection, &headers).await;
     let setup_required = !state.auth.is_initialized().unwrap_or(false);
     let authenticated = !setup_required && is_authenticated(&state, &headers);
-    let has_passkeys = state
-        .auth
-        .load()
-        .ok()
-        .flatten()
+    let record = state.auth.load().ok().flatten();
+    let has_passkeys = record
+        .as_ref()
         .is_some_and(|record| !record.passkeys.is_empty());
+    let terminal_ready = authenticated
+        && record
+            .as_ref()
+            .is_some_and(|record| record.system_password_synced);
+    let terminal_message = (authenticated && !terminal_ready)
+        .then(|| TERMINAL_DEGRADED_MESSAGE.to_owned());
     let (config, video, webrtc, capabilities) = if authenticated {
         let config = state.config.read().await.clone();
         let webrtc = state.webrtc.status();
@@ -623,6 +654,8 @@ async fn bootstrap(
         token_required: setup_required,
         authenticated,
         has_passkeys,
+        terminal_ready,
+        terminal_message,
         client_ip: Some(client.ip.to_string()),
         client,
         config,
@@ -668,7 +701,7 @@ async fn setup(
     State(state): State<AppState>,
     Json(request): Json<SetupRequest>,
 ) -> Result<Response, ApiError> {
-    let _setup_guard = state.setup.lock().await;
+    let setup_guard = state.setup.clone().lock_owned().await;
     if state.auth.is_initialized().map_err(ApiError::internal)? {
         return Err(ApiError::new(StatusCode::CONFLICT, "管理员已经初始化"));
     }
@@ -752,12 +785,37 @@ async fn setup(
             .map_err(map_auth_error)?
     };
 
+    // Keep the complete initialization transaction and its lock alive if the
+    // HTTP client disconnects after privileged password synchronization starts.
+    tokio::spawn(async move {
+        let _setup_guard = setup_guard;
+        finish_setup(state, new_config, auth_record, password).await
+    })
+    .await
+    .map_err(ApiError::internal)?
+}
+
+async fn finish_setup(
+    state: AppState,
+    new_config: Config,
+    auth_record: AuthRecord,
+    password: String,
+) -> Result<Response, ApiError> {
     persist_config(state.config_path.as_ref(), &new_config).await?;
 
     // Keep the local maintenance account in sync with the web administrator.
     // The account is deliberately fixed to `wingman`; never interpolate a
-    // user-supplied name into a shell command.
-    sync_system_password(&password).await?;
+    // user-supplied name into a shell command. A helper failure must not abort
+    // setup: KVM control is still usable, only the browser terminal is gated.
+    let terminal_ready = match sync_system_password(&password).await {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(error = %error, "system password synchronization failed during setup");
+            false
+        }
+    };
+    let mut auth_record = auth_record;
+    auth_record.system_password_synced = terminal_ready;
 
     let auth = state.auth.clone();
     tokio::task::spawn_blocking(move || auth.initialize_record(auth_record))
@@ -782,7 +840,12 @@ async fn setup(
         .take();
     let session = state.sessions.create().map_err(ApiError::internal)?;
     Ok(with_session_cookie(
-        Json(json!({"ok": true})).into_response(),
+        Json(json!({
+            "ok": true,
+            "terminal_ready": terminal_ready,
+            "terminal_message": (!terminal_ready).then_some(TERMINAL_DEGRADED_MESSAGE),
+        }))
+        .into_response(),
         &session,
     ))
 }
@@ -1041,30 +1104,207 @@ fn paths_refer_to_same_node(left: &Path, right: &Path) -> bool {
     }
 }
 
-async fn sync_system_password(password: &str) -> Result<(), ApiError> {
-    if password.is_empty() || password.bytes().any(|b| b == b'\n' || b == b'\r' || b == 0) {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "密码格式不正确"));
+const SYSTEM_PASSWORD_SYNC_DEADLINE: Duration = Duration::from_secs(5);
+const MAX_SYSTEM_PASSWORD_BYTES: usize = 1024;
+const TERMINAL_DEGRADED_MESSAGE: &str =
+    "终端凭证尚未同步，终端当前不可用；请退出后重新登录以重试。KVM 画面与输入不受影响。";
+
+#[derive(Debug, thiserror::Error)]
+enum PasswordSyncError {
+    #[error("system password is not valid for helper synchronization")]
+    InvalidPassword,
+    #[error("failed to start system password helper")]
+    Spawn,
+    #[error("failed to write system password helper request")]
+    Write,
+    #[error("system password helper exited unsuccessfully")]
+    Exit,
+    #[error("system password helper timed out")]
+    Timeout,
+    #[error("system password helper supervisor stopped")]
+    Supervisor,
+}
+
+#[derive(Clone, Debug)]
+struct SystemPasswordHelper {
+    program: PathBuf,
+    args: Vec<String>,
+    deadline: Duration,
+}
+
+impl Default for SystemPasswordHelper {
+    fn default() -> Self {
+        Self {
+            program: PathBuf::from("sudo"),
+            args: vec![
+                "-n".to_owned(),
+                "/usr/local/sbin/wingmankvm-set-wingman-password".to_owned(),
+            ],
+            deadline: SYSTEM_PASSWORD_SYNC_DEADLINE,
+        }
+    }
+}
+
+impl SystemPasswordHelper {
+    fn command(&self) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new(&self.program);
+        command
+            .args(&self.args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.as_std_mut().process_group(0);
+        }
+        command
+    }
+}
+
+async fn sync_system_password(password: &str) -> Result<(), PasswordSyncError> {
+    sync_system_password_with(password, &SystemPasswordHelper::default()).await
+}
+
+/// Run the helper under a supervisor task that owns the child process. If the
+/// HTTP request is cancelled, the supervisor still enforces the deadline, kills
+/// the child and reaps it. The deadline covers both the stdin write and wait.
+async fn sync_system_password_with(
+    password: &str,
+    helper: &SystemPasswordHelper,
+) -> Result<(), PasswordSyncError> {
+    if password.is_empty()
+        || password.len() > MAX_SYSTEM_PASSWORD_BYTES
+        || password
+            .bytes()
+            .any(|byte| matches!(byte, b'\n' | b'\r' | 0))
+    {
+        return Err(PasswordSyncError::InvalidPassword);
     }
     let password = password.to_owned();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let mut child = std::process::Command::new("sudo")
-            .args(["-n", "/usr/local/sbin/wingmankvm-set-wingman-password"])
-            .stdin(std::process::Stdio::piped())
-            .spawn()?;
-        use std::io::Write;
-        child
-            .stdin
-            .take()
-            .expect("piped stdin")
-            .write_all(format!("{password}\n").as_bytes())?;
-        if !child.wait()?.success() {
-            anyhow::bail!("无法更新 wingman 密码");
+    let helper = helper.clone();
+    tokio::spawn(async move { supervise_system_password_sync(&helper, &password).await })
+        .await
+        .map_err(|_| PasswordSyncError::Supervisor)?
+}
+
+async fn supervise_system_password_sync(
+    helper: &SystemPasswordHelper,
+    password: &str,
+) -> Result<(), PasswordSyncError> {
+    let mut child = helper.command().spawn().map_err(|_| PasswordSyncError::Spawn)?;
+    let Some(mut stdin) = child.stdin.take() else {
+        kill_and_reap_system_password_child(&mut child).await;
+        return Err(PasswordSyncError::Write);
+    };
+    let exchange = async {
+        stdin.write_all(password.as_bytes()).await?;
+        stdin.shutdown().await?;
+        drop(stdin);
+        child.wait().await
+    };
+    match tokio::time::timeout(helper.deadline, exchange).await {
+        Ok(Ok(status)) if status.success() => Ok(()),
+        Ok(Ok(_)) => Err(PasswordSyncError::Exit),
+        Ok(Err(_)) => {
+            kill_and_reap_system_password_child(&mut child).await;
+            Err(PasswordSyncError::Write)
         }
-        Ok(())
-    })
+        Err(_) => {
+            kill_and_reap_system_password_child(&mut child).await;
+            Err(PasswordSyncError::Timeout)
+        }
+    }
+}
+
+async fn migrate_system_password_on_login(
+    migration: Arc<AsyncMutex<()>>,
+    auth: AuthStore,
+    verified: AuthRecord,
+    password: String,
+    helper: SystemPasswordHelper,
+) -> bool {
+    let Ok(guard) = migration.try_lock_owned() else {
+        // Do not queue login attempts behind a slow helper.
+        return false;
+    };
+    tokio::spawn(supervise_system_password_migration(
+        auth, verified, password, helper, guard,
+    ))
     .await
-    .map_err(ApiError::internal)?
-    .map_err(ApiError::internal)
+    .unwrap_or(false)
+}
+
+async fn supervise_system_password_migration(
+    auth: AuthStore,
+    verified: AuthRecord,
+    password: String,
+    helper: SystemPasswordHelper,
+    guard: tokio::sync::OwnedMutexGuard<()>,
+) -> bool {
+    let _migration_guard = guard;
+    let Ok(Some(current)) = auth.load() else {
+        return false;
+    };
+    if current.username != verified.username
+        || current.password_hash != verified.password_hash
+    {
+        return false;
+    }
+    if current.system_password_synced {
+        return true;
+    }
+    if let Err(error) = sync_system_password_with(&password, &helper).await {
+        tracing::warn!(%error, "system password migration failed during login");
+        return false;
+    }
+    match auth.update(|record| {
+        if record.username == verified.username
+            && record.password_hash == verified.password_hash
+        {
+            record.mark_system_password_synced()?;
+            Ok(true)
+        } else {
+            // The password changed while the helper was running; do not
+            // claim synchronization.
+            Ok(false)
+        }
+    }) {
+        Ok(persisted) => persisted,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "failed to persist system password migration marker"
+            );
+            false
+        }
+    }
+}
+
+#[cfg(unix)]
+fn signal_password_process_group(pid: u32) {
+    if let Ok(pid) = i32::try_from(pid) {
+        if pid > 1 {
+            // The unreaped child is the leader of the private group created
+            // by process_group(0). Signal it directly without spawning a tool.
+            unsafe { libc::kill(-pid, libc::SIGKILL); }
+        }
+    }
+}
+
+async fn kill_and_reap_system_password_child(child: &mut tokio::process::Child) {
+    // Signal the task-owned group before reaping the leader so its id cannot be
+    // reused for a different group. process_group(0) makes the child the leader
+    // of a fresh group, never the server's shared group.
+    #[cfg(unix)]
+    {
+        if let Some(pid) = child.id() {
+            signal_password_process_group(pid);
+        }
+    }
+    let _ = child.start_kill();
+    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
 }
 
 #[derive(Deserialize)]
@@ -1092,29 +1332,52 @@ async fn login(
     let username = request.username;
     let password = request.password;
     let password_for_verification = password.clone();
-    let valid = run_with_password_slot(password_slot, move || {
+    let verified = run_with_password_slot(password_slot, move || {
         let Some(record) = auth.load()? else {
-            return Ok(false);
+            return Ok(None);
         };
-        record.verify_credentials(&username, &password_for_verification)
+        Ok(record
+            .verify_credentials(&username, &password_for_verification)?
+            .then_some(record))
     })
     .await?;
 
-    if !valid {
+    let Some(verified) = verified else {
         return Err(ApiError::new(
             StatusCode::UNAUTHORIZED,
             "用户名或密码不正确",
         ));
-    }
+    };
 
     // Older deployments predate password synchronization during setup. A
     // successful administrator login is the only safe point at which the
-    // plaintext password is available again, so repair those installations
-    // before issuing a terminal-capable session.
-    sync_system_password(&password).await?;
+    // plaintext password is available again. The verified record binds the
+    // migration to the exact password hash that just passed verification.
+    let mut terminal_ready = verified.system_password_synced;
+    if !terminal_ready {
+        // The migration supervisor owns the lock guard, the current-state
+        // recheck, the bounded helper and the conditional marker write. If this
+        // HTTP task is cancelled, dropping the JoinHandle does not cancel that
+        // task or release the guard while the helper is still running.
+        terminal_ready = migrate_system_password_on_login(
+            state.password_migration.clone(),
+            state.auth.clone(),
+            verified,
+            password,
+            SystemPasswordHelper::default(),
+        )
+        .await;
+    }
+    let terminal_message = (!terminal_ready).then_some(TERMINAL_DEGRADED_MESSAGE);
+
     let session = state.sessions.create().map_err(ApiError::internal)?;
     Ok(with_session_cookie(
-        Json(json!({"ok": true})).into_response(),
+        Json(json!({
+            "ok": true,
+            "terminal_ready": terminal_ready,
+            "terminal_message": terminal_message,
+        }))
+        .into_response(),
         &session,
     ))
 }
@@ -1315,14 +1578,20 @@ async fn passkey_login_finish(
     };
 
     let cred_id = request.credential.raw_id;
-    let username = state.auth.update(|record| {
+    let (username, terminal_ready) = state.auth.update(|record| {
         record.update_passkey_credential(cred_id.as_slice(), &auth_result);
-        Ok(record.username.clone())
+        Ok((record.username.clone(), record.system_password_synced))
     }).map_err(map_auth_error)?;
 
     let session = state.sessions.create().map_err(ApiError::internal)?;
     Ok(with_session_cookie(
-        Json(json!({"ok": true, "username": username})).into_response(),
+        Json(json!({
+            "ok": true,
+            "username": username,
+            "terminal_ready": terminal_ready,
+            "terminal_message": (!terminal_ready).then_some(TERMINAL_DEGRADED_MESSAGE),
+        }))
+        .into_response(),
         &session,
     ))
 }
@@ -3070,6 +3339,199 @@ mod tests {
         .await
         .expect("slot should be released when blocking verification finishes");
         drop(held);
+    }
+
+    #[cfg(unix)]
+    fn helper_fixture(name: &str) -> PathBuf {
+        let id = TEST_PATH_ID.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "wingmankvm-helper-{}-{id}-{name}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[cfg(unix)]
+    fn script_helper(root: &Path, script: &str, deadline: Duration) -> SystemPasswordHelper {
+        SystemPasswordHelper {
+            program: PathBuf::from("/bin/sh"),
+            args: vec![
+                "-c".to_owned(),
+                script.to_owned(),
+                "wingman-helper-test".to_owned(),
+                root.to_string_lossy().into_owned(),
+            ],
+            deadline,
+        }
+    }
+
+    #[cfg(unix)]
+    fn process_is_alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_pid_file(path: &Path) -> String {
+        for _ in 0..100 {
+            if let Ok(pid) = fs::read_to_string(path) {
+                if !pid.trim().is_empty() {
+                    return pid.trim().to_owned();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("helper fixture did not record its pid");
+    }
+
+    #[cfg(unix)]
+    async fn wait_until_process_exits(pid: &str) {
+        for _ in 0..200 {
+            if !process_is_alive(pid) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("helper child {pid} was not killed and reaped");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn system_password_helper_pipes_exact_password_without_newline() {
+        let root = helper_fixture("success");
+        let helper = script_helper(&root, r#"cat > "$1/password""#, Duration::from_secs(2));
+        sync_system_password_with("Correct-Horse7!", &helper)
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::read(root.join("password")).unwrap(),
+            b"Correct-Horse7!"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn system_password_helper_reports_a_failed_exit() {
+        let root = helper_fixture("failure");
+        let helper = script_helper(
+            &root,
+            r#"cat >/dev/null; exit 7"#,
+            Duration::from_secs(2),
+        );
+        assert!(matches!(
+            sync_system_password_with("Correct-Horse7!", &helper).await,
+            Err(PasswordSyncError::Exit)
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn system_password_helper_times_out_and_reaps_the_child() {
+        let root = helper_fixture("hang");
+        let helper = script_helper(
+            &root,
+            r#"printf '%s' "$$" > "$1/pid"; exec sleep 30"#,
+            Duration::from_secs(1),
+        );
+        let started = Instant::now();
+        assert!(matches!(
+            sync_system_password_with("Correct-Horse7!", &helper).await,
+            Err(PasswordSyncError::Timeout)
+        ));
+        assert!(started.elapsed() < Duration::from_secs(3));
+        let pid = wait_for_pid_file(&root.join("pid")).await;
+        wait_until_process_exits(&pid).await;
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_the_http_side_still_kills_and_reaps_the_helper() {
+        let root = helper_fixture("cancel");
+        let helper = script_helper(
+            &root,
+            r#"printf '%s' "$$" > "$1/pid"; /bin/cat >/dev/null; exec sleep 30"#,
+            Duration::from_secs(1),
+        );
+        let pid_path = root.join("pid");
+        let task = tokio::spawn(async move {
+            sync_system_password_with("Correct-Horse7!", &helper).await
+        });
+        let pid = wait_for_pid_file(&pid_path).await;
+        task.abort();
+        let _ = task.await;
+        wait_until_process_exits(&pid).await;
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_login_migration_keeps_the_guard_until_the_helper_ends() {
+        let root = helper_fixture("migration-cancel");
+        let store = AuthStore::new(root.join("auth.json"));
+        store.initialize("admin", "Correct-Horse7!").unwrap();
+        let verified = store.load().unwrap().unwrap();
+        let helper = script_helper(
+            &root,
+            r#"printf '%s' "$$" > "$1/pid"; exec sleep 2"#,
+            Duration::from_secs(4),
+        );
+        let migration = Arc::new(AsyncMutex::new(()));
+        let task = tokio::spawn(migrate_system_password_on_login(
+            migration.clone(),
+            store.clone(),
+            verified,
+            "Correct-Horse7!".to_owned(),
+            helper,
+        ));
+        let pid = wait_for_pid_file(&root.join("pid")).await;
+        task.abort();
+        let _ = task.await;
+        assert!(
+            migration.clone().try_lock_owned().is_err(),
+            "caller cancellation must not release the migration guard"
+        );
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(guard) = migration.clone().try_lock_owned() {
+                drop(guard);
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "migration guard was not released after the helper ended"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        wait_until_process_exits(&pid).await;
+        assert!(store.load().unwrap().unwrap().system_password_synced);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn group_cleanup_terminates_owned_descendants() {
+        let root = helper_fixture("descendants");
+        let helper = script_helper(
+            &root,
+            r#"printf '%s' "$$" > "$1/pid"; /bin/sleep 30 & printf '%s' "$!" > "$1/descendant"; wait"#,
+            Duration::from_secs(1),
+        );
+        assert!(matches!(
+            sync_system_password_with("Correct-Horse7!", &helper).await,
+            Err(PasswordSyncError::Timeout)
+        ));
+        let leader = wait_for_pid_file(&root.join("pid")).await;
+        let descendant = wait_for_pid_file(&root.join("descendant")).await;
+        wait_until_process_exits(&leader).await;
+        wait_until_process_exits(&descendant).await;
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
