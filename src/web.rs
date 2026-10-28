@@ -2517,11 +2517,20 @@ async fn video_feed(State(state): State<AppState>) -> Response {
 
 async fn webrtc_offer(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<WebRtcOfferRequest>,
 ) -> Result<Response, ApiError> {
+    // Acquire the live guard atomically with validation. A logout that races
+    // this request cannot leave an authorized peer behind, because the guard
+    // is passed into the manager and supervises revocation/expiry.
+    let Some(guard) = session_token(&headers)
+        .and_then(|token| state.sessions.validate_guard(token))
+    else {
+        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "需要登录"));
+    };
     let response = state
         .webrtc
-        .offer(request)
+        .offer(request, guard)
         .await
         .map_err(map_webrtc_error)?;
     Ok(no_store(Json(response)).into_response())
@@ -3093,6 +3102,7 @@ fn map_webrtc_error(error: WebRtcError) -> ApiError {
         WebRtcError::InvalidOffer(_) => StatusCode::UNPROCESSABLE_ENTITY,
         WebRtcError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         WebRtcError::Capacity => StatusCode::TOO_MANY_REQUESTS,
+        WebRtcError::Unauthorized => StatusCode::UNAUTHORIZED,
         WebRtcError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     if matches!(&error, WebRtcError::Internal(_)) {
