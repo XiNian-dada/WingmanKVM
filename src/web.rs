@@ -1555,8 +1555,18 @@ async fn update_config(
 ) -> Result<impl IntoResponse, ApiError> {
     let _update_guard = state.config_update.lock().await;
     validate_config(&config)?;
+    let previous = state.config.read().await.server.clone();
+    let listener_changed = previous.listen_address != config.server.listen_address
+        || previous.port != config.server.port;
     commit_config(&state, &config).await?;
-    Ok(no_store(Json(config)))
+    let mut response = no_store(Json(config)).into_response();
+    if listener_changed {
+        response.headers_mut().insert(
+            "x-wingmankvm-restart-required",
+            HeaderValue::from_static("true"),
+        );
+    }
+    Ok(response)
 }
 
 #[derive(Default, Deserialize)]
