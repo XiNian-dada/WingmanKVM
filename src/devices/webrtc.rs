@@ -2409,4 +2409,65 @@ mod tests {
         wait_for_fixture_exit(leader).await;
         wait_for_fixture_exit(child).await;
     }
+    /// Real loopback ICE/DTLS/SRTP with two viewers sharing one server UDP
+    /// port. The synthetic NAL bytes test transport, not H.264 decoding.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn two_loopback_viewers_share_udp_and_end_on_logout() {
+        let fixture = ProbeFixture::new();
+        let script = fixture.script("loopback-encoder", r"while :; do printf '\000\000\000\001\011\360\000\000\000\001\145\210\204'; sleep 0.05; done");
+        let (video, frames) = VideoManager::test_source(VideoConfig::default());
+        frames.send_replace(Some(Arc::new(crate::devices::video::VideoFrame {
+            jpeg: Bytes::from_static(&[0xff, 0xd8, 0xff, 0xd9]), sequence: 1,
+        })));
+        let reserved = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let address = reserved.local_addr().unwrap();
+        drop(reserved);
+        let manager = WebRtcManager { inner: Arc::new(Inner {
+            video,
+            config: Mutex::new(H264Config { udp_bind_address: Some(address), max_sessions: 2, ..H264Config::default() }),
+            encoder: Mutex::new(Ok(test_encoder_spec(&script))),
+            sessions: Mutex::new(HashMap::new()), offer_lock: AsyncMutex::new(()),
+            udp_binding: AsyncMutex::new(None),
+        }) };
+        let sessions = crate::auth::SessionStore::new(Duration::from_secs(60));
+        let token = sessions.create().unwrap();
+        let mut clients = Vec::new();
+        for _ in 0..2 {
+            let mut media = MediaEngine::default();
+            media.register_default_codecs().unwrap();
+            let mut settings = SettingEngine::default();
+            settings.set_network_types(vec![NetworkType::Udp4]);
+            let client = APIBuilder::new().with_media_engine(media).with_setting_engine(settings)
+                .build().new_peer_connection(RTCConfiguration::default()).await.unwrap();
+            client.add_transceiver_from_kind(webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video, None).await.unwrap();
+            let (packet_tx, mut packet_rx) = mpsc::channel(1);
+            client.on_track(Box::new(move |track, _, _| {
+                let tx = packet_tx.clone();
+                Box::pin(async move {
+                    if let Ok((packet, _)) = track.read_rtp().await {
+                        let _ = tx.send(packet.payload).await;
+                    }
+                })
+            }));
+            let mut gathered = client.gathering_complete_promise().await;
+            let offer = client.create_offer(None).await.unwrap();
+            client.set_local_description(offer).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(6), gathered.recv()).await.unwrap();
+            let offer = client.local_description().await.unwrap();
+            let answer = manager.offer(WebRtcOfferRequest { sdp_type: "offer".into(), sdp: offer.sdp }, sessions.validate_guard(&token).unwrap()).await.unwrap();
+            assert!(answer.sdp.contains(&format!(" {} typ host", address.port())));
+            client.set_remote_description(RTCSessionDescription::answer(answer.sdp).unwrap()).await.unwrap();
+            let packet = tokio::time::timeout(Duration::from_secs(10), packet_rx.recv()).await.expect("loopback SRTP packet").unwrap();
+            assert!(!packet.is_empty());
+            clients.push(client);
+        }
+        assert_eq!(manager.status().sessions, 2);
+        assert!(sessions.revoke(&token));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while manager.status().sessions != 0 { tokio::time::sleep(Duration::from_millis(10)).await; }
+        }).await.unwrap();
+        for client in clients { client.close().await.unwrap(); }
+    }
+
 }

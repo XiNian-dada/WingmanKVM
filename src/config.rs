@@ -723,7 +723,7 @@ mod tests {
         assert!(config.validate_udp_mapping().is_ok());
         config.public_udp_endpoint = Some("kvm.example.com:38319".into());
         assert!(config.validate_udp_mapping().is_err());
-        config.udp_bind_address = Some("0.0.0.0:8080".parse().unwrap());
+        config.udp_bind_address = Some("0.0.0.0:8080".parse::<std::net::SocketAddr>().unwrap());
         for endpoint in [
             "kvm.example.com:38319",
             "203.0.113.10:38319",
@@ -1165,28 +1165,28 @@ mod tests {
         let mut server = ServerConfig::default();
         assert_eq!(
             server.socket_address().unwrap(),
-            "0.0.0.0:8080".parse().unwrap()
+            "0.0.0.0:8080".parse::<std::net::SocketAddr>().unwrap()
         );
 
         server.listen_address = "127.0.0.1".to_owned();
         server.port = 9090;
         assert_eq!(
             server.socket_address().unwrap(),
-            "127.0.0.1:9090".parse().unwrap()
+            "127.0.0.1:9090".parse::<std::net::SocketAddr>().unwrap()
         );
 
         server.listen_address = "::".to_owned();
         server.port = 8080;
         assert_eq!(
             server.socket_address().unwrap(),
-            "[::]:8080".parse().unwrap()
+            "[::]:8080".parse::<std::net::SocketAddr>().unwrap()
         );
 
         server.listen_address = "2001:db8::1".to_owned();
         server.port = u16::MAX;
         assert_eq!(
             server.socket_address().unwrap(),
-            "[2001:db8::1]:65535".parse().unwrap()
+            "[2001:db8::1]:65535".parse::<std::net::SocketAddr>().unwrap()
         );
     }
 

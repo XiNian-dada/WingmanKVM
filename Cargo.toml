@@ -18,11 +18,11 @@ libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1.53.3", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 portable-pty = "0.9"
-webrtc = "0.14"
+webrtc = "0.17.2"
 webauthn-rs = "0.5"
 sha2 = "0.10"
 # WebAuthn's certificate validation depends on OpenSSL. Build it for the
@@ -40,3 +40,7 @@ tokio-tungstenite = "0.29"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Temporary legacy-DTLS compatibility patch; provenance and removal criteria in vendor/dtls/PATCHES.md.
+[patch.crates-io]
+dtls = { path = "vendor/dtls" }
