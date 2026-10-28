@@ -1,4 +1,5 @@
 import os
+import glob
 import json
 import base64
 from playwright.sync_api import sync_playwright
@@ -17,7 +18,7 @@ with open(SRC_WEB_UI, "r", encoding="utf-8") as f:
 start_marker = 'pub static INDEX_HTML: &str = r##"'
 end_marker = '"##;'
 s_idx = rust_src.index(start_marker) + len(start_marker)
-e_idx = rust_src.rindex(end_marker)
+e_idx = rust_src.index(end_marker, s_idx)
 raw_html = rust_src[s_idx:e_idx]
 
 with open(os.path.join(VENDOR_DIR, "xterm.css"), "r", encoding="utf-8") as f:
@@ -120,15 +121,43 @@ mock_media_list = {
     }
 }
 
+mock_system = {
+    "cpu": {
+        "percent": 24.5,
+        "cores": 4,
+        "frequency_mhz": 1800
+    },
+    "load_avg": [0.62, 0.58, 0.45],
+    "memory": {
+        "total_bytes": 4096000000,
+        "used_bytes": 1943040000,
+        "free_bytes": 2152960000,
+        "percent": 47.4
+    },
+    "disk": {
+        "total_bytes": 30601641984,
+        "used_bytes": 15243820992,
+        "free_bytes": 15357820992,
+        "percent": 49.8
+    },
+    "temperature": 51.5,
+    "uptime_seconds": 273600
+}
+
 mock_bootstrap_main = {
     "setup_required": False,
     "token_required": False,
     "authenticated": True,
-    "has_passkeys": False,
+    "has_passkeys": True,
     "client_ip": "192.168.1.100",
+    "client": {
+        "ip": "192.168.1.100",
+        "port": 54321,
+        "source": "socket"
+    },
     "config": {
         "version": 1,
-        "server": {"listen_address": "0.0.0.0", "port": 8080, "proxy_protocol": "disabled"},
+        "server": {"listen_address": "0.0.0.0", "port": 8080, "proxy_protocol": "auto", "trusted_http_proxies": []},
         "video": {"device": "/dev/video0", "width": 1920, "height": 1080, "frames_per_second": 60, "jpeg_quality": 85},
         "hid": {"keyboard_device": "/dev/hidg0", "mouse_device": "/dev/hidg1", "absolute_pointer_device": "/dev/hidg2", "pointer_mode": "absolute"},
         "power": {"enabled": True, "gpio_chip": "/dev/gpiochip1", "gpio_line": 7, "active_high": True},
@@ -150,6 +179,33 @@ mock_bootstrap_main = {
         "terminal": True
     }
 }
+
+mock_status = {
+    "video": {
+        "state": "ready",
+        "message": "",
+        "frames_per_second": 60.0,
+        "width": 1920,
+        "height": 1080
+    },
+    "power": {
+        "power_led": {"configured": True, "state": "on", "sense_error": None}
+    },
+    "hid": {
+        "keyboard_leds": {"num_lock": True, "caps_lock": False, "scroll_lock": False, "raw": 1}
+    },
+    "client": {
+        "ip": "192.168.1.100",
+        "port": 54321,
+        "source": "socket",
+        "proxy_protocol": "auto"
+    },
+    "system": mock_system
+}
+
+mock_passkeys = [
+    {"id": "macbook-touch-id", "name": "MacBook Pro (Touch ID)", "created_at": "2026-10-25T14:20:00Z"}
+]
 
 screen_svg = '''
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
@@ -175,7 +231,7 @@ screen_svg = '''
     <text x="230" y="415" fill="#c9d1d9">$ </text>
     <text x="250" y="415" fill="#f0f6fc">systemctl status wingmankvm-node</text>
     
-    <text x="30" y="450" fill="#3fb950">● wingmankvm-node.service - Target Node Agent</text>
+    <text x="30" y="450" fill="#3fb950">&#x25CF; wingmankvm-node.service - Target Node Agent</text>
     <text x="50" y="475" fill="#c9d1d9">   Loaded: loaded (/lib/systemd/system/wingmankvm-node.service; enabled)</text>
     <text x="50" y="500" fill="#3fb950">   Active: active (running) </text>
     <text x="250" y="500" fill="#8b949e">since Sun 2026-10-18 19:40:12 CST; 1h 05min ago</text>
@@ -198,7 +254,8 @@ LAUNCH_ARGS = [
     "--disable-gpu",
     "--force-device-scale-factor=2"
 ]
-CHROME_PATH = "/Users/bernard/Library/Caches/ms-playwright/chromium_headless_shell-1223/chrome-headless-shell-mac-arm64/chrome-headless-shell"
+chrome_paths = sorted(glob.glob("/Users/bernard/Library/Caches/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-mac-arm64/chrome-headless-shell"))
+CHROME_PATH = chrome_paths[-1] if chrome_paths else None
 
 def capture_setup_flow():
     with sync_playwright() as p:
@@ -213,6 +270,8 @@ def capture_setup_flow():
                 route.fulfill(status=200, content_type="application/javascript", body=xterm_fit_js)
             elif "/assets/xterm.js" in url:
                 route.fulfill(status=200, content_type="application/javascript", body=xterm_js)
+            elif "/assets/icon.svg" in url or "/favicon.ico" in url:
+                route.fulfill(status=200, content_type="image/svg+xml", body='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 348 252"></svg>')
             elif "/api/bootstrap" in url:
                 route.fulfill(status=200, content_type="application/json", body=json.dumps({
                     "setup_required": True,
@@ -268,12 +327,20 @@ def capture_console():
                 route.fulfill(status=200, content_type="application/javascript", body=xterm_fit_js)
             elif "/assets/xterm.js" in url:
                 route.fulfill(status=200, content_type="application/javascript", body=xterm_js)
+            elif "/assets/icon.svg" in url or "/favicon.ico" in url:
+                route.fulfill(status=200, content_type="image/svg+xml", body='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 348 252"></svg>')
             elif "/api/bootstrap" in url:
                 route.fulfill(status=200, content_type="application/json", body=json.dumps(mock_bootstrap_main))
+            elif "/api/status" in url:
+                route.fulfill(status=200, content_type="application/json", body=json.dumps(mock_status))
+            elif "/api/system" in url:
+                route.fulfill(status=200, content_type="application/json", body=json.dumps(mock_system))
             elif "/api/setup/devices" in url or "/api/devices/scan" in url:
                 route.fulfill(status=200, content_type="application/json", body=json.dumps(mock_devices))
             elif "/api/media/images" in url or "/api/media" in url:
                 route.fulfill(status=200, content_type="application/json", body=json.dumps(mock_media_list))
+            elif "/api/passkeys" in url:
+                route.fulfill(status=200, content_type="application/json", body=json.dumps(mock_passkeys))
             elif "/video_feed" in url:
                 route.fulfill(status=200, content_type="image/svg+xml", body=screen_svg)
             elif url.endswith("/") or "index" in url:
@@ -288,15 +355,26 @@ def capture_console():
         # 注入逼真画面和运行状态
         page.evaluate(f"""() => {{
             const feed = document.querySelector('#video-feed');
-            feed.src = '{screen_data_url}';
-            feed.classList.remove('hidden');
-            document.querySelector('#video-message').classList.add('hidden');
-            document.querySelector('#status-dot').className = 'status-dot online';
-            document.querySelector('#status-label').textContent = 'MJPEG · 60 FPS';
-            document.querySelector('#video-transport-label').textContent = 'LIVE / MJPEG';
-            document.querySelector('#input-state').textContent = '输入中 (绝对指针)';
-            document.querySelector('#input-state').classList.add('active');
-            document.querySelector('#led-num').classList.add('active');
+            if (feed) {{
+                feed.src = '{screen_data_url}';
+                feed.classList.remove('hidden');
+            }}
+            document.querySelector('#video-message')?.classList.add('hidden');
+            const dot = document.querySelector('#status-dot');
+            if (dot) dot.className = 'status-dot online';
+            const statusLabel = document.querySelector('#status-label');
+            if (statusLabel) statusLabel.textContent = 'MJPEG · 60 FPS';
+            const transLabel = document.querySelector('#video-transport-label');
+            if (transLabel) transLabel.textContent = 'LIVE / MJPEG';
+            const inState = document.querySelector('#input-state');
+            if (inState) {{
+                const textSpan = inState.querySelector('.input-text');
+                if (textSpan) textSpan.textContent = '输入中 (绝对指针)';
+                inState.classList.add('active');
+            }}
+            document.querySelector('#led-num')?.classList.add('active');
+            document.querySelector('#inspector-led-num')?.classList.add('active');
+            if (typeof renderSystemMetrics === 'function') renderSystemMetrics({json.dumps(mock_system)});
         }}""")
         page.wait_for_timeout(400)
 
@@ -310,10 +388,18 @@ def capture_console():
         page.screenshot(path=os.path.join(DOCS_IMG_DIR, "console-dark.png"))
         print("Generated console-dark.png")
 
+        # 6. 顶栏呼出 NAS 主控机性能监控浮动面板
+        page.click("#topbar-perf-btn")
+        page.wait_for_timeout(400)
+        page.screenshot(path=os.path.join(DOCS_IMG_DIR, "perf-popover.png"))
+        print("Generated perf-popover.png")
+        page.click("#perf-pop-close")
+        page.wait_for_timeout(300)
+
         # 恢复浅色
         page.evaluate("document.documentElement.setAttribute('data-theme', 'light')")
 
-        # 6. 虚拟全键盘
+        # 7. 虚拟全键盘
         page.click('#keyboard-toggle')
         page.wait_for_timeout(400)
         page.screenshot(path=os.path.join(DOCS_IMG_DIR, "virtual-keyboard.png"))
@@ -323,21 +409,31 @@ def capture_console():
         page.click('#keyboard-dialog [data-close]')
         page.wait_for_timeout(200)
 
-        # 7. 介质控制面板
+        # 8. 介质控制面板
         page.click('[data-panel-target="media"]')
         page.wait_for_timeout(400)
         page.screenshot(path=os.path.join(DOCS_IMG_DIR, "media-panel.png"))
         print("Generated media-panel.png")
 
-        # 8. 视频调节面板
+        # 9. 视频调节面板
         page.click('[data-panel-target="video"]')
         page.wait_for_timeout(400)
         page.screenshot(path=os.path.join(DOCS_IMG_DIR, "video-panel.png"))
         print("Generated video-panel.png")
 
+        # 10. 移动端竖屏 (390 x 844 iPhone 尺寸)
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.evaluate("document.documentElement.setAttribute('data-theme', 'dark')")
+        if page.query_selector('#app.inspector-open'):
+            page.click('#inspector-close')
+        page.wait_for_timeout(400)
+        page.screenshot(path=os.path.join(DOCS_IMG_DIR, "mobile-console.png"))
+        print("Generated mobile-console.png")
+
         browser.close()
 
 if __name__ == "__main__":
+    print(f"Using Chrome path: {CHROME_PATH}")
     print("Capturing setup flow...")
     capture_setup_flow()
     print("Capturing console screens...")
