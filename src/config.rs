@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use crate::proxy_protocol::ProxyProtocolMode;
@@ -467,16 +467,13 @@ impl Default for VideoConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HidConfig {
     pub auto_detect: bool,
     pub keyboard_device: Option<PathBuf>,
     pub mouse_device: Option<PathBuf>,
     pub absolute_pointer_device: Option<PathBuf>,
     pub pointer_mode: PointerMode,
-    pub write_timeout_ms: u64,
-    pub retry_interval_ms: u64,
 }
 
 impl Default for HidConfig {
@@ -487,9 +484,77 @@ impl Default for HidConfig {
             mouse_device: None,
             absolute_pointer_device: None,
             pointer_mode: PointerMode::Auto,
-            write_timeout_ms: 500,
-            retry_interval_ms: 10,
         }
+    }
+}
+
+/// Compatibility view for configuration files written before issue #20.
+/// The retired timing keys are consumed so their presence can be reported.
+/// They are never retained in the active [`HidConfig`].
+#[derive(Deserialize)]
+#[serde(default)]
+struct HidConfigFile {
+    auto_detect: bool,
+    keyboard_device: Option<PathBuf>,
+    mouse_device: Option<PathBuf>,
+    absolute_pointer_device: Option<PathBuf>,
+    pointer_mode: PointerMode,
+    #[serde(default, deserialize_with = "deserialize_deprecated_hid_timing")]
+    write_timeout_ms: Option<serde::de::IgnoredAny>,
+    #[serde(default, deserialize_with = "deserialize_deprecated_hid_timing")]
+    retry_interval_ms: Option<serde::de::IgnoredAny>,
+}
+
+impl Default for HidConfigFile {
+    fn default() -> Self {
+        let config = HidConfig::default();
+        Self {
+            auto_detect: config.auto_detect,
+            keyboard_device: config.keyboard_device,
+            mouse_device: config.mouse_device,
+            absolute_pointer_device: config.absolute_pointer_device,
+            pointer_mode: config.pointer_mode,
+            write_timeout_ms: None,
+            retry_interval_ms: None,
+        }
+    }
+}
+
+fn deserialize_deprecated_hid_timing<'de, D>(
+    deserializer: D,
+) -> Result<Option<serde::de::IgnoredAny>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    // An absent key falls back to `None` from the default above; this runs
+    // only when the key is present, including an explicit JSON `null`.
+    serde::de::IgnoredAny::deserialize(deserializer).map(Some)
+}
+
+impl<'de> Deserialize<'de> for HidConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let file = HidConfigFile::deserialize(deserializer)?;
+        for (field, present) in [
+            ("hid.write_timeout_ms", file.write_timeout_ms.is_some()),
+            ("hid.retry_interval_ms", file.retry_interval_ms.is_some()),
+        ] {
+            if present {
+                tracing::warn!(
+                    field,
+                    "deprecated HID timing option ignored: HID reports use a fixed 500 ms per-report deadline with readiness-based retry, not polling"
+                );
+            }
+        }
+        Ok(Self {
+            auto_detect: file.auto_detect,
+            keyboard_device: file.keyboard_device,
+            mouse_device: file.mouse_device,
+            absolute_pointer_device: file.absolute_pointer_device,
+            pointer_mode: file.pointer_mode,
+        })
     }
 }
 
@@ -875,6 +940,82 @@ mod tests {
         assert_eq!(config.hid.pointer_mode, PointerMode::Auto);
         assert_eq!(config.hid.absolute_pointer_device, None);
         assert_eq!(config.hid.mouse_device, Some(PathBuf::from("/dev/hidg1")));
+    }
+
+    #[test]
+    fn deprecated_hid_timing_fields_are_accepted_and_ignored() {
+        for (write_timeout_ms, retry_interval_ms) in [
+            (serde_json::json!(500), serde_json::json!(10)),
+            (serde_json::json!(2_500), serde_json::json!(0)),
+            (serde_json::Value::Null, serde_json::Value::Null),
+        ] {
+            let config: Config = serde_json::from_value(serde_json::json!({
+                "version": CONFIG_VERSION,
+                "hid": {
+                    "auto_detect": false,
+                    "keyboard_device": "/dev/hidg0",
+                    "mouse_device": "/dev/hidg1",
+                    "absolute_pointer_device": "/dev/hidg2",
+                    "pointer_mode": "relative",
+                    "write_timeout_ms": write_timeout_ms,
+                    "retry_interval_ms": retry_interval_ms
+                }
+            }))
+            .unwrap();
+
+            assert_eq!(
+                config.hid,
+                HidConfig {
+                    auto_detect: false,
+                    keyboard_device: Some(PathBuf::from("/dev/hidg0")),
+                    mouse_device: Some(PathBuf::from("/dev/hidg1")),
+                    absolute_pointer_device: Some(PathBuf::from("/dev/hidg2")),
+                    pointer_mode: PointerMode::Relative,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn deprecated_hid_timing_fields_are_dropped_when_configuration_is_saved() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("config.json");
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "version": CONFIG_VERSION,
+                "hid": {
+                    "auto_detect": false,
+                    "keyboard_device": "/dev/hidg0",
+                    "write_timeout_ms": 900,
+                    "retry_interval_ms": 1
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.hid.keyboard_device, Some(PathBuf::from("/dev/hidg0")));
+        config.save_atomic(&path).unwrap();
+
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let hid = saved.get("hid").expect("hid section");
+        assert!(hid.get("write_timeout_ms").is_none());
+        assert!(hid.get("retry_interval_ms").is_none());
+        assert_eq!(hid.get("keyboard_device").unwrap(), "/dev/hidg0");
+        assert_eq!(Config::load(&path).unwrap(), config);
+    }
+
+    #[test]
+    fn default_configuration_roundtrips_without_hid_timing_fields() {
+        let config = Config::default();
+        let value = serde_json::to_value(&config).unwrap();
+        let hid = value.get("hid").expect("hid section");
+        assert!(hid.get("write_timeout_ms").is_none());
+        assert!(hid.get("retry_interval_ms").is_none());
+        assert_eq!(serde_json::from_value::<Config>(value).unwrap(), config);
     }
 
     #[test]
