@@ -13,6 +13,7 @@ TX_DEST_ROOT=''
 TX_ENTRY_COUNT=0
 TX_EUID=0
 TX_ROLLBACK_HOOK=''
+TX_PRE_ROLLBACK_HOOK=''
 TX_POLICY=()
 TX_OLD=()
 TX_MODE=()
@@ -362,6 +363,16 @@ _tx_rollback() {
     TX_STATE=rolling_back
     printf '%s\n' "$reason" >"$TX_TXN/rollback-reason" 2>/dev/null
     tx_error "rollback started: $reason"
+    # Runtime state may need the newly published unit files. Restore it before
+    # removing files that were absent on first installation.
+    if [[ -n $TX_PRE_ROLLBACK_HOOK ]]; then
+        if declare -F "$TX_PRE_ROLLBACK_HOOK" >/dev/null 2>&1; then
+            "$TX_PRE_ROLLBACK_HOOK" || failures=$((failures + 1))
+        else
+            tx_error "pre-rollback hook is not a function: $TX_PRE_ROLLBACK_HOOK"
+            failures=$((failures + 1))
+        fi
+    fi
     for ((i = TX_ENTRY_COUNT - 1; i >= 0; i--)); do
         if [[ ${TX_POLICY[i]} == preserved && ${TX_OLD[i]} == present ]]; then
             continue
@@ -417,6 +428,7 @@ tx_commit() {
     chmod 0600 -- "$TX_TXN/COMMITTED"
     _tx_clear_pending || tx_fail "cannot clear pending marker after commit"
     TX_ROLLBACK_HOOK=''
+    TX_PRE_ROLLBACK_HOOK=''
     TX_STATE=committed
     tx_log "transaction committed; snapshot retained at $TX_TXN"
 }

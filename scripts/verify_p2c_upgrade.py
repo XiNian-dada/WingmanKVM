@@ -4,7 +4,8 @@
 Real: deploy/upgrade-transaction.sh, installer integration functions, file
 bytes/modes/absence, EXIT/TERM traps, SIGKILL recovery, Python HTTP probing and
 GNU-timeout wall-clock enforcement.
-Mocked: systemd/udev commands and two injected failure points.
+Mocked: systemd/udev runtime commands and two injected failure points. Four
+first-install cases use real systemctl --root unit-file enable/disable operations.
 No root, sudo, network, hardware, user creation or host installation is used.
 
 Usage:
@@ -422,6 +423,7 @@ install_managed_files
 HEALTH_URL="{fixture.url}"
 FAIL_FIRST_RESTART=1
 runtime_prepare
+TX_PRE_ROLLBACK_HOOK=wingmankvm_runtime_pre_rollback
 TX_ROLLBACK_HOOK=wingmankvm_runtime_rollback
 if ! start_services; then handle_start_failure; fi
 """))
@@ -453,6 +455,7 @@ tx_init "$TX_STORE" "$DEST_ROOT"
 install_managed_files
 HEALTH_URL="{fixture.url}"
 runtime_prepare
+TX_PRE_ROLLBACK_HOOK=wingmankvm_runtime_pre_rollback
 TX_ROLLBACK_HOOK=wingmankvm_runtime_rollback
 if ! start_services; then handle_start_failure; fi
 """))
@@ -501,6 +504,58 @@ if ! start_services; then handle_start_failure; fi
             problems.append(f"invalid JSON should not retry, saw {calls} requests")
         self.record("health-invalid-json", not problems, "; ".join(problems) or "ok",
                     ["local HTTP fixture; real probe"])
+
+    def case_first_install_units(self) -> None:
+        # Real systemctl file operations in an isolated --root tree; service
+        # start/stop and daemon operations still use the explicit runtime stub.
+        real_systemctl = shutil.which("systemctl")
+        if real_systemctl is None:
+            raise RuntimeError("systemctl is required for isolated unit-file regression")
+        for failure in ("before-start", "enable", "start", "health"):
+            base = self.base("first-units-" + failure)
+            root = self.root(base)
+            self.stubs(base)
+            before = self.hashes(root)
+            wrapper = f'''
+systemctl() {{
+    case $1 in
+        enable|disable)
+            printf '%s\\n' "$*" >>"$SYSTEMCTL_LOG"
+            {real_systemctl} --root "$DEST_ROOT" "$@" || return $?
+            if [[ $1 == enable && {failure} == enable ]]; then return 1; fi
+            ;;
+        *) command systemctl "$@" ;;
+    esac
+}}
+'''
+            with HealthFixture([(200, b'{"status":"ok","service":"other"}')]) as fixture:
+                body = self.prelude() + wrapper + f'''
+tx_init "$TX_STORE" "$DEST_ROOT"
+runtime_prepare
+TX_PRE_ROLLBACK_HOOK=wingmankvm_runtime_pre_rollback
+TX_ROLLBACK_HOOK=wingmankvm_runtime_rollback
+install_managed_files
+HEALTH_URL="{fixture.url}"
+export FAIL_FIRST_RESTART={'1' if failure == 'start' else '0'}
+'''
+                body += ('exit 7\n' if failure == 'before-start' else
+                         'if ! start_services; then handle_start_failure; fi\n')
+                result = self.run(self.driver(base, body))
+            problems = self.tree(root, before, False)
+            if result.returncode == 0:
+                problems.append("injected first-install failure succeeded")
+            store = root / "var/lib/wingmankvm-deploy"
+            if (store / "PENDING").exists() or not list(store.glob("txn.*/ROLLED_BACK")):
+                problems.append("first-install rollback did not complete")
+            links = list((root / "etc/systemd/system").rglob("*.wants/wingmankvm*.service"))
+            if links:
+                problems.append("new enable links left after rollback")
+            active = base / "stub-state/active"
+            if list(active.glob("wingmankvm*.service")):
+                problems.append("new app/Gadget left active after rollback")
+            self.record("first-install-real-unit-files-" + failure, not problems,
+                        "; ".join(problems) or "ok",
+                        ["runtime systemd/udev stubs; real systemctl --root enable/disable"])
 
     def case_rollback_failure(self) -> None:
         base = self.base("rollback-fail")
@@ -584,7 +639,7 @@ finish_no_start
     def run_all(self) -> bool:
         for name in (
             "case_success", "case_missing_helper", "case_partial", "case_term",
-            "case_sigkill", "case_health", "case_rollback_failure", "case_no_start", "case_maintenance_transaction",
+            "case_sigkill", "case_health", "case_first_install_units", "case_rollback_failure", "case_no_start", "case_maintenance_transaction",
         ):
             try:
                 getattr(self, name)()
@@ -618,7 +673,7 @@ def main() -> int:
         report = {
             "harness": "verify_p2c_upgrade",
             "root_used": os.geteuid() == 0,
-            "note": "Temporary filesystem with real transaction operations; systemd/udev are explicit stubs.",
+            "note": "Real transaction and isolated systemctl --root unit-file operations; runtime systemd/udev commands are explicit stubs.",
             "scratch": str(scratch),
             "cases": harness.cases,
             "all_passed": ok,

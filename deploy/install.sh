@@ -18,6 +18,7 @@ GADGET_WAS_ACTIVE=false
 GADGET_WAS_ENABLED=false
 GADGET_STARTED_BY_US=false
 START_FAILURE=
+SERVICES_START_ATTEMPTED=false
 
 usage() {
     cat <<EOF
@@ -478,6 +479,7 @@ runtime_prepare() {
     GADGET_WAS_ENABLED=false
     GADGET_STARTED_BY_US=false
     START_FAILURE=
+    SERVICES_START_ATTEMPTED=false
     systemctl is-active --quiet wingmankvm.service && APP_WAS_ACTIVE=true
     systemctl is-enabled --quiet wingmankvm.service && APP_WAS_ENABLED=true
     systemctl is-active --quiet wingmankvm-gadget.service && GADGET_WAS_ACTIVE=true
@@ -508,15 +510,27 @@ wingmankvm_files_rollback() {
     reload_udev && systemctl daemon-reload
 }
 
-wingmankvm_runtime_rollback() {
+wingmankvm_runtime_pre_rollback() {
+    # Before start_services, no enabled/active state has been changed. In
+    # particular, missing first-install units need no disable/stop operation.
+    $SERVICES_START_ATTEMPTED || return 0
     local ok=true
-    reload_udev || { warn "could not reload udev rules during rollback"; ok=false; }
-    systemctl daemon-reload || { warn "could not reload systemd during rollback"; ok=false; }
     restore_enabled_state || ok=false
     if $GADGET_STARTED_BY_US; then
         systemctl stop wingmankvm-gadget.service \
             || { warn "could not stop the Gadget started by this installer"; ok=false; }
     fi
+    if ! $APP_WAS_ACTIVE; then
+        systemctl stop wingmankvm.service >/dev/null 2>&1 \
+            || { warn "could not leave the previously inactive app stopped"; ok=false; }
+    fi
+    $ok
+}
+
+wingmankvm_runtime_rollback() {
+    local ok=true
+    reload_udev || { warn "could not reload udev rules during rollback"; ok=false; }
+    systemctl daemon-reload || { warn "could not reload systemd during rollback"; ok=false; }
     if $APP_WAS_ACTIVE; then
         if systemctl restart wingmankvm.service; then
             if probe_health "$HEALTH_URL"; then
@@ -529,14 +543,12 @@ wingmankvm_runtime_rollback() {
             warn "could not restart the previously active WingmanKVM app"
             ok=false
         fi
-    else
-        systemctl stop wingmankvm.service >/dev/null 2>&1 \
-            || { warn "could not leave the previously inactive app stopped"; ok=false; }
     fi
     $ok
 }
 
 start_services() {
+    SERVICES_START_ATTEMPTED=true
     systemctl enable wingmankvm-gadget.service wingmankvm.service \
         || { START_FAILURE="could not enable WingmanKVM services"; return 1; }
     if systemctl is-active --quiet wingmankvm-gadget.service; then
@@ -809,6 +821,7 @@ if $NO_START; then
     TX_ROLLBACK_HOOK=wingmankvm_files_rollback
 else
     runtime_prepare
+    TX_PRE_ROLLBACK_HOOK=wingmankvm_runtime_pre_rollback
     TX_ROLLBACK_HOOK=wingmankvm_runtime_rollback
 fi
 install_managed_files

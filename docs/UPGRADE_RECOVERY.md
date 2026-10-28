@@ -93,10 +93,11 @@ both units. An already-active Gadget is never restarted, so USB is not
 re-enumerated. `GADGET_STARTED_BY_US` is set before the new start attempt, so a
 partially failed start is stopped on rollback.
 
-If the new app fails to start or fails the bounded `/healthz` probe, the whole
-managed set is restored, udev/systemd are reloaded, enabled state is restored,
-a Gadget started by this installer is stopped, and a previously active app is
-restarted and **health-verified** before rollback success is reported. Both the
+If startup was attempted and fails, enabled state is restored and newly started
+services are stopped while their unit files still exist. Before startup is
+attempted, no service-state reversal is needed. The whole managed set is then
+restored and udev/systemd are reloaded. A previously active app is restarted and
+**health-verified** before rollback success is reported. Both the
 original failure and rollback result are printed; a failed recovery remains
 nonzero and retains the snapshot and pending marker.
 
@@ -148,6 +149,9 @@ functions against disposable roots. It covers success, missing helper with zero
 mutation, partial replacement, trapped `TERM`, `SIGKILL` plus pending rejection
 and manual recovery, new-start failure, health mismatch, invalid JSON, delayed
 healthy polling, rollback failure, `--no-start`, explicit legacy maintenance
-selection, and optional root-grant removal/rollback. File bytes/modes/ownership/absence,
+selection, optional root-grant removal/rollback, and first-install failure before
+startup, during enable/start, or during health checks. These first-install cases
+use real `systemctl --root` enable/disable operations in an isolated file tree.
+File bytes/modes/ownership/absence,
 trap rollback, recovery and the HTTP probe are real; systemd/udev and two failure
 injection wrappers are mocked. The JSON report records that distinction.
