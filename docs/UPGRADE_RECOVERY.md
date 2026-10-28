@@ -9,6 +9,8 @@ All deployment sources are read and validated before any managed file changes.
 - `/usr/local/sbin/wingmankvm-gadget`
 - `/usr/local/sbin/wingmankvm-set-wingman-password`
 - `/etc/sudoers.d/wingmankvm`
+- `/etc/sudoers.d/wingmankvm-maintenance-root` (explicit privileged mode only;
+  restricted mode removes only the exact unmodified managed rule)
 - `/etc/udev/rules.d/99-wingmankvm.rules`
 - `/etc/systemd/system/wingmankvm-gadget.service`
 - `/etc/systemd/system/wingmankvm.service`
@@ -22,9 +24,9 @@ exact list; the transaction never publishes arbitrary manifest paths.
 The `wingman` login profile is **not** part of the code transaction. A missing
 profile may be initialized before the transaction, but an existing profile is
 never read, rewritten, or removed. Initialization can remain after a later
-failure. The same applies to users, groups, directories, `systemctl enable`
-state, and other first-install setup: this is not full OS, account, or package
-rollback.
+failure. The same applies to users, groups, directories, and other first-install
+setup: this is not full OS, account, or package rollback. Service enabled/active
+state is recorded and restored by runtime rollback as described below.
 
 User/service state is never touched by rollback:
 
@@ -142,6 +144,7 @@ does not bulk-delete old transaction directories.
 functions against disposable roots. It covers success, missing helper with zero
 mutation, partial replacement, trapped `TERM`, `SIGKILL` plus pending rejection
 and manual recovery, new-start failure, health mismatch, invalid JSON, delayed
-healthy polling, rollback failure, and `--no-start`. File bytes/modes/absence,
+healthy polling, rollback failure, `--no-start`, explicit legacy maintenance
+selection, and optional root-grant removal/rollback. File bytes/modes/ownership/absence,
 trap rollback, recovery and the HTTP probe are real; systemd/udev and two failure
 injection wrappers are mocked. The JSON report records that distinction.
