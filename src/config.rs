@@ -62,6 +62,7 @@ impl Config {
         })?;
         config.validate_version()?;
         config.validate_public_origin()?;
+        config.validate_server()?;
         if let Some(mode) = proxy_protocol_from_env() {
             config.server.proxy_protocol = mode;
         }
@@ -86,6 +87,7 @@ impl Config {
     pub fn save_atomic(&self, path: impl AsRef<Path>) -> Result<(), ConfigError> {
         self.validate_version()?;
         self.validate_public_origin()?;
+        self.validate_server()?;
         let path = path.as_ref();
         let mut contents = serde_json::to_vec_pretty(self).map_err(ConfigError::Serialize)?;
         contents.push(b'\n');
@@ -111,6 +113,10 @@ impl Config {
             })?;
         }
         Ok(())
+    }
+
+    fn validate_server(&self) -> Result<(), ConfigError> {
+        self.server.socket_address().map(|_| ())
     }
 }
 
@@ -148,6 +154,26 @@ impl Default for ServerConfig {
             trusted_http_proxies: Vec::new(),
             public_origin: None,
         }
+    }
+}
+
+impl ServerConfig {
+    /// Parse the configured listener into a concrete socket address.
+    ///
+    /// `listen_address` must be a bare IPv4 or IPv6 literal: hostnames,
+    /// bracketed IPv6 and surrounding whitespace are rejected. Port 0 is
+    /// rejected because the application requires a fixed, usable port.
+    pub fn socket_address(&self) -> Result<SocketAddr, ConfigError> {
+        let ip = self
+            .listen_address
+            .parse::<IpAddr>()
+            .map_err(|_| ConfigError::InvalidListenAddress {
+                value: self.listen_address.clone(),
+            })?;
+        if self.port == 0 {
+            return Err(ConfigError::InvalidServerPort { port: self.port });
+        }
+        Ok(SocketAddr::new(ip, self.port))
     }
 }
 
@@ -593,6 +619,10 @@ pub enum ConfigError {
     UnsupportedVersion { found: u32, supported: u32 },
     #[error("invalid server.public_origin {value:?}: {reason}")]
     InvalidPublicOrigin { value: String, reason: String },
+    #[error("invalid server.listen_address {value:?}: expected a bare IPv4 or IPv6 address without brackets or whitespace")]
+    InvalidListenAddress { value: String },
+    #[error("invalid server.port {port}: expected a fixed port between 1 and 65535")]
+    InvalidServerPort { port: u16 },
     #[error("failed to obtain secure randomness for an atomic write: {0}")]
     Randomness(String),
 }
@@ -1128,6 +1158,134 @@ mod tests {
             config.save_atomic(&path),
             Err(ConfigError::InvalidPublicOrigin { .. })
         ));
+    }
+
+    #[test]
+    fn server_socket_address_parses_ipv4_and_bare_ipv6() {
+        let mut server = ServerConfig::default();
+        assert_eq!(
+            server.socket_address().unwrap(),
+            "0.0.0.0:8080".parse().unwrap()
+        );
+
+        server.listen_address = "127.0.0.1".to_owned();
+        server.port = 9090;
+        assert_eq!(
+            server.socket_address().unwrap(),
+            "127.0.0.1:9090".parse().unwrap()
+        );
+
+        server.listen_address = "::".to_owned();
+        server.port = 8080;
+        assert_eq!(
+            server.socket_address().unwrap(),
+            "[::]:8080".parse().unwrap()
+        );
+
+        server.listen_address = "2001:db8::1".to_owned();
+        server.port = u16::MAX;
+        assert_eq!(
+            server.socket_address().unwrap(),
+            "[2001:db8::1]:65535".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn server_socket_address_rejects_invalid_addresses_and_port_zero() {
+        let mut server = ServerConfig::default();
+        for invalid in [
+            "",
+            "localhost",
+            "kvm.example.com",
+            "[::1]",
+            "[127.0.0.1]",
+            " 127.0.0.1",
+            "127.0.0.1 ",
+            "127.0.0.1:8080",
+            "999.1.1.1",
+            "::1%lo",
+        ] {
+            server.listen_address = invalid.to_owned();
+            assert!(
+                matches!(
+                    server.socket_address(),
+                    Err(ConfigError::InvalidListenAddress { .. })
+                ),
+                "unexpectedly accepted {invalid:?}"
+            );
+        }
+
+        server.listen_address = "127.0.0.1".to_owned();
+        server.port = 0;
+        assert!(matches!(
+            server.socket_address(),
+            Err(ConfigError::InvalidServerPort { port: 0 })
+        ));
+        server.port = u16::MAX;
+        assert!(server.socket_address().is_ok());
+    }
+
+    #[test]
+    fn ipv4_and_ipv6_listeners_roundtrip_through_save_and_load() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("config.json");
+        for listen in ["127.0.0.1", "::1"] {
+            let mut config = Config::default();
+            config.server.listen_address = listen.to_owned();
+            config.server.port = 1;
+            config.save_atomic(&path).unwrap();
+            let loaded = Config::load(&path).unwrap();
+            assert_eq!(loaded.server.listen_address, listen);
+            assert_eq!(loaded.server.socket_address().unwrap().port(), 1);
+
+            config.server.port = u16::MAX;
+            config.save_atomic(&path).unwrap();
+            assert_eq!(Config::load(&path).unwrap().server.port, u16::MAX);
+        }
+    }
+
+    #[test]
+    fn invalid_server_listener_fails_load_and_save_without_overwriting() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("config.json");
+        for (listen, port) in [("localhost", 8080), ("127.0.0.1", 0), ("[::1]", 8080)] {
+            fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!({
+                    "version": CONFIG_VERSION,
+                    "server": {"listen_address": listen, "port": port}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            assert!(matches!(
+                Config::load(&path),
+                Err(ConfigError::InvalidListenAddress { .. })
+                    | Err(ConfigError::InvalidServerPort { .. })
+            ));
+        }
+
+        let mut valid = Config::default();
+        valid.server.listen_address = "127.0.0.1".to_owned();
+        valid.server.port = 9090;
+        valid.save_atomic(&path).unwrap();
+        let before = fs::read(&path).unwrap();
+
+        let mut invalid = valid.clone();
+        invalid.server.listen_address = "localhost".to_owned();
+        assert!(matches!(
+            invalid.save_atomic(&path),
+            Err(ConfigError::InvalidListenAddress { .. })
+        ));
+        assert_eq!(fs::read(&path).unwrap(), before);
+
+        let mut invalid = valid;
+        invalid.server.port = 0;
+        assert!(matches!(
+            invalid.save_atomic(&path),
+            Err(ConfigError::InvalidServerPort { .. })
+        ));
+        assert_eq!(fs::read(&path).unwrap(), before);
     }
 }
 

@@ -171,7 +171,7 @@ impl AppState {
 
     pub async fn server_address(&self) -> anyhow::Result<SocketAddr> {
         let config = self.config.read().await;
-        Ok(format!("{}:{}", config.server.listen_address, config.server.port).parse()?)
+        Ok(config.server.socket_address()?)
     }
 
     pub async fn proxy_protocol_mode(&self) -> ProxyProtocolMode {
@@ -2479,6 +2479,15 @@ fn validate_config(config: &Config) -> Result<(), ApiError> {
     if config.version != CONFIG_VERSION {
         return Err(ApiError::bad_request("配置版本不受支持"));
     }
+    config.server.socket_address().map_err(|error| match error {
+        config::ConfigError::InvalidListenAddress { .. } => ApiError::bad_request(
+            "server.listen_address 必须是不带方括号或空白的 IPv4/IPv6 地址",
+        ),
+        config::ConfigError::InvalidServerPort { .. } => {
+            ApiError::bad_request("server.port 必须在 1 到 65535 之间")
+        }
+        _ => ApiError::bad_request("无效的服务器监听地址"),
+    })?;
     if let Some(origin) = &config.server.public_origin {
         config::NormalizedOrigin::parse(origin)
             .map_err(|reason| ApiError::bad_request(format!("无效的 server.public_origin: {reason}")))?;
@@ -3366,6 +3375,26 @@ mod tests {
         assert!(validate_config(&config).is_ok());
         config.server.public_origin = Some("https://user@kvm.example.com".to_owned());
         assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn configuration_validation_rejects_invalid_server_listener() {
+        for address in ["localhost", "kvm.example.com", "[::1]", " 127.0.0.1"] {
+            let mut config = Config::default();
+            config.server.listen_address = address.to_owned();
+            let error = validate_config(&config).unwrap_err();
+            assert!(error.message.contains("listen_address"), "{address:?}");
+        }
+
+        let mut config = Config::default();
+        config.server.port = 0;
+        let error = validate_config(&config).unwrap_err();
+        assert!(error.message.contains("server.port"));
+
+        let mut config = Config::default();
+        config.server.listen_address = "::1".to_owned();
+        config.server.port = 9090;
+        assert!(validate_config(&config).is_ok());
     }
 
     #[test]
