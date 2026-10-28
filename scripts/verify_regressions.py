@@ -2,7 +2,8 @@
 """Sequential regression orchestrator for WingmanKVM issue #18.
 
 Runs existing black-box API/UI scripts as bounded children, keeps sanitized
-stdout/stderr and JSON reports under one unique run directory, and aggregates
+stdout/stderr and JSON reports under one unique run directory, uses private
+short per-case TMPDIRs, and aggregates
 pass/fail/blocked/skipped. It never builds, installs, uses the network, or
 changes host policy. Exit 0 means no failed/blocked case.
 """
@@ -411,9 +412,7 @@ def report_verdict(report, counts):
 def run_case(spec, repo, binary, run_dir, browser_channel, required_gates, skip_ui):
     started = time.monotonic()
     case_dir = run_dir / "cases" / spec.case_id
-    tmp_dir = case_dir / "tmp"
     case_dir.mkdir(parents=True, exist_ok=True)
-    tmp_dir.mkdir(parents=True, exist_ok=True)
     command, report_hint = build_command(spec, sys.executable, repo, binary, case_dir, browser_channel)
     result = base_result(spec, required_gates, command)
 
@@ -431,6 +430,11 @@ def run_case(spec, repo, binary, run_dir, browser_channel, required_gates, skip_
         )
         return result
 
+    # Chromium creates Unix-domain sockets under TMPDIR. A nested CI scratch
+    # path can exceed sockaddr_un's path limit and abort the browser at launch.
+    # This directory is private, freshly created, and removed only by this case.
+    tmp_dir = Path(tempfile.mkdtemp(prefix="wkvm-reg-", dir="/tmp"))
+    result["temporary_directory"] = str(tmp_dir)
     stdout_raw, stderr_raw = case_dir / "stdout.raw", case_dir / "stderr.raw"
     stdout_log, stderr_log = case_dir / "stdout.log", case_dir / "stderr.log"
     env = os.environ.copy()
@@ -480,9 +484,8 @@ def run_case(spec, repo, binary, run_dir, browser_channel, required_gates, skip_
             "report": None,
             "output_dir": str(case_dir / "output") if spec.category == "ui" else None,
         }
-        # Cleanup is limited to this case directory inside our unique run_dir.
-        # Raw app scratch, browser profiles, and raw stdout/stderr must not be
-        # retained for artifact upload.
+        # Remove only our case scratch and the exact private TMPDIR created
+        # above. Never clean their parent directories or shared /tmp entries.
         shutil.rmtree(case_dir / "scratch", ignore_errors=True)
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -649,10 +652,10 @@ def main(argv=None):
         "require_gate": sorted(required_gates),
         "sequential": True,
         "cleanup": {
-            "scope": "unique_run_dir_only",
+            "scope": "unique_run_dir_and_exact_owned_case_tmpdirs",
             "removed": [
                 "cases/<id>/scratch",
-                "cases/<id>/tmp",
+                "each case's temporary_directory (private /tmp/wkvm-reg-* directory)",
                 "cases/<id>/stdout.raw",
                 "cases/<id>/stderr.raw",
             ],

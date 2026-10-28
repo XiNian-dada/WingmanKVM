@@ -74,8 +74,11 @@ python3 scripts/verify_regressions.py \
 
 It invokes every script exactly once in bounded child processes. Raw app scratch,
 browser profiles, and raw stdout/stderr are removed after each case. Cleanup is
-limited to the unique `run-*` directory created inside `--scratch-dir`; it never
-deletes the parent scratch directory or repository files. Only sanitized
+limited to the unique `run-*` directory created inside `--scratch-dir` and each
+case's newly created private `/tmp/wkvm-reg-*` directory. The short per-case
+`TMPDIR` avoids Chromium's Unix socket path limit on deeply nested CI paths;
+the exact owned path is recorded and removed in `finally`. Cleanup never deletes
+the parent scratch directory, shared `/tmp` entries, or repository files. Only sanitized
 `stdout.log`, `stderr.log`, UI screenshots/report JSON, and case/summary JSON
 remain. The summary records the exact sanitized report path and cleanup scope.
 
@@ -149,8 +152,9 @@ Never use `--privileged`, mount the Docker socket, or mount host `/etc` or
   terminate/wait/kill fallback; no system-wide or user-wide process scan is used.
 - Timeouts/interrupts reap the direct child and terminate fixture servers that
   created their own session, via pidfds on Linux.
-- Cleanup only touches the unique `run-*` directory created under
-  `--scratch-dir`; raw child scratch and per-case `TMPDIR` are removed.
+- Cleanup only touches the unique `run-*` directory under `--scratch-dir` and
+  the exact private per-case `TMPDIR` created by that run. Raw child scratch and
+  these short temporary directories are removed.
 
 ## Manual hardware smoke checklist (not CI)
 
