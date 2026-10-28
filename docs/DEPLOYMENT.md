@@ -7,7 +7,7 @@ WingmanKVM 的推荐部署方式是：准备一个与目标机架构匹配的 Li
 目标 KVM 主机需要：
 
 - Linux `aarch64`、`armv7` 或 `x86_64`；
-- systemd、udev、Bash 和 `sudo`；
+- systemd、udev、Bash、`sudo`、Python 3、GNU coreutils（`timeout`）和 util-linux（`flock`）；
 - 可用或可切换到 Device 模式的 USB Device/OTG 控制器（Linux UDC）；
 - 内核 USB Gadget/configfs、HID function 和 Mass Storage function 支持；
 - 支持 V4L2 mmap 的 USB HDMI 采集卡；
@@ -17,7 +17,7 @@ Debian、Ubuntu、Armbian 的常用运行与诊断工具：
 
 ```bash
 sudo apt update
-sudo apt install -y sudo udev libgpiod-tools v4l-utils
+sudo apt install -y sudo udev python3 coreutils util-linux libgpiod-tools v4l-utils
 ```
 
 官方安装器要求 systemd 和 Linux UDC，并部署完整的 HID 与 Mass Storage 复合 Gadget；当前不提供无 UDC 的 video-only 安装模式。手工启动二进制只适合源码开发和诊断，不代表受支持的生产部署，也不会替代 Gadget、权限和持久化服务。
@@ -87,7 +87,9 @@ sudo ./deploy/install.sh --binary ./target/release/wingmankvm
 
 安装完成后默认监听 `0.0.0.0:8080`。安装器会直接打印带一次性令牌的首次设置地址；页面读取令牌后会立即从地址栏清除，无需手工复制或先查日志。安装器不会把密码写进命令行或 unit 文件；首次网页初始化时，管理员密码会通过受限 helper 同步给本机终端用户 `wingman`。
 
-网页终端以 `wingman` 用户运行。该用户可使用同一密码执行 `sudo`；应用服务本身仍以独立的、无登录能力的 `wingmankvm` 用户运行。服务沙箱只对 sudo 的运行时时间戳目录 `/run/sudo` 开放写入权限。
+网页终端以 `wingman` 用户运行，新装默认不授予该用户 sudo 权限。主机管理员可用 `--maintenance-mode privileged` 显式启用 root 维护；该模式下服务可重置维护密码，因此接受“服务被攻陷后宿主也可被接管”的边界。旧版已有管理授权时，升级必须显式选择 `restricted` 或 `privileged`，不会静默更改既有访问。完整启用、关闭与外部授权检查见[维护权限模式](MAINTENANCE_MODES.md)。
+
+应用仍以无登录 shell 的 `wingmankvm` 身份运行，但 nologin 本身不构成完整隔离。unit 实际开放 `/var/lib/wingmankvm`、`/run/sudo`、`/etc` 和可选的 `/sys/kernel/config/usb_gadget` 写入挂载；root 密码 helper 需要 `/etc` 更新 shadow，普通 Unix 权限仍然有效。
 
 重复运行同一命令可用于升级。安装器会更新二进制和托管的部署文件，但保留：
 
@@ -181,6 +183,10 @@ sudo journalctl -u wingmankvm -b --no-pager
 ```bash
 sudo ./deploy/install.sh --binary /path/to/new/wingmankvm
 ```
+
+升级前预检并暂存所有托管文件，快照保存在仅 root 可访问的 `/var/lib/wingmankvm-deploy/`，与应用数据分开。新服务未在 15 秒健康窗口内通过 `/healthz` 时，会恢复整组文件及此前服务状态；SIGKILL/断电留下待恢复标记，后续安装会停止并打印独立恢复脚本。`auth.json`、`config.json`、镜像和已有 Gadget 配置不被回滚覆盖。`--no-start` 仅验证文件安装，不宣称运行验收。详见[升级恢复说明](UPGRADE_RECOVERY.md)。
+
+旧版 sudoers 含 root 维护授权时，上面的命令会要求补充 `--maintenance-mode restricted` 或 `--maintenance-mode privileged`。
 
 如果 Gadget service 已经正常运行，安装器会保持当前 USB 连接，不主动重新枚举。修改 `/etc/wingmankvm/gadget.env` 后需要显式重启 Gadget service：
 
@@ -364,7 +370,7 @@ done
 
 ## 11. HTTPS
 
-直接 HTTP 模式不会给 Cookie 添加 `Secure`，只适合可信管理网内调试。生产环境建议：
+未配置 `server.public_origin` 或显式使用 `http://...` 时，Cookie 不带 `Secure`，只适合可信管理网内调试。配置 `https://...` 后，首次设置、密码/Passkey 登录和注销响应统一使用 Secure Cookie，且不会信任转发头降级。迁移前须撤销旧会话并清除旧 Cookie，再通过 HTTPS 重新登录，同时关闭公开 HTTP 入口。详见[会话 Cookie 策略](SESSION_COOKIES.md)。生产环境建议：
 
 - 使用 WireGuard/Tailscale 等 VPN；或
 - 在 Caddy/Nginx 后终止 HTTPS，并限制来源网络。

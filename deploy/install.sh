@@ -7,15 +7,27 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}
 
 BINARY=
 NO_START=false
+MAINTENANCE_MODE=
 WINGMAN_CREATED=false
+DEST_ROOT=/
+HEALTH_URL=
+STATE_DIR=
+APP_WAS_ACTIVE=false
+APP_WAS_ENABLED=false
+GADGET_WAS_ACTIVE=false
+GADGET_WAS_ENABLED=false
+GADGET_STARTED_BY_US=false
+START_FAILURE=
 
 usage() {
     cat <<EOF
-Usage: sudo ./deploy/$PROGRAM --binary /path/to/wingmankvm [--no-start]
+Usage: sudo ./deploy/$PROGRAM --binary /path/to/wingmankvm [--no-start] [--health-url URL] [--maintenance-mode MODE]
 
 Options:
   --binary PATH  Linux WingmanKVM executable to install (required)
   --no-start     Install files only; do not enable or start services
+  --health-url U Local loopback http /healthz override (IP literal only)
+  --maintenance-mode MODE  restricted (default) or explicit privileged root maintenance
   -h, --help     Show this help
 EOF
 }
@@ -23,11 +35,9 @@ EOF
 log() {
     printf '%s: %s\n' "$PROGRAM" "$*"
 }
-
 warn() {
     printf '%s: warning: %s\n' "$PROGRAM" "$*" >&2
 }
-
 die() {
     printf '%s: error: %s\n' "$PROGRAM" "$*" >&2
     exit 1
@@ -43,45 +53,85 @@ source_file() {
     printf '%s\n' "$path"
 }
 
-install_managed_file() {
-    local source=$1
-    local destination=$2
-    local mode=$3
-    local owner=${4:-root}
-    local group=${5:-root}
-    local temporary
+# shellcheck source=upgrade-transaction.sh
+. "$SCRIPT_DIR/upgrade-transaction.sh" || die "cannot load upgrade transaction library"
 
-    [[ ! -e $destination || -f $destination || -L $destination ]] \
-        || die "installation target is not a regular file: $destination"
-    [[ ! -L $destination ]] || die "refusing to replace managed symlink: $destination"
-    temporary=$(mktemp "${destination}.tmp.XXXXXX")
-    install -o "$owner" -g "$group" -m "$mode" "$source" "$temporary"
+dest_path() {
+    local path=$1
+    [[ $path == /* ]] || return 1
+    printf '%s\n' "${DEST_ROOT%/}$path"
+}
 
-    if [[ -f $destination ]] && cmp -s "$temporary" "$destination"; then
-        rm -f -- "$temporary"
-        chown "$owner:$group" "$destination"
-        chmod "$mode" "$destination"
-        log "already current: $destination"
-    else
-        mv -f -- "$temporary" "$destination"
-        log "installed: $destination"
+install_directory() {
+    local destination=$1 mode=$2 owner=${3:-root} group=${4:-root}
+    install -d -m "$mode" -- "$destination"
+    if [[ $(id -u) -eq 0 ]]; then
+        chown "$owner:$group" -- "$destination"
     fi
 }
 
-install_if_missing() {
-    local source=$1
-    local destination=$2
-    local mode=$3
-    local owner=${4:-root}
-    local group=${5:-root}
+ensure_install_directories() {
+    install_directory "$(dest_path /etc/wingmankvm)" 0755
+    install_directory "$(dest_path /etc/sudoers.d)" 0750
+    install_directory "$(dest_path /etc/udev/rules.d)" 0755
+    install_directory "$(dest_path /etc/systemd/system)" 0755
+    install_directory "$(dest_path /usr/local/bin)" 0755
+    install_directory "$(dest_path /usr/local/sbin)" 0755
+}
 
-    [[ ! -e $destination || -f $destination || -L $destination ]] \
-        || die "preserved target is not a regular file: $destination"
-    if [[ -e $destination || -L $destination ]]; then
-        log "preserved existing file: $destination"
-        return
+
+# Root-selected policy only: never controlled by a web request or service state.
+managed_sudoers_grants_wingman_all() {
+    [[ -f $1 && -r $1 ]] || return 1
+    grep -Eq '^[[:space:]]*wingman[[:space:]]+ALL[[:space:]]*=' "$1"
+}
+resolve_maintenance_mode() {
+    local optional
+    optional=$(dest_path /etc/sudoers.d/wingmankvm-maintenance-root)
+    if managed_sudoers_grants_wingman_all "$(dest_path /etc/sudoers.d/wingmankvm)" \
+        || [[ -e $optional || -L $optional ]]; then
+        [[ -n $MAINTENANCE_MODE ]] || die "existing root maintenance detected; explicitly select --maintenance-mode restricted or privileged before upgrading; no managed files changed"
     fi
-    install_managed_file "$source" "$destination" "$mode" "$owner" "$group"
+    MAINTENANCE_MODE=${MAINTENANCE_MODE:-restricted}
+    case $MAINTENANCE_MODE in
+        restricted | privileged) ;;
+        *) die "--maintenance-mode must be restricted or privileged" ;;
+    esac
+}
+preflight_maintenance_mode() {
+    local group groups optional
+    [[ $MAINTENANCE_MODE == restricted ]] || return 0
+    if getent passwd wingman >/dev/null; then
+        [[ $(id -u wingman) -ne 0 ]] || die "existing wingman account must not be root"
+        groups=$(id -nG wingman)
+        for group in sudo wheel admin; do
+            [[ " $groups " != *" $group "* ]] || die "wingman is in host administrator group '$group'; review this grant manually before choosing restricted mode"
+        done
+    fi
+    optional=$(dest_path /etc/sudoers.d/wingmankvm-maintenance-root)
+    if [[ -e $optional || -L $optional ]]; then
+        [[ -f $optional && ! -L $optional ]] || die "refusing to remove non-regular optional privilege rule: $optional"
+        cmp -s "$MAINTENANCE_ROOT_SUDOERS" "$optional" || die "optional privilege rule was customized; review it manually: $optional"
+    fi
+}
+stage_maintenance_mode() {
+    local target
+    target=$(dest_path /etc/sudoers.d/wingmankvm-maintenance-root)
+    if [[ ${MAINTENANCE_MODE:-restricted} == privileged ]]; then
+        tx_add_managed "$MAINTENANCE_ROOT_SUDOERS" "$target" 0440 root root
+    else
+        tx_add_absent "$MAINTENANCE_ROOT_SUDOERS" "$target"
+    fi
+}
+postflight_maintenance_mode() {
+    local listing
+    [[ $MAINTENANCE_MODE == restricted ]] || return 0
+    if listing=$(LC_ALL=C sudo -n -l -U wingman 2>&1); then
+        die "unexpected host sudo grant for wingman in restricted mode; review foreign sudoers/group policy; managed files will be rolled back"
+    elif [[ $listing == *"not allowed to run sudo"* || $listing == *"may not run sudo"* ]]; then
+        return 0
+    fi
+    die "could not verify effective sudo policy for wingman"
 }
 
 create_group() {
@@ -209,21 +259,328 @@ reload_udev() {
     udevadm trigger --subsystem-match=gpio --action=change >/dev/null 2>&1 || true
 }
 
-start_services() {
-    systemctl enable wingmankvm-gadget.service wingmankvm.service
+load_deployment_sources() {
+    UDEV_RULES=$(source_file 99-wingmankvm.rules)
+    WINGMAN_PROFILE=$(source_file wingman.bash_profile)
+    PASSWORD_HELPER=$(source_file wingmankvm-set-wingman-password)
+    SUDOERS_RULE=$(source_file wingmankvm-sudoers)
+    MAINTENANCE_ROOT_SUDOERS=$(source_file wingmankvm-maintenance-root-sudoers)
+    GADGET_SCRIPT=$(source_file wingmankvm-gadget)
+    GADGET_ENV_EXAMPLE=$(source_file gadget.env.example)
+    GADGET_SERVICE=$(source_file wingmankvm-gadget.service)
+    APPLICATION_SERVICE=$(source_file wingmankvm.service)
 
+    bash -n "$SCRIPT_DIR/install.sh" || die "installer failed shell syntax validation"
+    bash -n "$WINGMAN_PROFILE" || die "login profile failed shell syntax validation"
+    sh -n "$GADGET_SCRIPT" || die "Gadget helper failed shell syntax validation"
+    sh -n "$PASSWORD_HELPER" || die "password helper failed shell syntax validation"
+    visudo -cf "$SUDOERS_RULE" >/dev/null || die "sudoers source failed validation"
+    visudo -cf "$MAINTENANCE_ROOT_SUDOERS" >/dev/null || die "optional root sudoers source failed validation"
+}
+
+install_managed_files() {
+    tx_begin
+    tx_add_managed "$BINARY" \
+        "$(dest_path /usr/local/bin/wingmankvm)" 0755 root root
+    tx_add_managed "$GADGET_SCRIPT" \
+        "$(dest_path /usr/local/sbin/wingmankvm-gadget)" 0755 root root
+    tx_add_managed "$PASSWORD_HELPER" \
+        "$(dest_path /usr/local/sbin/wingmankvm-set-wingman-password)" 0755 root root
+    tx_add_managed "$SUDOERS_RULE" \
+        "$(dest_path /etc/sudoers.d/wingmankvm)" 0440 root root
+    tx_add_managed "$UDEV_RULES" \
+        "$(dest_path /etc/udev/rules.d/99-wingmankvm.rules)" 0644 root root
+    tx_add_managed "$GADGET_SERVICE" \
+        "$(dest_path /etc/systemd/system/wingmankvm-gadget.service)" 0644 root root
+    tx_add_managed "$APPLICATION_SERVICE" \
+        "$(dest_path /etc/systemd/system/wingmankvm.service)" 0644 root root
+    tx_add_preserved "$GADGET_ENV_EXAMPLE" \
+        "$(dest_path /etc/wingmankvm/gadget.env)" 0644 root root
+    stage_maintenance_mode
+    tx_stage_all
+    tx_apply
+    log "managed files staged and published transactionally"
+}
+
+# This intentionally runs outside the managed-file transaction. It only creates
+# a missing profile; an existing profile is never read, rewritten, or removed.
+# A later failure can leave this first-install initialization in place.
+install_missing_login_profile() {
+    local destination destination_group
+    if ! $WINGMAN_CREATED; then
+        log "existing terminal account: login profile left unchanged"
+        return 0
+    fi
+    destination=$(dest_path /home/wingman/.bash_profile)
+    destination_group=${WINGMAN_GROUP:-root}
+    [[ ! -e $destination && ! -L $destination ]] || {
+        log "preserved existing login profile: $destination"
+        return 0
+    }
+    install -m 0644 -- "$WINGMAN_PROFILE" "$destination"
+    if [[ $(id -u) -eq 0 ]]; then
+        chown wingman:"$destination_group" -- "$destination"
+    fi
+    log "initialized missing login profile outside the rollback transaction: $destination"
+}
+
+resolve_health_url() {
+    local config host port parsed
+    config=$(dest_path /var/lib/wingmankvm/config.json)
+    if [[ -e $config || -L $config ]]; then
+        [[ -f $config && -r $config && ! -L $config ]] \
+            || die "config.json is not a readable regular file: $config"
+        parsed=$(python3 - "$config" <<'PY'
+import ipaddress, json, sys
+path = sys.argv[1]
+try:
+    with open(path, "rb") as handle:
+        data = json.load(handle)
+except Exception as exc:
+    print(f"cannot parse {path}: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+if not isinstance(data, dict):
+    print("config.json root must be an object", file=sys.stderr)
+    raise SystemExit(1)
+server = data.get("server")
+if server is None:
+    server = {}
+if not isinstance(server, dict):
+    print("server must be an object", file=sys.stderr)
+    raise SystemExit(1)
+address = server.get("listen_address", "0.0.0.0")
+port = server.get("port", 8080)
+if not isinstance(address, str):
+    print("server.listen_address must be a bare IP string", file=sys.stderr)
+    raise SystemExit(1)
+try:
+    ip = ipaddress.ip_address(address)
+except ValueError as exc:
+    print(f"server.listen_address must be a bare IP literal: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+    print("server.port must be an integer in 1..65535", file=sys.stderr)
+    raise SystemExit(1)
+if ip.is_unspecified:
+    host = "127.0.0.1" if ip.version == 4 else "::1"
+else:
+    host = str(ip)
+print(host)
+print(port)
+PY
+) || die "existing config.json has an invalid server.listen_address/server.port"
+        host=$(printf '%s\n' "$parsed" | sed -n '1p')
+        port=$(printf '%s\n' "$parsed" | sed -n '2p')
+    else
+        host=127.0.0.1
+        port=8080
+    fi
+    if [[ -n $HEALTH_URL ]]; then
+        python3 - "$HEALTH_URL" <<'PY' || die "invalid --health-url"
+import ipaddress, sys, urllib.parse
+value = sys.argv[1]
+try:
+    parsed = urllib.parse.urlsplit(value)
+    port = parsed.port
+except ValueError as exc:
+    print(f"invalid URL: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+if parsed.scheme != "http" or parsed.username is not None or parsed.password is not None:
+    print("health URL must be plain http without credentials", file=sys.stderr)
+    raise SystemExit(1)
+if parsed.path != "/healthz" or parsed.query or parsed.fragment or port is None:
+    print("health URL must be exactly http://IP:PORT/healthz", file=sys.stderr)
+    raise SystemExit(1)
+try:
+    ip = ipaddress.ip_address(parsed.hostname or "")
+except ValueError as exc:
+    print(f"health URL host must be a bare IP literal: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+if not ip.is_loopback:
+    print("health URL must use a loopback IP literal", file=sys.stderr)
+    raise SystemExit(1)
+if not 1 <= port <= 65535:
+    print("health URL port is out of range", file=sys.stderr)
+    raise SystemExit(1)
+PY
+        return 0
+    fi
+    if [[ $host == *:* ]]; then
+        HEALTH_URL="http://[$host]:$port/healthz"
+    else
+        HEALTH_URL="http://$host:$port/healthz"
+    fi
+}
+
+probe_health() {
+    local url=$1
+    timeout --kill-after=1s 16s python3 - "$url" <<'PY'
+import http.client
+import json
+import sys
+import time
+import urllib.parse
+
+url = sys.argv[1]
+parsed = urllib.parse.urlsplit(url)
+deadline = time.monotonic() + 15.0
+last = "no attempt completed"
+while True:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        break
+    try:
+        connection = http.client.HTTPConnection(
+            parsed.hostname, parsed.port, timeout=min(2.0, remaining)
+        )
+        connection.request("GET", parsed.path, headers={"Accept": "application/json"})
+        response = connection.getresponse()
+        body = response.read(65537)
+        status = response.status
+        content_type = (response.getheader("Content-Type") or "").split(";")[0].strip().lower()
+        connection.close()
+        if status != 200:
+            last = f"HTTP {status}"
+        elif len(body) > 65536:
+            print("health response is too large", file=sys.stderr)
+            raise SystemExit(1)
+        elif content_type != "application/json":
+            print(f"health response content type is {content_type!r}", file=sys.stderr)
+            raise SystemExit(1)
+        else:
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except Exception as exc:
+                print(f"health response is not valid JSON: {exc}", file=sys.stderr)
+                raise SystemExit(1)
+            if (
+                not isinstance(payload, dict)
+                or payload.get("status") != "ok"
+                or payload.get("service") != "wingmankvm"
+            ):
+                print("health JSON must contain status=ok and service=wingmankvm", file=sys.stderr)
+                raise SystemExit(1)
+            raise SystemExit(0)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        last = f"{type(exc).__name__}: {exc}"
+    time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+print(f"health check at {url} failed within 15s: {last}", file=sys.stderr)
+raise SystemExit(1)
+PY
+}
+
+runtime_prepare() {
+    APP_WAS_ACTIVE=false
+    APP_WAS_ENABLED=false
+    GADGET_WAS_ACTIVE=false
+    GADGET_WAS_ENABLED=false
+    GADGET_STARTED_BY_US=false
+    START_FAILURE=
+    systemctl is-active --quiet wingmankvm.service && APP_WAS_ACTIVE=true
+    systemctl is-enabled --quiet wingmankvm.service && APP_WAS_ENABLED=true
+    systemctl is-active --quiet wingmankvm-gadget.service && GADGET_WAS_ACTIVE=true
+    systemctl is-enabled --quiet wingmankvm-gadget.service && GADGET_WAS_ENABLED=true
+    return 0
+}
+
+restore_enabled_state() {
+    local ok=true
+    if $APP_WAS_ENABLED; then
+        systemctl enable wingmankvm.service >/dev/null 2>&1 \
+            || { warn "could not re-enable wingmankvm.service"; ok=false; }
+    else
+        systemctl disable wingmankvm.service >/dev/null 2>&1 \
+            || { warn "could not restore wingmankvm.service disabled state"; ok=false; }
+    fi
+    if $GADGET_WAS_ENABLED; then
+        systemctl enable wingmankvm-gadget.service >/dev/null 2>&1 \
+            || { warn "could not re-enable wingmankvm-gadget.service"; ok=false; }
+    else
+        systemctl disable wingmankvm-gadget.service >/dev/null 2>&1 \
+            || { warn "could not restore wingmankvm-gadget.service disabled state"; ok=false; }
+    fi
+    $ok
+}
+
+wingmankvm_files_rollback() {
+    reload_udev && systemctl daemon-reload
+}
+
+wingmankvm_runtime_rollback() {
+    local ok=true
+    reload_udev || { warn "could not reload udev rules during rollback"; ok=false; }
+    systemctl daemon-reload || { warn "could not reload systemd during rollback"; ok=false; }
+    restore_enabled_state || ok=false
+    if $GADGET_STARTED_BY_US; then
+        systemctl stop wingmankvm-gadget.service \
+            || { warn "could not stop the Gadget started by this installer"; ok=false; }
+    fi
+    if $APP_WAS_ACTIVE; then
+        if systemctl restart wingmankvm.service; then
+            if probe_health "$HEALTH_URL"; then
+                log "previously active WingmanKVM app was restored and passed /healthz"
+            else
+                warn "previously active WingmanKVM app restarted but did not pass /healthz"
+                ok=false
+            fi
+        else
+            warn "could not restart the previously active WingmanKVM app"
+            ok=false
+        fi
+    else
+        systemctl stop wingmankvm.service >/dev/null 2>&1 \
+            || { warn "could not leave the previously inactive app stopped"; ok=false; }
+    fi
+    $ok
+}
+
+start_services() {
+    systemctl enable wingmankvm-gadget.service wingmankvm.service \
+        || { START_FAILURE="could not enable WingmanKVM services"; return 1; }
     if systemctl is-active --quiet wingmankvm-gadget.service; then
         log "Gadget service is already active; leaving the current USB connection intact"
-    elif ! systemctl start wingmankvm-gadget.service; then
-        systemctl --no-pager --full status wingmankvm-gadget.service || true
-        die "failed to start USB Gadget; check /etc/wingmankvm/gadget.env and the service log"
+    else
+        GADGET_STARTED_BY_US=true
+        if ! systemctl start wingmankvm-gadget.service; then
+            systemctl --no-pager --full status wingmankvm-gadget.service || true
+            START_FAILURE="failed to start USB Gadget; check /etc/wingmankvm/gadget.env and the service log"
+            return 1
+        fi
     fi
-
     if ! systemctl restart wingmankvm.service; then
         systemctl --no-pager --full status wingmankvm.service || true
-        die "failed to start WingmanKVM"
+        START_FAILURE="failed to start WingmanKVM"
+        return 1
     fi
-    systemctl is-active --quiet wingmankvm.service || die "WingmanKVM did not remain active"
+    if ! systemctl is-active --quiet wingmankvm.service; then
+        systemctl --no-pager --full status wingmankvm.service || true
+        START_FAILURE="WingmanKVM did not remain active"
+        return 1
+    fi
+    if ! probe_health "$HEALTH_URL"; then
+        START_FAILURE="WingmanKVM did not pass /healthz verification at $HEALTH_URL"
+        return 1
+    fi
+    return 0
+}
+
+handle_start_failure() {
+    local original=$START_FAILURE
+    [[ -n $original ]] || original="new services failed to start or pass health verification"
+    if tx_rollback "$original"; then
+        die "$original; previous managed files were restored and runtime recovery succeeded"
+    fi
+    die "$original; automatic rollback failed; keep the printed snapshot and run the recovery command"
+}
+
+finish_no_start() {
+    tx_commit
+    log "installation complete; the installer did not enable or start services"
+    log "file publication succeeded but was NOT runtime verified (--no-start)"
+    log "any services that were already running were left unchanged"
+    log "review /etc/wingmankvm/gadget.env, then run: systemctl enable --now wingmankvm-gadget.service wingmankvm.service"
 }
 
 show_first_run_access() {
@@ -310,7 +667,7 @@ show_first_run_access() {
     if ((${#access_hosts[@]} == 0)); then
         access_hosts+=(127.0.0.1)
     fi
-    if [[ ! -s /var/lib/wingmankvm/auth.json && -n $setup_token ]]; then
+    if [[ ! -s $STATE_DIR/auth.json && -n $setup_token ]]; then
         setup_fragment="#setup=$setup_token"
     fi
     for index in "${!access_hosts[@]}"; do
@@ -321,7 +678,7 @@ show_first_run_access() {
         fi
     done
 
-    if [[ -s /var/lib/wingmankvm/auth.json ]]; then
+    if [[ -s $STATE_DIR/auth.json ]]; then
         log "existing administrator configuration was preserved"
         return
     fi
@@ -332,6 +689,11 @@ show_first_run_access() {
     fi
 }
 
+# Source guard: the verification harness sources only the definitions above.
+if [[ ${BASH_SOURCE[0]} != "$0" ]]; then
+    return 0
+fi
+
 while (($# > 0)); do
     case $1 in
         --binary)
@@ -341,6 +703,24 @@ while (($# > 0)); do
             ;;
         --binary=*)
             BINARY=${1#*=}
+            shift
+            ;;
+        --health-url)
+            (($# >= 2)) || die "--health-url requires a URL"
+            HEALTH_URL=$2
+            shift 2
+            ;;
+        --health-url=*)
+            HEALTH_URL=${1#*=}
+            shift
+            ;;
+        --maintenance-mode)
+            (($# >= 2)) || die "--maintenance-mode requires a mode"
+            MAINTENANCE_MODE=$2
+            shift 2
+            ;;
+        --maintenance-mode=*)
+            MAINTENANCE_MODE=${1#*=}
             shift
             ;;
         --no-start)
@@ -359,15 +739,19 @@ done
 
 [[ -n $BINARY ]] || die "--binary is required"
 [[ $(id -u) -eq 0 ]] || die "run this installer as root (for example with sudo)"
+DEST_ROOT=/
 
 require_command awk
 require_command cmp
+require_command flock
 require_command getent
 require_command groupadd
 require_command install
 require_command mktemp
 require_command od
+require_command python3
 require_command systemctl
+require_command timeout
 require_command udevadm
 require_command useradd
 require_command usermod
@@ -404,57 +788,42 @@ case $(uname -m) in
         ;;
 esac
 
-UDEV_RULES=$(source_file 99-wingmankvm.rules)
-WINGMAN_PROFILE=$(source_file wingman.bash_profile)
-PASSWORD_HELPER=$(source_file wingmankvm-set-wingman-password)
-SUDOERS_RULE=$(source_file wingmankvm-sudoers)
-GADGET_SCRIPT=$(source_file wingmankvm-gadget)
-GADGET_ENV_EXAMPLE=$(source_file gadget.env.example)
-GADGET_SERVICE=$(source_file wingmankvm-gadget.service)
-APPLICATION_SERVICE=$(source_file wingmankvm.service)
-
-sh -n "$GADGET_SCRIPT" || die "Gadget helper failed syntax validation"
-
+load_deployment_sources
+resolve_maintenance_mode
+preflight_maintenance_mode
 ENVIRONMENT_CHECK=$GADGET_ENV_EXAMPLE
-if [[ -e /etc/wingmankvm/gadget.env || -L /etc/wingmankvm/gadget.env ]]; then
-    ENVIRONMENT_CHECK=/etc/wingmankvm/gadget.env
+if [[ -e $(dest_path /etc/wingmankvm/gadget.env) || -L $(dest_path /etc/wingmankvm/gadget.env) ]]; then
+    ENVIRONMENT_CHECK=$(dest_path /etc/wingmankvm/gadget.env)
 fi
 check_platform "$ENVIRONMENT_CHECK"
+resolve_health_url
+
+STATE_DIR=$(dest_path /var/lib/wingmankvm)
+tx_init "$(dest_path /var/lib/wingmankvm-deploy)" "$DEST_ROOT"
 
 create_users
-visudo -cf "$SUDOERS_RULE" >/dev/null || die "sudoers rule failed validation"
-
-install -d -o root -g root -m 0755 /etc/wingmankvm
-install -d -o root -g root -m 0750 /etc/sudoers.d
-install -d -o root -g root -m 0755 /etc/udev/rules.d
-install -d -o root -g root -m 0755 /etc/systemd/system
-install -d -o root -g root -m 0755 /usr/local/bin /usr/local/sbin
-install_if_missing "$GADGET_ENV_EXAMPLE" /etc/wingmankvm/gadget.env 0644
-install_managed_file "$BINARY" /usr/local/bin/wingmankvm 0755
-install_managed_file "$GADGET_SCRIPT" /usr/local/sbin/wingmankvm-gadget 0755
-install_managed_file "$PASSWORD_HELPER" /usr/local/sbin/wingmankvm-set-wingman-password 0755
-install_managed_file "$SUDOERS_RULE" /etc/sudoers.d/wingmankvm 0440
-visudo -cf /etc/sudoers.d/wingmankvm >/dev/null || die "installed sudoers rule failed validation"
-
+ensure_install_directories
 WINGMAN_GROUP=$(id -gn wingman)
-if $WINGMAN_CREATED; then
-    install_managed_file "$WINGMAN_PROFILE" /home/wingman/.bash_profile 0644 wingman "$WINGMAN_GROUP"
+install_missing_login_profile
+if $NO_START; then
+    TX_ROLLBACK_HOOK=wingmankvm_files_rollback
 else
-    install_if_missing "$WINGMAN_PROFILE" /home/wingman/.bash_profile 0644 wingman "$WINGMAN_GROUP"
+    runtime_prepare
+    TX_ROLLBACK_HOOK=wingmankvm_runtime_rollback
 fi
-install_managed_file "$UDEV_RULES" /etc/udev/rules.d/99-wingmankvm.rules 0644
-install_managed_file "$GADGET_SERVICE" /etc/systemd/system/wingmankvm-gadget.service 0644
-install_managed_file "$APPLICATION_SERVICE" /etc/systemd/system/wingmankvm.service 0644
+install_managed_files
+postflight_maintenance_mode
 
 reload_udev
-systemctl daemon-reload
+systemctl daemon-reload || die "systemd daemon-reload failed after publishing managed files"
 
 if $NO_START; then
-    log "installation complete; the installer did not enable or start services"
-    log "any services that were already running were left unchanged"
-    log "review /etc/wingmankvm/gadget.env, then run: systemctl enable --now wingmankvm-gadget.service wingmankvm.service"
+    finish_no_start
 else
-    start_services
-    log "installation complete; WingmanKVM is running"
+    if ! start_services; then
+        handle_start_failure
+    fi
+    tx_commit
+    log "installation complete; WingmanKVM is running and passed /healthz"
     show_first_run_access
 fi

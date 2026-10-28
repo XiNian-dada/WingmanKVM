@@ -1,0 +1,7 @@
+# Optional root maintenance access for the authenticated web terminal.
+# Install only via:
+#   sudo ./deploy/install.sh --binary ... --maintenance-mode privileged
+# A password is still required.  Because the service can reset wingman's
+# password through the fixed helper, this mode deliberately accepts:
+# service compromise -> wingman password reset -> host root.
+wingman ALL=(ALL:ALL) ALL

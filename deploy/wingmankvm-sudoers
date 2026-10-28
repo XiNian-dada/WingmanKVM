@@ -1,9 +1,12 @@
 # Keep the web service unprivileged while allowing setup to synchronize the
 # local console account.  The helper accepts only a password on stdin and
-# always targets the fixed `wingman` account.
-wingmankvm ALL=(root) NOPASSWD: /usr/local/sbin/wingmankvm-set-wingman-password
+# always targets the fixed `wingman` account.  The empty argument list ("")
+# makes the sudo rule unusable with extra command-line arguments (requires
+# sudo with empty-argument support).
+wingmankvm ALL=(root) NOPASSWD: /usr/local/sbin/wingmankvm-set-wingman-password ""
 wingmankvm ALL=(wingman) NOPASSWD: /bin/bash -l
 
-# The authenticated web terminal runs as this local maintenance user.  Keep
-# normal sudo password verification so the service itself remains unprivileged.
-wingman ALL=(ALL:ALL) ALL
+# Root maintenance for the authenticated web terminal is intentionally NOT
+# granted here.  Host root can install the separate, optional
+# /etc/sudoers.d/wingmankvm-maintenance-root rule with the installer's
+# --maintenance-mode privileged option.
