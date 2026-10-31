@@ -407,6 +407,8 @@ enum TerminalClientMessage {
     Resize { cols: u16, rows: u16 },
 }
 
+const TERMINAL_TASK_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+
 struct TerminalSession {
     child: Box<dyn Child + Send + Sync>,
     reader_task: tokio::task::JoinHandle<()>,
@@ -432,8 +434,14 @@ impl TerminalSession {
         drop(master);
         drop(reader_rx);
         let reaped = reap_terminal_child(child).await;
-        let _ = reader_task.await;
-        let _ = writer_task.await;
+        // A detached descendant (e.g. `setsid cmd &`) can keep the PTY slave
+        // open so the blocking reader never sees EOF. Bound the wait so the
+        // connection task is released; the stray thread exits with the slave.
+        for (name, task) in [("reader", reader_task), ("writer", writer_task)] {
+            if tokio::time::timeout(TERMINAL_TASK_JOIN_TIMEOUT, task).await.is_err() {
+                tracing::warn!(task = name, "terminal I/O thread did not exit; abandoning it");
+            }
+        }
         reaped
     }
 }
@@ -4861,6 +4869,18 @@ mod tests {
         let unreadable = AuthStore::new(root.join("not-a-dir").join("auth.json"));
         assert!(load_bootstrap_auth(unreadable).await.is_err());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn terminal_stop_returns_when_a_detached_child_keeps_the_pty_open() {
+        let mut command = CommandBuilder::new("/bin/sh");
+        // The background subshell ignores SIGHUP and keeps the slave open.
+        command.args(["-c", "(trap '' HUP; sleep 30) & exec sleep 30"]);
+        let session = spawn_terminal_session(command).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::timeout(TERMINAL_TASK_JOIN_TIMEOUT * 3, session.stop())
+            .await
+            .expect("stop must not wait forever on the PTY reader");
     }
 
     #[tokio::test]
