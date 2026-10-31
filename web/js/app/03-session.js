@@ -157,8 +157,13 @@
       showState('login');
       $('#login-error').textContent = '会话已过期，请重新登录。';
     }
-    if (!response.ok)
-      throw new Error((data && (data.error || data.message)) || data || `请求失败 (${response.status})`);
+    if (!response.ok) {
+      const error = new Error(
+        (data && (data.error || data.message)) || data || `请求失败 (${response.status})`,
+      );
+      error.status = response.status;
+      throw error;
+    }
     return data;
   }
   const rawValue = (form, name) => new FormData(form).get(name)?.toString() || '';
@@ -388,17 +393,31 @@
       loginForm.setAttribute('aria-busy', 'false');
     }
   });
+  // Only show the login screen once the server confirms the session is gone;
+  // the HttpOnly cookie cannot be cleared from script, so a failed logout
+  // must not pretend to have signed out.
   $('#logout').addEventListener('click', async () => {
-    clearAuthSecrets({ token: true });
-    await stopInput();
+    const button = $('#logout');
+    if (button.disabled) return;
+    button.disabled = true;
     try {
-      await request('/api/logout', { method: 'POST' });
-    } finally {
+      try {
+        await request('/api/logout', { method: 'POST' });
+      } catch (error) {
+        if (error.status !== 401) {
+          toast(t('logout_failed', '退出失败，会话仍然有效，请重试') + `：${error.message}`, true);
+          return;
+        }
+      }
+      clearAuthSecrets({ token: true });
+      await stopInput();
       bootstrap.authenticated = false;
       try {
         bootstrap = await request('/api/bootstrap');
       } catch (_) {}
       showState('login');
+    } finally {
+      button.disabled = false;
     }
   });
 
