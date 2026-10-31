@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     process::{Child as StdChild, Command as StdCommand, ExitStatus, Stdio as StdStdio},
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Mutex, Weak, atomic::{AtomicU64, Ordering}},
     time::{Duration, Instant},
 };
 
@@ -18,7 +18,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UdpSocket, lookup_host},
     process::{Child as TokioChild, Command as TokioCommand},
-    sync::{mpsc, watch, Mutex as AsyncMutex},
+    sync::{Mutex as AsyncMutex, mpsc, watch},
     task::AbortHandle,
 };
 use webrtc::{
@@ -46,10 +46,7 @@ use webrtc::{
 };
 
 #[cfg(unix)]
-use std::os::unix::{
-    io::AsRawFd,
-    process::CommandExt,
-};
+use std::os::unix::{io::AsRawFd, process::CommandExt};
 
 use crate::{
     auth::SessionGuard,
@@ -75,6 +72,7 @@ const PROBE_REAP_TIMEOUT: Duration = Duration::from_secs(2);
 const PROBE_READ_CHUNK: usize = 16 * 1024;
 const MAX_RETAINED_PROBES: usize = 4;
 const PROBE_BUSY: &str = "H.264 编码器探测暂时不可用";
+const PROBE_PENDING: &str = "H.264 编码器正在后台探测";
 const PROBE_CLEANUP_FAILED: &str = "H.264 编码器探测清理失败";
 
 #[cfg(unix)]
@@ -199,6 +197,8 @@ struct Inner {
     sessions: Mutex<HashMap<String, Session>>,
     offer_lock: AsyncMutex<()>,
     udp_binding: AsyncMutex<Option<UdpBinding>>,
+    /// Guards startup probes from overwriting a newer `reconfigure` result.
+    probe_epoch: AtomicU64,
 }
 
 impl Drop for Inner {
@@ -306,11 +306,9 @@ fn lifecycle_decision(
     policy: &LifecyclePolicy,
 ) -> LifecycleDecision {
     let (base, limit, expiry) = match phase {
-        ConnectionPhase::New | ConnectionPhase::Connecting | ConnectionPhase::Other => (
-            started,
-            policy.unconnected,
-            LifecycleExpiry::Unconnected,
-        ),
+        ConnectionPhase::New | ConnectionPhase::Connecting | ConnectionPhase::Other => {
+            (started, policy.unconnected, LifecycleExpiry::Unconnected)
+        }
         ConnectionPhase::Disconnected => (
             phase_since,
             policy.disconnected,
@@ -334,22 +332,56 @@ fn lifecycle_decision(
     }
 }
 
-impl WebRtcManager {
-    pub fn new(video: VideoManager, config: H264Config) -> Self {
+/// Run the potentially slow FFmpeg probe without blocking the caller.
+///
+/// The epoch check prevents a startup probe that finishes after a
+/// `reconfigure` from overwriting the newer encoder choice.
+fn spawn_startup_probe(inner: Arc<Inner>, config: H264Config) {
+    let epoch = inner.probe_epoch.load(Ordering::SeqCst);
+    let probe = move || {
         let encoder = probe_encoder(&config);
         if let Err(message) = &encoder {
             tracing::info!(%message, "H.264 WebRTC transport is unavailable");
         }
-        Self {
-            inner: Arc::new(Inner {
-                video,
-                config: Mutex::new(config),
-                encoder: Mutex::new(encoder),
-                sessions: Mutex::new(HashMap::new()),
-                offer_lock: AsyncMutex::new(()),
-                udp_binding: AsyncMutex::new(None),
-            }),
+        if inner.probe_epoch.load(Ordering::SeqCst) == epoch {
+            *inner
+                .encoder
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = encoder;
         }
+    };
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn(async move {
+                if let Err(error) = tokio::task::spawn_blocking(probe).await {
+                    tracing::warn!(%error, "H.264 编码器后台探测失败");
+                }
+            });
+        }
+        Err(_) => {
+            // Construction outside a Tokio runtime still must not block; a
+            // dedicated thread performs the one-off probe.
+            std::thread::spawn(probe);
+        }
+    }
+}
+
+impl WebRtcManager {
+    pub fn new(video: VideoManager, config: H264Config) -> Self {
+        // Encoder discovery shells out to FFmpeg and may take seconds. Publish
+        // a "probing" state immediately and finish the probe in the background
+        // so startup can begin listening without waiting for the media stack.
+        let inner = Arc::new(Inner {
+            video,
+            config: Mutex::new(config.clone()),
+            encoder: Mutex::new(Err(PROBE_PENDING.to_owned())),
+            sessions: Mutex::new(HashMap::new()),
+            offer_lock: AsyncMutex::new(()),
+            udp_binding: AsyncMutex::new(None),
+            probe_epoch: AtomicU64::new(0),
+        });
+        spawn_startup_probe(Arc::clone(&inner), config);
+        Self { inner }
     }
 
     pub fn status(&self) -> WebRtcStatus {
@@ -395,6 +427,8 @@ impl WebRtcManager {
 
     pub async fn reconfigure(&self, config: H264Config) {
         let _offer_guard = self.inner.offer_lock.lock().await;
+        // Invalidate any startup probe that may still be running.
+        self.inner.probe_epoch.fetch_add(1, Ordering::SeqCst);
         let udp_bind_address = config.udp_bind_address;
         let probe_config = config.clone();
         let encoder = tokio::task::spawn_blocking(move || probe_encoder(&probe_config))
@@ -779,6 +813,76 @@ fn install_connection_cleanup(inner: &Arc<Inner>, peer: &Arc<RTCPeerConnection>,
     }));
 }
 
+/// Removes the session map entry, closes the peer and wakes `close` waiters on
+/// every exit path, including a panic inside the supervisor.
+struct SessionCleanup {
+    inner: Weak<Inner>,
+    session_id: String,
+    peer: Option<Arc<RTCPeerConnection>>,
+    closed: Option<watch::Sender<bool>>,
+}
+
+impl SessionCleanup {
+    fn new(
+        inner: Weak<Inner>,
+        session_id: String,
+        peer: Arc<RTCPeerConnection>,
+        closed: watch::Sender<bool>,
+    ) -> Self {
+        Self {
+            inner,
+            session_id,
+            peer: Some(peer),
+            closed: Some(closed),
+        }
+    }
+
+    fn remove_session(&self) {
+        // Remove the map entry before closing the peer. The peer state callback
+        // re-enters the map; if it ran during close while the entry still
+        // existed it could signal a session that is already being torn down.
+        if let Some(inner) = self.inner.upgrade() {
+            inner
+                .sessions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&self.session_id);
+        }
+    }
+
+    fn signal_closed(&mut self) {
+        if let Some(closed) = self.closed.take() {
+            let _ = closed.send_replace(true);
+        }
+    }
+
+    async fn shutdown(&mut self) {
+        self.remove_session();
+        if let Some(peer) = self.peer.take() {
+            let _ = tokio::time::timeout(SESSION_CLOSE_TIMEOUT, peer.close()).await;
+        }
+        self.signal_closed();
+    }
+}
+
+impl Drop for SessionCleanup {
+    fn drop(&mut self) {
+        self.remove_session();
+        if let Some(peer) = self.peer.take() {
+            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                self.signal_closed();
+                return;
+            };
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                runtime.spawn(async move {
+                    let _ = tokio::time::timeout(SESSION_CLOSE_TIMEOUT, peer.close()).await;
+                });
+            }));
+        }
+        self.signal_closed();
+    }
+}
+
 /// The one lifecycle task for a session. It owns the peer, the encoder future,
 /// the shutdown receiver and the authenticated session guard. The map only
 /// keeps signalling channels, never a strong reference back to `Inner`.
@@ -797,6 +901,9 @@ async fn run_session_supervisor(
     closed: watch::Sender<bool>,
     policy: LifecyclePolicy,
 ) {
+    // Construct the cleanup guard before any fallible/panicking work so the
+    // session map entry cannot outlive this task.
+    let mut cleanup = SessionCleanup::new(inner, session_id.clone(), peer, closed);
     let (progress_tx, progress_rx) = mpsc::channel(1);
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let encoder_future: EncoderFuture = Box::pin(run_encoder(
@@ -828,18 +935,7 @@ async fn run_session_supervisor(
         }
     }
 
-    // Remove the map entry before closing the peer. The peer state callback
-    // re-enters the map; if it ran during close while the entry still existed
-    // it could signal a session that is already being torn down.
-    if let Some(inner) = inner.upgrade() {
-        inner
-            .sessions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&session_id);
-    }
-    let _ = tokio::time::timeout(SESSION_CLOSE_TIMEOUT, peer.close()).await;
-    let _ = closed.send_replace(true);
+    cleanup.shutdown().await;
 }
 
 async fn supervise_lifecycle(
@@ -864,14 +960,7 @@ async fn supervise_lifecycle(
             break EndReason::Auth;
         }
         let now = Instant::now();
-        let due = match lifecycle_decision(
-            now,
-            started,
-            phase,
-            phase_since,
-            last_media,
-            &policy,
-        ) {
+        let due = match lifecycle_decision(now, started, phase, phase_since, last_media, &policy) {
             LifecycleDecision::Expire(reason) => break EndReason::Watchdog(reason),
             LifecycleDecision::Wait(due) => due,
         };
@@ -1775,14 +1864,7 @@ mod tests {
             LifecycleDecision::Expire(LifecycleExpiry::Disconnected)
         );
         assert_eq!(
-            lifecycle_decision(
-                base,
-                base,
-                ConnectionPhase::Failed,
-                base,
-                None,
-                &policy,
-            ),
+            lifecycle_decision(base, base, ConnectionPhase::Failed, base, None, &policy,),
             LifecycleDecision::Expire(LifecycleExpiry::ConnectionEnded)
         );
         assert!(matches!(
@@ -1902,9 +1984,8 @@ mod tests {
         let (_state_tx, state_rx) = watch::channel(ConnectionPhase::New);
         let (_progress_tx, progress_rx) = mpsc::channel(1);
         let (cancel_tx, _cancel_rx) = watch::channel(false);
-        let encoder: EncoderFuture = Box::pin(async {
-            Err(WebRtcError::Internal("fixture encoder failure".to_owned()))
-        });
+        let encoder: EncoderFuture =
+            Box::pin(async { Err(WebRtcError::Internal("fixture encoder failure".to_owned())) });
         let token = sessions.create().unwrap();
         let guard = sessions.validate_guard(&token).unwrap();
         let task = tokio::spawn(async move {
@@ -1957,10 +2038,7 @@ mod tests {
             .await
             .expect("media idle session should be reclaimed")
             .unwrap();
-        assert_eq!(
-            end.reason,
-            EndReason::Watchdog(LifecycleExpiry::MediaIdle)
-        );
+        assert_eq!(end.reason, EndReason::Watchdog(LifecycleExpiry::MediaIdle));
     }
 
     #[tokio::test]
@@ -2015,6 +2093,7 @@ mod tests {
             sessions: Mutex::new(HashMap::new()),
             offer_lock: AsyncMutex::new(()),
             udp_binding: AsyncMutex::new(None),
+            probe_epoch: AtomicU64::new(0),
         })
     }
 
@@ -2022,18 +2101,14 @@ mod tests {
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
         let (state_tx, _state_rx) = watch::channel(ConnectionPhase::New);
         let (closed_tx, closed_rx) = watch::channel(false);
-        inner
-            .sessions
-            .lock()
-            .unwrap()
-            .insert(
-                session_id.to_owned(),
-                Session {
-                    shutdown: shutdown_tx,
-                    state: state_tx,
-                    closed: closed_rx,
-                },
-            );
+        inner.sessions.lock().unwrap().insert(
+            session_id.to_owned(),
+            Session {
+                shutdown: shutdown_tx,
+                state: state_tx,
+                closed: closed_rx,
+            },
+        );
         let weak = Arc::downgrade(inner);
         let session_id = session_id.to_owned();
         tokio::spawn(async move {
@@ -2045,6 +2120,37 @@ mod tests {
             }
             let _ = closed_tx.send_replace(true);
         });
+    }
+
+    #[tokio::test]
+    async fn session_cleanup_removes_the_entry_and_signals_closed_on_panic() {
+        let inner = test_inner();
+        let (closed_tx, closed_rx) = watch::channel(false);
+        let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+        let (state_tx, _state_rx) = watch::channel(ConnectionPhase::New);
+        inner.sessions.lock().unwrap().insert(
+            "session-panic".to_owned(),
+            Session {
+                shutdown: shutdown_tx,
+                state: state_tx,
+                closed: closed_rx.clone(),
+            },
+        );
+        let cleanup = SessionCleanup {
+            inner: Arc::downgrade(&inner),
+            session_id: "session-panic".to_owned(),
+            peer: None,
+            closed: Some(closed_tx),
+        };
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _cleanup = cleanup;
+            panic!("simulated supervisor panic");
+        }));
+
+        assert!(result.is_err());
+        assert!(inner.sessions.lock().unwrap().is_empty());
+        assert!(*closed_rx.borrow());
     }
 
     #[tokio::test]
@@ -2182,10 +2288,7 @@ mod tests {
     fn probe_nonzero_exit_is_generic_and_does_not_leak_output() {
         let _serial = serial_probe_fixture();
         let fixture = ProbeFixture::new();
-        let script = fixture.script(
-            "ffmpeg-fail",
-            "printf 'SECRET-PROBE-OUTPUT\\n' >&2\nexit 7",
-        );
+        let script = fixture.script("ffmpeg-fail", "printf 'SECRET-PROBE-OUTPUT\\n' >&2\nexit 7");
         let config = fixture.config(&script);
         let error = probe_encoder_with(&config, ProbeLimits::default()).unwrap_err();
         assert!(error.contains("无法列出编码器"));
@@ -2220,6 +2323,39 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(!process_exists(pid), "hung probe child must be reaped");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn new_returns_immediately_while_encoder_probe_is_suspended() {
+        let _serial = serial_probe_fixture();
+        let fixture = ProbeFixture::new();
+        let script = fixture.script("ffmpeg-slow", "sleep 1\nprintf 'V....D libx264\\n'");
+        let config = fixture.config(&script);
+
+        let started = Instant::now();
+        let manager = WebRtcManager::new(VideoManager::new(VideoConfig::default()), config);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "constructor must not wait for the encoder probe"
+        );
+        let probing = manager.status();
+        assert!(!probing.available);
+        assert!(
+            probing
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("探测"))
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !manager.status().available {
+            assert!(
+                Instant::now() < deadline,
+                "background probe should finish and publish the encoder"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     #[cfg(unix)]
@@ -2346,7 +2482,10 @@ mod tests {
         while process_exists(pid) && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert!(!process_exists(pid), "encoder process group member survived");
+        assert!(
+            !process_exists(pid),
+            "encoder process group member survived"
+        );
     }
 
     #[cfg(unix)]
@@ -2418,18 +2557,27 @@ mod tests {
         let script = fixture.script("loopback-encoder", r"while :; do printf '\000\000\000\001\011\360\000\000\000\001\145\210\204'; sleep 0.05; done");
         let (video, frames) = VideoManager::test_source(VideoConfig::default());
         frames.send_replace(Some(Arc::new(crate::devices::video::VideoFrame {
-            jpeg: Bytes::from_static(&[0xff, 0xd8, 0xff, 0xd9]), sequence: 1,
+            jpeg: Bytes::from_static(&[0xff, 0xd8, 0xff, 0xd9]),
+            sequence: 1,
         })));
         let reserved = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let address = reserved.local_addr().unwrap();
         drop(reserved);
-        let manager = WebRtcManager { inner: Arc::new(Inner {
-            video,
-            config: Mutex::new(H264Config { udp_bind_address: Some(address), max_sessions: 2, ..H264Config::default() }),
-            encoder: Mutex::new(Ok(test_encoder_spec(&script))),
-            sessions: Mutex::new(HashMap::new()), offer_lock: AsyncMutex::new(()),
-            udp_binding: AsyncMutex::new(None),
-        }) };
+        let manager = WebRtcManager {
+            inner: Arc::new(Inner {
+                video,
+                config: Mutex::new(H264Config {
+                    udp_bind_address: Some(address),
+                    max_sessions: 2,
+                    ..H264Config::default()
+                }),
+                encoder: Mutex::new(Ok(test_encoder_spec(&script))),
+                sessions: Mutex::new(HashMap::new()),
+                offer_lock: AsyncMutex::new(()),
+                udp_binding: AsyncMutex::new(None),
+                probe_epoch: AtomicU64::new(0),
+            }),
+        };
         let sessions = crate::auth::SessionStore::new(Duration::from_secs(60));
         let token = sessions.create().unwrap();
         let mut clients = Vec::new();
@@ -2438,9 +2586,20 @@ mod tests {
             media.register_default_codecs().unwrap();
             let mut settings = SettingEngine::default();
             settings.set_network_types(vec![NetworkType::Udp4]);
-            let client = APIBuilder::new().with_media_engine(media).with_setting_engine(settings)
-                .build().new_peer_connection(RTCConfiguration::default()).await.unwrap();
-            client.add_transceiver_from_kind(webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video, None).await.unwrap();
+            let client = APIBuilder::new()
+                .with_media_engine(media)
+                .with_setting_engine(settings)
+                .build()
+                .new_peer_connection(RTCConfiguration::default())
+                .await
+                .unwrap();
+            client
+                .add_transceiver_from_kind(
+                    webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video,
+                    None,
+                )
+                .await
+                .unwrap();
             let (packet_tx, mut packet_rx) = mpsc::channel(1);
             client.on_track(Box::new(move |track, _, _| {
                 let tx = packet_tx.clone();
@@ -2453,21 +2612,47 @@ mod tests {
             let mut gathered = client.gathering_complete_promise().await;
             let offer = client.create_offer(None).await.unwrap();
             client.set_local_description(offer).await.unwrap();
-            tokio::time::timeout(Duration::from_secs(6), gathered.recv()).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(6), gathered.recv())
+                .await
+                .unwrap();
             let offer = client.local_description().await.unwrap();
-            let answer = manager.offer(WebRtcOfferRequest { sdp_type: "offer".into(), sdp: offer.sdp }, sessions.validate_guard(&token).unwrap()).await.unwrap();
-            assert!(answer.sdp.contains(&format!(" {} typ host", address.port())));
-            client.set_remote_description(RTCSessionDescription::answer(answer.sdp).unwrap()).await.unwrap();
-            let packet = tokio::time::timeout(Duration::from_secs(10), packet_rx.recv()).await.expect("loopback SRTP packet").unwrap();
+            let answer = manager
+                .offer(
+                    WebRtcOfferRequest {
+                        sdp_type: "offer".into(),
+                        sdp: offer.sdp,
+                    },
+                    sessions.validate_guard(&token).unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                answer
+                    .sdp
+                    .contains(&format!(" {} typ host", address.port()))
+            );
+            client
+                .set_remote_description(RTCSessionDescription::answer(answer.sdp).unwrap())
+                .await
+                .unwrap();
+            let packet = tokio::time::timeout(Duration::from_secs(10), packet_rx.recv())
+                .await
+                .expect("loopback SRTP packet")
+                .unwrap();
             assert!(!packet.is_empty());
             clients.push(client);
         }
         assert_eq!(manager.status().sessions, 2);
         assert!(sessions.revoke(&token));
         tokio::time::timeout(Duration::from_secs(5), async {
-            while manager.status().sessions != 0 { tokio::time::sleep(Duration::from_millis(10)).await; }
-        }).await.unwrap();
-        for client in clients { client.close().await.unwrap(); }
+            while manager.status().sessions != 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        for client in clients {
+            client.close().await.unwrap();
+        }
     }
-
 }

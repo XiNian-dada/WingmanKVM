@@ -13,7 +13,8 @@ use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf},
     net::{TcpListener, TcpStream},
-    sync::watch,
+    sync::{Semaphore, mpsc, watch},
+    task::JoinHandle,
 };
 
 /// 12-byte fixed signature required at the start of every PROXY protocol v2 header.
@@ -25,6 +26,10 @@ pub const PPV2_SIGNATURE: [u8; 12] = [
 /// Maximum allowed length of a PROXY protocol v2 header (header + addresses + TLVs).
 /// This prevents memory exhaustion from malicious or malformed length fields.
 pub const MAX_PPV2_HEADER_SIZE: usize = 4096;
+
+/// Upper bound on concurrently negotiating connections. Excess connections wait
+/// in the kernel backlog instead of consuming unbounded tasks and buffers.
+pub const MAX_PENDING_HANDSHAKES: usize = 64;
 
 /// Timeout waiting for the full PROXY protocol v2 header to arrive.
 pub const PPV2_READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -276,8 +281,16 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for PrefixedStream<S> {
 /// An Axum-compatible `Listener` that intercepts incoming TCP connections,
 /// optionally parses PROXY protocol v2 headers, and forwards the authentic client `SocketAddr`.
 pub struct ProxyProtocolListener {
-    listener: TcpListener,
+    local_addr: SocketAddr,
     mode: watch::Receiver<ProxyProtocolMode>,
+    ready: mpsc::Receiver<(PrefixedStream<TcpStream>, SocketAddr)>,
+    acceptor: JoinHandle<()>,
+}
+
+impl Drop for ProxyProtocolListener {
+    fn drop(&mut self) {
+        self.acceptor.abort();
+    }
 }
 
 impl ProxyProtocolListener {
@@ -286,8 +299,16 @@ impl ProxyProtocolListener {
         Self::with_mode_updates(listener, watch::channel(mode).1)
     }
 
+    /// Spawns the TCP accept loop. PPv2 negotiation runs in a per-connection
+    /// task under a total deadline, so one slow or silent peer can never stall
+    /// `accept()` for everyone else.
     pub fn with_mode_updates(listener: TcpListener, mode: watch::Receiver<ProxyProtocolMode>) -> Self {
-        Self { listener, mode }
+        let local_addr = listener
+            .local_addr()
+            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
+        let (ready_tx, ready) = mpsc::channel(MAX_PENDING_HANDSHAKES);
+        let acceptor = tokio::spawn(run_acceptor(listener, mode.clone(), ready_tx));
+        Self { local_addr, mode, ready, acceptor }
     }
 
     #[allow(dead_code)]
@@ -363,38 +384,69 @@ impl ProxyProtocolListener {
     }
 }
 
+async fn run_acceptor(
+    listener: TcpListener,
+    mode: watch::Receiver<ProxyProtocolMode>,
+    ready: mpsc::Sender<(PrefixedStream<TcpStream>, SocketAddr)>,
+) {
+    let handshakes = std::sync::Arc::new(Semaphore::new(MAX_PENDING_HANDSHAKES));
+    loop {
+        let Ok(permit) = handshakes.clone().acquire_owned().await else { return };
+        let (stream, peer_addr) = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(err) => {
+                tracing::error!(%err, "TCP accept failed; sleeping 100ms");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
+        if ready.is_closed() {
+            return;
+        }
+        // Snapshot once per accepted connection; existing streams retain their protocol.
+        let mode = *mode.borrow();
+        if mode == ProxyProtocolMode::Disabled {
+            drop(permit);
+            if ready.send((PrefixedStream::new(stream), peer_addr)).await.is_err() {
+                return;
+            }
+            continue;
+        }
+        let ready = ready.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            let negotiated = tokio::time::timeout(
+                PPV2_READ_TIMEOUT,
+                ProxyProtocolListener::process_stream(mode, stream, peer_addr),
+            )
+            .await
+            .unwrap_or(Err(ProxyProtocolError::Timeout));
+            match negotiated {
+                Ok(conn) => {
+                    let _ = ready.send(conn).await;
+                }
+                Err(err) => {
+                    tracing::debug!(%peer_addr, ?err, "Rejected proxy protocol connection");
+                }
+            }
+        });
+    }
+}
+
 impl Listener for ProxyProtocolListener {
     type Io = PrefixedStream<TcpStream>;
     type Addr = SocketAddr;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
-        loop {
-            let (stream, peer_addr) = match self.listener.accept().await {
-                Ok(conn) => conn,
-                Err(err) => {
-                    tracing::error!(%err, "TCP accept failed; sleeping 100ms");
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    continue;
-                }
-            };
-
-            // Snapshot once per accepted connection; existing streams retain their protocol.
-            let mode = *self.mode.borrow();
-            if mode == ProxyProtocolMode::Disabled {
-                return (PrefixedStream::new(stream), peer_addr);
-            }
-
-            match Self::process_stream(mode, stream, peer_addr).await {
-                Ok(conn) => return conn,
-                Err(err) => {
-                    tracing::debug!(%peer_addr, ?err, "Rejected proxy protocol connection");
-                }
-            }
+        match self.ready.recv().await {
+            Some(conn) => conn,
+            // The acceptor only stops when the listener is being dropped.
+            None => std::future::pending().await,
         }
     }
 
     fn local_addr(&self) -> io::Result<Self::Addr> {
-        self.listener.local_addr()
+        Ok(self.local_addr)
     }
 }
 
@@ -403,6 +455,39 @@ mod tests {
     use super::*;
     use std::str::FromStr;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn stalled_handshake_does_not_block_other_connections() {
+        let Ok(tcp_listener) = tokio::net::TcpListener::bind("127.0.0.1:0").await else {
+            eprintln!("Skipping network test: bind not permitted");
+            return;
+        };
+        let local_addr = tcp_listener.local_addr().unwrap();
+        let mut listener = ProxyProtocolListener::new(tcp_listener, ProxyProtocolMode::Required);
+
+        // A peer that sends only part of the PPv2 signature and then stalls.
+        let Ok(mut stalled) = tokio::net::TcpStream::connect(local_addr).await else {
+            eprintln!("Skipping network test: connect not permitted");
+            return;
+        };
+        stalled.write_all(&PPV2_SIGNATURE[..4]).await.unwrap();
+
+        let mut healthy = tokio::net::TcpStream::connect(local_addr).await.unwrap();
+        let packet = make_ppv2_ipv4_packet(
+            Ipv4Addr::new(198, 51, 100, 7),
+            Ipv4Addr::new(10, 0, 0, 1),
+            40000,
+            8080,
+            b"",
+        );
+        healthy.write_all(&packet).await.unwrap();
+
+        let (_, addr) = tokio::time::timeout(Duration::from_secs(1), listener.accept())
+            .await
+            .expect("healthy connection must be accepted while another handshake stalls");
+        assert_eq!(addr, SocketAddr::from(([198, 51, 100, 7], 40000)));
+        drop(stalled);
+    }
 
     fn make_ppv2_ipv4_packet(
         src_ip: Ipv4Addr,

@@ -1,23 +1,16 @@
 import os
+from ui_bundle import load_index_html
 import json
 import base64
 from playwright.sync_api import sync_playwright
 
 WORKSPACE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC_WEB_UI = os.path.join(WORKSPACE, "src", "web_ui.rs")
 VENDOR_DIR = os.path.join(WORKSPACE, "web", "vendor", "xterm")
 ARTIFACT_DIR = "/Users/bernard/.gemini/antigravity/brain/2392f8dc-b668-4683-9c0c-064ce20f152d"
 
 os.makedirs(ARTIFACT_DIR, exist_ok=True)
 
-with open(SRC_WEB_UI, "r", encoding="utf-8") as f:
-    rust_src = f.read()
-
-start_marker = 'pub static INDEX_HTML: &str = r##"'
-end_marker = '"##;'
-s_idx = rust_src.index(start_marker) + len(start_marker)
-e_idx = rust_src.index(end_marker, s_idx)
-raw_html = rust_src[s_idx:e_idx]
+raw_html = load_index_html(WORKSPACE)
 
 with open(os.path.join(VENDOR_DIR, "xterm.css"), "r", encoding="utf-8") as f:
     xterm_css = f.read()

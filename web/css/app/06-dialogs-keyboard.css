@@ -1,0 +1,264 @@
+dialog {
+  max-width: none;
+  padding: 0;
+  border: 0;
+  color: var(--ink);
+  background: transparent;
+}
+.keyboard-sheet {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  width: min(940px, calc(100vw - 48px));
+  transform: translate3d(-50%, 0, 0);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--canvas);
+  box-shadow: var(--shadow-5);
+  will-change: transform;
+}
+dialog::backdrop {
+  background: #00000032;
+  backdrop-filter: blur(4px);
+}
+.dialog-head {
+  display: flex;
+  align-items: center;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.dialog-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.dialog-head p {
+  margin: 0 0 0 10px;
+  color: var(--muted);
+  font:
+    11px/16px "Geist Mono",
+    ui-monospace,
+    monospace;
+}
+.dialog-head button {
+  margin-left: auto;
+}
+.keyboard {
+  display: grid;
+  gap: 7px;
+  padding: 16px;
+  overflow-x: auto;
+}
+.keyboard-row {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  min-width: max-content;
+}
+.keyboard button {
+  min-width: 44px;
+  height: 44px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--soft);
+  font:
+    12px/16px "Geist Mono",
+    ui-monospace,
+    monospace;
+}
+.keyboard button:hover {
+  background: var(--soft-2);
+  border-color: var(--line-strong);
+}
+.keyboard .grow {
+  min-width: 180px;
+}
+.keyboard .active {
+  color: var(--ink-contrast);
+  background: var(--ink);
+}
+#toast {
+  position: fixed;
+  z-index: 100;
+  left: 50%;
+  bottom: 24px;
+  max-width: calc(100vw - 32px);
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--canvas);
+  color: var(--ink);
+  box-shadow: var(--shadow-4);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate3d(-50%, 12px, 0);
+  transition:
+    opacity 180ms,
+    transform 180ms;
+  will-change: transform, opacity;
+}
+#toast.show {
+  opacity: 1;
+  transform: translate3d(-50%, 0, 0);
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes step-in {
+  from {
+    opacity: 0;
+    transform: translate3d(8px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes mesh-drift {
+  to {
+    transform: translate3d(-48%, 5%, 0) scale(1.04);
+  }
+}
+@keyframes dropdown-drop {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -6px, 0) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+@keyframes popover-drop {
+  from {
+    opacity: 0;
+    transform: translate3d(-50%, -6px, 0) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(-50%, 0, 0) scale(1);
+  }
+}
+#app {
+  grid-template-rows: 64px minmax(0, 1fr) auto;
+}
+#keyboard-dialog {
+  position: relative;
+  inset: auto;
+  align-self: end;
+  width: 100%;
+  max-width: none;
+  max-height: min(34dvh, 310px);
+  margin: 0;
+  overflow: hidden;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--canvas);
+}
+#keyboard-dialog::backdrop {
+  display: none;
+}
+.keyboard-sheet {
+  position: static;
+  left: auto;
+  bottom: auto;
+  width: 100%;
+  transform: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: 0 -8px 24px -16px #0003;
+}
+.keyboard-sheet .dialog-head {
+  min-height: 46px;
+  padding: 9px 16px;
+}
+.keyboard {
+  max-height: calc(min(34dvh, 310px) - 46px);
+  gap: 4px;
+  padding: 10px;
+}
+.keyboard-row {
+  gap: 4px;
+}
+.keyboard button {
+  min-width: 40px;
+  height: 36px;
+  font-size: 11px;
+}
+.keyboard .grow {
+  min-width: 150px;
+}
+.console {
+  left: 24px;
+  top: 24px;
+  width: calc(100% - 48px);
+  height: calc(100% - 48px);
+  max-width: none;
+  max-height: none;
+}
+.inspector-keys {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+  overflow: visible;
+  margin-bottom: 10px;
+}
+.inspector-keys button {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 4px;
+}
+h2[tabindex="-1"]:focus {
+  outline: 0;
+  box-shadow: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+.workspace-tabs {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 7px;
+  background: var(--soft-2);
+  flex-shrink: 0 !important;
+  min-width: fit-content;
+}
+.workspace-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap !important;
+  word-break: keep-all !important;
+  flex-shrink: 0 !important;
+}
+.workspace-tab.active {
+  color: var(--ink);
+  background: var(--canvas);
+  box-shadow: 0 1px 2px #0001;
+}
+.terminal-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}

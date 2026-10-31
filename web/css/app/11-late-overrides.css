@@ -1,0 +1,189 @@
+#webrtc-feed {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+  background: #050505;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+#video-feed.video-surface,
+#webrtc-feed.video-surface {
+  display: block;
+}
+#video-feed.video-surface.hidden,
+#webrtc-feed.video-surface.hidden {
+  display: none !important;
+}
+.mode-native #webrtc-feed {
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  object-fit: none;
+  margin: auto;
+  flex-shrink: 0;
+}
+.mode-fill #webrtc-feed {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: fill;
+}
+.render-pixelated #webrtc-feed {
+  image-rendering: pixelated;
+}
+#video-transport-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.local-exit-hint {
+  position: absolute;
+  z-index: 4;
+  left: 10px;
+  bottom: 10px;
+  padding: 3px 8px;
+  border: 1px solid #ffffff33;
+  border-radius: 999px;
+  background: #00000099;
+  color: #fff;
+  font:
+    10px/14px "Geist Mono",
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  pointer-events: none;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+.shortcut-hint {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font:
+    11px/16px "Geist Mono",
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+#video-viewport.video-unhealthy .video-surface {
+  visibility: hidden;
+}
+.gpio-config-block {
+  grid-column: 1/-1;
+  margin-top: 5px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.gpio-config-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: var(--ink);
+  font:
+    600 11px/16px "Geist Mono",
+    ui-monospace,
+    monospace;
+  letter-spacing: 0.04em;
+}
+.gpio-inline-test {
+  min-height: 26px;
+  padding: 0 8px;
+  font-size: 10px;
+  letter-spacing: 0;
+}
+.gpio-config-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.gpio-config-status .status-dot {
+  width: 6px;
+  height: 6px;
+}
+.gpio-config-fields {
+  gap: 10px;
+}
+.gpio-config-fields .field {
+  font-size: 11px;
+}
+.gpio-config-fields .field input,
+.gpio-config-fields .field select {
+  height: 36px;
+  font-size: 12px;
+}
+.field-help {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 4px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  color: var(--muted);
+  background: var(--canvas);
+  font:
+    600 10px/1 "Geist Mono",
+    ui-monospace,
+    monospace;
+  vertical-align: 1px;
+  cursor: help;
+  transition:
+    color 160ms,
+    border-color 160ms,
+    background-color 160ms;
+}
+.field-help:hover,
+.field-help:focus-visible {
+  color: var(--ink);
+  border-color: var(--ink);
+  background: var(--soft-2);
+}
+.field-help:focus-visible {
+  outline: 0;
+  box-shadow:
+    0 0 0 2px var(--canvas),
+    0 0 0 4px var(--blue);
+}
+#field-tooltip {
+  position: fixed;
+  z-index: 120;
+  max-width: min(280px, calc(100vw - 24px));
+  padding: 8px 10px;
+  border: 1px solid #383838;
+  border-radius: 8px;
+  color: #fff;
+  background: #1d1d1d;
+  box-shadow: 0 8px 20px #0003;
+  font-size: 11px;
+  line-height: 17px;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  opacity: 0;
+  translate: 0 4px;
+  transition:
+    opacity 140ms,
+    translate 140ms;
+}
+#field-tooltip.visible {
+  opacity: 1;
+  translate: 0 0;
+}
+#field-tooltip[hidden] {
+  display: none;
+}

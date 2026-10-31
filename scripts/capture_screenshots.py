@@ -1,25 +1,18 @@
 import os
+from ui_bundle import load_index_html
 import glob
 import json
 import base64
 from playwright.sync_api import sync_playwright
 
 WORKSPACE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC_WEB_UI = os.path.join(WORKSPACE, "src", "web_ui.rs")
 VENDOR_DIR = os.path.join(WORKSPACE, "web", "vendor", "xterm")
 DOCS_IMG_DIR = os.path.join(WORKSPACE, "docs", "images")
 
 os.makedirs(DOCS_IMG_DIR, exist_ok=True)
 
 # 1. 提取 HTML 与静态文件
-with open(SRC_WEB_UI, "r", encoding="utf-8") as f:
-    rust_src = f.read()
-
-start_marker = 'pub static INDEX_HTML: &str = r##"'
-end_marker = '"##;'
-s_idx = rust_src.index(start_marker) + len(start_marker)
-e_idx = rust_src.index(end_marker, s_idx)
-raw_html = rust_src[s_idx:e_idx]
+raw_html = load_index_html(WORKSPACE)
 
 with open(os.path.join(VENDOR_DIR, "xterm.css"), "r", encoding="utf-8") as f:
     xterm_css = f.read()
@@ -373,7 +366,6 @@ def capture_console():
                 inState.classList.add('active');
             }}
             document.querySelector('#led-num')?.classList.add('active');
-            document.querySelector('#inspector-led-num')?.classList.add('active');
             if (typeof renderSystemMetrics === 'function') renderSystemMetrics({json.dumps(mock_system)});
         }}""")
         page.wait_for_timeout(400)

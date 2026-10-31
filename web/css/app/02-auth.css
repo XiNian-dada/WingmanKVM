@@ -1,0 +1,370 @@
+.auth-shell {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.78fr) minmax(520px, 1.22fr);
+  width: min(1180px, 100%);
+  min-height: 680px;
+  overflow: hidden;
+  border: 1px solid #ffffffb8;
+  border-radius: 20px;
+  background: #ffffffd9;
+  box-shadow: var(--shadow-5);
+  backdrop-filter: blur(18px);
+}
+.auth-story {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 100%;
+  padding: 48px;
+  border-right: 1px solid var(--line);
+  background: linear-gradient(145deg, #ffffffdc, #fafafae8);
+}
+.auth-story-copy {
+  position: relative;
+  z-index: 1;
+  margin: auto 0;
+}
+.auth-story h2 {
+  max-width: 430px;
+  margin: 0;
+  font-size: 44px;
+  font-weight: 600;
+  line-height: 1.03;
+  letter-spacing: -2.1px;
+}
+.auth-story h2 span {
+  color: var(--muted);
+}
+.auth-guide {
+  margin: auto 0;
+  scroll-margin-top: 16px;
+  animation: step-in 180ms ease;
+}
+.auth-guide .eyebrow {
+  margin-top: 26px;
+}
+.auth-guide h2 {
+  font-size: 34px;
+  line-height: 1.08;
+  letter-spacing: -1.4px;
+}
+.auth-guide-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 24px;
+}
+.auth-guide-item {
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #ffffffa8;
+}
+.auth-guide-item strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+}
+.auth-guide-item span {
+  display: block;
+  margin-top: 4px;
+  color: var(--body);
+  font-size: 12px;
+  line-height: 18px;
+}
+.guide-back {
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--canvas);
+  font-size: 12px;
+}
+.guide-help {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: -4px 0 -4px 3px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  color: var(--muted);
+  background: var(--canvas);
+  font:
+    600 11px/1 ui-monospace,
+    monospace;
+  vertical-align: 2px;
+}
+.guide-help:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+.capability-heading {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.capability-heading .guide-help {
+  margin-left: 1px;
+}
+.auth-story-text {
+  max-width: 430px;
+  margin: 22px 0 0;
+  color: var(--body);
+  font-size: 16px;
+  line-height: 25px;
+}
+.feature-list {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-top: 42px;
+}
+.feature-chip {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffffb8;
+}
+.feature-chip strong {
+  display: block;
+  font:
+    12px/16px "Geist Mono",
+    ui-monospace,
+    monospace;
+  font-weight: 400;
+}
+.feature-chip span {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.auth-foot {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font:
+    11px/16px "Geist Mono",
+    ui-monospace,
+    monospace;
+}
+.auth-panel {
+  display: flex;
+  align-items: center;
+  padding: 48px;
+  background: var(--canvas);
+}
+.auth-card {
+  width: 100%;
+  max-width: 660px;
+  margin: auto;
+}
+.auth-card h2 {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 38px;
+  letter-spacing: -1.1px;
+}
+.auth-lead {
+  margin: 8px 0 28px;
+  color: var(--body);
+  font-size: 14px;
+  line-height: 21px;
+}
+.auth-form.narrow {
+  max-width: 420px;
+  margin: auto;
+}
+.auth-form .field input {
+  height: 44px;
+}
+.auth-form .primary {
+  min-height: 44px;
+}
+.form-heading {
+  margin-bottom: 28px;
+}
+.boot-orbit {
+  width: 34px;
+  height: 34px;
+  margin-bottom: 22px;
+  border: 1px solid var(--line);
+  border-top-color: var(--ink);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+.setup-progress {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin: 0 0 30px;
+}
+.progress-step {
+  position: relative;
+  padding-top: 12px;
+  border-top: 2px solid var(--line);
+  color: var(--muted);
+  font:
+    11px/16px "Geist Mono",
+    ui-monospace,
+    monospace;
+}
+.progress-step.active {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+.progress-step.done {
+  border-color: var(--blue);
+  color: var(--body);
+}
+.setup-step {
+  display: none;
+  animation: step-in 180ms ease;
+}
+.setup-step.active {
+  display: block;
+}
+.setup-step h3 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.6px;
+}
+.setup-step-copy {
+  margin: 0 0 22px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.setup-scan-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--soft);
+}
+.setup-scan-card strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+}
+.setup-detection-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+.setup-detection-grid .capability {
+  min-width: 0;
+}
+.setup-detection-grid .capability p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.setup-detection-grid select {
+  width: 100%;
+  height: 34px;
+  margin-top: 10px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--canvas);
+  font-size: 12px;
+}
+.setup-advanced {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.setup-advanced summary {
+  padding: 16px 0;
+  color: var(--body);
+  cursor: pointer;
+  font-size: 13px;
+}
+.setup-advanced[open] summary {
+  margin-bottom: 4px;
+}
+.capability {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--canvas);
+}
+.capability .status-dot {
+  margin-bottom: 12px;
+}
+.capability strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+}
+.capability p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.status-dot.warning {
+  background: var(--amber);
+}
+.setup-option-fields {
+  margin: 0 0 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+.auth-choice {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 0;
+  border-top: 1px solid var(--line);
+}
+.auth-choice strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+}
+.auth-choice p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.device-results,
+.media-list {
+  margin-top: 12px;
+  padding: 12px;
+  max-height: 170px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--body);
+  font:
+    11px/1.55 "Geist Mono",
+    ui-monospace,
+    monospace;
+}
+.auth-shell {
+  max-height: calc(100dvh - 64px);
+}
+.auth-panel {
+  min-height: 0;
+  max-height: calc(100dvh - 64px);
+  overflow: auto;
+}
+#app {
+  height: 100vh;
+  height: 100dvh;
+  display: grid;
+  grid-template-rows: 64px minmax(0, 1fr);
+  overflow: hidden;
+  background: var(--soft);
+}

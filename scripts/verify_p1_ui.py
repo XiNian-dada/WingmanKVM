@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Issue #1 regression: terminal teardown on logout and HTTP 401."""
+from ui_bundle import load_index_html
 import argparse, json, os, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 try:
@@ -108,11 +109,7 @@ class State:
     def __init__(self):
         self.authenticated, self.status401_seen = True, 0
 def extract_html(repo):
-    with open(os.path.join(repo, "src", "web_ui.rs"), encoding="utf-8") as fh:
-        source = fh.read()
-    start = 'pub static INDEX_HTML: &str = r##"'
-    at = source.index(start) + len(start)
-    html = source[at:source.index('"##;', at)]
+    html = load_index_html(repo)
     marker = '<script src="/assets/xterm-fit.js"></script>'
     if marker not in html:
         raise RuntimeError("xterm-fit script marker not found")

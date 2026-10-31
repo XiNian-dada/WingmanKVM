@@ -1,0 +1,517 @@
+button.topbar-center {
+  cursor: pointer;
+  transition:
+    background-color 160ms,
+    border-color 160ms;
+}
+button.topbar-center:hover {
+  background: var(--soft-2);
+  border-color: var(--line-strong);
+}
+button.topbar-center svg {
+  opacity: 0.6;
+  transition: transform 160ms;
+}
+button.topbar-center[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+.power-menu-container {
+  position: relative;
+}
+#power-menu-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+#power-menu-toggle svg {
+  opacity: 0.6;
+}
+.lang-menu-container {
+  position: relative;
+}
+#lang-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+}
+#lang-toggle svg {
+  opacity: 0.7;
+}
+#theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  padding: 0;
+}
+#theme-toggle svg {
+  opacity: 0.8;
+}
+.dropdown-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 90;
+  min-width: 210px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--canvas);
+  box-shadow: var(--shadow-5);
+  display: grid;
+  gap: 3px;
+  transform-origin: top right;
+  animation: dropdown-drop 140ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform, opacity;
+  transform: translate3d(0, 0, 0);
+}
+.dropdown-menu[hidden] {
+  display: none !important;
+}
+.dropdown-header {
+  padding: 6px 10px 8px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font:
+    11px/16px "Geist Mono",
+    ui-monospace,
+    monospace;
+}
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 140ms;
+}
+.dropdown-item:hover {
+  background: var(--soft-2);
+}
+.dropdown-item.danger {
+  color: var(--red);
+}
+.dropdown-item.danger:hover {
+  background: var(--red-soft);
+}
+.diagnostics-popover {
+  position: fixed;
+  left: 50%;
+  top: 64px;
+  transform: translate3d(-50%, 0, 0);
+  z-index: 90;
+  width: min(440px, calc(100vw - 32px));
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--canvas);
+  box-shadow: var(--shadow-5);
+  animation: popover-drop 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform, opacity;
+  contain: layout;
+}
+.diagnostics-popover[hidden] {
+  display: none !important;
+}
+.diagnostics-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.diagnostics-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.diagnostics-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.diagnostics-card {
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft-2);
+}
+.diagnostics-card span {
+  display: block;
+  font:
+    10px/14px "Geist Mono",
+    ui-monospace,
+    monospace;
+  color: var(--muted);
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.diagnostics-card strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.diagnostics-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.quick-keys {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+}
+.icon-button-sm {
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--canvas);
+  color: var(--body);
+  font:
+    11px/1 "Geist Mono",
+    ui-monospace,
+    monospace;
+  cursor: pointer;
+  transition:
+    background-color 140ms,
+    border-color 140ms,
+    color 140ms,
+    transform 140ms;
+}
+.icon-button-sm:hover {
+  background: var(--soft-2);
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+.icon-button-sm.danger {
+  color: var(--red);
+  border-color: #f2c7c7;
+}
+.icon-button-sm.danger:hover {
+  background: var(--red-soft);
+  border-color: #efaaaa;
+}
+#input-state.clickable {
+  cursor: pointer;
+  transition:
+    background-color 140ms,
+    box-shadow 140ms;
+}
+#input-state.clickable:hover {
+  box-shadow: 0 0 0 1px var(--line-strong);
+}
+.video-preset-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 0 0 14px;
+}
+.preset-chip {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--body);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color 140ms,
+    border-color 140ms,
+    color 140ms,
+    transform 120ms;
+}
+.preset-chip:hover {
+  background: var(--soft-2);
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+.preset-chip:active {
+  transform: scale(0.96);
+}
+.perf-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font:
+    500 10px/16px "Geist Mono",
+    ui-monospace,
+    monospace;
+  color: var(--blue);
+  background: #edf6ff;
+  border: 1px solid rgba(0, 112, 243, 0.2);
+}
+.perf-badge.warning {
+  color: var(--red);
+  background: var(--red-soft);
+  border-color: #f2c7c7;
+}
+.perf-uptime {
+  font:
+    10px/16px "Geist Mono",
+    ui-monospace,
+    monospace;
+  color: var(--muted);
+}
+.perf-bar {
+  height: 5px;
+  width: 100%;
+  background: var(--line-strong);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.perf-bar i {
+  display: block;
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: var(--blue);
+  transition:
+    width 240ms ease,
+    background-color 240ms ease;
+}
+.topbar-center-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+}
+.topbar-center-wrap .topbar-center {
+  min-width: 0;
+  flex-shrink: 1;
+}
+.topbar-center-wrap #status-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.topbar-center-wrap .topbar-perf-btn {
+  flex-shrink: 0;
+}
+.topbar-perf-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--ink);
+  font:
+    500 12px/16px "Geist Mono",
+    ui-monospace,
+    monospace;
+  cursor: pointer;
+  transition:
+    background-color 160ms,
+    border-color 160ms,
+    color 160ms,
+    box-shadow 160ms;
+  white-space: nowrap;
+  user-select: none;
+  box-sizing: border-box;
+}
+.topbar-perf-btn:hover {
+  background: var(--soft-2);
+  border-color: var(--line-strong);
+}
+.topbar-perf-btn.active {
+  color: #0761d1;
+  background: #edf6ff;
+  border-color: var(--blue);
+  box-shadow: 0 0 0 1px rgba(0, 112, 243, 0.25);
+}
+.topbar-perf-btn svg.perf-chevron {
+  opacity: 0.6;
+  transition: transform 160ms;
+}
+.topbar-perf-btn[aria-expanded="true"] svg.perf-chevron {
+  transform: rotate(180deg);
+}
+.perf-chip-pulse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.perf-chip-icon {
+  display: block;
+  opacity: 0.85;
+}
+.perf-chip-full {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.perf-chip-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.perf-chip-seg strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+.perf-chip-sep {
+  color: var(--muted);
+  opacity: 0.5;
+  margin: 0 1px;
+}
+.perf-chip-compact {
+  display: none;
+}
+.topbar-perf-popover {
+  position: fixed;
+  left: 50%;
+  top: 64px;
+  transform: translate3d(-50%, 0, 0);
+  z-index: 90;
+  width: min(340px, calc(100vw - 32px));
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--canvas);
+  box-shadow: var(--shadow-5);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  animation: popover-drop 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform, opacity;
+  contain: layout;
+}
+.topbar-perf-popover[hidden] {
+  display: none !important;
+}
+.perf-pop-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.perf-pop-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.2px;
+}
+.perf-pop-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.perf-pop-close {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background-color 140ms,
+    color 140ms;
+}
+.perf-pop-close:hover {
+  background: var(--soft-2);
+  color: var(--ink);
+}
+.perf-pop-body {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+.perf-pop-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.perf-pop-row-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.perf-pop-row-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.perf-pop-row-title span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.perf-pop-sub {
+  font:
+    10px/14px "Geist Mono",
+    ui-monospace,
+    monospace;
+  color: var(--muted);
+}
+.perf-pop-row-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font:
+    10px/14px "Geist Mono",
+    ui-monospace,
+    monospace;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.perf-pop-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.perf-pop-more {
+  border: 0;
+  background: transparent;
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 6px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background-color 140ms;
+}
+.perf-pop-more:hover {
+  background: var(--soft-2);
+  text-decoration: underline;
+}

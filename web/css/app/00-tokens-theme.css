@@ -1,0 +1,389 @@
+:root {
+  font-family:
+    Inter,
+    "PingFang SC",
+    "Microsoft YaHei",
+    system-ui,
+    -apple-system,
+    sans-serif;
+  color: var(--ink);
+  background: var(--soft);
+  line-height: 1.45;
+  font-feature-settings: "ss01", "ss02";
+  --ink: #171717;
+  --ink-contrast: #fff;
+  --body: #4d4d4d;
+  --muted: #888;
+  --line: #ebebeb;
+  --line-strong: #d4d4d4;
+  --canvas: #fff;
+  --soft: #fafafa;
+  --soft-2: #f5f5f5;
+  --blue: #0070f3;
+  --red: #ee0000;
+  --red-soft: #fff1f1;
+  --amber: #ab570a;
+  --switch-bg: #d4d4d4;
+  --shadow-2: 0 1px 1px #00000005, 0 2px 2px #0000000a, 0 0 0 1px #0000000d;
+  --shadow-4: 0 2px 2px #00000008, 0 8px 16px -4px #0000000d, 0 0 0 1px #00000012;
+  --shadow-5: 0 1px 1px #00000005, 0 8px 16px -4px #0000000a, 0 24px 32px -8px #00000016, 0 0 0 1px #00000012;
+}
+:root[data-theme="dark"] {
+  color: var(--ink);
+  background: var(--soft);
+  --ink: #f0f0f0;
+  --ink-contrast: #0d0d0d;
+  --body: #a8a8a8;
+  --muted: #757575;
+  --line: #2d2d2d;
+  --line-strong: #444;
+  --canvas: #141414;
+  --soft: #0d0d0d;
+  --soft-2: #1e1e1e;
+  --blue: #3291ff;
+  --red: #ff5555;
+  --red-soft: #2d1012;
+  --amber: #f5a623;
+  --switch-bg: #383838;
+  --shadow-2: 0 1px 1px #00000040, 0 2px 2px #00000060, 0 0 0 1px #ffffff12;
+  --shadow-4: 0 2px 2px #00000050, 0 8px 16px -4px #00000080, 0 0 0 1px #ffffff14;
+  --shadow-5: 0 1px 1px #00000060, 0 8px 16px -4px #000000a0, 0 24px 32px -8px #000000d0, 0 0 0 1px #ffffff18;
+}
+:root[data-theme="dark"] .topbar,
+:root[data-theme="dark"] .command-bar {
+  background: rgba(20, 20, 20, 0.88);
+}
+:root[data-theme="dark"] .workspace {
+  background: radial-gradient(circle at 50% 8%, #1c1c1c 0, #131313 42%, #0a0a0a 100%);
+}
+:root[data-theme="dark"] .console-head,
+:root[data-theme="dark"] .dropdown-menu,
+:root[data-theme="dark"] .diagnostics-popover,
+:root[data-theme="dark"] #toast,
+:root[data-theme="dark"] .keyboard-sheet,
+:root[data-theme="dark"] #keyboard-dialog,
+:root[data-theme="dark"] .settings-modal {
+  background: var(--canvas);
+  color: var(--ink);
+}
+:root[data-theme="dark"] .auth-shell {
+  background: rgba(20, 20, 20, 0.85);
+  border-color: #ffffff18;
+}
+:root[data-theme="dark"] .auth-story {
+  background: linear-gradient(145deg, #181818ea, #121212f0);
+}
+:root[data-theme="dark"] #auth-view::before {
+  opacity: 0.22;
+}
+:root[data-theme="dark"] #auth-view::after {
+  background: linear-gradient(to bottom, #00000015 0, #0d0d0dcc 50%, #0d0d0d 76%);
+}
+:root[data-theme="dark"] .auth-guide-item,
+:root[data-theme="dark"] .feature-chip {
+  background: rgba(30, 30, 30, 0.8);
+  border-color: var(--line);
+}
+:root[data-theme="dark"] .guide-back,
+:root[data-theme="dark"] .guide-help {
+  background: var(--soft-2);
+  color: var(--muted);
+  border-color: var(--line-strong);
+}
+:root[data-theme="dark"] .diagnostics-card {
+  background: var(--soft-2);
+}
+:root[data-theme="dark"] .perf-badge {
+  background: rgba(50, 145, 255, 0.18);
+  border-color: rgba(50, 145, 255, 0.35);
+  color: var(--blue);
+}
+:root[data-theme="dark"] .perf-badge.warning {
+  background: rgba(255, 85, 85, 0.22);
+  border-color: rgba(255, 85, 85, 0.45);
+  color: var(--red);
+}
+:root[data-theme="dark"] .topbar-perf-btn {
+  background: var(--soft);
+  color: var(--ink);
+  border-color: var(--line);
+}
+:root[data-theme="dark"] .topbar-perf-btn:hover {
+  background: var(--soft-2);
+  border-color: var(--line-strong);
+}
+:root[data-theme="dark"] .topbar-perf-btn.active {
+  background: rgba(50, 145, 255, 0.18);
+  border-color: rgba(50, 145, 255, 0.45);
+  color: var(--blue);
+  box-shadow: 0 0 0 1px rgba(50, 145, 255, 0.3);
+}
+:root[data-theme="dark"] .topbar-perf-popover {
+  background: rgba(20, 20, 20, 0.94);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.65);
+}
+:root[data-theme="dark"] .tab-button.active,
+:root[data-theme="dark"] .workspace-tab.active {
+  background: var(--canvas);
+  color: var(--ink);
+}
+:root[data-theme="dark"] .video-message {
+  background: rgba(20, 20, 20, 0.92);
+  border-color: #ffffff1a;
+}
+:root[data-theme="dark"] .input-badge.active,
+:root[data-theme="dark"] .media-badge {
+  color: #60a5fa;
+  background: #172554;
+}
+:root[data-theme="dark"] .led-badge {
+  background: var(--soft);
+  color: var(--muted);
+  border-color: var(--line);
+}
+:root[data-theme="dark"] .led-badge:hover {
+  background: var(--soft-2);
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+:root[data-theme="dark"] .led-badge.active {
+  color: #34d399;
+  background: #064e3b33;
+  border-color: rgba(52, 211, 153, 0.4);
+  box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.2);
+}
+:root[data-theme="dark"] .led-badge.active .led-dot {
+  background: #34d399;
+  box-shadow: 0 0 7px #34d399;
+}
+:root[data-theme="dark"] .primary {
+  color: #0d0d0d;
+  background: #f0f0f0;
+  border-color: #f0f0f0;
+}
+:root[data-theme="dark"] .primary:hover {
+  background: #fff;
+}
+:root[data-theme="dark"] #inspector-toggle.active {
+  color: #0d0d0d;
+  background: #f0f0f0;
+  border-color: #f0f0f0;
+}
+:root[data-theme="dark"] #inspector-toggle.active:hover {
+  color: #000;
+  background: #fff;
+  border-color: #fff;
+}
+:root[data-theme="dark"] .mark,
+:root[data-theme="dark"] .user-pill,
+:root[data-theme="dark"] .session-avatar {
+  color: #0d0d0d;
+  background: #f0f0f0;
+}
+:root[data-theme="dark"] .upload-progress {
+  background: var(--soft-2);
+}
+:root[data-theme="dark"] .danger {
+  color: var(--red);
+  background: var(--canvas);
+  border-color: #551c1c;
+}
+:root[data-theme="dark"] .danger:hover {
+  background: var(--red-soft);
+  border-color: #772525;
+}
+:root[data-theme="dark"] .keyboard button {
+  background: var(--soft-2);
+  border-color: var(--line);
+  color: var(--ink);
+}
+:root[data-theme="dark"] .keyboard button:hover {
+  background: var(--canvas);
+  border-color: var(--line-strong);
+}
+:root[data-theme="dark"] .keyboard .active {
+  color: #0d0d0d;
+  background: #f0f0f0;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color: var(--ink);
+    background: var(--soft);
+    --ink: #f0f0f0;
+    --ink-contrast: #0d0d0d;
+    --body: #a8a8a8;
+    --muted: #757575;
+    --line: #2d2d2d;
+    --line-strong: #444;
+    --canvas: #141414;
+    --soft: #0d0d0d;
+    --soft-2: #1e1e1e;
+    --blue: #3291ff;
+    --red: #ff5555;
+    --red-soft: #2d1012;
+    --amber: #f5a623;
+    --switch-bg: #383838;
+    --shadow-2: 0 1px 1px #00000040, 0 2px 2px #00000060, 0 0 0 1px #ffffff12;
+    --shadow-4: 0 2px 2px #00000050, 0 8px 16px -4px #00000080, 0 0 0 1px #ffffff14;
+    --shadow-5:
+      0 1px 1px #00000060, 0 8px 16px -4px #000000a0, 0 24px 32px -8px #000000d0, 0 0 0 1px #ffffff18;
+  }
+  :root:not([data-theme="light"]) .topbar,
+  :root:not([data-theme="light"]) .command-bar {
+    background: rgba(20, 20, 20, 0.88);
+  }
+  :root:not([data-theme="light"]) .workspace {
+    background: radial-gradient(circle at 50% 8%, #1c1c1c 0, #131313 42%, #0a0a0a 100%);
+  }
+  :root:not([data-theme="light"]) .console-head,
+  :root:not([data-theme="light"]) .dropdown-menu,
+  :root:not([data-theme="light"]) .diagnostics-popover,
+  :root:not([data-theme="light"]) #toast,
+  :root:not([data-theme="light"]) .keyboard-sheet,
+  :root:not([data-theme="light"]) #keyboard-dialog,
+  :root:not([data-theme="light"]) .settings-modal {
+    background: var(--canvas);
+    color: var(--ink);
+  }
+  :root:not([data-theme="light"]) .auth-shell {
+    background: rgba(20, 20, 20, 0.85);
+    border-color: #ffffff18;
+  }
+  :root:not([data-theme="light"]) .auth-story {
+    background: linear-gradient(145deg, #181818ea, #121212f0);
+  }
+  :root:not([data-theme="light"]) #auth-view::before {
+    opacity: 0.22;
+  }
+  :root:not([data-theme="light"]) #auth-view::after {
+    background: linear-gradient(to bottom, #00000015 0, #0d0d0dcc 50%, #0d0d0d 76%);
+  }
+  :root:not([data-theme="light"]) .auth-guide-item,
+  :root:not([data-theme="light"]) .feature-chip {
+    background: rgba(30, 30, 30, 0.8);
+    border-color: var(--line);
+  }
+  :root:not([data-theme="light"]) .guide-back,
+  :root:not([data-theme="light"]) .guide-help {
+    background: var(--soft-2);
+    color: var(--muted);
+    border-color: var(--line-strong);
+  }
+  :root:not([data-theme="light"]) .diagnostics-card {
+    background: var(--soft-2);
+  }
+  :root:not([data-theme="light"]) .perf-badge {
+    background: rgba(50, 145, 255, 0.18);
+    border-color: rgba(50, 145, 255, 0.35);
+    color: var(--blue);
+  }
+  :root:not([data-theme="light"]) .perf-badge.warning {
+    background: rgba(255, 85, 85, 0.22);
+    border-color: rgba(255, 85, 85, 0.45);
+    color: var(--red);
+  }
+  :root:not([data-theme="light"]) .topbar-perf-btn {
+    background: var(--soft);
+    color: var(--ink);
+    border-color: var(--line);
+  }
+  :root:not([data-theme="light"]) .topbar-perf-btn:hover {
+    background: var(--soft-2);
+    border-color: var(--line-strong);
+  }
+  :root:not([data-theme="light"]) .topbar-perf-btn.active {
+    background: rgba(50, 145, 255, 0.18);
+    border-color: rgba(50, 145, 255, 0.45);
+    color: var(--blue);
+    box-shadow: 0 0 0 1px rgba(50, 145, 255, 0.3);
+  }
+  :root:not([data-theme="light"]) .topbar-perf-popover {
+    background: rgba(20, 20, 20, 0.94);
+    border-color: rgba(255, 255, 255, 0.12);
+    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.65);
+  }
+  :root:not([data-theme="light"]) .tab-button.active,
+  :root:not([data-theme="light"]) .workspace-tab.active {
+    background: var(--canvas);
+    color: var(--ink);
+  }
+  :root:not([data-theme="light"]) .video-message {
+    background: rgba(20, 20, 20, 0.92);
+    border-color: #ffffff1a;
+  }
+  :root:not([data-theme="light"]) .input-badge.active,
+  :root:not([data-theme="light"]) .media-badge {
+    color: #60a5fa;
+    background: #172554;
+  }
+  :root:not([data-theme="light"]) .led-badge {
+    background: var(--soft);
+    color: var(--muted);
+    border-color: var(--line);
+  }
+  :root:not([data-theme="light"]) .led-badge:hover {
+    background: var(--soft-2);
+    color: var(--ink);
+    border-color: var(--line-strong);
+  }
+  :root:not([data-theme="light"]) .led-badge.active {
+    color: #34d399;
+    background: #064e3b33;
+    border-color: rgba(52, 211, 153, 0.4);
+    box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.2);
+  }
+  :root:not([data-theme="light"]) .led-badge.active .led-dot {
+    background: #34d399;
+    box-shadow: 0 0 7px #34d399;
+  }
+  :root:not([data-theme="light"]) .primary {
+    color: #0d0d0d;
+    background: #f0f0f0;
+    border-color: #f0f0f0;
+  }
+  :root:not([data-theme="light"]) .primary:hover {
+    background: #fff;
+  }
+  :root:not([data-theme="light"]) #inspector-toggle.active {
+    color: #0d0d0d;
+    background: #f0f0f0;
+    border-color: #f0f0f0;
+  }
+  :root:not([data-theme="light"]) #inspector-toggle.active:hover {
+    color: #000;
+    background: #fff;
+    border-color: #fff;
+  }
+  :root:not([data-theme="light"]) .mark,
+  :root:not([data-theme="light"]) .user-pill,
+  :root:not([data-theme="light"]) .session-avatar {
+    color: #0d0d0d;
+    background: #f0f0f0;
+  }
+  :root:not([data-theme="light"]) .upload-progress {
+    background: var(--soft-2);
+  }
+  :root:not([data-theme="light"]) .danger {
+    color: var(--red);
+    background: var(--canvas);
+    border-color: #551c1c;
+  }
+  :root:not([data-theme="light"]) .danger:hover {
+    background: var(--red-soft);
+    border-color: #772525;
+  }
+  :root:not([data-theme="light"]) .keyboard button {
+    background: var(--soft-2);
+    border-color: var(--line);
+    color: var(--ink);
+  }
+  :root:not([data-theme="light"]) .keyboard button:hover {
+    background: var(--canvas);
+    border-color: var(--line-strong);
+  }
+  :root:not([data-theme="light"]) .keyboard .active {
+    color: #0d0d0d;
+    background: #f0f0f0;
+  }
+}
