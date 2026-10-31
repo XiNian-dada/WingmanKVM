@@ -23,6 +23,7 @@
   function openSettingsDialog() {
     if (!settingsDialog) return;
     syncSettingsDialogUi();
+    refreshPasskeys();
     try {
       if (typeof settingsDialog.showModal === 'function') {
         settingsDialog.showModal();

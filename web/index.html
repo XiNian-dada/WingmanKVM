@@ -187,20 +187,6 @@
               </div>
               <div class="gpio-led-row" role="status" aria-live="polite"><span id="power-led-dot" data-power-led-dot class="status-dot"></span><span class="gpio-led-label">PWR LED</span><span id="power-led-state" data-power-led-state class="gpio-led-state">读取中…</span><button id="power-led-refresh" data-power-led-refresh class="ghost" type="button" data-i18n="refresh">刷新</button></div>
             </div>
-            <div class="panel-section">
-              <div class="control-card">
-                <div>
-                  <strong data-i18n="passkey_title">Passkey 通行密钥</strong>
-                  <p data-i18n="passkey_desc">绑定 Apple Touch ID / Face ID，无需输入密码快速登录</p>
-                </div>
-                <button id="passkey-add-btn" class="primary" type="button" data-i18n="passkey_add">+ 绑定此设备</button>
-              </div>
-              <div id="passkey-list-container">
-                <div id="passkey-empty-hint" class="hint" data-i18n="passkey_none">尚未绑定任何 Passkey</div>
-                <div id="passkey-items" class="media-list hidden"></div>
-              </div>
-              <div id="passkey-inspector-hint" class="hint hidden"></div>
-            </div>
           </section>
           <section class="inspector-panel" id="panel-video" role="tabpanel" data-panel="video" hidden>
             <h3 class="panel-title" data-i18n="tab_video">视频</h3>
@@ -343,6 +329,21 @@
                 <option value="required" data-i18n="proxy_required">强制要求</option>
               </select>
             </div>
+          </div>
+          <div class="settings-group settings-account">
+            <span class="settings-group-title" data-i18n="settings_group_account">账户与安全</span>
+            <div class="control-card">
+              <div>
+                <strong data-i18n="passkey_title">Passkey 通行密钥</strong>
+                <p data-i18n="passkey_desc">绑定 Apple Touch ID / Face ID，无需输入密码快速登录</p>
+              </div>
+              <button id="passkey-add-btn" class="primary" type="button" data-i18n="passkey_add">+ 绑定此设备</button>
+            </div>
+            <div id="passkey-list-container">
+              <div id="passkey-empty-hint" class="hint" data-i18n="passkey_none">尚未绑定任何 Passkey</div>
+              <div id="passkey-items" class="media-list hidden"></div>
+            </div>
+            <div id="passkey-inspector-hint" class="hint hidden"></div>
           </div>
           <div class="settings-group">
             <span class="settings-group-title" data-i18n="settings_group_system">系统与重置</span>
