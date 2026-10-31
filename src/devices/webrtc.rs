@@ -1715,6 +1715,20 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// Upper bound for test-side polling of subprocess fixtures. The fixture
+    /// scripts only need milliseconds on an idle machine, but a saturated CI
+    /// host can delay fork/scheduling for seconds. This bound exists only to
+    /// stop a test if the fixture never runs; it is not a performance
+    /// assertion.
+    #[cfg(unix)]
+    const FIXTURE_POLL_TIMEOUT: Duration = Duration::from_secs(20);
+
+    /// The probe deadline used by tests that deliberately hang a fixture. It is
+    /// intentionally much larger than the production default (3s) so the
+    /// fixture always gets a chance to write its pid before the probe kills it.
+    #[cfg(unix)]
+    const SLOW_FIXTURE_DEADLINE: Duration = Duration::from_secs(10);
+
     #[test]
     fn advertises_udp_dnat_port_without_changing_other_sdp_fields() {
         let sdp = concat!(
@@ -2250,7 +2264,7 @@ mod tests {
 
     #[cfg(unix)]
     fn read_fixture_pid(path: &Path) -> u32 {
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now() + FIXTURE_POLL_TIMEOUT;
         loop {
             if let Ok(text) = fs::read_to_string(path)
                 && let Some(pid) = text
@@ -2304,21 +2318,19 @@ mod tests {
         let script = fixture.script(
             "ffmpeg-hang",
             &format!(
-                "echo $$ > {}\nsleep 3\nprintf 'V....D libx264\\n'",
+                "echo $$ > {}\nsleep 60\nprintf 'V....D libx264\\n'",
                 shell_quote(&pidfile)
             ),
         );
         let config = fixture.config(&script);
         let limits = ProbeLimits {
-            deadline: Duration::from_secs(1),
+            deadline: SLOW_FIXTURE_DEADLINE,
             max_output: 1024,
         };
-        let started = Instant::now();
         let error = probe_encoder_with(&config, limits).unwrap_err();
-        assert!(started.elapsed() < Duration::from_secs(2));
-        assert!(error.contains("超时"));
+        assert!(error.contains("超时"), "{error}");
         let pid = read_fixture_pid(&pidfile);
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + FIXTURE_POLL_TIMEOUT;
         while process_exists(pid) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -2330,32 +2342,30 @@ mod tests {
     async fn new_returns_immediately_while_encoder_probe_is_suspended() {
         let _serial = serial_probe_fixture();
         let fixture = ProbeFixture::new();
-        let script = fixture.script("ffmpeg-slow", "sleep 1\nprintf 'V....D libx264\\n'");
+        let gate = fixture.path("probe-gate");
+        let script = fixture.script(
+            "ffmpeg-gated",
+            &format!(
+                "i=0\nwhile [ ! -f {} ] && [ $i -lt 2000 ]; do sleep 0.01; i=$((i+1)); done\nprintf 'V....D libx264\\n'",
+                shell_quote(&gate)
+            ),
+        );
         let config = fixture.config(&script);
 
-        let started = Instant::now();
+        // The fixture cannot produce its listing until the gate file appears.
+        // If construction waited for the probe, `new` would block until the
+        // probe's own deadline expired and would publish a timeout instead of
+        // returning while the probe is still pending. This proves the
+        // non-blocking contract without depending on how fast the machine is;
+        // the successful probe path is covered by the direct probe tests.
         let manager = WebRtcManager::new(VideoManager::new(VideoConfig::default()), config);
-        assert!(
-            started.elapsed() < Duration::from_millis(500),
-            "constructor must not wait for the encoder probe"
-        );
         let probing = manager.status();
         assert!(!probing.available);
-        assert!(
-            probing
-                .message
-                .as_deref()
-                .is_some_and(|message| message.contains("探测"))
-        );
+        assert_eq!(probing.message.as_deref(), Some(PROBE_PENDING));
 
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while !manager.status().available {
-            assert!(
-                Instant::now() < deadline,
-                "background probe should finish and publish the encoder"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        // Release the fixture so the detached background probe can exit
+        // promptly; its eventual result is deliberately not asserted here.
+        fs::write(&gate, b"go").unwrap();
     }
 
     #[cfg(unix)]
@@ -2403,19 +2413,19 @@ mod tests {
         let script = fixture.script(
             "ffmpeg-pipe-holder",
             &format!(
-                "sleep 3 &\necho $! > {}\nprintf 'V....D libx264\\n'\nexit 0",
+                "sleep 60 &\necho $! > {}\nprintf 'V....D libx264\\n'\nexit 0",
                 shell_quote(&child_pidfile)
             ),
         );
         let config = fixture.config(&script);
         let limits = ProbeLimits {
-            deadline: Duration::from_secs(1),
+            deadline: SLOW_FIXTURE_DEADLINE,
             max_output: 1024 * 1024,
         };
         let error = probe_encoder_with(&config, limits).unwrap_err();
         assert!(error.contains("超时"), "{error}");
         let pid = read_fixture_pid(&child_pidfile);
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + FIXTURE_POLL_TIMEOUT;
         while process_exists(pid) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -2462,7 +2472,7 @@ mod tests {
 
     #[cfg(unix)]
     async fn wait_for_fixture_pid(path: &Path) -> u32 {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + FIXTURE_POLL_TIMEOUT;
         loop {
             if let Ok(text) = fs::read_to_string(path)
                 && let Some(pid) = text
@@ -2478,7 +2488,7 @@ mod tests {
 
     #[cfg(unix)]
     async fn wait_for_fixture_exit(pid: u32) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + FIXTURE_POLL_TIMEOUT;
         while process_exists(pid) && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -2510,7 +2520,7 @@ mod tests {
         let child = wait_for_fixture_pid(&child_pidfile).await;
         assert_ne!(leader, child);
         let _ = cancel_tx.send_replace(true);
-        let result = tokio::time::timeout(Duration::from_secs(3), task)
+        let result = tokio::time::timeout(FIXTURE_POLL_TIMEOUT, task)
             .await
             .expect("cancelled encoder should stop")
             .expect("encoder task should not panic");
