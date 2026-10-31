@@ -443,6 +443,9 @@
     '|': altGrKey('IntlBackslash'),
     µ: altGrKey('KeyM'),
   };
+  // "~" (AltGr+2) and "`" (AltGr+7) are dead keys on Windows French layouts:
+  // typed mid-text they would merge with the next character, so they are
+  // deliberately unsupported here and reported before sending.
   const FR_SYMBOLS = {
     '²': plainKey('Backquote'),
     '&': plainKey('Digit1'),
@@ -476,12 +479,10 @@
     '+': shiftedKey('Equal'),
     '@': altGrKey('Digit0'),
     '€': altGrKey('KeyE'),
-    '~': altGrKey('Digit2'),
     '#': altGrKey('Digit3'),
     '{': altGrKey('Digit4'),
     '[': altGrKey('Digit5'),
     '|': altGrKey('Digit6'),
-    '`': altGrKey('Digit7'),
     '\\': altGrKey('Digit8'),
     '^': altGrKey('Digit9'),
     ']': altGrKey('Minus'),
