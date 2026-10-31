@@ -1102,7 +1102,9 @@ button:active:not(:disabled),
   z-index: 40;
   color: var(--ink);
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto minmax(220px, 1fr);
+  /* The centre column absorbs overflow: longer translations truncate the
+     status pill instead of sliding the side columns over it. */
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 16px;
   padding: 0 20px;
@@ -2903,6 +2905,20 @@ button.topbar-center[aria-expanded="true"] svg {
   align-items: center;
   justify-content: center;
   gap: 8px;
+  min-width: 0;
+}
+.topbar-center-wrap .topbar-center {
+  min-width: 0;
+  flex-shrink: 1;
+}
+.topbar-center-wrap #status-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.topbar-center-wrap .topbar-perf-btn {
+  flex-shrink: 0;
 }
 .topbar-perf-btn {
   display: inline-flex;
