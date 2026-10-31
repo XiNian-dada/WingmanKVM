@@ -1441,7 +1441,9 @@ def quality_overlay_webrtc(browser, port, checks):
     """#81: stats deltas, persistence, and polling only while shown."""
     state = State()
     state.video.update(state="ready", message="", last_frame_age_ms=10)
-    context, page = media_page(browser, state, port, h264=True, stubs=(FAKE_PEER,))
+    # Adaptive bitrate (#82) also samples stats; this scenario covers the
+    # overlay alone, so it starts with adaptation turned off.
+    context, page = media_page(browser, state, port, h264=True, stubs=(FAKE_PEER, ADAPTIVE_OFF))
     try:
         page.wait_for_function("() => /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
         page.wait_for_timeout(1200)
@@ -1460,7 +1462,8 @@ def quality_overlay_webrtc(browser, port, checks):
         page.wait_for_function("() => document.querySelector('#quality-overlay').textContent.includes('Mbps')", timeout=4000)
         rows = overlay_rows(page)
         check(checks, rows == {"往返延迟": "25 ms", "接收码率": "1.00 Mbps", "丢包率": "1.0%", "解码帧率": "30",
-                               "抖动缓冲": "50 ms", "分辨率": "1920×1080"}, "quality_webrtc_stats_rendered", rows)
+                               "抖动缓冲": "50 ms", "自适应码率": "已关闭", "分辨率": "1920×1080"},
+              "quality_webrtc_stats_rendered", rows)
         page.wait_for_function("() => window.__statsCalls >= 3", timeout=4000)
         page.wait_for_timeout(50)
         rows = overlay_rows(page)
@@ -2007,6 +2010,171 @@ def notification_settings(browser, port, checks):
         check(checks, cleared == {"clear_url": True}, "clear_sends_explicit_flag", cleared)
         state_text = page.text_content('[data-notify-secret="webhook"]') or ""
         check(checks, "未配置" in state_text, "cleared_secret_shows_unconfigured", state_text)
+    finally:
+        context.close()
+
+
+ADAPTIVE_OFF = "localStorage.setItem('wingman_setting_adaptive_bitrate', 'false');"
+
+
+ADAPTIVE_DECISION_SCRIPT = """() => {
+  const t = window.__wingmanTest, decide = t.decideAdaptiveBitrate;
+  const BAD = {packetLossPct: 8, rttMs: 30, jitterBufferMs: 40, receivedKbps: null};
+  const GOOD = {packetLossPct: 0, rttMs: 30, jitterBufferMs: 40, receivedKbps: 900};
+  const NEUTRAL = {packetLossPct: 2, rttMs: 30, jitterBufferMs: 40, receivedKbps: 900};
+  // Feed [sample, atMs] pairs; returns every non-null target with its time.
+  const run = (state, steps) => {
+    const out = [];
+    for (const [sample, at] of steps) {
+      const r = decide(state, sample, at);
+      state = r.state;
+      if (r.targetKbps !== null) out.push([r.targetKbps, at]);
+    }
+    return {state, out};
+  };
+  const seq = (sample, from, count, every = 1000) =>
+    Array.from({length: count}, (_, i) => [sample, from + i * every]);
+  const res = {};
+  const frozen = t.newAdaptiveState(4000);
+  const copy = JSON.stringify(frozen);
+  decide(frozen, BAD, 0);
+  res.pure = JSON.stringify(frozen) === copy;
+  // Two bad samples are not enough; the third lowers by 30 %.
+  res.lower = run(t.newAdaptiveState(4000), seq(BAD, 0, 3)).out;
+  // Persisting congestion: one change per 10 s cooldown, not per sample.
+  res.cooldown = run(t.newAdaptiveState(4000), seq(BAD, 0, 25)).out;
+  // Under loss the target never exceeds what actually arrived (+10 %).
+  res.received = run(t.newAdaptiveState(4000), seq({...BAD, receivedKbps: 1000}, 0, 3)).out;
+  res.severe = run(t.newAdaptiveState(4000), seq({...BAD, packetLossPct: 20}, 0, 3)).out;
+  res.rtt = run(t.newAdaptiveState(4000), seq({packetLossPct: 0, rttMs: 400}, 0, 3)).out;
+  res.jitter = run(t.newAdaptiveState(4000), seq({packetLossPct: 0, jitterBufferMs: 250}, 0, 3)).out;
+  // RTT trend: a healthy 40 ms baseline makes 200 ms (below 350) bad too.
+  res.trend = run(t.newAdaptiveState(4000),
+    [...seq({packetLossPct: 0, rttMs: 40}, 0, 5), ...seq({packetLossPct: 0, rttMs: 200}, 5000, 3)]).out;
+  // Hysteresis: bad samples interleaved with the neutral band never act.
+  const flap = [];
+  for (let i = 0; i < 40; i++) flap.push([i % 3 === 2 ? NEUTRAL : BAD, i * 1000]);
+  res.flap = run(t.newAdaptiveState(4000), flap).out;
+  res.neutral = run(t.newAdaptiveState(4000), seq(NEUTRAL, 0, 60)).out;
+  res.unknown = run(t.newAdaptiveState(4000), seq({}, 0, 10)).out;
+  // Recovery: lowered at 2 s, then good. No raise within 30 s of the last
+  // bad sample, then +25 % per 10 good samples, snapping to the maximum.
+  res.recover = run(t.newAdaptiveState(4000), [...seq(BAD, 0, 3), ...seq(GOOD, 3000, 120)]).out;
+  // Good samples never push above the configured bitrate.
+  res.atMax = run(t.newAdaptiveState(4000), seq(GOOD, 0, 60)).out;
+  // Floor: never below 256 kbps, and no request once there.
+  const low = {...t.newAdaptiveState(4000), currentKbps: 300};
+  res.floor = run(low, seq(BAD, 0, 30)).out;
+  return res;
+}"""
+
+
+def adaptive_bitrate_decision(browser, port, checks):
+    """#82: the pure decision function's thresholds, cooldown and hysteresis."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        r = page.evaluate(ADAPTIVE_DECISION_SCRIPT)
+        check(checks, r["pure"], "adaptive_decision_is_pure", r["pure"])
+        check(checks, r["lower"] == [[2800, 2000]], "adaptive_lowers_after_three_bad_samples", r["lower"])
+        check(checks, r["cooldown"] == [[2800, 2000], [1950, 12000], [1350, 22000]],
+              "adaptive_one_change_per_cooldown", r["cooldown"])
+        check(checks, r["received"] == [[1100, 2000]], "adaptive_caps_at_received_bitrate", r["received"])
+        check(checks, r["severe"] == [[2000, 2000]], "adaptive_severe_loss_halves", r["severe"])
+        check(checks, r["rtt"] == [[2800, 2000]] and r["jitter"] == [[2800, 2000]],
+              "adaptive_rtt_and_jitter_thresholds", (r["rtt"], r["jitter"]))
+        check(checks, r["trend"] == [[2800, 7000]], "adaptive_rtt_rise_vs_baseline", r["trend"])
+        check(checks, r["flap"] == [] and r["neutral"] == [] and r["unknown"] == [],
+              "adaptive_hysteresis_band_holds", (r["flap"], r["neutral"], r["unknown"]))
+        check(checks, r["recover"] == [[2800, 2000], [3500, 32000], [4000, 42000]],
+              "adaptive_recovers_gradually_to_max", r["recover"])
+        check(checks, r["atMax"] == [], "adaptive_never_exceeds_max", r["atMax"])
+        check(checks, r["floor"] == [[256, 2000]], "adaptive_respects_floor", r["floor"])
+    finally:
+        context.close()
+
+
+def adaptive_stats(at, scale, lost_per_1000):
+    report = stats_report(at, scale)
+    video = report[-1]
+    video["packetsReceived"] = (1000 - lost_per_1000) * scale
+    video["packetsLost"] = lost_per_1000 * scale
+    return report
+
+
+def adaptive_bitrate_webrtc(browser, port, checks):
+    """#82: stubbed stats drive POST /api/webrtc/bitrate with cooldown and hysteresis."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    context, page = media_page(browser, state, port, h264=True, stubs=(FAKE_PEER,))
+    sent = []
+
+    def bitrate(route):
+        body = json.loads(route.request.post_data or "{}")
+        sent.append((body.get("session_id"), body.get("kbps"), page.evaluate("() => performance.now()")))
+        kbps = max(256, min(4000, int(body.get("kbps", 0))))
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(
+            {"session_id": body.get("session_id"), "kbps": kbps, "min_kbps": 256, "max_kbps": 4000,
+             "changed": True}))
+
+    def wait_sent(count, timeout=12000):
+        # Route callbacks run while Playwright waits, so poll in short steps.
+        for _ in range(timeout // 50):
+            if len(sent) >= count:
+                return
+            page.wait_for_timeout(50)
+        raise AssertionError(f"expected {count} bitrate requests, got {sent}")
+
+    page.route("**/api/webrtc/bitrate", bitrate)
+    page.route("**/api/webrtc/offer", lambda route: route.fulfill(
+        status=200, content_type="application/json",
+        body=json.dumps({"type": "answer", "session_id": "s1", "sdp": "a=rtpmap:96 H264/90000",
+                         "bitrate_kbps": 4000, "min_bitrate_kbps": 256})))
+    try:
+        page.reload(wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        page.wait_for_function("() => /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
+        # Short timings keep the scenario fast; the logic is the same.
+        page.evaluate("""() => Object.assign(window.__wingmanTest.adaptivePolicy,
+          {cooldownMs: 2500, raiseAfterBadMs: 3000, goodSamples: 3})""")
+        # 10 % loss at ~1 Mbps received; repeated reports keep the rates.
+        page.evaluate("(r) => { window.__statsSeq = r; }", [adaptive_stats(10000, 1, 100), adaptive_stats(11000, 2, 100)])
+        page.wait_for_function("() => window.__statsCalls >= 2", timeout=4000)
+        check(checks, not page.locator("#quality-overlay").is_visible(),
+              "adaptive_samples_without_overlay", page.evaluate("() => window.__statsCalls"))
+        wait_sent(2)
+        page.wait_for_timeout(300)
+        check(checks, [(s, k) for s, k, _ in sent] == [("s1", 1100), ("s1", 750)],
+              "adaptive_lowers_capped_by_received", sent)
+        gap = sent[1][2] - sent[0][2] if len(sent) == 2 else 0
+        check(checks, gap >= 2400, "adaptive_requests_respect_cooldown", gap)
+
+        page.evaluate("(r) => { window.__statsSeq = r; }", [adaptive_stats(20000, 3, 0), adaptive_stats(21000, 4, 0)])
+        wait_sent(3)
+        check(checks, len(sent) == 3 and sent[2][1] == 950 and sent[2][2] - sent[1][2] >= 2400,
+              "adaptive_raises_after_recovery_hold", sent)
+        page.evaluate("() => { window.__wingmanTest.adaptivePolicy.goodSamples = 1e9; }")
+        page.click("#quality-toggle")
+        page.wait_for_timeout(1200)
+        rows = overlay_rows(page)
+        check(checks, rows.get("自适应码率") == "↓ 950 kbps / 4.00 Mbps", "adaptive_indicator_in_overlay", rows)
+
+        count = len(sent)
+        page.evaluate("""() => {
+          const box = document.querySelector('#setting-adaptive-bitrate');
+          box.checked = false;
+          box.dispatchEvent(new Event('change'));
+        }""")
+        wait_sent(count + 1, 3000)
+        page.wait_for_timeout(300)
+        check(checks, len(sent) == count + 1 and sent[-1][1] == 4000, "adaptive_disable_restores_configured",
+              sent[count:])
+        page.evaluate("(r) => { window.__statsSeq = r; }", [adaptive_stats(30000, 5, 300), adaptive_stats(31000, 6, 300)])
+        page.wait_for_timeout(4000)
+        rows = overlay_rows(page)
+        check(checks, len(sent) == count + 1 and rows.get("自适应码率") == "已关闭"
+              and page.evaluate("() => localStorage.getItem('wingman_setting_adaptive_bitrate')") == "false",
+              "adaptive_disabled_sends_nothing", (sent[count:], rows))
     finally:
         context.close()
 

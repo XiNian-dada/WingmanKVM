@@ -65,6 +65,12 @@ const SESSION_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 const ENCODER_EXIT_GRACE: Duration = Duration::from_secs(2);
 const ENCODER_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Lowest bitrate a client may request for adaptive streaming.
+pub const MIN_ADAPTIVE_BITRATE_KBPS: u32 = 256;
+/// Minimum spacing between two encoder restarts of one session. Every change
+/// restarts FFmpeg, so a misbehaving client must not be able to thrash it.
+const BITRATE_CHANGE_INTERVAL: Duration = Duration::from_secs(10);
+
 const PROBE_DEADLINE: Duration = Duration::from_secs(3);
 const PROBE_MAX_OUTPUT: usize = 1024 * 1024;
 const PROBE_POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -100,6 +106,20 @@ pub struct WebRtcOfferResponse {
     pub sdp_type: &'static str,
     pub sdp: String,
     pub session_id: String,
+    /// Configured (maximum) bitrate the session starts at.
+    pub bitrate_kbps: u32,
+    pub min_bitrate_kbps: u32,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct BitrateChange {
+    pub session_id: String,
+    /// Bitrate now in effect after clamping.
+    pub kbps: u32,
+    pub min_kbps: u32,
+    pub max_kbps: u32,
+    /// False when the clamped value equals the running bitrate.
+    pub changed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -123,6 +143,10 @@ pub enum WebRtcError {
     Capacity,
     #[error("WebRTC 会话授权已失效")]
     Unauthorized,
+    #[error("WebRTC 会话不存在")]
+    SessionNotFound,
+    #[error("码率调整过于频繁，请 {0} 秒后重试")]
+    RateLimited(u64),
     #[error("{0}")]
     Internal(String),
 }
@@ -137,6 +161,13 @@ struct EncoderSpec {
 
 struct Session {
     shutdown: watch::Sender<bool>,
+    /// Current encoder bitrate; changing it restarts only the FFmpeg process.
+    bitrate: watch::Sender<u32>,
+    /// Configured bitrate at offer time; clients can never exceed it.
+    max_bitrate_kbps: u32,
+    last_bitrate_change: Option<Instant>,
+    /// Login session that created this peer; only it may tune the bitrate.
+    owner: SessionGuard,
     state: watch::Sender<ConnectionPhase>,
     closed: watch::Receiver<bool>,
 }
@@ -677,6 +708,7 @@ impl WebRtcManager {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (state_tx, state_rx) = watch::channel(ConnectionPhase::New);
         let (closed_tx, closed_rx) = watch::channel(false);
+        let (bitrate_tx, bitrate_rx) = watch::channel(config.bitrate_kbps);
         let publication = {
             let mut sessions = self
                 .inner
@@ -696,6 +728,10 @@ impl WebRtcManager {
                     session_id.clone(),
                     Session {
                         shutdown: shutdown_tx,
+                        bitrate: bitrate_tx,
+                        max_bitrate_kbps: config.bitrate_kbps,
+                        last_bitrate_change: None,
+                        owner: guard.clone(),
                         state: state_tx,
                         closed: closed_rx,
                     },
@@ -722,7 +758,7 @@ impl WebRtcManager {
             video,
             track,
             encoder,
-            config,
+            bitrate_rx,
             guard,
             shutdown_rx,
             state_rx,
@@ -734,11 +770,119 @@ impl WebRtcManager {
             sdp_type: "answer",
             sdp: local.sdp,
             session_id,
+            bitrate_kbps: config.bitrate_kbps,
+            min_bitrate_kbps: MIN_ADAPTIVE_BITRATE_KBPS.min(config.bitrate_kbps),
         })
+    }
+
+    /// Change the encoder bitrate of one session owned by `guard`.
+    ///
+    /// The request is clamped to `[256, configured bitrate]`, a session owned
+    /// by another login is reported exactly like an unknown one, and real
+    /// changes are limited to one per `BITRATE_CHANGE_INTERVAL`.
+    pub fn set_bitrate(
+        &self,
+        session_id: &str,
+        kbps: u32,
+        guard: &SessionGuard,
+    ) -> Result<BitrateChange, WebRtcError> {
+        set_session_bitrate(&self.inner, session_id, kbps, guard, Instant::now())
     }
 
     pub async fn close(&self, session_id: &str) -> bool {
         close_session(&self.inner, session_id).await
+    }
+}
+
+fn set_session_bitrate(
+    inner: &Inner,
+    session_id: &str,
+    kbps: u32,
+    guard: &SessionGuard,
+    now: Instant,
+) -> Result<BitrateChange, WebRtcError> {
+    if !guard.is_active() {
+        return Err(WebRtcError::Unauthorized);
+    }
+    let mut sessions = inner
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let session = sessions
+        .get_mut(session_id)
+        .filter(|session| session.owner.same_session(guard))
+        .ok_or(WebRtcError::SessionNotFound)?;
+    let max_kbps = session.max_bitrate_kbps;
+    let min_kbps = MIN_ADAPTIVE_BITRATE_KBPS.min(max_kbps);
+    let target = kbps.clamp(min_kbps, max_kbps);
+    let current = *session.bitrate.borrow();
+    let changed = target != current;
+    if changed {
+        if let Some(last) = session.last_bitrate_change {
+            let elapsed = now.saturating_duration_since(last);
+            if elapsed < BITRATE_CHANGE_INTERVAL {
+                let wait = (BITRATE_CHANGE_INTERVAL - elapsed).as_secs_f64().ceil() as u64;
+                return Err(WebRtcError::RateLimited(wait.max(1)));
+            }
+        }
+        session.bitrate.send_replace(target);
+        session.last_bitrate_change = Some(now);
+        tracing::info!(%session_id, from = current, to = target, "WebRTC adaptive bitrate changed");
+    }
+    Ok(BitrateChange {
+        session_id: session_id.to_owned(),
+        kbps: target,
+        min_kbps,
+        max_kbps,
+        changed,
+    })
+}
+
+#[cfg(test)]
+impl WebRtcManager {
+    /// Manager without an encoder probe, for HTTP handler tests.
+    pub(crate) fn for_tests() -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                video: VideoManager::new(crate::config::VideoConfig::default()),
+                config: Mutex::new(H264Config::default()),
+                encoder: Mutex::new(Err("test manager".to_owned())),
+                sessions: Mutex::new(HashMap::new()),
+                offer_lock: AsyncMutex::new(()),
+                udp_binding: AsyncMutex::new(None),
+                probe_epoch: AtomicU64::new(0),
+            }),
+        }
+    }
+
+    /// Register a session map entry without a peer or encoder.
+    pub(crate) fn insert_test_session(
+        &self,
+        session_id: &str,
+        owner: SessionGuard,
+        max_bitrate_kbps: u32,
+    ) -> watch::Receiver<u32> {
+        let (bitrate_tx, bitrate_rx) = watch::channel(max_bitrate_kbps);
+        let (closed_tx, closed_rx) = watch::channel(false);
+        // Keep `closed` open so the entry looks live.
+        std::mem::forget(closed_tx);
+        self.inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                session_id.to_owned(),
+                Session {
+                    shutdown: watch::channel(false).0,
+                    bitrate: bitrate_tx,
+                    max_bitrate_kbps,
+                    last_bitrate_change: None,
+                    owner,
+                    state: watch::channel(ConnectionPhase::New).0,
+                    closed: closed_rx,
+                },
+            );
+        bitrate_rx
     }
 }
 
@@ -910,7 +1054,7 @@ async fn run_session_supervisor(
     video: VideoManager,
     track: Arc<TrackLocalStaticSample>,
     encoder: EncoderSpec,
-    config: H264Config,
+    bitrate: watch::Receiver<u32>,
     guard: SessionGuard,
     shutdown: watch::Receiver<bool>,
     state: watch::Receiver<ConnectionPhase>,
@@ -926,8 +1070,8 @@ async fn run_session_supervisor(
         video,
         track,
         encoder,
-        config,
         cancel_rx,
+        bitrate,
         progress_tx,
     ));
     let end = supervise_lifecycle(
@@ -1469,22 +1613,85 @@ async fn wait_for_cancel(receiver: &mut watch::Receiver<bool>) {
     let _ = receiver.changed().await;
 }
 
+/// How one FFmpeg process run ended.
+enum EncoderRun {
+    /// Cancelled by the supervisor or the encoder finished cleanly.
+    Finished,
+    /// The session asked for a different bitrate; respawn with this value.
+    Restart(u32),
+}
+
+/// Wait until the requested bitrate differs from the running one. A dropped
+/// sender means the bitrate can no longer change, so this pends forever.
+async fn wait_for_bitrate_change(receiver: &mut watch::Receiver<u32>, current: u32) -> u32 {
+    loop {
+        if receiver.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+        let next = *receiver.borrow_and_update();
+        if next != current {
+            return next;
+        }
+    }
+}
+
+/// Run the per-session encoder, restarting only the FFmpeg process when the
+/// adaptive bitrate changes.
+///
+/// FFmpeg's stdin carries the MJPEG input, so its interactive commands cannot
+/// be used, and none of the supported encoders (libx264, h264_rkmpp,
+/// h264_v4l2m2m) accept a runtime `-b:v` change through FFmpeg anyway. The
+/// peer connection and the `TrackLocalStaticSample` stay up, so no WebRTC
+/// renegotiation happens: the new process starts with an IDR frame (with
+/// SPS/PPS in band), the browser decoder resumes from it, and the visible gap
+/// is the FFmpeg start-up time. Callers rate-limit changes.
 async fn run_encoder(
     video: VideoManager,
     track: Arc<TrackLocalStaticSample>,
     encoder: EncoderSpec,
-    config: H264Config,
     mut cancel: watch::Receiver<bool>,
+    mut bitrate: watch::Receiver<u32>,
     progress: mpsc::Sender<()>,
 ) -> Result<(), WebRtcError> {
+    let mut kbps = *bitrate.borrow_and_update();
+    loop {
+        match run_encoder_process(
+            &video,
+            track.clone(),
+            &encoder,
+            kbps,
+            &mut cancel,
+            &mut bitrate,
+            progress.clone(),
+        )
+        .await?
+        {
+            EncoderRun::Finished => return Ok(()),
+            EncoderRun::Restart(next) => {
+                tracing::info!(from = kbps, to = next, "restarting H.264 encoder for new bitrate");
+                kbps = next;
+            }
+        }
+    }
+}
+
+async fn run_encoder_process(
+    video: &VideoManager,
+    track: Arc<TrackLocalStaticSample>,
+    encoder: &EncoderSpec,
+    bitrate_kbps: u32,
+    cancel: &mut watch::Receiver<bool>,
+    bitrate_updates: &mut watch::Receiver<u32>,
+    progress: mpsc::Sender<()>,
+) -> Result<EncoderRun, WebRtcError> {
     let fps = video
         .status()
         .frames_per_second
         .unwrap_or(30.0)
         .round()
         .clamp(1.0, 120.0) as u32;
-    let bitrate = format!("{}k", config.bitrate_kbps);
-    let buffer_size = format!("{}k", config.bitrate_kbps.saturating_mul(2));
+    let bitrate = format!("{bitrate_kbps}k");
+    let buffer_size = format!("{}k", bitrate_kbps.saturating_mul(2));
     let fps_text = fps.to_string();
     let mut command = TokioCommand::new(&encoder.executable);
     command.kill_on_drop(true).args([
@@ -1613,7 +1820,8 @@ async fn run_encoder(
 
     let result = tokio::select! {
         biased;
-        _ = wait_for_cancel(&mut cancel) => Ok(()),
+        _ = wait_for_cancel(cancel) => Ok(EncoderRun::Finished),
+        next = wait_for_bitrate_change(bitrate_updates, bitrate_kbps) => Ok(EncoderRun::Restart(next)),
         result = &mut writer => match result {
             Ok(Ok(())) => Err(WebRtcError::Internal("FFmpeg 输入意外结束".to_owned())),
             Ok(Err(error)) => Err(WebRtcError::Internal(error)),
@@ -1621,7 +1829,7 @@ async fn run_encoder(
         },
         result = &mut reader => match result {
             Ok(Ok(())) => match process.wait_for_exit(ENCODER_EXIT_GRACE).await {
-                Some(status) if status.success() => Ok(()),
+                Some(status) if status.success() => Ok(EncoderRun::Finished),
                 Some(_) => Err(WebRtcError::Unavailable(
                     "H.264 编码器异常退出".to_owned(),
                 )),
@@ -2128,6 +2336,21 @@ mod tests {
     }
 
     fn insert_fake_session(inner: &Arc<Inner>, session_id: &str) {
+        let store = crate::auth::SessionStore::default();
+        let token = store.create().unwrap();
+        let owner = store.validate_guard(&token).unwrap();
+        insert_owned_session(inner, session_id, owner, 4_000);
+        // Keep the store alive so the owner guard stays active.
+        std::mem::forget(store);
+    }
+
+    fn insert_owned_session(
+        inner: &Arc<Inner>,
+        session_id: &str,
+        owner: SessionGuard,
+        max_bitrate_kbps: u32,
+    ) -> watch::Receiver<u32> {
+        let (bitrate_tx, bitrate_rx) = watch::channel(max_bitrate_kbps);
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
         let (state_tx, _state_rx) = watch::channel(ConnectionPhase::New);
         let (closed_tx, closed_rx) = watch::channel(false);
@@ -2135,6 +2358,10 @@ mod tests {
             session_id.to_owned(),
             Session {
                 shutdown: shutdown_tx,
+                bitrate: bitrate_tx,
+                max_bitrate_kbps,
+                last_bitrate_change: None,
+                owner,
                 state: state_tx,
                 closed: closed_rx,
             },
@@ -2150,6 +2377,97 @@ mod tests {
             }
             let _ = closed_tx.send_replace(true);
         });
+        bitrate_rx
+    }
+
+    #[tokio::test]
+    async fn set_bitrate_clamps_to_floor_and_configured_maximum() {
+        let inner = test_inner();
+        let store = crate::auth::SessionStore::default();
+        let guard = store.validate_guard(&store.create().unwrap()).unwrap();
+        let bitrate = insert_owned_session(&inner, "s", guard.clone(), 4_000);
+        let start = Instant::now();
+
+        let change = set_session_bitrate(&inner, "s", 10, &guard, start).unwrap();
+        assert_eq!(
+            change,
+            BitrateChange {
+                session_id: "s".to_owned(),
+                kbps: MIN_ADAPTIVE_BITRATE_KBPS,
+                min_kbps: MIN_ADAPTIVE_BITRATE_KBPS,
+                max_kbps: 4_000,
+                changed: true,
+            }
+        );
+        assert_eq!(*bitrate.borrow(), 256);
+
+        let later = start + BITRATE_CHANGE_INTERVAL;
+        let change = set_session_bitrate(&inner, "s", 50_000, &guard, later).unwrap();
+        assert_eq!((change.kbps, change.changed), (4_000, true));
+        assert_eq!(*bitrate.borrow(), 4_000, "never above the configured bitrate");
+
+        // Re-requesting the running value is a no-op and is not rate-limited.
+        let change = set_session_bitrate(&inner, "s", 9_000, &guard, later).unwrap();
+        assert_eq!((change.kbps, change.changed), (4_000, false));
+    }
+
+    #[tokio::test]
+    async fn set_bitrate_is_rate_limited_per_session() {
+        let inner = test_inner();
+        let store = crate::auth::SessionStore::default();
+        let guard = store.validate_guard(&store.create().unwrap()).unwrap();
+        let bitrate = insert_owned_session(&inner, "s", guard.clone(), 4_000);
+        let start = Instant::now();
+        set_session_bitrate(&inner, "s", 2_000, &guard, start).unwrap();
+        let error = set_session_bitrate(&inner, "s", 1_000, &guard, start + Duration::from_secs(3))
+            .unwrap_err();
+        assert!(matches!(error, WebRtcError::RateLimited(7)), "{error:?}");
+        assert_eq!(*bitrate.borrow(), 2_000);
+        let change =
+            set_session_bitrate(&inner, "s", 1_000, &guard, start + BITRATE_CHANGE_INTERVAL)
+                .unwrap();
+        assert_eq!(change.kbps, 1_000);
+        assert_eq!(*bitrate.borrow(), 1_000);
+    }
+
+    #[tokio::test]
+    async fn set_bitrate_rejects_unknown_foreign_and_revoked_sessions() {
+        let inner = test_inner();
+        let store = crate::auth::SessionStore::default();
+        let owner_token = store.create().unwrap();
+        let owner = store.validate_guard(&owner_token).unwrap();
+        let other = store.validate_guard(&store.create().unwrap()).unwrap();
+        let bitrate = insert_owned_session(&inner, "s", owner.clone(), 4_000);
+        let now = Instant::now();
+
+        assert!(matches!(
+            set_session_bitrate(&inner, "missing", 1_000, &owner, now),
+            Err(WebRtcError::SessionNotFound)
+        ));
+        // Another login must not learn about, nor tune, this session.
+        assert!(matches!(
+            set_session_bitrate(&inner, "s", 1_000, &other, now),
+            Err(WebRtcError::SessionNotFound)
+        ));
+        // A second guard of the same login is the same owner.
+        let again = store.validate_guard(&owner_token).unwrap();
+        assert!(set_session_bitrate(&inner, "s", 1_000, &again, now).unwrap().changed);
+        assert!(store.revoke(&owner_token));
+        assert!(matches!(
+            set_session_bitrate(&inner, "s", 2_000, &owner, now + BITRATE_CHANGE_INTERVAL),
+            Err(WebRtcError::Unauthorized)
+        ));
+        assert_eq!(*bitrate.borrow(), 1_000);
+    }
+
+    #[tokio::test]
+    async fn set_bitrate_floor_never_exceeds_a_low_configured_bitrate() {
+        let inner = test_inner();
+        let store = crate::auth::SessionStore::default();
+        let guard = store.validate_guard(&store.create().unwrap()).unwrap();
+        insert_owned_session(&inner, "s", guard.clone(), 200);
+        let change = set_session_bitrate(&inner, "s", 256, &guard, Instant::now()).unwrap();
+        assert_eq!((change.kbps, change.min_kbps, change.max_kbps), (200, 200, 200));
     }
 
     #[tokio::test]
@@ -2158,10 +2476,16 @@ mod tests {
         let (closed_tx, closed_rx) = watch::channel(false);
         let (shutdown_tx, _shutdown_rx) = watch::channel(false);
         let (state_tx, _state_rx) = watch::channel(ConnectionPhase::New);
+        let store = crate::auth::SessionStore::default();
+        let owner = store.validate_guard(&store.create().unwrap()).unwrap();
         inner.sessions.lock().unwrap().insert(
             "session-panic".to_owned(),
             Session {
                 shutdown: shutdown_tx,
+                bitrate: watch::channel(4_000).0,
+                max_bitrate_kbps: 4_000,
+                last_bitrate_change: None,
+                owner,
                 state: state_tx,
                 closed: closed_rx.clone(),
             },
@@ -2528,8 +2852,8 @@ mod tests {
             VideoManager::new(VideoConfig::default()),
             test_encoder_track(),
             test_encoder_spec(&script),
-            H264Config::default(),
             cancel_rx,
+            watch::channel(H264Config::default().bitrate_kbps).1,
             progress_tx,
         ));
         let leader = wait_for_fixture_pid(&leader_pidfile).await;
@@ -2546,6 +2870,72 @@ mod tests {
     }
 
     #[cfg(unix)]
+    async fn wait_for_fixture_lines(path: &Path, count: usize) -> Vec<String> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let lines = fs::read_to_string(path)
+                .map(|text| text.lines().map(str::to_owned).collect::<Vec<_>>())
+                .unwrap_or_default();
+            if lines.len() >= count {
+                return lines;
+            }
+            assert!(Instant::now() < deadline, "fixture wrote {} of {count} lines", lines.len());
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    // The std guard only serialises fixture-spawning tests; it is never
+    // contended inside this single-threaded runtime.
+    #[allow(clippy::await_holding_lock)]
+    async fn bitrate_change_restarts_only_the_encoder_process() {
+        let _serial = serial_probe_fixture();
+        let fixture = ProbeFixture::new();
+        let runs = fixture.path("encoder-runs.log");
+        let script = fixture.script(
+            "encoder-bitrate",
+            &format!(
+                "echo \"$$ $*\" >> {}\nexec sleep 30",
+                shell_quote(&runs)
+            ),
+        );
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let (bitrate_tx, bitrate_rx) = watch::channel(4_000_u32);
+        let (progress_tx, _progress_rx) = mpsc::channel(1);
+        let task = tokio::spawn(run_encoder(
+            VideoManager::new(VideoConfig::default()),
+            test_encoder_track(),
+            test_encoder_spec(&script),
+            cancel_rx,
+            bitrate_rx,
+            progress_tx,
+        ));
+        let first = wait_for_fixture_lines(&runs, 1).await;
+        assert!(first[0].contains("-b:v 4000k -maxrate 4000k -bufsize 8000k"), "{}", first[0]);
+        let first_pid: u32 = first[0].split_whitespace().next().unwrap().parse().unwrap();
+
+        // Re-sending the running value must not restart FFmpeg.
+        bitrate_tx.send_replace(4_000);
+        let _ = bitrate_tx.send_replace(1_500);
+        let lines = wait_for_fixture_lines(&runs, 2).await;
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[1].contains("-b:v 1500k -maxrate 1500k -bufsize 3000k"), "{}", lines[1]);
+        wait_for_fixture_exit(first_pid).await;
+        assert!(!task.is_finished(), "the session encoder must keep running");
+
+        let second_pid: u32 = lines[1].split_whitespace().next().unwrap().parse().unwrap();
+        let _ = cancel_tx.send_replace(true);
+        let result = tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .expect("cancelled encoder should stop")
+            .expect("encoder task should not panic");
+        assert!(result.is_ok(), "{result:?}");
+        wait_for_fixture_exit(second_pid).await;
+        assert_eq!(fs::read_to_string(&runs).unwrap().lines().count(), 2);
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn encoder_drop_kills_private_group_and_stops_tasks() {
         let _serial = serial_probe_fixture();
@@ -2559,8 +2949,8 @@ mod tests {
             VideoManager::new(VideoConfig::default()),
             test_encoder_track(),
             test_encoder_spec(&script),
-            H264Config::default(),
             cancel_rx,
+            watch::channel(H264Config::default().bitrate_kbps).1,
             progress_tx,
         ));
         let leader = wait_for_fixture_pid(&leader_pidfile).await;

@@ -36,6 +36,7 @@ pub static APP_JS_PARTS: &[&str] = &[
     include_str!("../web/js/app/07a-pip.js"),
     include_str!("../web/js/app/07b-quality.js"),
     include_str!("../web/js/app/07z-keyboard-macros.js"),
+    include_str!("../web/js/app/07c-adaptive-bitrate.js"),
     include_str!("../web/js/app/08-input.js"),
     include_str!("../web/js/app/08a-input-socket.js"),
     include_str!("../web/js/app/08b-touch.js"),

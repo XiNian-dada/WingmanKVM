@@ -14,6 +14,8 @@
     if (pixelCheckbox) pixelCheckbox.checked = getSetting('render_pixelated', true);
     const inspectorCheckbox = $('#setting-auto-inspector');
     if (inspectorCheckbox) inspectorCheckbox.checked = getSetting('auto_expand_inspector', true);
+    const adaptiveCheckbox = $('#setting-adaptive-bitrate');
+    if (adaptiveCheckbox) adaptiveCheckbox.checked = getSetting('adaptive_bitrate', true) !== false;
     const proxySelect = $('#setting-proxy-protocol');
     if (proxySelect) {
       const config = unwrapConfig(bootstrap);
@@ -73,6 +75,10 @@
   });
   $('#setting-auto-inspector')?.addEventListener('change', (e) => {
     setSetting('auto_expand_inspector', e.target.checked);
+    toast(t('settings_saved', '设置已保存'));
+  });
+  $('#setting-adaptive-bitrate')?.addEventListener('change', (e) => {
+    setAdaptiveBitrateEnabled(e.target.checked);
     toast(t('settings_saved', '设置已保存'));
   });
   $('#setting-target-layout')?.addEventListener('change', (e) => {
