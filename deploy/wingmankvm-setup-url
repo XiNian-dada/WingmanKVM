@@ -134,8 +134,8 @@ collect_hosts() {
     fi
 }
 
-# Sets MDNS_HOST to NAME.local when avahi-daemon is running. Passkey needs a
-# domain name rather than an IP, so this address is printed first.
+# Sets MDNS_HOST to NAME.local when avahi-daemon is running. The name survives IP
+# changes, so it is listed first.
 collect_mdns_host() {
     local name=
     command -v systemctl >/dev/null 2>&1 || return 0
