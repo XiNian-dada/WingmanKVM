@@ -142,7 +142,7 @@ mod tests {
         assert!(INDEX_HTML.contains("id=\"setting-auto-inspector\""));
         assert!(INDEX_HTML.contains("id=\"setting-reset-btn\""));
         assert!(INDEX_HTML.contains("handleHidError"));
-        assert!(INDEX_HTML.contains("isHidWritableTimeoutError"));
+        assert!(INDEX_HTML.contains("error?.status === 504"));
         assert!(INDEX_HTML.contains("getSetting"));
         assert!(INDEX_HTML.contains("setSetting"));
         assert!(INDEX_HTML.contains("settings-modal-pop"));

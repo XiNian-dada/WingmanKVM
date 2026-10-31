@@ -126,7 +126,40 @@ def video_settings(browser, port, checks):
         context.close()
 
 
-SCENARIOS = [keyboard_focus, video_settings]
+def logout_and_errors(browser, port, checks):
+    """#37 / #38 / #43: failed logout, HID errors and release failures surface."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        page.route("**/api/logout", lambda route: route.fulfill(
+            status=500, content_type="application/json", body='{"error":"boom"}'))
+        page.locator('[data-panel-target="control"]').click()
+        page.click("#logout")
+        page.wait_for_timeout(300)
+        in_app = page.evaluate("() => !document.querySelector('#app').classList.contains('hidden')")
+        check(checks, in_app, "failed_logout_keeps_console", in_app)
+        toast = page.text_content("#toast") or ""
+        check(checks, "boom" in toast, "failed_logout_reports_error", toast)
+
+        page.route("**/api/key", lambda route: route.fulfill(
+            status=503, content_type="application/json", body='{"error":"键盘设备未就绪"}'))
+        page.click("#input-state")
+        page.keyboard.press("b")
+        page.wait_for_timeout(300)
+        toast = page.text_content("#toast") or ""
+        check(checks, "未就绪" in toast, "hid_not_ready_is_reported", toast)
+
+        page.route("**/api/input/release-all", lambda route: route.fulfill(
+            status=429, content_type="application/json", body='{"error":"队列已满"}'))
+        page.click("#input-release")
+        page.wait_for_timeout(300)
+        toast = page.text_content("#toast") or ""
+        check(checks, "队列已满" in toast, "release_failure_is_reported", toast)
+    finally:
+        context.close()
+
+
+SCENARIOS = [keyboard_focus, video_settings, logout_and_errors]
 
 if __name__ == "__main__":
     sys.exit(main())

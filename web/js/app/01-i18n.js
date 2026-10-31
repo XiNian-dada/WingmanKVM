@@ -78,9 +78,11 @@
       settings_title: '全局偏好设置',
       settings_desc: '配置交互反馈、通知拦截与全局渲染偏好',
       settings_group_input: '交互与通知',
+      logout_failed: '退出失败，会话仍然有效，请重试',
+      input_release_failed: '释放按键失败，被控机可能仍有按键处于按下状态',
       settings_suppress_hid: '屏蔽 HID 写入超时警告',
       settings_suppress_hid_desc:
-        '在纯 Linux 环境或被控端未开机时，忽略鼠标与键盘写入超时 (writable timeout) 弹窗警告',
+        '被控端未开机等情况下，键鼠写入超时（504）不再弹出提示；设备未就绪等其他错误仍会提示',
       settings_capture_pulse: '接管边缘微光脉冲',
       settings_capture_pulse_desc: '激活键鼠转发时，在远端画面边缘显示光晕视觉反馈',
       settings_release_toast: '按键释放提示',
@@ -200,9 +202,11 @@
       settings_title: '全局偏好設定',
       settings_desc: '配置交互反饋、通知攔截與全局渲染偏好',
       settings_group_input: '交互與通知',
+      logout_failed: '登出失敗，工作階段仍然有效，請重試',
+      input_release_failed: '釋放按鍵失敗，被控機可能仍有按鍵處於按下狀態',
       settings_suppress_hid: '屏蔽 HID 寫入逾時警告',
       settings_suppress_hid_desc:
-        '在純 Linux 環境或被控端未開機時，忽略滑鼠與鍵盤寫入逾時 (writable timeout) 彈窗警告',
+        '被控端未開機等情況下，鍵鼠寫入逾時（504）不再彈出提示；裝置未就緒等其他錯誤仍會提示',
       settings_capture_pulse: '接管邊緣微光脈衝',
       settings_capture_pulse_desc: '激活鍵鼠轉發時，在遠端畫面邊緣顯示光暈視覺反饋',
       settings_release_toast: '按鍵釋放提示',
@@ -323,9 +327,11 @@
       settings_title: 'Global Preferences',
       settings_desc: 'Configure interaction feedback, alert silencing, and rendering preferences',
       settings_group_input: 'Interaction & Alerts',
+      logout_failed: 'Log out failed; the session is still active. Please retry',
+      input_release_failed: 'Releasing keys failed; keys may still be held on the target',
       settings_suppress_hid: 'Silence HID Timeout Warnings',
       settings_suppress_hid_desc:
-        'Suppress popup warnings when mouse/keyboard /dev/hidg device times out waiting to become writable',
+        'Hide HID write timeout (504) popups, e.g. when the target is powered off; other errors such as "device not ready" are still shown',
       settings_capture_pulse: 'Input Capture Edge Glow',
       settings_capture_pulse_desc:
         'Display a subtle blue edge glow feedback when activating remote keyboard/mouse capture',

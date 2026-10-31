@@ -1,5 +1,5 @@
   const SETTING_DEFAULTS = {
-    suppress_hid_timeout: true,
+    suppress_hid_timeout: false,
     capture_pulse: true,
     release_key_toast: true,
     render_pixelated: true,
@@ -22,21 +22,12 @@
     } catch (_) {}
   }
   let lastHidToast = 0;
-  function isHidWritableTimeoutError(message) {
-    if (!message) return false;
-    const msg = String(message).toLowerCase();
-    return (
-      msg.includes('writable') ||
-      msg.includes('timed out') ||
-      msg.includes('timeout') ||
-      msg.includes('超时') ||
-      msg.includes('未就绪')
-    );
-  }
+  // Only a write timeout (HTTP 504, e.g. target powered off) is noisy enough to
+  // optionally silence; "not configured"/"not ready" failures always surface.
   function handleHidError(error) {
     const message = (error && (error.message || error.error)) || String(error);
-    if (isHidWritableTimeoutError(message)) {
-      if (getSetting('suppress_hid_timeout', true)) return;
+    if (error?.status === 504) {
+      if (getSetting('suppress_hid_timeout', false)) return;
       const now = performance.now();
       if (now - lastHidToast < 10000) return;
       lastHidToast = now;
@@ -187,8 +178,13 @@
       );
   });
   $('#input-release')?.addEventListener('click', async () => {
-    await releaseAll();
     if (relativeCaptured()) document.exitPointerLock();
+    try {
+      await releaseAll({ strict: true });
+    } catch (error) {
+      toast(t('input_release_failed', '释放按键失败，被控机可能仍有按键处于按下状态') + `：${error.message}`, true);
+      return;
+    }
     if (getSetting('release_key_toast', true)) toast(t('input_released', '已释放所有按键与鼠标锁定'));
   });
   const VIRTUAL_MODIFIERS = new Set(['Control', 'Shift', 'Alt', 'Meta']);
@@ -360,12 +356,15 @@
   $$('.key-strip [data-key]').forEach((button) =>
     button.addEventListener('click', () => sendKey(button.dataset.key).catch(handleHidError)),
   );
-  function releaseAll() {
+  // Background releases (blur, logout, pause) are best effort; the explicit
+  // "release keys" button passes `strict` so the user learns if it failed.
+  function releaseAll({ strict = false } = {}) {
     mouseX = mouseY = 0;
     absolutePending = null;
     resetVirtualModifiers();
     if (app.classList.contains('hidden') || bootstrap.authenticated === false) return Promise.resolve();
-    return request('/api/input/release-all', { method: 'POST', keepalive: true }).catch(() => {});
+    const released = request('/api/input/release-all', { method: 'POST', keepalive: true });
+    return strict ? released : released.catch(() => {});
   }
   function stopInput() {
     pageActive = false;

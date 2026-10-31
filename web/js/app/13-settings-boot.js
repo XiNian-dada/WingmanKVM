@@ -5,7 +5,7 @@
   function syncSettingsDialogUi() {
     if (!settingsDialog) return;
     const hidCheckbox = $('#setting-suppress-hid-timeout');
-    if (hidCheckbox) hidCheckbox.checked = getSetting('suppress_hid_timeout', true);
+    if (hidCheckbox) hidCheckbox.checked = getSetting('suppress_hid_timeout', false);
     const pulseCheckbox = $('#setting-capture-pulse');
     if (pulseCheckbox) pulseCheckbox.checked = getSetting('capture_pulse', true);
     const releaseCheckbox = $('#setting-release-toast');
