@@ -352,6 +352,40 @@ impl AuthStore {
         }
     }
 
+    /// Run [`AuthStore::is_initialized`] on the blocking pool.
+    ///
+    /// `auth.json` lives on flash storage; metadata reads can stall long
+    /// enough to matter on the small worker pools used by the target boards.
+    pub async fn is_initialized_async(&self) -> Result<bool, AuthError> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.is_initialized())
+            .await
+            .map_err(|error| AuthError::BlockingTask(error.to_string()))?
+    }
+
+    /// Run [`AuthStore::load`] on the blocking pool.
+    pub async fn load_async(&self) -> Result<Option<AuthRecord>, AuthError> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.load())
+            .await
+            .map_err(|error| AuthError::BlockingTask(error.to_string()))?
+    }
+
+    /// Run a read-modify-write cycle on the blocking pool.
+    ///
+    /// The closure runs while `AuthStore`'s write lock is held, so concurrent
+    /// async callers are still serialized exactly like [`AuthStore::update`].
+    pub async fn update_async<F, R>(&self, f: F) -> Result<R, AuthError>
+    where
+        F: FnOnce(&mut AuthRecord) -> Result<R, AuthError> + Send + 'static,
+        R: Send + 'static,
+    {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.update(f))
+            .await
+            .map_err(|error| AuthError::BlockingTask(error.to_string()))?
+    }
+
     pub fn load(&self) -> Result<Option<AuthRecord>, AuthError> {
         let bytes = match fs::read(&self.path) {
             Ok(bytes) => bytes,
@@ -684,6 +718,8 @@ pub enum AuthError {
     InvalidSystemTime,
     #[error("session expiration time overflowed")]
     TimeOverflow,
+    #[error("blocking authentication task failed: {0}")]
+    BlockingTask(String),
 }
 
 pub fn default_auth_path() -> PathBuf {

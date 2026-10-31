@@ -142,7 +142,7 @@ pub(super) async fn supervise_system_password_migration(
     guard: tokio::sync::OwnedMutexGuard<()>,
 ) -> bool {
     let _migration_guard = guard;
-    let Ok(Some(current)) = auth.load() else {
+    let Ok(Some(current)) = auth.load_async().await else {
         return false;
     };
     if current.username != verified.username
@@ -157,7 +157,7 @@ pub(super) async fn supervise_system_password_migration(
         tracing::warn!(%error, "system password migration failed during login");
         return false;
     }
-    match auth.update(|record| {
+    match auth.update_async(move |record| {
         if record.username == verified.username
             && record.password_hash == verified.password_hash
         {
@@ -168,7 +168,7 @@ pub(super) async fn supervise_system_password_migration(
             // claim synchronization.
             Ok(false)
         }
-    }) {
+    }).await {
         Ok(persisted) => persisted,
         Err(error) => {
             tracing::warn!(

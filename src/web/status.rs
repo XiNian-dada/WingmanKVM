@@ -17,20 +17,29 @@ pub(super) struct Capabilities {
     pub(super) video_webrtc_h264: bool,
 }
 
-pub(super) async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
-    no_store(Json(state.system.snapshot()))
+pub(super) async fn system_status(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
+    let system = blocking_system_snapshot(state.system.clone()).await?;
+    Ok(no_store(Json(system)))
+}
+
+async fn blocking_system_snapshot(
+    monitor: Arc<crate::system::SystemMonitor>,
+) -> Result<crate::system::SystemMetrics, ApiError> {
+    tokio::task::spawn_blocking(move || monitor.snapshot())
+        .await
+        .map_err(ApiError::internal)
 }
 
 pub(super) async fn status(
     State(state): State<AppState>,
     ConnectInfo(connection): ConnectInfo<ClientConnection>,
     headers: HeaderMap,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     let client = state.client_address(connection, &headers).await;
     let config = state.config.read().await.clone();
     let webrtc = state.webrtc.status();
-    let system = state.system.snapshot();
-    no_store(Json(json!({
+    let system = blocking_system_snapshot(state.system.clone()).await?;
+    Ok(no_store(Json(json!({
         "video": state.video.status(),
         "power": state.power.status().await,
         "webrtc": webrtc,
@@ -45,7 +54,7 @@ pub(super) async fn status(
             "source": client.source,
             "proxy_protocol": config.server.proxy_protocol,
         },
-    })))
+    }))))
 }
 
 #[allow(dead_code)]
