@@ -890,6 +890,37 @@ def screenshot_and_record(browser, port, checks):
         context.close()
 
 
+def terminal_kept_in_background(browser, port, checks):
+    """#47: switching to video keeps the terminal session and marks its tab."""
+    from verify_p2b_ui import api_route, bootstrap_payload, GIF
+    state = State()
+    payload = bootstrap_payload(state)
+    payload["terminal_ready"] = True
+    sockets = []
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    try:
+        page = context.new_page()
+        page.route_web_socket("**/api/terminal/ws", lambda ws: sockets.append(ws))
+        page.route("**/api/bootstrap", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(payload)))
+        page.route("**/api/**", lambda route: api_route(route, state))
+        page.route("**/video_feed*", lambda route: route.fulfill(status=200, content_type="image/gif", body=GIF))
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        page.click('[data-workspace="terminal"]')
+        page.wait_for_timeout(500)
+        page.click('[data-workspace="video"]')
+        page.wait_for_timeout(300)
+        live = page.evaluate("() => document.querySelector('[data-workspace=\"terminal\"]').classList.contains('session-live')")
+        check(checks, len(sockets) == 1 and live, "terminal_session_kept_and_marked", (len(sockets), live))
+        page.click('[data-workspace="terminal"]')
+        page.wait_for_timeout(300)
+        live = page.evaluate("() => document.querySelector('[data-workspace=\"terminal\"]').classList.contains('session-live')")
+        check(checks, len(sockets) == 1 and not live, "returning_reuses_session_and_clears_mark", (len(sockets), live))
+    finally:
+        context.close()
+
+
 # Every function taking (browser, port, checks) is a scenario, run in
 # definition order; new scenarios need no list edit (and no merge conflict).
 SCENARIOS = [

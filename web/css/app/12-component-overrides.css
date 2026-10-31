@@ -530,4 +530,14 @@
   to {
     visibility: hidden;
   }
+/* Terminal session still running while the video tab is shown. */
+.workspace-tab.session-live::after {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: #16a34a;
+  vertical-align: 1px;
 }

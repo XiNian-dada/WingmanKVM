@@ -3,6 +3,7 @@
       terminalMode = next === 'terminal',
       changed = videoWorkspace !== next;
     videoWorkspace = next;
+    syncTerminalTabIndicator();
     invalidateSurfaceBox();
     $('#terminal-window').hidden = !terminalMode;
     $('#video-viewport').hidden = terminalMode;
