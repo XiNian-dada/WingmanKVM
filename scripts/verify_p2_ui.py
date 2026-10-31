@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """P2 UI regression: media read-only defaults (ISSUE-06) and auth secret clearing (ISSUE-09)."""
-from ui_bundle import load_index_html
-import argparse, json, os, sys, threading, time, urllib.parse
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json, os, sys, time, urllib.parse
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ui_harness
+# Re-exported for older callers that imported the fixtures from this module.
+from ui_harness import GIF, check, extract_html, mock_video_feed, read_assets, serve_static, wait_until
 try:
     from playwright.sync_api import sync_playwright
 except Exception as exc:  # pragma: no cover - environment guard
     print(json.dumps({"status": "FAIL", "error": f"Playwright import failed: {exc}"}))
     sys.exit(2)
 
-GIF = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
 USER, PASSWORD = "admin", "Synthetic-Passw0rd!9"
 SETUP_TOKEN = "SYNTHETIC-SETUP-TOKEN-921"
 STATUS = {
@@ -77,56 +78,6 @@ def bootstrap_payload(state):
     }
 
 
-def extract_html(repo):
-    return load_index_html(repo)
-
-
-def read_assets(repo):
-    root = os.path.join(repo, "web", "vendor", "xterm")
-    names = {"xterm.js": "xterm.js", "addon-fit.js": "addon-fit.js", "xterm.css": "xterm.css"}
-    return {key: open(os.path.join(root, name), "rb").read() for key, name in names.items()}
-
-
-def serve_static(html, assets):
-    html_bytes = html.encode("utf-8")
-    icon = b'<svg xmlns="http://www.w3.org/2000/svg"/>'
-
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
-
-        def _send(self, code, body, ctype):
-            self.send_response(code)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
-
-        def _route(self):
-            path = urllib.parse.urlsplit(self.path).path
-            if path in ("/", "/index.html"):
-                return self._send(200, html_bytes, "text/html; charset=utf-8")
-            if path == "/assets/xterm.js":
-                return self._send(200, assets["xterm.js"], "application/javascript")
-            if path == "/assets/xterm-fit.js":
-                return self._send(200, assets["addon-fit.js"], "application/javascript")
-            if path == "/assets/xterm.css":
-                return self._send(200, assets["xterm.css"], "text/css")
-            if path in ("/assets/icon.svg", "/favicon.ico"):
-                return self._send(200, icon, "image/svg+xml")
-            return self._send(404, b"not found", "text/plain")
-
-        do_GET = _route
-        do_POST = _route
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    server.daemon_threads = True
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return server, server.server_address[1]
-
-
 def api_route(route, state):
     path = urllib.parse.urlsplit(route.request.url).path
     headers = {"content-type": "application/json"}
@@ -184,18 +135,11 @@ def api_route(route, state):
     return route.fulfill(status=200, headers=headers, body="{}")
 
 
-def check(checks, condition, name, evidence=""):
-    checks.append({"name": name, "ok": bool(condition), "evidence": str(evidence)[:256]})
-    if not condition:
-        raise AssertionError(f"{name}: {evidence}")
-
-
 def new_page(browser, state, port, fragment=""):
     context = browser.new_context(viewport={"width": 1280, "height": 900})
     page = context.new_page()
     page.route("**/api/**", lambda route: api_route(route, state))
-    page.route("**/video_feed*", lambda route: route.fulfill(
-        status=200, content_type="image/gif", body=GIF))
+    mock_video_feed(page)
     page.goto(f"http://localhost:{port}/{fragment}", wait_until="load", timeout=15000)
     return page
 
@@ -249,21 +193,6 @@ def value_of(page, selector):
 
 def empty_value(page, selector):
     return value_of(page, selector) == ""
-
-
-def wait_until(page, predicate, timeout=3.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            if predicate():
-                return True
-        except Exception:
-            pass
-        page.wait_for_timeout(50)
-    try:
-        return bool(predicate())
-    except Exception:
-        return False
 
 
 def media_default_true(browser, port, checks):
@@ -492,18 +421,12 @@ def setup_success_before_bootstrap_failure(browser, port, checks):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--repo", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    parser.add_argument("--output-dir", default="")
-    parser.add_argument("--browser-channel", default="chrome")
-    args = parser.parse_args()
-    checks = []
-    summary = {"status": "FAIL", "repo": os.path.abspath(args.repo), "checks": checks}
-    server = current = media_page = None
+    args = ui_harness.parse_args()
+    summary = ui_harness.new_summary(args.repo)
+    checks = summary["checks"]
+    current = media_page = None
     try:
-        html, assets = extract_html(args.repo), read_assets(args.repo)
-        server, port = serve_static(html, assets)
-        with sync_playwright() as p:
+        with ui_harness.static_server(args.repo) as port, sync_playwright() as p:
             browser = p.chromium.launch(headless=True, channel=args.browser_channel)
             try:
                 current = media_page = media_default_true(browser, port, checks)
@@ -514,43 +437,17 @@ def main():
                 current = auth_transitions(browser, port, checks)
                 current = setup_success_before_bootstrap_failure(browser, port, checks)
                 summary["status"] = "PASS"
-                if args.output_dir:
-                    os.makedirs(args.output_dir, exist_ok=True)
-                    media_page.screenshot(path=os.path.join(args.output_dir, "p2_ui_pass.png"))
+                if ui_harness.screenshot(media_page, args.output_dir, "p2_ui_pass.png"):
                     summary["screenshots"] = ["p2_ui_pass.png"]
             except Exception:
-                if current and args.output_dir:
-                    try:
-                        os.makedirs(args.output_dir, exist_ok=True)
-                        current.screenshot(path=os.path.join(args.output_dir, "p2_ui_failure.png"))
-                        summary["screenshots"] = ["p2_ui_failure.png"]
-                    except Exception:
-                        pass
+                if ui_harness.screenshot(current, args.output_dir, "p2_ui_failure.png"):
+                    summary["screenshots"] = ["p2_ui_failure.png"]
                 raise
             finally:
                 browser.close()
     except Exception as exc:
         summary["error"] = f"{type(exc).__name__}: {exc}"
-        if current and args.output_dir:
-            try:
-                os.makedirs(args.output_dir, exist_ok=True)
-                current.screenshot(path=os.path.join(args.output_dir, "p2_ui_failure.png"))
-                summary["screenshots"] = ["p2_ui_failure.png"]
-            except Exception:
-                pass
-    finally:
-        if server:
-            server.shutdown()
-            server.server_close()
-        if args.output_dir:
-            try:
-                os.makedirs(args.output_dir, exist_ok=True)
-                with open(os.path.join(args.output_dir, "p2_ui_report.json"), "w", encoding="utf-8") as fh:
-                    json.dump(summary, fh, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
-        print(json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
-    return 0 if summary["status"] == "PASS" else 1
+    return ui_harness.finish(summary, args.output_dir, "p2_ui_report.json")
 
 
 if __name__ == "__main__":
