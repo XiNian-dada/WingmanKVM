@@ -34,6 +34,8 @@ pub struct Config {
     pub power: PowerConfig,
     #[serde(default)]
     pub media: MediaConfig,
+    #[serde(default)]
+    pub notifications: NotificationsConfig,
 }
 
 impl Default for Config {
@@ -45,6 +47,7 @@ impl Default for Config {
             hid: HidConfig::default(),
             power: PowerConfig::default(),
             media: MediaConfig::default(),
+            notifications: NotificationsConfig::default(),
         }
     }
 }
@@ -677,6 +680,282 @@ impl Default for MediaConfig {
             max_upload_bytes: 16 * 1024 * 1024 * 1024,
             read_only_by_default: false,
         }
+    }
+}
+
+pub const DEFAULT_NTFY_SERVER: &str = "https://ntfy.sh";
+
+/// Outbound event notifications (issue #84).
+///
+/// Secret values (`webhook.url`, `ntfy.token`, `telegram.bot_token`) are
+/// persisted in the private configuration file but never returned to the
+/// browser; see [`NotificationsConfig::redact_json`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationsConfig {
+    pub webhook: WebhookChannelConfig,
+    pub ntfy: NtfyChannelConfig,
+    pub telegram: TelegramChannelConfig,
+    pub events: NotificationEvents,
+    /// Keyboard/mouse failures within the window, with no success, before alerting.
+    pub hid_failure_threshold: u32,
+    pub hid_failure_window_seconds: u64,
+    /// Video must stay lost this long before a notification is sent.
+    pub video_lost_seconds: u64,
+    /// At most one message per event type per this many seconds; repeats are merged.
+    pub rate_limit_seconds: u64,
+}
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self {
+            webhook: WebhookChannelConfig::default(),
+            ntfy: NtfyChannelConfig::default(),
+            telegram: TelegramChannelConfig::default(),
+            events: NotificationEvents::default(),
+            hid_failure_threshold: 5,
+            hid_failure_window_seconds: 60,
+            video_lost_seconds: 30,
+            rate_limit_seconds: 60,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebhookChannelConfig {
+    pub enabled: bool,
+    /// Treated as a secret: chat-service webhook URLs embed their credential.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NtfyChannelConfig {
+    pub enabled: bool,
+    pub server: String,
+    pub topic: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+impl Default for NtfyChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            server: DEFAULT_NTFY_SERVER.to_owned(),
+            topic: None,
+            token: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TelegramChannelConfig {
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bot_token: Option<String>,
+    pub chat_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationEvents {
+    pub login_succeeded: bool,
+    pub login_failed: bool,
+    pub power_led_changed: bool,
+    pub hid_failing: bool,
+    pub video_lost: bool,
+}
+
+impl Default for NotificationEvents {
+    fn default() -> Self {
+        Self {
+            login_succeeded: true,
+            login_failed: true,
+            power_led_changed: true,
+            hid_failing: true,
+            video_lost: true,
+        }
+    }
+}
+
+fn non_empty(value: &Option<String>) -> Option<&str> {
+    value.as_deref().map(str::trim).filter(|value| !value.is_empty())
+}
+
+/// Accept only absolute http(s) URLs with a host.
+pub fn validate_http_url(value: &str) -> Result<reqwest::Url, &'static str> {
+    if value.chars().any(|character| character.is_whitespace() || character.is_control()) {
+        return Err("URL 不能包含空白或控制字符");
+    }
+    let url = reqwest::Url::parse(value).map_err(|_| "URL 格式无效")?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("URL 只允许 http 或 https");
+    }
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err("URL 缺少主机名");
+    }
+    Ok(url)
+}
+
+impl NotificationsConfig {
+    pub fn webhook_url(&self) -> Option<&str> {
+        non_empty(&self.webhook.url)
+    }
+
+    pub fn ntfy_topic(&self) -> Option<&str> {
+        non_empty(&self.ntfy.topic)
+    }
+
+    pub fn ntfy_token(&self) -> Option<&str> {
+        non_empty(&self.ntfy.token)
+    }
+
+    pub fn telegram_bot_token(&self) -> Option<&str> {
+        non_empty(&self.telegram.bot_token)
+    }
+
+    pub fn telegram_chat_id(&self) -> Option<&str> {
+        non_empty(&self.telegram.chat_id)
+    }
+
+    pub fn webhook_ready(&self) -> bool {
+        self.webhook_url().is_some()
+    }
+
+    pub fn ntfy_ready(&self) -> bool {
+        self.ntfy_topic().is_some() && !self.ntfy.server.trim().is_empty()
+    }
+
+    pub fn telegram_ready(&self) -> bool {
+        self.telegram_bot_token().is_some() && self.telegram_chat_id().is_some()
+    }
+
+    /// Keep previously stored secrets when an update leaves them empty.
+    /// Clearing a secret is an explicit, separate action.
+    pub fn inherit_secrets(&mut self, previous: &Self) {
+        for (current, previous) in [
+            (&mut self.webhook.url, &previous.webhook.url),
+            (&mut self.ntfy.token, &previous.ntfy.token),
+            (&mut self.telegram.bot_token, &previous.telegram.bot_token),
+        ] {
+            if non_empty(current).is_none() {
+                current.clone_from(previous);
+            }
+        }
+    }
+
+    /// Replace secret values in a serialized configuration with
+    /// `*_configured` flags. `value` is the `notifications` object.
+    pub fn redact_json(&self, value: &mut serde_json::Value) {
+        let flags = [
+            ("webhook", "url", self.webhook_url().is_some()),
+            ("ntfy", "token", self.ntfy_token().is_some()),
+            ("telegram", "bot_token", self.telegram_bot_token().is_some()),
+        ];
+        for (section, key, configured) in flags {
+            if let Some(object) = value.get_mut(section).and_then(serde_json::Value::as_object_mut) {
+                object.remove(key);
+                object.insert(format!("{key}_configured"), serde_json::Value::Bool(configured));
+            }
+        }
+        // Show only the webhook origin so the operator can recognise it.
+        if let Some(webhook) = value.get_mut("webhook").and_then(serde_json::Value::as_object_mut) {
+            let hint = self
+                .webhook_url()
+                .and_then(|url| reqwest::Url::parse(url).ok())
+                .map(|url| url.origin().ascii_serialization());
+            webhook.insert("url_hint".to_owned(), hint.into());
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if let Some(url) = self.webhook_url() {
+            validate_http_url(url).map_err(|_| "Webhook URL 必须是有效的 http/https 地址")?;
+        }
+        if self.webhook.enabled && !self.webhook_ready() {
+            return Err("启用 Webhook 前必须填写 URL");
+        }
+        if !self.ntfy.server.trim().is_empty() {
+            let url = validate_http_url(self.ntfy.server.trim())
+                .map_err(|_| "ntfy 服务器必须是有效的 http/https 地址")?;
+            if url.query().is_some() || url.fragment().is_some() {
+                return Err("ntfy 服务器地址不能包含查询或片段");
+            }
+        }
+        if let Some(topic) = self.ntfy_topic() {
+            if topic.len() > 64
+                || !topic
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            {
+                return Err("ntfy 主题只能包含 1–64 位字母、数字、短横线或下划线");
+            }
+        }
+        if let Some(token) = self.ntfy_token() {
+            if token.len() > 256 || !token.bytes().all(|byte| byte.is_ascii_graphic()) {
+                return Err("ntfy 访问令牌只能包含可见 ASCII 字符");
+            }
+        }
+        if self.ntfy.enabled && !self.ntfy_ready() {
+            return Err("启用 ntfy 前必须填写服务器和主题");
+        }
+        if let Some(token) = self.telegram_bot_token() {
+            let valid = token.split_once(':').is_some_and(|(id, secret)| {
+                !id.is_empty()
+                    && id.bytes().all(|byte| byte.is_ascii_digit())
+                    && !secret.is_empty()
+                    && secret.len() <= 128
+                    && secret
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            });
+            if !valid {
+                return Err("Telegram Bot Token 格式无效（应为 数字:字符串）");
+            }
+        }
+        if let Some(chat) = self.telegram_chat_id() {
+            let digits = chat.strip_prefix('-').unwrap_or(chat);
+            let numeric = !digits.is_empty() && digits.len() <= 20 && digits.bytes().all(|b| b.is_ascii_digit());
+            let channel = chat.strip_prefix('@').is_some_and(|name| {
+                (5..=32).contains(&name.len())
+                    && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            });
+            if !numeric && !channel {
+                return Err("Telegram Chat ID 必须是数字 ID 或 @频道名");
+            }
+        }
+        if self.telegram.enabled && !self.telegram_ready() {
+            return Err("启用 Telegram 前必须填写 Bot Token 和 Chat ID");
+        }
+        if !(1..=1_000).contains(&self.hid_failure_threshold) {
+            return Err("键鼠失败次数阈值必须在 1 到 1000 之间");
+        }
+        if !(5..=3_600).contains(&self.hid_failure_window_seconds) {
+            return Err("键鼠失败统计窗口必须在 5 到 3600 秒之间");
+        }
+        if !(5..=3_600).contains(&self.video_lost_seconds) {
+            return Err("视频丢失通知延迟必须在 5 到 3600 秒之间");
+        }
+        if !(10..=3_600).contains(&self.rate_limit_seconds) {
+            return Err("通知限流间隔必须在 10 到 3600 秒之间");
+        }
+        Ok(())
+    }
+}
+
+impl Config {
+    /// The configuration as returned to the browser: identical to the stored
+    /// form except that notification secrets become `*_configured` flags.
+    pub fn redacted_json(&self) -> serde_json::Value {
+        let mut value = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
+        if let Some(notifications) = value.get_mut("notifications") {
+            self.notifications.redact_json(notifications);
+        }
+        value
     }
 }
 
@@ -1472,5 +1751,107 @@ mod tests {
         ));
         assert_eq!(fs::read(&path).unwrap(), before);
     }
-}
 
+    fn configured_notifications() -> NotificationsConfig {
+        let mut notifications = NotificationsConfig::default();
+        notifications.webhook = WebhookChannelConfig {
+            enabled: true,
+            url: Some("https://hooks.example.com/services/T000/SECRET-PATH".to_owned()),
+        };
+        notifications.ntfy = NtfyChannelConfig {
+            enabled: true,
+            server: "https://ntfy.example.com".to_owned(),
+            topic: Some("wingman-alerts".to_owned()),
+            token: Some("tk_ntfysecret".to_owned()),
+        };
+        notifications.telegram = TelegramChannelConfig {
+            enabled: true,
+            bot_token: Some("123456:ABC-telegram_secret".to_owned()),
+            chat_id: Some("-1001234".to_owned()),
+        };
+        notifications
+    }
+
+    #[test]
+    fn notification_defaults_are_disabled_and_legacy_files_load() {
+        let config: Config = serde_json::from_value(serde_json::json!({"version": 1})).unwrap();
+        assert_eq!(config.notifications, NotificationsConfig::default());
+        assert!(!config.notifications.webhook.enabled);
+        assert!(config.notifications.validate().is_ok());
+    }
+
+    #[test]
+    fn notification_validation_rejects_bad_urls_and_incomplete_channels() {
+        let valid = configured_notifications();
+        assert!(valid.validate().is_ok());
+        for url in ["ftp://example.com/x", "javascript:alert(1)", "https://", "not a url", "file:///etc/passwd"] {
+            let mut config = valid.clone();
+            config.webhook.url = Some(url.to_owned());
+            assert!(config.validate().is_err(), "{url}");
+        }
+        let mut config = valid.clone();
+        config.ntfy.server = "gopher://ntfy.example.com".to_owned();
+        assert!(config.validate().is_err());
+        let mut config = valid.clone();
+        config.ntfy.topic = Some("bad topic/../x".to_owned());
+        assert!(config.validate().is_err());
+        let mut config = valid.clone();
+        config.ntfy.token = Some("line\nbreak".to_owned());
+        assert!(config.validate().is_err());
+        let mut config = valid.clone();
+        config.telegram.bot_token = Some("not-a-token".to_owned());
+        assert!(config.validate().is_err());
+        let mut config = valid.clone();
+        config.telegram.chat_id = Some("abc".to_owned());
+        assert!(config.validate().is_err());
+        let mut config = valid.clone();
+        config.telegram.chat_id = Some("@my_channel".to_owned());
+        assert!(config.validate().is_ok());
+        let mut config = valid.clone();
+        config.webhook.url = None;
+        assert!(config.validate().is_err(), "enabled webhook needs a URL");
+        config.webhook.enabled = false;
+        assert!(config.validate().is_ok());
+        let mut config = valid.clone();
+        config.rate_limit_seconds = 1;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn redacted_configuration_never_contains_notification_secrets() {
+        let mut config = Config::default();
+        config.notifications = configured_notifications();
+        let value = config.redacted_json();
+        let text = value.to_string();
+        for secret in ["SECRET-PATH", "tk_ntfysecret", "telegram_secret"] {
+            assert!(!text.contains(secret), "{secret} leaked: {text}");
+        }
+        let notifications = &value["notifications"];
+        assert_eq!(notifications["webhook"]["url_configured"], true);
+        assert_eq!(notifications["webhook"]["url_hint"], "https://hooks.example.com");
+        assert_eq!(notifications["ntfy"]["token_configured"], true);
+        assert_eq!(notifications["ntfy"]["topic"], "wingman-alerts");
+        assert_eq!(notifications["telegram"]["bot_token_configured"], true);
+        assert_eq!(notifications["telegram"]["chat_id"], "-1001234");
+
+        // A browser that saves the redacted form back keeps every secret.
+        let mut roundtrip: Config = serde_json::from_value(value).unwrap();
+        assert!(roundtrip.notifications.webhook.url.is_none());
+        roundtrip.notifications.inherit_secrets(&config.notifications);
+        assert_eq!(roundtrip.notifications, config.notifications);
+
+        let empty = Config::default().redacted_json();
+        assert_eq!(empty["notifications"]["telegram"]["bot_token_configured"], false);
+        assert!(empty["notifications"]["webhook"]["url_hint"].is_null());
+    }
+
+    #[test]
+    fn notification_secrets_persist_in_the_private_file() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join(CONFIG_FILE_NAME);
+        let mut config = Config::default();
+        config.notifications = configured_notifications();
+        config.save_atomic(&path).unwrap();
+        assert_eq!(Config::load(&path).unwrap().notifications, config.notifications);
+    }
+}

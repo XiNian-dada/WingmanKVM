@@ -85,6 +85,8 @@ pub(super) fn map_webrtc_error(error: WebRtcError) -> ApiError {
         WebRtcError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         WebRtcError::Capacity => StatusCode::TOO_MANY_REQUESTS,
         WebRtcError::Unauthorized => StatusCode::UNAUTHORIZED,
+        WebRtcError::SessionNotFound => StatusCode::NOT_FOUND,
+        WebRtcError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
         WebRtcError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     if matches!(&error, WebRtcError::Internal(_)) {

@@ -9,7 +9,7 @@ use std::{
     io::{self, Write},
     net::IpAddr,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -87,10 +87,14 @@ impl AuditEntry {
     }
 }
 
+type AuditObserver = Box<dyn Fn(&AuditEntry) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct AuditLog {
     path: PathBuf,
     write_lock: Arc<Mutex<()>>,
+    /// Optional non-blocking listener (event notifications) told about every entry.
+    observer: Arc<OnceLock<AuditObserver>>,
 }
 
 impl AuditLog {
@@ -98,7 +102,13 @@ impl AuditLog {
         Self {
             path: state_dir.into().join(AUDIT_FILE_NAME),
             write_lock: Arc::new(Mutex::new(())),
+            observer: Arc::new(OnceLock::new()),
         }
+    }
+
+    /// Install the observer once; it must not block.
+    pub fn set_observer(&self, observer: impl Fn(&AuditEntry) + Send + Sync + 'static) {
+        let _ = self.observer.set(Box::new(observer));
     }
 
     #[cfg(test)]
@@ -115,6 +125,9 @@ impl AuditLog {
         detail: Option<String>,
     ) {
         let entry = AuditEntry::new(event, ip, session, detail);
+        if let Some(observer) = self.observer.get() {
+            observer(&entry);
+        }
         let log = self.clone();
         match tokio::task::spawn_blocking(move || log.append(&entry)).await {
             Ok(Ok(())) => {}

@@ -226,8 +226,9 @@ def ppv2_confirmation(browser, port, checks):
     posts = []
     context, page = new_page(browser, state, port)
     try:
+        # Only writes count: opening settings also reads the config.
         page.route("**/api/config", lambda route: (
-            posts.append(route.request.post_data),
+            route.request.method == "POST" and posts.append(route.request.post_data),
             route.fulfill(status=200, content_type="application/json",
                           body='{"server":{"proxy_protocol":"required"}}'))[-1])
         dialogs = []
@@ -278,7 +279,7 @@ def low_risk_ui(browser, port, checks):
         context.add_init_script(
             "localStorage.setItem('wingman_setting_auto_expand_inspector','false')")
         page = context.new_page()
-        from verify_p2b_ui import api_route, GIF
+        from verify_p2b_ui import api_route, GIF, bootstrap_payload
         page.route("**/api/**", lambda route: api_route(route, state))
         page.route("**/video_feed*", lambda route: route.fulfill(
             status=200, content_type="image/gif", body=GIF))
@@ -356,7 +357,7 @@ def power_confirmation(browser, port, checks):
     posts = []
     context, page = new_page(browser, state, port)
     try:
-        from verify_p2b_ui import bootstrap_payload
+        from verify_p2b_ui import bootstrap_payload, api_route, GIF
         payload = bootstrap_payload(state)
         payload["capabilities"].update(gpio_power=True, gpio_reset=True)
         page.route("**/api/bootstrap", lambda route: route.fulfill(
@@ -425,7 +426,7 @@ def paste_as_typing(browser, port, checks):
 
         # With Caps Lock on at the target, letter case must still come out right.
         state.key_posts.clear()
-        from verify_p2b_ui import api_route
+        from verify_p2b_ui import api_route, bootstrap_payload, GIF
         class CapsOnRoute:
             """Wraps a route so the mocked status reports Caps Lock on."""
             def __init__(self, route):
@@ -679,7 +680,7 @@ def shortcut_sheet(browser, port, checks):
 
 def touch_fullscreen_toolbar(browser, port, checks):
     """#58: touch devices get a floating toolbar in fullscreen."""
-    from verify_p2b_ui import api_route, GIF
+    from verify_p2b_ui import api_route, GIF, bootstrap_payload
     state = State()
     context = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
     try:
@@ -723,7 +724,7 @@ def touch_fullscreen_toolbar(browser, port, checks):
 
 def input_websocket(browser, port, checks):
     """#61: HID events use the input WebSocket and fall back to HTTP."""
-    from verify_p2b_ui import api_route, GIF
+    from verify_p2b_ui import api_route, GIF, bootstrap_payload
     state = State()
     frames, sockets = [], []
     context = browser.new_context(viewport={"width": 1280, "height": 900})
@@ -777,7 +778,7 @@ def input_websocket(browser, port, checks):
 
 def touch_gestures(browser, port, checks):
     """#62: tap, long press, one-finger drag and two-finger scroll."""
-    from verify_p2b_ui import api_route, GIF
+    from verify_p2b_ui import api_route, GIF, bootstrap_payload
     state = State()
     # A visible, playing feed is needed to map touch points to the target.
     state.video.update(state="ready", message="", last_frame_age_ms=10)
@@ -881,7 +882,7 @@ def touch_gestures(browser, port, checks):
 
 def runtime_metrics(browser, port, checks):
     """#67: diagnostics show version, connections and keyboard/mouse write health."""
-    from verify_p2b_ui import api_route
+    from verify_p2b_ui import api_route, bootstrap_payload, GIF
     state = State()
     context, page = new_page(browser, state, port)
     try:
@@ -1440,7 +1441,9 @@ def quality_overlay_webrtc(browser, port, checks):
     """#81: stats deltas, persistence, and polling only while shown."""
     state = State()
     state.video.update(state="ready", message="", last_frame_age_ms=10)
-    context, page = media_page(browser, state, port, h264=True, stubs=(FAKE_PEER,))
+    # Adaptive bitrate (#82) also samples stats; this scenario covers the
+    # overlay alone, so it starts with adaptation turned off.
+    context, page = media_page(browser, state, port, h264=True, stubs=(FAKE_PEER, ADAPTIVE_OFF))
     try:
         page.wait_for_function("() => /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
         page.wait_for_timeout(1200)
@@ -1459,7 +1462,8 @@ def quality_overlay_webrtc(browser, port, checks):
         page.wait_for_function("() => document.querySelector('#quality-overlay').textContent.includes('Mbps')", timeout=4000)
         rows = overlay_rows(page)
         check(checks, rows == {"往返延迟": "25 ms", "接收码率": "1.00 Mbps", "丢包率": "1.0%", "解码帧率": "30",
-                               "抖动缓冲": "50 ms", "分辨率": "1920×1080"}, "quality_webrtc_stats_rendered", rows)
+                               "抖动缓冲": "50 ms", "自适应码率": "已关闭", "分辨率": "1920×1080"},
+              "quality_webrtc_stats_rendered", rows)
         page.wait_for_function("() => window.__statsCalls >= 3", timeout=4000)
         page.wait_for_timeout(50)
         rows = overlay_rows(page)
@@ -1549,7 +1553,7 @@ def quality_overlay_mjpeg(browser, port, checks):
 
 def hotplug_recovery(browser, port, checks):
     """#93: capture-card unplug/replug and USB HID re-enumeration are announced."""
-    from verify_p2b_ui import api_route
+    from verify_p2b_ui import api_route, bootstrap_payload, GIF
     state = State()
     hid = {"keyboard_reenumerating": False, "mouse_reenumerating": False}
     context, page = new_page(browser, state, port)
@@ -1603,6 +1607,574 @@ def hotplug_recovery(browser, port, checks):
         badge = page.text_content("#hid-link-state") or ""
         check(checks, message.startswith("Capture card disconnected") and badge == "HID reconnecting",
               "hotplug_messages_translate", (message, badge, message_hidden))
+    finally:
+        context.close()
+
+
+def keyboard_macros(browser, port, checks):
+    """#80: record forwarded keys, replay with timing, and manage JSON files."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        page.click("#input-state")
+        page.click("#quick-more-toggle")
+        page.click("#quick-macro-record")
+        check(checks, page.locator("#macro-recording").is_visible(),
+              "macro_recording_indicator_visible", page.locator("#macro-recording").is_visible())
+
+        page.keyboard.press("Control+a")
+        page.wait_for_timeout(30)
+        page.keyboard.press("Shift+b")
+        page.wait_for_timeout(600)
+        page.keyboard.press("c")
+
+        # Keys typed into local controls, especially password fields, must not
+        # be recorded (or forwarded) even while a recording is running.
+        page.evaluate("""() => {
+          const input = document.createElement('input');
+          input.type = 'password';
+          input.id = 'macro-test-password';
+          document.body.append(input);
+          input.focus();
+        }""")
+        page.keyboard.press("d")
+        page.wait_for_timeout(50)
+        page.evaluate("""() => {
+          document.querySelector('#macro-test-password')?.remove();
+          document.querySelector('#video-viewport').focus();
+        }""")
+
+        # The local exit shortcut is handled before the forwarding path.
+        page.keyboard.press("Control+Alt+`")
+        page.wait_for_timeout(100)
+        check(checks, not page.is_checked("#remote-input"),
+              "macro_local_shortcut_exits_forwarding", page.is_checked("#remote-input"))
+
+        page.click("#macro-record-stop")
+        page.wait_for_selector("#macro-save-dialog[open]", timeout=3000)
+        summary = page.text_content("#macro-save-summary") or ""
+        check(checks, "3" in summary, "macro_save_dialog_reports_three_steps", summary)
+        page.fill("#macro-save-name", "测试宏")
+        page.click("#macro-save-confirm")
+        page.wait_for_timeout(200)
+
+        saved = json.loads(
+            page.evaluate("() => localStorage.getItem('wingman_keyboard_macros') || '[]'"))
+        steps = saved[0].get("steps", []) if saved else []
+        keys = [step.get("key") for step in steps]
+        mods = [(bool(step.get("ctrl")), bool(step.get("shift")),
+                 bool(step.get("alt")), bool(step.get("meta"))) for step in steps]
+        check(checks, keys == ["KeyA", "KeyB", "KeyC"],
+              "macro_recording_captures_forwarded_keys_only", keys)
+        check(checks, mods == [(True, False, False, False),
+                              (False, True, False, False),
+                              (False, False, False, False)],
+              "macro_recording_captures_modifiers", mods)
+        check(checks, steps and steps[-1].get("delay_ms", 0) >= 500,
+              "macro_recording_captures_delay", steps[-1:] if steps else steps)
+
+        def play_and_time(speed):
+            state.key_posts.clear()
+            page.click("#quick-more-toggle")
+            page.click(f'[data-macro-speed="{speed}"]')
+            started = time.monotonic()
+            page.click("#quick-more-menu [data-macro-play]")
+            page.wait_for_function(
+                """() => (document.querySelector('#macro-play-status')?.textContent || '')
+                  .includes('已回放完成')""", timeout=6000)
+            return time.monotonic() - started
+
+        fast = play_and_time("2")
+        fast_sequence = [(post.get("key"), bool(post.get("ctrl")), bool(post.get("shift")),
+                          bool(post.get("alt")), bool(post.get("meta")))
+                         for post in state.key_posts]
+        check(checks, fast_sequence == [("KeyA", True, False, False, False),
+                                       ("KeyB", False, True, False, False),
+                                       ("KeyC", False, False, False, False)],
+              "macro_replay_sends_order_and_modifiers", fast_sequence)
+        page.click('#macro-play-dialog .dialog-head [data-macro-play-close]')
+        page.wait_for_timeout(100)
+
+        slow = play_and_time("0.5")
+        check(checks, slow > fast + 0.5, "macro_replay_speed_changes_interval", (fast, slow))
+        page.click('#macro-play-dialog .dialog-head [data-macro-play-close]')
+        page.wait_for_timeout(100)
+
+        # Cancel during the long recorded pause before the last key.
+        state.key_posts.clear()
+        page.click("#quick-more-toggle")
+        page.click('[data-macro-speed="0.5"]')
+        page.click("#quick-more-menu [data-macro-play]")
+        page.wait_for_timeout(180)
+        page.click("#macro-play-cancel")
+        page.wait_for_timeout(500)
+        canceled = len(state.key_posts)
+        status = page.text_content("#macro-play-status") or ""
+        check(checks, 0 < canceled < 3 and "已取消" in status,
+              "macro_replay_can_be_canceled", (canceled, status))
+        page.click('#macro-play-dialog .dialog-head [data-macro-play-close]')
+        page.wait_for_timeout(100)
+
+        # Turning forwarding off mid-replay stops the run and reports it.
+        state.key_posts.clear()
+        page.click("#quick-more-toggle")
+        page.click('[data-macro-speed="0.5"]')
+        page.click("#quick-more-menu [data-macro-play]")
+        page.wait_for_timeout(180)
+        page.locator("#input-state").evaluate("b => b.click()")
+        page.wait_for_timeout(500)
+        interrupted = len(state.key_posts)
+        status = page.text_content("#macro-play-status") or ""
+        check(checks, 0 < interrupted < 3 and "已中断" in status,
+              "macro_replay_stops_when_forwarding_off", (interrupted, status))
+        page.click('#macro-play-dialog .dialog-head [data-macro-play-close]')
+        page.wait_for_timeout(100)
+
+        page.click("#quick-more-toggle")
+        page.click("#quick-macro-manage")
+        page.wait_for_selector("#macro-manager-dialog[open]", timeout=3000)
+        check(checks, page.locator("#macro-manager-list [data-macro-row]").count() == 1,
+              "macro_manager_lists_saved_macro",
+              page.locator("#macro-manager-list [data-macro-row]").count())
+
+        page.fill("#macro-manager-list .macro-name-input", "重命名宏")
+        page.click("#macro-manager-list [data-macro-rename]")
+        page.wait_for_timeout(200)
+        renamed = json.loads(
+            page.evaluate("() => localStorage.getItem('wingman_keyboard_macros') || '[]'"))
+        check(checks, renamed and renamed[0].get("name") == "重命名宏",
+              "macro_can_be_renamed", renamed[0].get("name") if renamed else None)
+
+        # The export file carries only names, key names, modifiers and delays.
+        with page.expect_download(timeout=5000) as download:
+            page.click("#macro-export-all")
+        exported = json.load(open(download.value.path(), encoding="utf-8"))
+        exported_step = exported["macros"][0]["steps"][0]
+        check(checks, set(exported) == {"version", "macros"}
+              and set(exported["macros"][0]) == {"name", "steps"}
+              and set(exported_step) == {"key", "ctrl", "shift", "alt", "meta", "delay_ms"},
+              "macro_export_contains_only_key_data", exported_step)
+
+        before = page.evaluate("() => localStorage.getItem('wingman_keyboard_macros')")
+        page.set_input_files("#macro-import-file", files=[{
+            "name": "bad.json", "mimeType": "application/json", "buffer": b"not json"}])
+        page.wait_for_timeout(300)
+        toast = page.text_content("#toast") or ""
+        check(checks, page.evaluate("() => localStorage.getItem('wingman_keyboard_macros')") == before
+              and "导入失败" in toast, "macro_import_rejects_invalid_json", toast)
+
+        bad_key = json.dumps({"version": 1, "macros": [{"name": "bad", "steps": [{
+            "key": "NotAKey", "ctrl": False, "shift": False, "alt": False,
+            "meta": False, "delay_ms": 0}]}]}).encode()
+        page.set_input_files("#macro-import-file", files=[{
+            "name": "bad-key.json", "mimeType": "application/json", "buffer": bad_key}])
+        page.wait_for_timeout(300)
+        toast = page.text_content("#toast") or ""
+        check(checks, page.evaluate("() => localStorage.getItem('wingman_keyboard_macros')") == before
+              and "导入失败" in toast, "macro_import_rejects_unknown_keys", toast)
+
+        valid = json.dumps({"version": 1, "macros": [{"name": "导入宏", "steps": [{
+            "key": "KeyX", "ctrl": False, "shift": False, "alt": False,
+            "meta": False, "delay_ms": 0}]}]}).encode()
+        page.set_input_files("#macro-import-file", files=[{
+            "name": "valid.json", "mimeType": "application/json", "buffer": valid}])
+        page.wait_for_timeout(300)
+        imported = json.loads(
+            page.evaluate("() => localStorage.getItem('wingman_keyboard_macros') || '[]'"))
+        check(checks, len(imported) == 2
+              and imported[-1].get("name") == "导入宏"
+              and imported[-1]["steps"][0].get("key") == "KeyX",
+              "macro_import_accepts_valid_file", imported)
+
+        page.click("#macro-manager-list [data-macro-row]:last-child [data-macro-delete]")
+        page.wait_for_timeout(200)
+        remaining = json.loads(
+            page.evaluate("() => localStorage.getItem('wingman_keyboard_macros') || '[]'"))
+        check(checks, len(remaining) == 1 and remaining[0].get("name") == "重命名宏",
+              "macro_can_be_deleted", remaining)
+
+        page.click("#macro-manager-dialog .dialog-head [data-macro-manager-close]")
+        page.reload(wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        page.click("#quick-more-toggle")
+        names = page.eval_on_selector_all(
+            "#quick-more-menu [data-macro-play]", "els => els.map(e => e.textContent)")
+        check(checks, names == ["重命名宏"], "macro_survives_reload", names)
+    finally:
+        context.close()
+
+
+def config_backup_restore(browser, port, checks):
+    """#83: export downloads config; import previews, cancels and applies."""
+    from verify_p2b_ui import bootstrap_payload, api_route, GIF
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        config = dict(bootstrap_payload(state)["config"])
+        exported = {"format": "wingmankvm-config", "version": 1,
+                    "exported_at": "2026-11-01T00:00:00Z", "config": config}
+        export_body = json.dumps(exported)
+        export_requests = []
+
+        def export_route(route):
+            export_requests.append(route.request.url)
+            route.fulfill(status=200, headers={
+                "content-type": "application/json",
+                "content-disposition":
+                    'attachment; filename="wingmankvm-config-2026-11-01.json"',
+            }, body=export_body)
+
+        changes = [
+            {"path": "server.port", "old": 8080, "new": 9090},
+            {"path": "video.width", "old": 1280, "new": 1920},
+        ]
+        preview_posts, import_posts = [], []
+        preview_error = {"status": None}
+
+        def preview_route(route):
+            if preview_error["status"]:
+                return route.fulfill(
+                    status=preview_error["status"], content_type="application/json",
+                    body='{"error":"配置版本 2 不受支持"}')
+            preview_posts.append(json.loads(route.request.post_data or "{}"))
+            return route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps({"changes": changes, "restart_required": True}))
+
+        def import_route(route):
+            import_posts.append(json.loads(route.request.post_data or "{}"))
+            return route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps({"ok": True, "restart_required": True,
+                                 "changes": changes}))
+
+        page.route("**/api/config/export", export_route)
+        page.route("**/api/config/import/preview", preview_route)
+        page.route("**/api/config/import", import_route)
+        page.click("#settings-toggle")
+        page.wait_for_selector("#settings-dialog[open]", timeout=3000)
+
+        with page.expect_download(timeout=5000) as download:
+            page.click("#config-export-btn")
+        filename = download.value.suggested_filename
+        check(checks, filename == "wingmankvm-config-2026-11-01.json",
+              "config_export_downloads_dated_json", filename)
+        check(checks, export_requests, "config_export_requests_api", export_requests)
+
+        def choose_file():
+            with page.expect_file_chooser(timeout=3000) as chooser:
+                page.click("#config-import-btn")
+            chooser.value.set_files({
+                "name": "wingmankvm-config-2026-11-01.json",
+                "mimeType": "application/json",
+                "buffer": export_body.encode(),
+            })
+            page.wait_for_selector("#config-import-dialog[open]", timeout=3000)
+
+        choose_file()
+        page.wait_for_timeout(200)
+        diff = page.text_content("#config-import-diff") or ""
+        check(checks, "server.port" in diff and "8080" in diff and "9090" in diff,
+              "config_import_preview_lists_diff", diff[:160])
+        check(checks, preview_posts and preview_posts[-1].get("format") == "wingmankvm-config",
+              "config_import_preview_uploads_export", preview_posts[-1:])
+        summary = page.text_content("#config-import-summary") or ""
+        check(checks, "2" in summary, "config_import_preview_counts_changes", summary)
+
+        page.click("#config-import-cancel")
+        page.wait_for_timeout(200)
+        opened = page.evaluate("() => document.querySelector('#config-import-dialog').open")
+        check(checks, not import_posts and not opened,
+              "config_import_cancel_does_not_apply", (import_posts, opened))
+
+        choose_file()
+        page.wait_for_timeout(200)
+        page.click("#config-import-confirm")
+        page.wait_for_timeout(300)
+        check(checks, import_posts and import_posts[-1] == exported,
+              "config_import_confirms_same_document", import_posts[-1:])
+        status = page.text_content("#config-import-status") or ""
+        check(checks, "导入成功" in status and "重启" in status,
+              "config_import_reports_success_and_restart", status)
+
+        page.click("#config-import-cancel")
+        preview_error["status"] = 400
+        before = len(import_posts)
+        choose_file()
+        page.wait_for_timeout(200)
+        status = page.text_content("#config-import-status") or ""
+        check(checks, "配置版本 2 不受支持" in status and "导入失败" in status,
+              "config_import_preview_error_is_shown", status)
+        check(checks, len(import_posts) == before,
+              "config_import_error_does_not_apply", import_posts)
+    finally:
+        context.close()
+
+
+def notification_settings(browser, port, checks):
+    """#84: notification settings never echo secrets; test results show inline."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    secret_token = "123456:TOKEN-should-never-render"
+    notifications = {
+        "webhook": {"enabled": True, "url_configured": True,
+                    "url_hint": "https://hooks.example.com"},
+        "ntfy": {"enabled": False, "server": "https://ntfy.sh", "topic": "kvm-alerts",
+                 "token_configured": False},
+        "telegram": {"enabled": False, "chat_id": "-100777", "bot_token_configured": False},
+        "events": {"login_succeeded": False, "login_failed": True, "power_led_changed": True,
+                   "hid_failing": True, "video_lost": True},
+        "hid_failure_threshold": 5, "hid_failure_window_seconds": 60,
+        "video_lost_seconds": 30, "rate_limit_seconds": 60,
+    }
+    posts, tests = [], []
+
+    def config_route(route):
+        if route.request.method == "POST":
+            body = json.loads(route.request.post_data or "{}")
+            posts.append(body)
+            patch = body.get("notifications", {})
+            telegram = patch.get("telegram", {})
+            if telegram.get("bot_token"):
+                notifications["telegram"]["bot_token_configured"] = True
+            if "enabled" in telegram:
+                notifications["telegram"]["enabled"] = telegram["enabled"]
+            if "chat_id" in telegram:
+                notifications["telegram"]["chat_id"] = telegram["chat_id"]
+            if patch.get("webhook", {}).get("clear_url"):
+                notifications["webhook"].update(url_configured=False, url_hint=None, enabled=False)
+        route.fulfill(status=200, content_type="application/json",
+                      body=json.dumps({"notifications": notifications}))
+
+    def test_route(route):
+        channel = json.loads(route.request.post_data or "{}").get("channel")
+        tests.append(channel)
+        if channel == "telegram":
+            route.fulfill(status=502, content_type="application/json",
+                          body=json.dumps({"error": "发送失败：服务返回 HTTP 401"}))
+        else:
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"ok": True, "channel": channel}))
+
+    page.route("**/api/config", config_route)
+    page.route("**/api/notifications/test", test_route)
+    try:
+        page.on("dialog", lambda dialog: dialog.accept())
+        page.click("#settings-toggle")
+        page.wait_for_function(
+            "() => document.querySelector('[data-notify-secret=\"webhook\"]').textContent.includes('已配置')",
+            timeout=5000)
+        form = page.locator("#notify-config")
+        state_text = page.text_content('[data-notify-secret="webhook"]') or ""
+        check(checks, "hooks.example.com" in state_text, "configured_webhook_shows_origin_only", state_text)
+        url_value = form.locator('input[name="webhook_url"]').input_value()
+        check(checks, url_value == "", "webhook_secret_input_left_empty", url_value)
+        check(checks, form.locator('input[name="event_login_succeeded"]').is_checked() is False
+              and form.locator('input[name="event_login_failed"]').is_checked(),
+              "event_toggles_reflect_config", None)
+        check(checks, form.locator('input[name="ntfy_topic"]').input_value() == "kvm-alerts",
+              "non_secret_fields_filled", form.locator('input[name="ntfy_topic"]').input_value())
+
+        form.locator('input[name="telegram_enabled"]').check()
+        form.locator('input[name="telegram_bot_token"]').fill(secret_token)
+        form.locator('button[type="submit"]').click()
+        page.wait_for_timeout(300)
+        sent = posts[-1]["notifications"] if posts else {}
+        check(checks, sent.get("telegram", {}).get("bot_token") == secret_token
+              and "url" not in sent.get("webhook", {}),
+              "save_sends_new_secret_and_omits_empty_ones", sent)
+        token_value = form.locator('input[name="telegram_bot_token"]').input_value()
+        html = page.content()
+        check(checks, token_value == "" and secret_token not in html,
+              "saved_secret_not_echoed_back", token_value)
+        tg_state = page.text_content('[data-notify-secret="telegram"]') or ""
+        check(checks, "已配置" in tg_state, "saved_secret_reported_as_configured", tg_state)
+        status = page.text_content("#notify-config .form-status") or ""
+        check(checks, "已保存" in status, "save_result_inline", status)
+
+        page.click('[data-notify-test="webhook"]')
+        page.wait_for_function(
+            "() => document.querySelector('[data-notify-result=\"webhook\"]').textContent.includes('已发送')",
+            timeout=5000)
+        check(checks, tests == ["webhook"], "test_button_posts_channel", tests)
+        page.click('[data-notify-test="telegram"]')
+        page.wait_for_function(
+            "() => document.querySelector('[data-notify-result=\"telegram\"]').classList.contains('error')",
+            timeout=5000)
+        error = page.text_content('[data-notify-result="telegram"]') or ""
+        check(checks, "HTTP 401" in error, "test_failure_shown_inline", error)
+
+        page.click('[data-notify-clear="webhook"]')
+        page.wait_for_timeout(300)
+        cleared = posts[-1].get("notifications", {}).get("webhook", {})
+        check(checks, cleared == {"clear_url": True}, "clear_sends_explicit_flag", cleared)
+        state_text = page.text_content('[data-notify-secret="webhook"]') or ""
+        check(checks, "未配置" in state_text, "cleared_secret_shows_unconfigured", state_text)
+    finally:
+        context.close()
+
+
+ADAPTIVE_OFF = "localStorage.setItem('wingman_setting_adaptive_bitrate', 'false');"
+
+
+ADAPTIVE_DECISION_SCRIPT = """() => {
+  const t = window.__wingmanTest, decide = t.decideAdaptiveBitrate;
+  const BAD = {packetLossPct: 8, rttMs: 30, jitterBufferMs: 40, receivedKbps: null};
+  const GOOD = {packetLossPct: 0, rttMs: 30, jitterBufferMs: 40, receivedKbps: 900};
+  const NEUTRAL = {packetLossPct: 2, rttMs: 30, jitterBufferMs: 40, receivedKbps: 900};
+  // Feed [sample, atMs] pairs; returns every non-null target with its time.
+  const run = (state, steps) => {
+    const out = [];
+    for (const [sample, at] of steps) {
+      const r = decide(state, sample, at);
+      state = r.state;
+      if (r.targetKbps !== null) out.push([r.targetKbps, at]);
+    }
+    return {state, out};
+  };
+  const seq = (sample, from, count, every = 1000) =>
+    Array.from({length: count}, (_, i) => [sample, from + i * every]);
+  const res = {};
+  const frozen = t.newAdaptiveState(4000);
+  const copy = JSON.stringify(frozen);
+  decide(frozen, BAD, 0);
+  res.pure = JSON.stringify(frozen) === copy;
+  // Two bad samples are not enough; the third lowers by 30 %.
+  res.lower = run(t.newAdaptiveState(4000), seq(BAD, 0, 3)).out;
+  // Persisting congestion: one change per 10 s cooldown, not per sample.
+  res.cooldown = run(t.newAdaptiveState(4000), seq(BAD, 0, 25)).out;
+  // Under loss the target never exceeds what actually arrived (+10 %).
+  res.received = run(t.newAdaptiveState(4000), seq({...BAD, receivedKbps: 1000}, 0, 3)).out;
+  res.severe = run(t.newAdaptiveState(4000), seq({...BAD, packetLossPct: 20}, 0, 3)).out;
+  res.rtt = run(t.newAdaptiveState(4000), seq({packetLossPct: 0, rttMs: 400}, 0, 3)).out;
+  res.jitter = run(t.newAdaptiveState(4000), seq({packetLossPct: 0, jitterBufferMs: 250}, 0, 3)).out;
+  // RTT trend: a healthy 40 ms baseline makes 200 ms (below 350) bad too.
+  res.trend = run(t.newAdaptiveState(4000),
+    [...seq({packetLossPct: 0, rttMs: 40}, 0, 5), ...seq({packetLossPct: 0, rttMs: 200}, 5000, 3)]).out;
+  // Hysteresis: bad samples interleaved with the neutral band never act.
+  const flap = [];
+  for (let i = 0; i < 40; i++) flap.push([i % 3 === 2 ? NEUTRAL : BAD, i * 1000]);
+  res.flap = run(t.newAdaptiveState(4000), flap).out;
+  res.neutral = run(t.newAdaptiveState(4000), seq(NEUTRAL, 0, 60)).out;
+  res.unknown = run(t.newAdaptiveState(4000), seq({}, 0, 10)).out;
+  // Recovery: lowered at 2 s, then good. No raise within 30 s of the last
+  // bad sample, then +25 % per 10 good samples, snapping to the maximum.
+  res.recover = run(t.newAdaptiveState(4000), [...seq(BAD, 0, 3), ...seq(GOOD, 3000, 120)]).out;
+  // Good samples never push above the configured bitrate.
+  res.atMax = run(t.newAdaptiveState(4000), seq(GOOD, 0, 60)).out;
+  // Floor: never below 256 kbps, and no request once there.
+  const low = {...t.newAdaptiveState(4000), currentKbps: 300};
+  res.floor = run(low, seq(BAD, 0, 30)).out;
+  return res;
+}"""
+
+
+def adaptive_bitrate_decision(browser, port, checks):
+    """#82: the pure decision function's thresholds, cooldown and hysteresis."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        r = page.evaluate(ADAPTIVE_DECISION_SCRIPT)
+        check(checks, r["pure"], "adaptive_decision_is_pure", r["pure"])
+        check(checks, r["lower"] == [[2800, 2000]], "adaptive_lowers_after_three_bad_samples", r["lower"])
+        check(checks, r["cooldown"] == [[2800, 2000], [1950, 12000], [1350, 22000]],
+              "adaptive_one_change_per_cooldown", r["cooldown"])
+        check(checks, r["received"] == [[1100, 2000]], "adaptive_caps_at_received_bitrate", r["received"])
+        check(checks, r["severe"] == [[2000, 2000]], "adaptive_severe_loss_halves", r["severe"])
+        check(checks, r["rtt"] == [[2800, 2000]] and r["jitter"] == [[2800, 2000]],
+              "adaptive_rtt_and_jitter_thresholds", (r["rtt"], r["jitter"]))
+        check(checks, r["trend"] == [[2800, 7000]], "adaptive_rtt_rise_vs_baseline", r["trend"])
+        check(checks, r["flap"] == [] and r["neutral"] == [] and r["unknown"] == [],
+              "adaptive_hysteresis_band_holds", (r["flap"], r["neutral"], r["unknown"]))
+        check(checks, r["recover"] == [[2800, 2000], [3500, 32000], [4000, 42000]],
+              "adaptive_recovers_gradually_to_max", r["recover"])
+        check(checks, r["atMax"] == [], "adaptive_never_exceeds_max", r["atMax"])
+        check(checks, r["floor"] == [[256, 2000]], "adaptive_respects_floor", r["floor"])
+    finally:
+        context.close()
+
+
+def adaptive_stats(at, scale, lost_per_1000):
+    report = stats_report(at, scale)
+    video = report[-1]
+    video["packetsReceived"] = (1000 - lost_per_1000) * scale
+    video["packetsLost"] = lost_per_1000 * scale
+    return report
+
+
+def adaptive_bitrate_webrtc(browser, port, checks):
+    """#82: stubbed stats drive POST /api/webrtc/bitrate with cooldown and hysteresis."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    context, page = media_page(browser, state, port, h264=True, stubs=(FAKE_PEER,))
+    sent = []
+
+    def bitrate(route):
+        body = json.loads(route.request.post_data or "{}")
+        sent.append((body.get("session_id"), body.get("kbps"), page.evaluate("() => performance.now()")))
+        kbps = max(256, min(4000, int(body.get("kbps", 0))))
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(
+            {"session_id": body.get("session_id"), "kbps": kbps, "min_kbps": 256, "max_kbps": 4000,
+             "changed": True}))
+
+    def wait_sent(count, timeout=12000):
+        # Route callbacks run while Playwright waits, so poll in short steps.
+        for _ in range(timeout // 50):
+            if len(sent) >= count:
+                return
+            page.wait_for_timeout(50)
+        raise AssertionError(f"expected {count} bitrate requests, got {sent}")
+
+    page.route("**/api/webrtc/bitrate", bitrate)
+    page.route("**/api/webrtc/offer", lambda route: route.fulfill(
+        status=200, content_type="application/json",
+        body=json.dumps({"type": "answer", "session_id": "s1", "sdp": "a=rtpmap:96 H264/90000",
+                         "bitrate_kbps": 4000, "min_bitrate_kbps": 256})))
+    try:
+        page.reload(wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        page.wait_for_function("() => /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
+        # Short timings keep the scenario fast; the logic is the same.
+        page.evaluate("""() => Object.assign(window.__wingmanTest.adaptivePolicy,
+          {cooldownMs: 2500, raiseAfterBadMs: 3000, goodSamples: 3})""")
+        # 10 % loss at ~1 Mbps received; repeated reports keep the rates.
+        page.evaluate("(r) => { window.__statsSeq = r; }", [adaptive_stats(10000, 1, 100), adaptive_stats(11000, 2, 100)])
+        page.wait_for_function("() => window.__statsCalls >= 2", timeout=4000)
+        check(checks, not page.locator("#quality-overlay").is_visible(),
+              "adaptive_samples_without_overlay", page.evaluate("() => window.__statsCalls"))
+        wait_sent(2)
+        page.wait_for_timeout(300)
+        check(checks, [(s, k) for s, k, _ in sent] == [("s1", 1100), ("s1", 750)],
+              "adaptive_lowers_capped_by_received", sent)
+        gap = sent[1][2] - sent[0][2] if len(sent) == 2 else 0
+        check(checks, gap >= 2400, "adaptive_requests_respect_cooldown", gap)
+
+        page.evaluate("(r) => { window.__statsSeq = r; }", [adaptive_stats(20000, 3, 0), adaptive_stats(21000, 4, 0)])
+        wait_sent(3)
+        check(checks, len(sent) == 3 and sent[2][1] == 950 and sent[2][2] - sent[1][2] >= 2400,
+              "adaptive_raises_after_recovery_hold", sent)
+        page.evaluate("() => { window.__wingmanTest.adaptivePolicy.goodSamples = 1e9; }")
+        page.click("#quality-toggle")
+        page.wait_for_timeout(1200)
+        rows = overlay_rows(page)
+        check(checks, rows.get("自适应码率") == "↓ 950 kbps / 4.00 Mbps", "adaptive_indicator_in_overlay", rows)
+
+        count = len(sent)
+        page.evaluate("""() => {
+          const box = document.querySelector('#setting-adaptive-bitrate');
+          box.checked = false;
+          box.dispatchEvent(new Event('change'));
+        }""")
+        wait_sent(count + 1, 3000)
+        page.wait_for_timeout(300)
+        check(checks, len(sent) == count + 1 and sent[-1][1] == 4000, "adaptive_disable_restores_configured",
+              sent[count:])
+        page.evaluate("(r) => { window.__statsSeq = r; }", [adaptive_stats(30000, 5, 300), adaptive_stats(31000, 6, 300)])
+        page.wait_for_timeout(4000)
+        rows = overlay_rows(page)
+        check(checks, len(sent) == count + 1 and rows.get("自适应码率") == "已关闭"
+              and page.evaluate("() => localStorage.getItem('wingman_setting_adaptive_bitrate')") == "false",
+              "adaptive_disabled_sends_nothing", (sent[count:], rows))
     finally:
         context.close()
 

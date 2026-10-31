@@ -593,20 +593,35 @@ mod tests {
         fs::set_permissions(&script, permissions).unwrap();
 
         let manager = PowerManager::new();
-        let error = manager
-            .pulse(GpioPulseConfigSnapshot {
-                program: script.clone(),
-                chip: "gpiochip1".to_owned(),
-                line: 7,
-                active_high: true,
-                pulse_ms: 50,
-                cooldown_ms: 0,
-            })
-            .await
-            .unwrap_err();
+        let config = GpioPulseConfigSnapshot {
+            program: script.clone(),
+            chip: "gpiochip1".to_owned(),
+            line: 7,
+            active_high: true,
+            pulse_ms: 50,
+            cooldown_ms: 0,
+        };
+        // `pulse` first runs the helper with `--version`, bounded by the
+        // production 2s read timeout. On a saturated host the fixture shell can
+        // take longer than that just to be scheduled, so the caller observes a
+        // Timeout before the script ever runs. Retry only those
+        // environment-induced timeouts under a firm overall bound; any other
+        // outcome must be the fixture's own Read failure.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            match manager.pulse(config.clone()).await {
+                Err(PowerError::Read(message)) => {
+                    assert!(message.contains("GPIO line is busy"), "{message}");
+                    break;
+                }
+                Err(PowerError::Timeout) if Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(error) => panic!("expected gpioset failure, got {error:?}"),
+                Ok(pid) => panic!("pulse unexpectedly succeeded with pid {pid}"),
+            }
+        }
 
-        assert!(matches!(error, PowerError::Read(_)));
-        assert!(error.to_string().contains("GPIO line is busy"));
         let status = manager.status().await;
         assert!(!status.running);
         assert!(

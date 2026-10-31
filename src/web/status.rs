@@ -52,6 +52,7 @@ pub(super) async fn status(
         },
         "system": system,
         "runtime": state.metrics.snapshot(),
+        "notifications": { "dropped": state.notifier.dropped() },
         "client": {
             "ip": client.ip.to_string(),
             "port": client.port,
