@@ -108,3 +108,56 @@
 #video-viewport.remote {
   box-shadow: inset 0 0 0 3px var(--blue);
 }
+
+/* Power confirmation dialog with hold-to-confirm for force-off. */
+.power-confirm {
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--canvas);
+  color: var(--ink);
+  box-shadow: var(--shadow-5);
+}
+.power-confirm::backdrop {
+  background: #0006;
+}
+.power-confirm-body {
+  display: grid;
+  gap: 10px;
+  padding: 20px;
+}
+.power-confirm-body h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.power-confirm-body p {
+  margin: 0;
+  color: var(--body);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.power-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+#power-confirm-ok {
+  position: relative;
+  overflow: hidden;
+}
+#power-confirm-ok .hold-fill {
+  position: absolute;
+  inset: 0;
+  width: 0;
+  background: var(--red);
+  opacity: 0.18;
+}
+#power-confirm-ok.holding .hold-fill {
+  width: 100%;
+  transition: width 1000ms linear;
+}
+#power-confirm-ok .hold-label {
+  position: relative;
+}

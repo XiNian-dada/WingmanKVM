@@ -288,8 +288,55 @@ def language_coverage(browser, port, checks):
         context.close()
 
 
+
+def power_confirmation(browser, port, checks):
+    """#52: power actions use in-app confirmation; force-off needs a hold."""
+    state = State()
+    posts = []
+    context, page = new_page(browser, state, port)
+    try:
+        from verify_p2b_ui import bootstrap_payload
+        payload = bootstrap_payload(state)
+        payload["capabilities"].update(gpio_power=True, gpio_reset=True)
+        page.route("**/api/bootstrap", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(payload)))
+        for path in ("/power", "/reset"):
+            page.route(f"**{path}", lambda route, *_, endpoint=path: (
+                posts.append((endpoint, route.request.post_data)),
+                route.fulfill(status=200, content_type="application/json", body='{"ok":true}'))[-1])
+        page.reload(wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        dialogs = []
+        page.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
+
+        page.locator('#panel-control [data-power-action="force-off"]').click()
+        page.wait_for_selector("#power-confirm[open]", timeout=3000)
+        focused = page.evaluate("() => document.activeElement.value")
+        check(checks, focused == "cancel", "power_confirm_focuses_cancel", focused)
+        page.click("#power-confirm-ok")
+        page.wait_for_timeout(300)
+        check(checks, not posts, "force_off_click_without_hold_does_nothing", posts)
+        box = page.locator("#power-confirm-ok").bounding_box()
+        page.mouse.move(box["x"] + 10, box["y"] + 10)
+        page.mouse.down()
+        page.wait_for_timeout(1200)
+        page.mouse.up()
+        page.wait_for_timeout(300)
+        check(checks, posts and posts[-1][0] == "/power" and "duration=5" in (posts[-1][1] or ""),
+              "force_off_hold_sends_long_press", posts)
+        check(checks, not dialogs, "no_native_confirm_dialogs", dialogs)
+
+        posts.clear()
+        page.locator('#panel-control [data-power-action="reset"]').click()
+        page.wait_for_selector("#power-confirm[open]", timeout=3000)
+        page.click("#power-confirm-ok")
+        page.wait_for_timeout(300)
+        check(checks, posts and posts[-1][0] == "/reset", "reset_confirm_click_sends_reset", posts)
+    finally:
+        context.close()
+
 SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation, low_risk_ui,
-             language_coverage]
+             language_coverage, power_confirmation]
 
 if __name__ == "__main__":
     sys.exit(main())

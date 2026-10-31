@@ -358,6 +358,16 @@
         </div>
       </div>
     </dialog>
+    <dialog id="power-confirm" class="power-confirm" aria-labelledby="power-confirm-title" aria-describedby="power-confirm-desc">
+      <form method="dialog" class="power-confirm-body">
+        <h3 id="power-confirm-title"></h3>
+        <p id="power-confirm-desc"></p>
+        <div class="power-confirm-actions">
+          <button class="secondary" type="submit" value="cancel">取消</button>
+          <button id="power-confirm-ok" class="primary" type="button"><span class="hold-fill" aria-hidden="true"></span><span class="hold-label"></span></button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="keyboard-dialog"><div class="keyboard-sheet"><div class="dialog-head"><h3 data-i18n="virtual_keyboard">虚拟键盘</h3><button class="secondary" type="button" data-close data-i18n="close">收起</button></div><div id="virtual-keyboard" class="keyboard"></div></div></dialog>
   </main>
 
