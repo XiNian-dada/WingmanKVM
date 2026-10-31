@@ -112,6 +112,12 @@ git cleanup. An uncommitted transaction cannot exit successfully merely because
 the shell would otherwise return zero. If the pending marker cannot be cleared,
 the transaction is not reported complete.
 
+Once `tx_commit` has written `COMMITTED` and cleared `PENDING`, the installer
+removes the `INT`, `TERM`, and `HUP` traps, and the signal handler and rollback
+entry point both refuse to act on a committed transaction. A later signal (for
+example Ctrl-C while the installer prints the first-run link) therefore cannot
+restore the previous files or create a contradictory `ROLLED_BACK` marker.
+
 `SIGKILL` cannot run traps; the published `PENDING` marker remains and the next
 installer refuses to change files. Power loss or kernel failure also cannot run
 traps, but this installer does not fsync every snapshot and directory: it does
@@ -127,8 +133,16 @@ It needs only Bash, coreutils, and `flock`; it does not need a source checkout.
 It validates the same exact destination list, trusted store/directory modes,
 manifest and snapshot ownership, and refuses unsafe content. It restores
 snapshots in reverse order, clears `PENDING` only after all file operations
-succeed, and writes `ROLLED_BACK`. It does not restart services; after recovery
-reload and restart explicitly:
+succeed, and writes `ROLLED_BACK`. If the transaction directory contains
+`COMMITTED` and no `PENDING` marker, `recover.sh` refuses to run: that transaction
+already succeeded, and restoring its snapshot would downgrade the managed files.
+Use `--force` only when intentionally reverting a committed deployment:
+
+```bash
+sudo /var/lib/wingmankvm-deploy/txn.<...>/recover.sh --force
+```
+
+It does not restart services; after recovery reload and restart explicitly:
 
 ```bash
 sudo udevadm control --reload-rules
@@ -146,11 +160,13 @@ does not bulk-delete old transaction directories.
 
 `scripts/verify_p2c_upgrade.py` runs the real library and installer integration
 functions against disposable roots. It covers success, missing helper with zero
-mutation, partial replacement, trapped `TERM`, `SIGKILL` plus pending rejection
-and manual recovery, new-start failure, health mismatch, invalid JSON, delayed
-healthy polling, rollback failure, `--no-start`, explicit legacy maintenance
-selection, optional root-grant removal/rollback, and first-install failure before
-startup, during enable/start, or during health checks. These first-install cases
+mutation, partial replacement, trapped `TERM`, a signal after commit, committed
+`recover.sh` refusal/`--force`, `SIGKILL` plus pending rejection and manual
+recovery, isolated-CWD Python imports in the health probe, new-start failure,
+health mismatch, invalid JSON, delayed healthy polling, rollback failure,
+`--no-start`, explicit legacy maintenance selection, optional root-grant
+removal/rollback, and first-install failure before startup, during
+enable/start, or during health checks. These first-install cases
 use real `systemctl --root` enable/disable operations in an isolated file tree.
 File bytes/modes/ownership/absence,
 trap rollback, recovery and the HTTP probe are real; systemd/udev and two failure
