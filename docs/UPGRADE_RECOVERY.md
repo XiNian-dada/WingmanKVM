@@ -8,12 +8,14 @@ All deployment sources are read and validated before any managed file changes.
 - `/usr/local/bin/wingmankvm`
 - `/usr/local/sbin/wingmankvm-gadget`
 - `/usr/local/sbin/wingmankvm-set-wingman-password`
+- `/usr/local/sbin/wingmankvm-online-upgrade`
 - `/etc/sudoers.d/wingmankvm`
 - `/etc/sudoers.d/wingmankvm-maintenance-root` (explicit privileged mode only;
   restricted mode removes only the exact unmodified managed rule)
 - `/etc/udev/rules.d/99-wingmankvm.rules`
 - `/etc/systemd/system/wingmankvm-gadget.service`
 - `/etc/systemd/system/wingmankvm.service`
+- `/etc/systemd/system/wingmankvm-online-upgrade.service`
 - `/etc/wingmankvm/gadget.env` (preserve-if-missing only)
 
 An existing `gadget.env` is never overwritten, snapshotted, or removed. If it is
@@ -155,6 +157,61 @@ If recovery reports failures, keep the snapshot and fix the reported paths
 before rerunning. A successful upgrade also retains its snapshot and prints the
 path. Retain last-known-good snapshots according to local policy; the installer
 does not bulk-delete old transaction directories.
+
+## Online upgrade from the web UI (#91)
+
+Settings → System → **Online upgrade** checks the latest GitHub Release of
+`XiNian-dada/WingmanKVM`, shows its notes and, after confirmation, upgrades
+through the same transaction as `deploy/install.sh --release`.
+
+Privilege path (the service itself stays unprivileged and hardened):
+
+1. `POST /api/update/apply {"version":"vX.Y.Z"}` needs an authenticated
+   session, passes the same-origin check of every mutating route, is
+   single-flight and is audit-logged (`update_started`). The service looks up
+   the latest release again and refuses unless the confirmed tag equals it and
+   is newer than the running version. The tag is not passed on.
+2. The service runs `sudo -n /usr/local/sbin/wingmankvm-online-upgrade --start`.
+   `/etc/sudoers.d/wingmankvm` allows this for `wingmankvm` with exactly that
+   argument list. `--start` reads no input and only runs
+   `systemctl --no-block start wingmankvm-online-upgrade.service` (exit 3 if it
+   is already running).
+3. The root oneshot unit runs `wingmankvm-online-upgrade --run`. It ignores the
+   environment, resolves the latest release of the fixed repository itself,
+   accepts only a plain `vX.Y.Z` tag, detects `aarch64`/`armv7l`, downloads the
+   archive and `SHA256SUMS`, verifies them with the same functions as
+   `scripts/get.sh`, and runs the release's `deploy/install.sh --release`.
+   The current maintenance mode is preserved (`--maintenance-mode privileged`
+   only when the optional root grant already exists); a legacy managed
+   `wingman ALL` rule makes it refuse, because that needs a host-root decision.
+4. Progress is written to `/run/wingmankvm-online-upgrade/status` (root-owned,
+   0644, kept after the run). The UI polls `/api/update/status`, keeps retrying
+   while the service restarts, and reloads after success. Sessions are held in
+   memory, so the restart signs the browser out; the outcome is shown after
+   signing in again and recorded once as `update_succeeded`/`update_failed`.
+
+Failure handling is the installer's: any error after the transaction starts
+rolls back the managed files and restores the previous service; errors before
+it (network, checksum, policy) change nothing. Inspect a run with
+`journalctl -u wingmankvm-online-upgrade`. Manual recovery is unchanged (see
+above).
+
+Scope and limits:
+
+- Only the latest published, non-prerelease release can be installed; there is
+  no downgrade and no way to supply a URL, path or script.
+- `SHA256SUMS` comes from the same GitHub release over HTTPS, so it protects
+  against corrupted downloads, not against a compromised GitHub account or
+  release; this is the same trust as `scripts/get.sh`.
+- A compromised service can at most start an upgrade to the latest official
+  release; it cannot choose the version or influence what root executes.
+- The helper and unit are installed by this release's installer. A device
+  running an older release must be upgraded once with `scripts/get.sh` or
+  `deploy/install.sh` before the web UI can upgrade it.
+
+Managed files added for this feature:
+`/usr/local/sbin/wingmankvm-online-upgrade` (0755) and
+`/etc/systemd/system/wingmankvm-online-upgrade.service` (0644).
 
 ## Harness
 
