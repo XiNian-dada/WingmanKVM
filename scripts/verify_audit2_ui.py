@@ -622,6 +622,16 @@ def input_websocket(browser, port, checks):
         check(checks, "WebSocket" in mode, "diagnostics_shows_websocket_transport", mode)
         page.click("#diagnostics-toggle")
 
+        # Unload-time release must use HTTP keepalive, not the socket.
+        before = state.release_posts
+        page.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pagehide'))")
+        page.wait_for_timeout(300)
+        socket_releases = [f for f in frames if f.get("type") == "release_all"]
+        check(checks, state.release_posts > before and not socket_releases,
+              "unload_release_uses_http_keepalive", (state.release_posts - before, socket_releases))
+        page.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pageshow'))")
+        page.wait_for_timeout(200)
+
         sockets[-1].close()
         page.wait_for_timeout(200)
         page.locator("#video-viewport").focus()

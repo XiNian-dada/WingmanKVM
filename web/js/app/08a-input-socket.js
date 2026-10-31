@@ -23,14 +23,16 @@
   function inputSocketReady() {
     return inputSocket?.readyState === WebSocket.OPEN;
   }
-  function failPendingInput(message) {
-    for (const { reject, timer } of inputSocketPending.values()) {
-      clearTimeout(timer);
-      const error = new Error(message);
-      error.status = 503;
-      reject(error);
-    }
+  // A dropped socket hands its in-flight requests to HTTP, so the user sees
+  // neither an error nor a lost key; the server also releases held keys when
+  // a socket ends, so a retried key press is never left stuck.
+  function retryPendingOverHttp() {
+    const pending = [...inputSocketPending.values()];
     inputSocketPending.clear();
+    for (const { resolve, reject, timer, fallback } of pending) {
+      clearTimeout(timer);
+      fallback().then(resolve, reject);
+    }
   }
   function connectInputSocket() {
     inputSocketWanted = true;
@@ -64,7 +66,7 @@
     socket.onclose = () => {
       if (inputSocket !== socket) return;
       inputSocket = null;
-      failPendingInput('键鼠连接已断开');
+      retryPendingOverHttp();
       updateDiagnosticsCard();
       // Reconnect with backoff while the console is open; meanwhile request()
       // transparently uses HTTP, which also surfaces 401 after a logout.
@@ -79,10 +81,13 @@
     clearTimeout(inputSocketRetry);
     const socket = inputSocket;
     inputSocket = null;
-    failPendingInput('键鼠连接已关闭');
+    retryPendingOverHttp();
     socket?.close();
   }
-  function sendOverInputSocket(type, body) {
+  // Pure pointer motion is disposable: when the socket is backed up, a newer
+  // position supersedes it. Keys, clicks, scrolls and releases always go out.
+  const INPUT_SOCKET_BACKLOG_BYTES = 16 * 1024;
+  function sendOverInputSocket(type, body, fallback) {
     let payload = {};
     if (body) {
       try {
@@ -91,6 +96,8 @@
         payload = {};
       }
     }
+    const motion = type === 'move' || (type === 'absolute' && payload.action === 'move');
+    if (motion && inputSocket.bufferedAmount > INPUT_SOCKET_BACKLOG_BYTES) return Promise.resolve({ ok: true });
     const id = inputSocketNextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -99,7 +106,7 @@
         error.status = 504;
         reject(error);
       }, INPUT_SOCKET_TIMEOUT_MS);
-      inputSocketPending.set(id, { resolve, reject, timer });
+      inputSocketPending.set(id, { resolve, reject, timer, fallback });
       inputSocket.send(JSON.stringify({ ...payload, id, type }));
     });
   }

@@ -145,8 +145,12 @@
   }
   async function request(url, options = {}) {
     // HID endpoints prefer the input WebSocket when it is connected.
-    const socketRoute = (options.method || 'GET') === 'POST' && HID_SOCKET_ROUTES[url];
-    if (socketRoute && inputSocketReady()) return sendOverInputSocket(socketRoute, options.body);
+    // keepalive requests (sent while the page unloads) stay on HTTP: the
+    // browser only guarantees delivery for those, not for socket messages.
+    const socketRoute =
+      (options.method || 'GET') === 'POST' && !options.keepalive && !options.viaHttp && HID_SOCKET_ROUTES[url];
+    if (socketRoute && inputSocketReady())
+      return sendOverInputSocket(socketRoute, options.body, () => request(url, { ...options, viaHttp: true }));
     const headers = new Headers(options.headers || {});
     if (options.body && !(options.body instanceof FormData) && !headers.has('content-type'))
       headers.set('content-type', 'application/json');
