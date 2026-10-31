@@ -550,14 +550,16 @@ private_dir "$SNAPSHOT" || { err "snapshot directory ownership/mode is unsafe"; 
 private_dir "$STAGE" || { err "stage directory ownership/mode is unsafe"; exit 1; }
 private_meta_file "$MANIFEST" || { err "manifest ownership/mode is unsafe"; exit 1; }
 private_meta_file "$LOCK" || { err "lock ownership/mode is unsafe"; exit 1; }
+exec 9>>"$LOCK" || { err "cannot open installation lock"; exit 1; }
+flock -n 9 || { err "another installer is running"; exit 1; }
+# Decide under the lock so an installer cannot commit between the check and
+# the restore.
 if [ "$FORCE" != true ] && [ -f "$TX_DIR/COMMITTED" ] && [ ! -L "$TX_DIR/COMMITTED" ] \
     && [ ! -e "$PENDING" ]; then
     err "transaction $TX_DIR is committed; refusing to restore an older snapshot"
     err "re-run with --force only to deliberately downgrade the managed files"
     exit 1
 fi
-exec 9>>"$LOCK" || { err "cannot open installation lock"; exit 1; }
-flock -n 9 || { err "another installer is running"; exit 1; }
 if [ -e "$PENDING" ]; then
     private_meta_file "$PENDING" || { err "pending marker is unsafe"; exit 1; }
     grep -Fxq "transaction=$TX_DIR" -- "$PENDING" || { err "pending marker mismatch"; exit 1; }
