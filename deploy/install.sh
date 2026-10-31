@@ -6,6 +6,8 @@ SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}
 
 BINARY=
+RELEASE_ARCHIVE=
+RELEASE_TMPDIR=
 NO_START=false
 MAINTENANCE_MODE=
 WINGMAN_CREATED=false
@@ -22,14 +24,17 @@ SERVICES_START_ATTEMPTED=false
 
 usage() {
     cat <<EOF
-Usage: sudo ./deploy/$PROGRAM --binary /path/to/wingmankvm [--no-start] [--health-url URL] [--maintenance-mode MODE]
+Usage: sudo ./deploy/$PROGRAM (--binary /path/to/wingmankvm | --release /path/to/wingmankvm-VERSION-TARGET.tar.gz) [--no-start] [--health-url URL] [--maintenance-mode MODE]
 
 Options:
-  --binary PATH  Linux WingmanKVM executable to install (required)
+  --binary PATH  Linux WingmanKVM executable to install
+  --release FILE Release tar.gz to verify and install; the binary is read from it
   --no-start     Install files only; do not enable or start services
   --health-url U Local loopback http /healthz override (IP literal only)
   --maintenance-mode MODE  restricted (default) or explicit privileged root maintenance
   -h, --help     Show this help
+
+Exactly one of --binary or --release is required.
 EOF
 }
 
@@ -52,6 +57,99 @@ source_file() {
     local path=$SCRIPT_DIR/$1
     [[ -f $path && -r $path ]] || die "deployment file is missing or unreadable: $path"
     printf '%s\n' "$path"
+}
+
+wingmankvm_release_cleanup() {
+    local dir=${RELEASE_TMPDIR:-}
+    [[ -n $dir ]] || return 0
+    case $dir in
+        */wingmankvm-release.*) ;;
+        *)
+            warn "refusing to remove unexpected release temp path: $dir"
+            RELEASE_TMPDIR=
+            return 0
+            ;;
+    esac
+    if [[ -d $dir && ! -L $dir ]]; then
+        rm -rf -- "$dir" || warn "could not remove release temp directory: $dir"
+    fi
+    RELEASE_TMPDIR=
+}
+
+_wingmankvm_release_exit_trap() {
+    local status=$?
+    wingmankvm_release_cleanup
+    exit "$status"
+}
+
+verify_release_archive() {
+    local archive=$1 sums name expected actual
+    sums=$(dirname -- "$archive")/SHA256SUMS
+    name=$(basename -- "$archive")
+    if [[ ! -e $sums && ! -L $sums ]]; then
+        log "SHA256SUMS not found next to $name; skipping checksum verification"
+        return 0
+    fi
+    [[ -f $sums && -r $sums && ! -L $sums ]] \
+        || die "SHA256SUMS is not a readable regular file: $sums"
+    require_command sha256sum
+    expected=$(awk -v name="$name" '
+        {
+            file = $0
+            sub(/^[0-9a-fA-F]+[[:space:]]+[*]?/, "", file)
+            if (file == name) { print tolower($1); exit }
+        }' "$sums")
+    [[ $expected =~ ^[0-9a-f]{64}$ ]] \
+        || die "SHA256SUMS does not contain a valid checksum for $name"
+    actual=$(sha256sum -- "$archive" | awk '{ print tolower($1); exit }')
+    [[ $actual == "$expected" ]] || die "SHA256 checksum mismatch for $name"
+    log "verified SHA256 checksum for $name"
+}
+
+prepare_release_archive() {
+    local release_dir tmp_root entry listing
+    release_dir=$(CDPATH='' cd -- "$(dirname -- "$RELEASE_ARCHIVE")" 2>/dev/null && pwd -P) \
+        || die "release archive directory does not exist: $(dirname -- "$RELEASE_ARCHIVE")"
+    RELEASE_ARCHIVE=$release_dir/$(basename -- "$RELEASE_ARCHIVE")
+    [[ -f $RELEASE_ARCHIVE && -r $RELEASE_ARCHIVE && -s $RELEASE_ARCHIVE ]] \
+        || die "release archive is missing, unreadable, or empty: $RELEASE_ARCHIVE"
+    case $RELEASE_ARCHIVE in
+        *.tar.gz | *.tgz) ;;
+        *) die "release archive must be a .tar.gz or .tgz file: $RELEASE_ARCHIVE" ;;
+    esac
+    require_command tar
+    verify_release_archive "$RELEASE_ARCHIVE"
+
+    tmp_root=${TMPDIR:-/tmp}
+    [[ -n $tmp_root ]] || tmp_root=/tmp
+    tmp_root=${tmp_root%/}
+    RELEASE_TMPDIR=$(mktemp -d "$tmp_root/wingmankvm-release.XXXXXXXX") \
+        || die "cannot create a temporary directory for the release archive"
+    trap _wingmankvm_release_exit_trap EXIT
+    trap 'wingmankvm_release_cleanup; exit 129' HUP
+    trap 'wingmankvm_release_cleanup; exit 130' INT
+    trap 'wingmankvm_release_cleanup; exit 143' TERM
+
+    listing=$(tar -tzf "$RELEASE_ARCHIVE") \
+        || die "cannot read release archive: $RELEASE_ARCHIVE"
+    while IFS= read -r entry; do
+        case $entry in
+            '' | '.' | './') continue ;;
+        esac
+        case $entry in
+            /* | .. | ../* | */.. | */../*)
+                die "release archive contains an unsafe path: $entry"
+                ;;
+        esac
+    done <<<"$listing"
+
+    tar -xzf "$RELEASE_ARCHIVE" -C "$RELEASE_TMPDIR" \
+        --no-same-owner --no-same-permissions \
+        || die "cannot extract release archive: $RELEASE_ARCHIVE"
+    BINARY=$RELEASE_TMPDIR/wingmankvm
+    [[ -f $BINARY && -r $BINARY && -s $BINARY && ! -L $BINARY ]] \
+        || die "release archive does not contain a top-level wingmankvm binary"
+    log "extracted release archive to a temporary directory"
 }
 
 # shellcheck source=upgrade-transaction.sh
@@ -507,10 +605,12 @@ restore_enabled_state() {
 }
 
 wingmankvm_files_rollback() {
+    wingmankvm_release_cleanup
     reload_udev && systemctl daemon-reload
 }
 
 wingmankvm_runtime_pre_rollback() {
+    wingmankvm_release_cleanup
     # Before start_services, no enabled/active state has been changed. In
     # particular, missing first-install units need no disable/stop operation.
     $SERVICES_START_ATTEMPTED || return 0
@@ -528,6 +628,7 @@ wingmankvm_runtime_pre_rollback() {
 }
 
 wingmankvm_runtime_rollback() {
+    wingmankvm_release_cleanup
     local ok=true
     reload_udev || { warn "could not reload udev rules during rollback"; ok=false; }
     systemctl daemon-reload || { warn "could not reload systemd during rollback"; ok=false; }
@@ -717,6 +818,15 @@ while (($# > 0)); do
             BINARY=${1#*=}
             shift
             ;;
+        --release)
+            (($# >= 2)) || die "--release requires a path"
+            RELEASE_ARCHIVE=$2
+            shift 2
+            ;;
+        --release=*)
+            RELEASE_ARCHIVE=${1#*=}
+            shift
+            ;;
         --health-url)
             (($# >= 2)) || die "--health-url requires a URL"
             HEALTH_URL=$2
@@ -749,7 +859,9 @@ while (($# > 0)); do
     esac
 done
 
-[[ -n $BINARY ]] || die "--binary is required"
+[[ -n $BINARY || -n $RELEASE_ARCHIVE ]] || die "--binary or --release is required"
+[[ -z $BINARY || -z $RELEASE_ARCHIVE ]] \
+    || die "--binary and --release are mutually exclusive"
 [[ $(id -u) -eq 0 ]] || die "run this installer as root (for example with sudo)"
 DEST_ROOT=/
 
@@ -772,6 +884,10 @@ require_command visudo
 [[ -x /bin/bash ]] || die "/bin/bash is required for the web terminal"
 [[ -x /usr/bin/sudo ]] || die "sudo is required; install it before running this installer"
 [[ -x /usr/sbin/chpasswd ]] || die "/usr/sbin/chpasswd is required for terminal password setup"
+
+if [[ -n $RELEASE_ARCHIVE ]]; then
+    prepare_release_archive
+fi
 
 BINARY_DIR=$(CDPATH='' cd -- "$(dirname -- "$BINARY")" 2>/dev/null && pwd -P) \
     || die "binary directory does not exist: $(dirname -- "$BINARY")"
@@ -825,6 +941,9 @@ else
     TX_ROLLBACK_HOOK=wingmankvm_runtime_rollback
 fi
 install_managed_files
+# The extracted binary has been copied into the transaction stage and
+# published; the release archive is no longer needed.
+wingmankvm_release_cleanup
 postflight_maintenance_mode
 
 reload_udev

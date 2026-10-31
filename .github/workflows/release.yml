@@ -1,0 +1,205 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+  # Changes to the release machinery are build-checked on their PR; the
+  # publish job below only runs for tag pushes.
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/check_release_version.py
+      - Cargo.toml
+      - Cargo.lock
+
+# Build jobs only read the repository. The publish job opts in to
+# contents: write so the default token cannot create releases elsewhere.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "2"
+
+jobs:
+  version:
+    name: verify-release-version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # same pin as regression.yml
+        with:
+          persist-credentials: false
+
+      - name: Verify tag matches Cargo.toml
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(python3 scripts/check_release_version.py --print-version)
+          case "$EVENT_NAME" in
+            push)
+              python3 scripts/check_release_version.py "$REF_NAME"
+              ;;
+            workflow_dispatch|pull_request)
+              if [ "$REF_TYPE" = "tag" ]; then
+                python3 scripts/check_release_version.py "$REF_NAME"
+              else
+                echo "workflow_dispatch without a tag: build only, no version check and no release"
+              fi
+              ;;
+            *)
+              echo "unsupported event: $EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build-${{ matrix.target }}
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native ARM64 runner; the container pins glibc to Debian bookworm.
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            objdump: objdump
+          # Debian's armhf cross toolchain inside the same bookworm image.
+          - target: armv7-unknown-linux-gnueabihf
+            runner: ubuntu-24.04
+            objdump: arm-linux-gnueabihf-objdump
+    runs-on: ${{ matrix.runner }}
+    # Build inside Debian bookworm so the binaries need at most glibc 2.36 and
+    # run on the documented targets (Debian / Armbian bookworm). Building on
+    # the Ubuntu 24.04 host would require glibc 2.39. Image pinned by digest.
+    container: rust:1.93.1-bookworm@sha256:7c4ae649a84014c467d79319bbf17ce2632ae8b8be123ac2fb2ea5be46823f31
+    timeout-minutes: 60
+    defaults:
+      run:
+        # Container jobs default to sh; the steps rely on bash (pipefail).
+        shell: bash
+    env:
+      TARGET: ${{ matrix.target }}
+      # bindgen (v4l2-sys-mit) must parse the target's kernel/libc headers.
+      CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+      CC_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-gcc
+      AR_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-ar
+      BINDGEN_EXTRA_CLANG_ARGS_armv7_unknown_linux_gnueabihf: --sysroot=/usr/arm-linux-gnueabihf -I/usr/arm-linux-gnueabihf/include
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # same pin as regression.yml
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          set -eu
+          apt-get update
+          apt-get install -y --no-install-recommends clang libclang-dev pkg-config binutils
+          if [ "$TARGET" = armv7-unknown-linux-gnueabihf ]; then
+            apt-get install -y --no-install-recommends \
+              gcc-arm-linux-gnueabihf libc6-dev-armhf-cross linux-libc-dev-armhf-cross \
+              binutils-arm-linux-gnueabihf
+          fi
+          rustup target add "$TARGET"
+
+      - name: Build release binary
+        run: cargo build --locked --release --target "$TARGET"
+
+      - name: Check glibc compatibility
+        env:
+          OBJDUMP: ${{ matrix.objdump }}
+        run: |
+          set -eu
+          # Fail if the binary needs a newer glibc than Debian bookworm ships.
+          max=$("$OBJDUMP" -T "target/$TARGET/release/wingmankvm" \
+            | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -1)
+          echo "highest required glibc: $max"
+          [ "$(printf '%s\n2.36\n' "$max" | sort -V | tail -1)" = 2.36 ] \
+            || { echo "binary requires glibc $max, newer than bookworm's 2.36" >&2; exit 1; }
+
+      - name: Package release archive
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          archive="wingmankvm-${VERSION}-${TARGET}"
+          staging="$RUNNER_TEMP/package/$archive"
+          rm -rf "$RUNNER_TEMP/package"
+          install -d -m 0755 "$staging"
+          install -m 0755 "target/$TARGET/release/wingmankvm" "$staging/wingmankvm"
+          cp -a deploy "$staging/deploy"
+          cp LICENSE README.md CHANGELOG.md "$staging/"
+          tar --owner=0 --group=0 --numeric-owner \
+            -C "$staging" -czf "$RUNNER_TEMP/$archive.tar.gz" .
+          ls -l "$RUNNER_TEMP/$archive.tar.gz"
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0, same pin as regression.yml
+        with:
+          name: wingmankvm-${{ matrix.target }}
+          path: ${{ runner.temp }}/wingmankvm-${{ needs.version.outputs.version }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish-github-release
+    needs: [version, build]
+    # workflow_dispatch is intentionally build-only; only tag pushes publish.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # same pin as regression.yml
+        with:
+          persist-credentials: false
+
+      - name: Download release archives
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          pattern: wingmankvm-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -- *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "WingmanKVM $VERSION" \
+              --generate-notes
+          fi

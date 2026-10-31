@@ -21,7 +21,34 @@
 
 ---
 
-## 极速开始（三步搞定）
+## 极速开始
+
+### 使用发布包安装（推荐，无需 Rust 工具链）
+
+1. 从 [Releases](https://github.com/XiNian-dada/WingmanKVM/releases) 下载与主机架构匹配的发布包：
+   - ARM64（`aarch64`）：`wingmankvm-<版本>-aarch64-unknown-linux-gnu.tar.gz`
+   - 32 位 ARM（`armv7` / `armhf`）：`wingmankvm-<版本>-armv7-unknown-linux-gnueabihf.tar.gz`
+
+   同时下载同一 Release 中的 `SHA256SUMS`。
+2. 将两个文件放在同一目录，校验后解压：
+
+   ```bash
+   sha256sum -c --ignore-missing SHA256SUMS
+   mkdir -p wingmankvm-release
+   tar -xzf wingmankvm-<版本>-<target>.tar.gz -C wingmankvm-release
+   ```
+
+   `--ignore-missing` 允许只下载当前架构的发布包。校验失败时不要继续安装。
+3. 使用 `--release` 安装：
+
+   ```bash
+   cd wingmankvm-release
+   sudo ./deploy/install.sh --release ../wingmankvm-<版本>-<target>.tar.gz
+   ```
+
+   安装器会在同一目录存在 `SHA256SUMS` 时再次校验，然后解包并复用 `--binary` 的安装、健康检查与事务回滚流程。
+
+下面的第 1–3 步是从源码构建并安装的方式；需要自行编译或调试时继续。
 
 ### 1. 准备依赖并构建
 
