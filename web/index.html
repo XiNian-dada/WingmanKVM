@@ -301,6 +301,19 @@
               </div>
               <label class="switch"><input type="checkbox" id="setting-release-toast" checked><i></i></label>
             </div>
+            <div class="settings-item">
+              <div class="settings-item-copy">
+                <strong>被控机键盘布局</strong>
+                <span>「粘贴为键入」按此布局把字符转换为物理键位；请与被控机系统内的键盘布局保持一致</span>
+              </div>
+              <select id="setting-target-layout">
+                <option value="us">美式（US QWERTY）</option>
+                <option value="uk">英式（UK）</option>
+                <option value="de">德语（DE QWERTZ）</option>
+                <option value="fr">法语（FR AZERTY）</option>
+                <option value="jp">日语（JP JIS）</option>
+              </select>
+            </div>
           </div>
           <div class="settings-group">
             <span class="settings-group-title" data-i18n="settings_group_display">画面与渲染</span>
@@ -385,7 +398,7 @@
         <div class="power-confirm-actions"><button class="primary" type="submit">知道了</button></div>
       </form>
     </dialog>
-    <dialog id="keyboard-dialog"><div class="keyboard-sheet"><div class="dialog-head"><h3 data-i18n="virtual_keyboard">虚拟键盘</h3><button id="paste-typing-btn" class="secondary" type="button" title="把文本按 US 键盘布局逐字键入被控机">粘贴为键入</button><button class="secondary" type="button" data-close data-i18n="close">收起</button></div><div id="virtual-keyboard" class="keyboard"></div></div></dialog>
+    <dialog id="keyboard-dialog"><div class="keyboard-sheet"><div class="dialog-head"><h3 data-i18n="virtual_keyboard">虚拟键盘</h3><button id="paste-typing-btn" class="secondary" type="button" title="把文本按当前被控机键盘布局逐字键入被控机">粘贴为键入</button><button class="secondary" type="button" data-close data-i18n="close">收起</button></div><div id="virtual-keyboard" class="keyboard"></div></div></dialog>
     <dialog id="paste-key-dialog">
       <div class="paste-key-modal" role="dialog" aria-modal="true" aria-labelledby="paste-key-title">
         <div class="dialog-head">
@@ -393,7 +406,7 @@
           <button class="secondary" type="button" data-paste-close>关闭</button>
         </div>
         <div class="paste-key-body">
-          <p class="hint">文本会按 US 键盘布局逐个转换为按键并发送；换行会发送 Enter，Tab 会发送 Tab。中文等无法表示的字符会在发送前列出并阻止发送。</p>
+          <p class="hint">文本会按当前被控机键盘布局逐个转换为按键并发送；换行会发送 Enter，Tab 会发送 Tab。中文等无法表示的字符会在发送前列出并阻止发送。当前布局：<strong id="paste-key-layout">美式（US QWERTY）</strong></p>
           <textarea id="paste-key-text" rows="7" spellcheck="false" aria-label="要键入的文本" placeholder="在此粘贴要键入的文本…"></textarea>
           <div id="paste-key-unsupported" class="paste-key-unsupported" role="alert" hidden></div>
           <div id="paste-key-progress" class="paste-key-progress" role="progressbar" aria-label="键入进度" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"><i id="paste-key-bar"></i></div>

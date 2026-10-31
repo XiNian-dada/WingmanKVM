@@ -401,6 +401,77 @@ def paste_as_typing(browser, port, checks):
         context.close()
 
 
+def target_keyboard_layouts(browser, port, checks):
+    """#63: paste-as-typing honors the selected target keyboard layout."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        page.click("#input-state")
+
+        def strokes(text, layout):
+            return page.evaluate(
+                """([text, layout]) => window.__wingmanTest
+                    .textToKeystrokes(text, layout).strokes
+                    .map(s => [s.key, !!s.shift, !!s.ctrl, !!s.alt])""",
+                [text, layout])
+
+        layouts = page.evaluate("() => window.__wingmanTest.targetLayouts")
+        check(checks, layouts == ["us", "uk", "de", "fr", "jp"],
+              "target_layouts_available", layouts)
+        check(checks, page.evaluate("() => window.__wingmanTest.targetLayout()") == "us",
+              "target_layout_defaults_to_us", page.evaluate(
+                  "() => localStorage.getItem('wingman_setting_target_layout')"))
+
+        de = strokes("zy@ä", "de")
+        check(checks, de == [["KeyY", False, False, False],
+                             ["KeyZ", False, False, False],
+                             ["KeyQ", False, True, True],
+                             ["Quote", False, False, False]],
+              "target_layout_de_maps_qwertz_and_altgr", de)
+        fr = strokes("a1", "fr")
+        check(checks, fr == [["KeyQ", False, False, False],
+                             ["Digit1", True, False, False]],
+              "target_layout_fr_maps_azerty_and_shifted_digits", fr)
+        uk = strokes('"', "uk")
+        check(checks, uk == [["Digit2", True, False, False]],
+              "target_layout_uk_maps_quote_to_shift_digit2", uk)
+        jp = strokes("@[:;]", "jp")
+        check(checks, jp == [["BracketLeft", False, False, False],
+                             ["BracketRight", False, False, False],
+                             ["Quote", False, False, False],
+                             ["Semicolon", False, False, False],
+                             ["Backslash", False, False, False]],
+              "target_layout_jp_maps_jis_symbol_positions", jp)
+
+        # The preference is persisted and the dialog names the active layout.
+        page.click("#settings-toggle")
+        options = page.eval_on_selector(
+            "#setting-target-layout", "el => [...el.options].map(o => o.value)")
+        check(checks, options == ["us", "uk", "de", "fr", "jp"],
+              "target_layout_settings_options", options)
+        page.select_option("#setting-target-layout", "de")
+        page.wait_for_timeout(100)
+        stored = page.evaluate(
+            "() => localStorage.getItem('wingman_setting_target_layout')")
+        check(checks, stored == "de", "target_layout_setting_persists", stored)
+        page.click("[data-settings-close]")
+        page.click("#keyboard-toggle")
+        page.click("#paste-typing-btn")
+        label = page.text_content("#paste-key-layout") or ""
+        check(checks, "德语" in label, "paste_dialog_shows_target_layout", label)
+        page.fill("#paste-key-text", "zy@ä")
+        page.click("#paste-key-send")
+        page.wait_for_timeout(700)
+        sequence = [(post.get("key"), bool(post.get("shift")),
+                     bool(post.get("ctrl")), bool(post.get("alt")))
+                    for post in state.key_posts]
+        expected = [("KeyY", False, False, False), ("KeyZ", False, False, False),
+                    ("KeyQ", False, True, True), ("Quote", False, False, False)]
+        check(checks, sequence == expected, "paste_typing_uses_selected_layout", sequence)
+    finally:
+        context.close()
+
+
 def custom_shortcuts(browser, port, checks):
     """#50 / UX-02: custom combinations persist and send the right payload."""
     state = State()
@@ -782,10 +853,25 @@ def runtime_metrics(browser, port, checks):
     finally:
         context.close()
 
-SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation, low_risk_ui,
-             language_coverage, power_confirmation, media_drop_upload, paste_as_typing, custom_shortcuts,
-             inline_save_feedback, shortcut_sheet,
-             touch_fullscreen_toolbar, input_websocket, touch_gestures, runtime_metrics]
+SCENARIOS = [
+    keyboard_focus,
+    video_settings,
+    logout_and_errors,
+    ppv2_confirmation,
+    low_risk_ui,
+    language_coverage,
+    power_confirmation,
+    paste_as_typing,
+    target_keyboard_layouts,
+    custom_shortcuts,
+    media_drop_upload,
+    inline_save_feedback,
+    shortcut_sheet,
+    touch_fullscreen_toolbar,
+    input_websocket,
+    touch_gestures,
+    runtime_metrics,
+]
 
 if __name__ == "__main__":
     sys.exit(main())
