@@ -213,6 +213,15 @@ pub fn router(state: AppState) -> Router {
             "/api/config",
             get(get_config).put(update_config).post(patch_config),
         )
+        .route("/api/config/export", get(export_config))
+        .route(
+            "/api/config/import/preview",
+            post(preview_import_config).layer(DefaultBodyLimit::max(CONFIG_IMPORT_BODY_LIMIT)),
+        )
+        .route(
+            "/api/config/import",
+            post(import_config).layer(DefaultBodyLimit::max(CONFIG_IMPORT_BODY_LIMIT)),
+        )
         .route("/api/logout", post(logout))
         .route("/api/key", post(key))
         .route("/api/mouse/move", post(mouse_move))

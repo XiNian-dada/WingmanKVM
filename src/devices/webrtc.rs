@@ -384,6 +384,22 @@ impl WebRtcManager {
         Self { inner }
     }
 
+    /// Test-only manager with no encoder probe or hardware access.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn test_stub(video: VideoManager, config: H264Config) -> Self {
+        let inner = Arc::new(Inner {
+            video,
+            config: Mutex::new(config),
+            encoder: Mutex::new(Err("test stub".to_owned())),
+            sessions: Mutex::new(HashMap::new()),
+            offer_lock: AsyncMutex::new(()),
+            udp_binding: AsyncMutex::new(None),
+            probe_epoch: AtomicU64::new(0),
+        });
+        Self { inner }
+    }
+
     pub fn status(&self) -> WebRtcStatus {
         let config = self
             .inner
