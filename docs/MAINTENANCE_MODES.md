@@ -12,6 +12,12 @@ user-config activation for either mode.
   (sudoers empty-argument syntax `""`);
 - `wingmankvm` -> the fixed `/bin/bash -l` command as the fixed `wingman`
   account.
+- `wingmankvm` -> `/usr/local/sbin/wingmankvm-online-upgrade --start` as root,
+  with exactly that argument list. The helper takes no input and only starts
+  the fixed `wingmankvm-online-upgrade.service` oneshot unit, which installs
+  the latest official release transactionally (see
+  [UPGRADE_RECOVERY.md](UPGRADE_RECOVERY.md)). It never changes the
+  maintenance mode and grants nothing to `wingman`.
 
 There is no `wingman ALL` rule in the managed default. The helper still reads
 the password only from stdin and always targets `wingman`; its behavior is

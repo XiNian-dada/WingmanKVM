@@ -39,6 +39,9 @@ pub enum AuditEvent {
     PasskeyAdded,
     PasskeyRemoved,
     SetupCompleted,
+    UpdateStarted,
+    UpdateSucceeded,
+    UpdateFailed,
 }
 
 impl AuditEvent {
@@ -55,6 +58,9 @@ impl AuditEvent {
             Self::PasskeyAdded => "passkey_added",
             Self::PasskeyRemoved => "passkey_removed",
             Self::SetupCompleted => "setup_completed",
+            Self::UpdateStarted => "update_started",
+            Self::UpdateSucceeded => "update_succeeded",
+            Self::UpdateFailed => "update_failed",
         }
     }
 }

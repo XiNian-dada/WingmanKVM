@@ -2014,6 +2014,103 @@ def notification_settings(browser, port, checks):
         context.close()
 
 
+def online_update(browser, port, checks):
+    """#91: check shows notes, upgrade confirms the shown tag, progress survives a restart."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    status = {"current_version": "0.1.0", "supported": True,
+              "status": {"state": "idle", "phase": "", "version": "", "error": "", "updated": 0}}
+    script = []   # queued status responses: a dict, or "down" for a network error
+    applies, checks_sent = [], []
+
+    def status_route(route):
+        step = script.pop(0) if script else None
+        if step == "down":
+            return route.abort("connectionrefused")
+        return route.fulfill(status=200, content_type="application/json", body=json.dumps(step or status))
+
+    def check_route(route):
+        checks_sent.append(route.request.method)
+        route.fulfill(status=200, content_type="application/json", body=json.dumps({
+            "current_version": "0.1.0", "supported": True, "update_available": True,
+            "latest": {"tag": "v0.2.0", "name": "WingmanKVM 0.2.0", "published_at": "2026-11-01T00:00:00Z",
+                       "notes": "## Added\n- <img src=x onerror=alert(1)> online upgrade",
+                       "notes_truncated": False,
+                       "url": "https://github.com/XiNian-dada/WingmanKVM/releases/tag/v0.2.0"}}))
+
+    def apply_route(route):
+        applies.append(json.loads(route.request.post_data or "{}"))
+        route.fulfill(status=202, content_type="application/json", body='{"ok":true,"version":"v0.2.0"}')
+
+    def running(phase):
+        return {**status, "status": {"state": "running", "phase": phase, "version": "v0.2.0",
+                                     "error": "", "updated": 1}}
+
+    def progress_matches(pattern, timeout):
+        page.wait_for_function(
+            "(p) => new RegExp(p).test(document.querySelector('#update-progress').textContent)",
+            arg=pattern, timeout=timeout)
+
+    page.route("**/api/update/status", status_route)
+    page.route("**/api/update/check", check_route)
+    page.route("**/api/update/apply", apply_route)
+    dialogs = []
+    page.on("dialog", lambda dialog: (dialogs.append(dialog.message), dialog.accept()))
+    try:
+        page.click("#settings-toggle")
+        page.wait_for_selector("#settings-dialog[open]", timeout=3000)
+        page.click("#update-check-btn")
+        page.wait_for_function(
+            "() => document.querySelector('#update-title').textContent.includes('v0.2.0')", timeout=5000)
+        title = page.text_content("#update-title") or ""
+        notes = page.text_content("#update-notes") or ""
+        notes_html = page.inner_html("#update-notes")
+        check(checks, "发现新版本 v0.2.0" in title and checks_sent == ["POST"],
+              "update_check_shows_new_version", (title, checks_sent))
+        check(checks, "online upgrade" in notes and page.locator("#update-notes img").count() == 0,
+              "update_notes_rendered_as_text", notes_html[:120])
+        href = page.get_attribute("#update-link", "href")
+        check(checks, href == "https://github.com/XiNian-dada/WingmanKVM/releases/tag/v0.2.0",
+              "update_link_points_to_release", href)
+        button = page.text_content("#update-apply-btn") or ""
+        check(checks, "v0.2.0" in button and page.is_visible("#update-apply-btn"),
+              "update_apply_button_names_version", button)
+
+        script.extend([running("downloading"), running("verifying"), running("installing"), "down", "down",
+                       {"current_version": "0.2.0", "supported": True,
+                        "status": {"state": "succeeded", "phase": "done", "version": "v0.2.0",
+                                   "error": "", "updated": 2}}])
+        page.click("#update-apply-btn")
+        progress_matches("下载|SHA256|安装", 5000)
+        check(checks, applies == [{"version": "v0.2.0"}], "update_apply_posts_shown_tag_only", applies)
+        check(checks, dialogs and "v0.2.0" in dialogs[-1], "update_apply_requires_confirmation", dialogs)
+        check(checks, page.is_disabled("#update-check-btn"), "update_buttons_locked_while_running", None)
+        progress_matches("自动重连", 10000)
+        check(checks, True, "update_progress_survives_restart", page.text_content("#update-progress"))
+        progress_matches("升级成功", 10000)
+        done = page.text_content("#update-progress") or ""
+        check(checks, "v0.2.0" in done and "刷新" in done, "update_success_reconnects_and_reloads", done)
+    finally:
+        context.close()
+
+    state = State()
+    context, page = new_page(browser, state, port)
+    failed = {**status, "status": {"state": "failed", "phase": "verifying", "version": "v0.2.0",
+                                   "error": "checksum", "updated": 3}}
+    page.route("**/api/update/status", lambda route: route.fulfill(
+        status=200, content_type="application/json", body=json.dumps(failed)))
+    try:
+        page.click("#settings-toggle")
+        page.wait_for_function(
+            "() => /升级失败/.test(document.querySelector('#update-progress').textContent)", timeout=5000)
+        text = page.text_content("#update-progress") or ""
+        classes = page.get_attribute("#update-progress", "class") or ""
+        check(checks, "SHA256 校验失败" in text and "回滚" in text and "error" in classes,
+              "update_failure_reports_rollback", text)
+    finally:
+        context.close()
+
+
 ADAPTIVE_OFF = "localStorage.setItem('wingman_setting_adaptive_bitrate', 'false');"
 
 

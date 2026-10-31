@@ -31,6 +31,7 @@
     refreshSessions();
     refreshAudit();
     refreshNotifications();
+    refreshOnlineUpdate();
     try {
       if (typeof settingsDialog.showModal === 'function') {
         settingsDialog.showModal();
