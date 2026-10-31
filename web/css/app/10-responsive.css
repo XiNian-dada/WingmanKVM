@@ -52,7 +52,7 @@
   }
 }
 @media (max-width: 960px) {
-  .quick-keys button:nth-child(n + 3) {
+  .quick-keys > [data-quick-key]:nth-child(n + 3) {
     display: none !important;
   }
   .keyboard-led-strip .led-text {

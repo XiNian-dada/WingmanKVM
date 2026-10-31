@@ -374,6 +374,12 @@ def custom_shortcuts(browser, port, checks):
         page.click("#quick-more-toggle")
         common = page.locator(".quick-menu-common").is_visible()
         check(checks, common, "narrow_console_menu_lists_common_keys", common)
+        page.set_viewport_size({"width": 900, "height": 900})
+        page.wait_for_timeout(200)
+        hidden = page.evaluate("""() => [...document.querySelectorAll('#quick-more-menu button')]
+          .filter(b => getComputedStyle(b).display === 'none').map(b => b.textContent)""")
+        check(checks, not hidden, "narrow_viewport_menu_items_all_visible", hidden)
+        page.set_viewport_size({"width": 1280, "height": 900})
         page.click("#quick-combo-add")
         page.check('#combo-form input[name="ctrl"]')
         page.check('#combo-form input[name="alt"]')
