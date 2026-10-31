@@ -1217,6 +1217,275 @@ def csp_no_violations(browser, port, checks):
         server.server_close()
 
 
+def media_page(browser, state, port, h264=False, stubs=(PIP_STUB,)):
+    """new_page with init scripts, plus an optional negotiable H.264 backend."""
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    for stub in stubs:
+        page.add_init_script(stub)
+    page.route("**/api/**", lambda route: api_route(route, state))
+    page.route("**/video_feed*", lambda route: route.fulfill(
+        status=200, content_type="image/gif", body=GIF))
+    if h264:
+        def bootstrap(route):
+            body = bootstrap_payload(state)
+            body["capabilities"]["video_webrtc_h264"] = True
+            body["webrtc"] = {"available": True}
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+        page.route("**/api/bootstrap", bootstrap)
+        page.route("**/api/webrtc/offer", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({"type": "answer", "session_id": "s1", "sdp": "a=rtpmap:96 H264/90000"})))
+        page.route("**/api/webrtc/close", lambda route: route.fulfill(
+            status=200, content_type="application/json", body="{}"))
+    page.goto(f"http://127.0.0.1:{port}/", wait_until="load", timeout=15000)
+    page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+    page.bring_to_front()
+    return context, page
+
+
+def wait_mjpeg_playing(page):
+    page.wait_for_function("() => document.querySelector('#video-feed').naturalWidth > 0", timeout=5000)
+    page.wait_for_function("""() => {
+      document.querySelector('#video-feed').dispatchEvent(new Event('load'));
+      return /LIVE/.test(document.querySelector('#video-transport-label').textContent);
+    }""", timeout=5000)
+
+
+def pip_unsupported_hides_button(browser, port, checks):
+    """#79: no PiP support, no button."""
+    state = State()
+    stub = """Object.defineProperty(Document.prototype, 'pictureInPictureEnabled',
+      {configurable: true, get: () => false});"""
+    context, page = media_page(browser, state, port, stubs=(stub,))
+    try:
+        check(checks, not page.locator("#pip").is_visible(), "pip_hidden_when_unsupported", "")
+    finally:
+        context.close()
+
+
+def pip_mjpeg(browser, port, checks):
+    """#79: MJPEG PiP plays a hidden canvas-fed video and cleans up."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10, frames_per_second=30)
+    context, page = media_page(browser, state, port)
+    source = "() => { const v = document.querySelector('video.pip-source'); return v ? !!v.srcObject : null; }"
+    try:
+        check(checks, page.locator("#pip").is_visible(), "pip_button_visible", "")
+        page.click('[data-workspace="terminal"]')
+        page.wait_for_timeout(200)
+        page.evaluate("() => document.querySelector('#pip').click()")
+        page.wait_for_timeout(100)
+        toast = page.text_content("#toast") or ""
+        check(checks, "没有可显示" in toast and not page.evaluate("() => window.__pipCalls.length"),
+              "pip_requires_live_picture", toast)
+        page.click('[data-workspace="video"]')
+        wait_mjpeg_playing(page)
+
+        page.click("#pip")
+        page.wait_for_function("() => window.__pipCalls.length === 1", timeout=5000)
+        check(checks, page.evaluate("() => window.__pipCalls[0]") == "pip-source" and page.evaluate(source) is True,
+              "pip_mjpeg_uses_canvas_video", page.evaluate("() => window.__pipCalls"))
+        check(checks, page.get_attribute("#pip", "aria-pressed") == "true", "pip_button_pressed", "")
+
+        # Backgrounding the tab must keep the stream alive while in PiP...
+        hide = """(hidden) => {
+          Object.defineProperty(document, 'hidden', {configurable: true, get: () => hidden});
+          document.dispatchEvent(new Event('visibilitychange'));
+        }"""
+        page.evaluate(hide, True)
+        page.wait_for_timeout(100)
+        check(checks, bool(page.get_attribute("#video-feed", "src")) and page.evaluate(source) is True,
+              "pip_keeps_video_when_tab_hidden", "")
+        # ...and closing the PiP window from the background stops it.
+        page.evaluate("() => document.exitPictureInPicture()")
+        page.wait_for_timeout(100)
+        check(checks, not page.get_attribute("#video-feed", "src") and page.evaluate(source) is None
+              and page.get_attribute("#pip", "aria-pressed") == "false",
+              "pip_leave_in_background_stops_video", "")
+        page.evaluate(hide, False)
+        page.wait_for_timeout(200)
+        wait_mjpeg_playing(page)
+
+        # A workspace switch stops video, which must end PiP and its resources.
+        page.click("#pip")
+        page.wait_for_function("() => window.__pipCalls.length === 2", timeout=5000)
+        page.click('[data-workspace="terminal"]')
+        page.wait_for_timeout(200)
+        check(checks, page.evaluate("() => document.pictureInPictureElement") is None and page.evaluate(source) is None
+              and page.get_attribute("#pip", "aria-pressed") == "false", "pip_cleans_up_on_stop", "")
+        page.click('[data-workspace="video"]')
+        wait_mjpeg_playing(page)
+
+        page.evaluate("() => { window.__pipReject = true; }")
+        page.click("#pip")
+        page.wait_for_timeout(300)
+        check(checks, "无法进入" in (page.text_content("#toast") or "") and page.evaluate(source) is None
+              and page.get_attribute("#pip", "aria-pressed") == "false", "pip_rejection_reports_and_cleans_up", "")
+    finally:
+        context.close()
+
+
+def pip_webrtc(browser, port, checks):
+    """#79: WebRTC PiP uses the live <video>; fallback to MJPEG ends it."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    context, page = media_page(browser, state, port, h264=True, stubs=(PIP_STUB, FAKE_PEER))
+    try:
+        page.wait_for_function("() => document.querySelector('#webrtc-feed').videoWidth > 0", timeout=8000)
+        page.wait_for_function("() => /H.264/.test(document.querySelector('#video-transport-label').textContent)"
+                               " && /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
+        page.click("#pip")
+        page.wait_for_function("() => window.__pipCalls.length === 1", timeout=5000)
+        check(checks, page.evaluate("() => window.__pipCalls[0]") == "webrtc-feed"
+              and page.get_attribute("#pip", "aria-pressed") == "true", "pip_webrtc_uses_video_element",
+              page.evaluate("() => window.__pipCalls"))
+        page.evaluate("""() => {
+          const peer = window.__peers.at(-1);
+          peer.connectionState = 'failed';
+          peer.onconnectionstatechange();
+        }""")
+        page.wait_for_timeout(200)
+        check(checks, page.evaluate("() => document.pictureInPictureElement") is None
+              and page.get_attribute("#pip", "aria-pressed") == "false", "pip_ends_on_transport_fallback", "")
+    finally:
+        context.close()
+
+
+def stats_report(at, scale=1, frames=None):
+    """One getStats() result; counters grow linearly with `scale`."""
+    return [
+        {"id": "T", "type": "transport", "selectedCandidatePairId": "P"},
+        {"id": "P", "type": "candidate-pair", "currentRoundTripTime": 0.025},
+        {"id": "AUDIO", "type": "inbound-rtp", "kind": "audio", "timestamp": at, "bytesReceived": 9e9},
+        {"id": "V", "type": "inbound-rtp", "kind": "video", "timestamp": at,
+         "bytesReceived": 125000 * scale, "packetsReceived": 990 * scale, "packetsLost": 10 * scale,
+         "framesDecoded": 30 * scale, "jitterBufferDelay": 1.5 * scale,
+         "jitterBufferEmittedCount": 30 * scale, "frameWidth": 1920, "frameHeight": 1080},
+    ]
+
+
+def overlay_rows(page):
+    return page.evaluate("""() => {
+      const out = {};
+      document.querySelectorAll('#quality-overlay dt:not(.hidden)').forEach((dt) => {
+        out[dt.textContent] = dt.nextElementSibling.textContent;
+      });
+      return out;
+    }""")
+
+
+def quality_overlay_webrtc(browser, port, checks):
+    """#81: stats deltas, persistence, and polling only while shown."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    context, page = media_page(browser, state, port, h264=True, stubs=(FAKE_PEER,))
+    try:
+        page.wait_for_function("() => /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
+        page.wait_for_timeout(1200)
+        check(checks, not page.locator("#quality-overlay").is_visible()
+              and page.evaluate("() => window.__statsCalls") == 0, "quality_off_by_default_without_polling", "")
+
+        # Two seconds apart: rates must divide by the real interval.
+        reports = [stats_report(10000, 1), stats_report(12000, 3), stats_report(12000, 3), stats_report(13000, 1),
+                   stats_report(14000, 2)]
+        page.evaluate("(reports) => { window.__statsSeq = reports; }", reports)
+        page.click("#quality-toggle")
+        check(checks, page.locator("#quality-overlay").is_visible()
+              and page.get_attribute("#quality-toggle", "aria-pressed") == "true", "quality_toggle_shows_overlay", "")
+        rows = overlay_rows(page)
+        check(checks, rows.get("接收码率") == "—", "quality_first_sample_has_no_rates", rows)
+        page.wait_for_function("() => document.querySelector('#quality-overlay').textContent.includes('Mbps')", timeout=4000)
+        rows = overlay_rows(page)
+        check(checks, rows == {"往返延迟": "25 ms", "接收码率": "1.00 Mbps", "丢包率": "1.0%", "解码帧率": "30",
+                               "抖动缓冲": "50 ms", "分辨率": "1920×1080"}, "quality_webrtc_stats_rendered", rows)
+        page.wait_for_function("() => window.__statsCalls >= 3", timeout=4000)
+        page.wait_for_timeout(50)
+        rows = overlay_rows(page)
+        check(checks, rows.get("接收码率") == "1.00 Mbps", "quality_cached_report_keeps_rates", rows)
+        page.wait_for_function("() => window.__statsCalls >= 4", timeout=4000)
+        page.wait_for_timeout(50)
+        rows = overlay_rows(page)
+        check(checks, rows.get("接收码率") == "—" and rows.get("解码帧率") == "—", "quality_counter_reset_not_negative", rows)
+        page.wait_for_function("() => window.__statsCalls >= 5", timeout=4000)
+        page.wait_for_timeout(50)
+        rows = overlay_rows(page)
+        check(checks, rows.get("接收码率") == "1.00 Mbps", "quality_recovers_after_reset", rows)
+
+        page.evaluate("""() => {
+          Object.defineProperty(document, 'hidden', {configurable: true, get: () => true});
+          document.dispatchEvent(new Event('visibilitychange'));
+        }""")
+        before = page.evaluate("() => window.__statsCalls")
+        page.wait_for_timeout(1300)
+        after = page.evaluate("() => window.__statsCalls")
+        check(checks, after == before, "quality_polling_stops_when_page_hidden", (before, after))
+        page.evaluate("""() => {
+          delete document.hidden;
+          document.dispatchEvent(new Event('visibilitychange'));
+        }""")
+        page.wait_for_function("() => /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
+
+        page.reload(wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        page.wait_for_function("() => /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
+        check(checks, page.locator("#quality-overlay").is_visible()
+              and page.get_attribute("#quality-toggle", "aria-pressed") == "true", "quality_setting_persists", "")
+        page.click("#quality-toggle")
+        before = page.evaluate("() => window.__statsCalls")
+        page.wait_for_timeout(1300)
+        check(checks, not page.locator("#quality-overlay").is_visible()
+              and page.evaluate("() => window.__statsCalls") == before, "quality_toggle_off_stops_polling", "")
+    finally:
+        context.close()
+
+
+def quality_overlay_mjpeg(browser, port, checks):
+    """#81: MJPEG is honest about where FPS comes from and about the bitrate."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10, frames_per_second=24.0)
+    context, page = media_page(browser, state, port, stubs=())
+    try:
+        wait_mjpeg_playing_once = """() => {
+          const feed = document.querySelector('#video-feed');
+          return feed.naturalWidth > 0 && /LIVE/.test(document.querySelector('#video-transport-label').textContent);
+        }"""
+        page.wait_for_function(wait_mjpeg_playing_once, timeout=5000)
+        page.click("#quality-toggle")
+        page.wait_for_timeout(100)
+        rows = overlay_rows(page)
+        check(checks, rows.get("帧率（服务端采集）") == "24" and rows.get("码率") == "不可用" and "丢包率" not in rows,
+              "quality_mjpeg_single_load_uses_server_fps", rows)
+
+        page.evaluate("""() => {
+          window.__loads = setInterval(
+            () => document.querySelector('#video-feed').dispatchEvent(new Event('load')), 100);
+        }""")
+        page.wait_for_function("""() => {
+          const dt = [...document.querySelectorAll('#quality-overlay dt')].find((e) => e.textContent.includes('浏览器实测'));
+          return dt && Number(dt.nextElementSibling.textContent) >= 6;
+        }""", timeout=5000)
+        rows = overlay_rows(page)
+        fps = float(rows.get("帧率（浏览器实测）", "0"))
+        check(checks, 6 <= fps <= 14 and "帧率（服务端采集）" not in rows, "quality_mjpeg_counts_load_events", rows)
+        page.evaluate("() => clearInterval(window.__loads)")
+
+        page.click("#lang-toggle")
+        page.click('[data-lang="en"]')
+        page.wait_for_timeout(1300)
+        rows = overlay_rows(page)
+        check(checks, rows.get("Bitrate") == "Unavailable" and "FPS (browser measured)" in rows,
+              "quality_overlay_translates", rows)
+
+        hit = page.evaluate("""() => {
+          const box = document.querySelector('#quality-overlay').getBoundingClientRect();
+          return document.elementFromPoint(box.left + 5, box.top + 5).closest('#quality-overlay') === null;
+        }""")
+        check(checks, hit, "quality_overlay_does_not_block_input", hit)
+    finally:
+        context.close()
+
+
 # Every function taking (browser, port, checks) is a scenario, run in
 # definition order; new scenarios need no list edit (and no merge conflict).
 SCENARIOS = [
