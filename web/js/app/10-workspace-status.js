@@ -86,7 +86,9 @@
         closeTopbarPerf();
         return;
       }
-      if (app.classList.contains('inspector-open') && !keyboardDialog?.open && !settingsDialog?.open) {
+      // Esc belongs to an open dialog first; only collapse the inspector when
+      // no modal (power confirm, cheat sheet, paste, ...) is consuming it.
+      if (app.classList.contains('inspector-open') && !document.querySelector('dialog[open]')) {
         setInspectorOpen(false);
       }
     }
