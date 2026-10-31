@@ -73,6 +73,21 @@
     const select = e.target;
     const mode = select.value;
     const previousMode = unwrapConfig(bootstrap).server?.proxy_protocol || 'disabled';
+    // This is a server listener setting that applies to every new connection
+    // immediately; "required" locks out any client not behind a PPv2 proxy.
+    const warning =
+      mode === 'required'
+        ? t(
+            'ppv2_confirm_required',
+            '“强制要求”会立即拒绝所有未经过 PPv2 代理的连接，包括你当前的直连访问。确认网页只通过已配置 PPv2 的反向代理访问后再继续。',
+          )
+        : mode === 'auto'
+          ? t('ppv2_confirm_auto', '“自动检测”会信任连接开头的 PPv2 头。只应在监听端口仅对可信代理开放时启用。继续？')
+          : null;
+    if (warning && !confirm(warning)) {
+      select.value = previousMode;
+      return;
+    }
     select.disabled = true;
     try {
       const saved = await request('/api/config', {
@@ -84,6 +99,19 @@
       config.server.proxy_protocol = saved.server.proxy_protocol;
       select.value = config.server.proxy_protocol;
       toast(t('settings_saved', '设置已保存'));
+      if (mode !== 'disabled') {
+        // A fresh connection is negotiated under the new mode; if it fails the
+        // operator needs recovery instructions while this page still works.
+        fetch('/healthz', { cache: 'no-store' }).catch(() =>
+          toast(
+            t(
+              'ppv2_probe_failed',
+              '新连接已无法访问本服务。请通过已配置 PPv2 的代理访问，或在设备上把 config.json 的 server.proxy_protocol 改回 disabled 后重启服务。',
+            ),
+            true,
+          ),
+        );
+      }
     } catch (err) {
       select.value = previousMode;
       toast(err.message || '保存失败', true);

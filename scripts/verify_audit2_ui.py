@@ -159,7 +159,30 @@ def logout_and_errors(browser, port, checks):
         context.close()
 
 
-SCENARIOS = [keyboard_focus, video_settings, logout_and_errors]
+def ppv2_confirmation(browser, port, checks):
+    """#28: switching the server PPv2 mode requires explicit confirmation."""
+    state = State()
+    posts = []
+    context, page = new_page(browser, state, port)
+    try:
+        page.route("**/api/config", lambda route: (
+            posts.append(route.request.post_data),
+            route.fulfill(status=200, content_type="application/json",
+                          body='{"server":{"proxy_protocol":"required"}}'))[-1])
+        dialogs = []
+        page.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
+        page.click("#settings-toggle")
+        page.select_option("#setting-proxy-protocol", "required")
+        page.wait_for_timeout(200)
+        check(checks, dialogs and "PPv2" in dialogs[0], "required_mode_asks_for_confirmation", dialogs)
+        check(checks, not posts, "dismissed_confirmation_sends_nothing", posts)
+        value = page.eval_on_selector("#setting-proxy-protocol", "el => el.value")
+        check(checks, value != "required", "dismissed_confirmation_restores_select", value)
+    finally:
+        context.close()
+
+
+SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation]
 
 if __name__ == "__main__":
     sys.exit(main())
