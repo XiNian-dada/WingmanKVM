@@ -360,6 +360,25 @@
               <div id="passkey-items" class="media-list hidden"></div>
             </div>
             <div id="passkey-inspector-hint" class="hint hidden"></div>
+            <div class="settings-item">
+              <div class="settings-item-copy">
+                <strong data-i18n="sessions_title">登录会话</strong>
+                <span data-i18n="sessions_desc">已登录的设备；下线会立即断开该设备上的视频、终端与键鼠连接</span>
+              </div>
+              <button id="sessions-revoke-others" class="secondary" type="button" data-i18n="sessions_revoke_others">让其他设备全部下线</button>
+            </div>
+            <div id="sessions-error" class="hint error hidden" role="alert"></div>
+            <div id="session-items" class="media-list" role="list">
+              <div class="hint" data-i18n="sessions_loading">正在读取登录会话…</div>
+            </div>
+            <details id="audit-details" class="side-advanced">
+              <summary data-i18n="audit_title">审计日志</summary>
+              <div class="hint" data-i18n="audit_desc">最近 50 条安全相关操作，仅保存在设备本机</div>
+              <div id="audit-error" class="hint error hidden" role="alert"></div>
+              <div id="audit-items" class="media-list" role="list">
+                <div class="hint" data-i18n="audit_loading">正在读取审计日志…</div>
+              </div>
+            </details>
           </div>
           <div class="settings-group">
             <span class="settings-group-title" data-i18n="settings_group_system">系统与重置</span>
