@@ -4,7 +4,7 @@
 Reuses the P2b mocked API harness: real DOM, real browser keyboard/pointer
 events and the real UI state machine; no hardware is touched.
 """
-import argparse, json, os, sys
+import argparse, inspect, json, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -853,24 +853,50 @@ def runtime_metrics(browser, port, checks):
     finally:
         context.close()
 
+def screenshot_and_record(browser, port, checks):
+    """#70: screenshot downloads a PNG; recording downloads a WebM."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    context, page = new_page(browser, state, port)
+    try:
+        # The terminal tab pauses video: nothing live to capture.
+        page.click('[data-workspace="terminal"]')
+        page.wait_for_timeout(200)
+        page.evaluate("() => document.querySelector('#screenshot').click()")
+        page.wait_for_timeout(200)
+        toast = page.text_content("#toast") or ""
+        check(checks, "没有可截取" in toast, "screenshot_requires_live_picture", toast)
+        page.click('[data-workspace="video"]')
+        page.wait_for_timeout(300)
+        page.evaluate("() => document.querySelector('#video-feed').dispatchEvent(new Event('load'))")
+        page.wait_for_timeout(300)
+        with page.expect_download(timeout=5000) as shot:
+            page.click("#screenshot")
+        name = shot.value.suggested_filename
+        data = open(shot.value.path(), "rb").read(8)
+        check(checks, name.endswith(".png") and data.startswith(b"\x89PNG"), "screenshot_downloads_png", name)
+
+        page.click("#record")
+        page.wait_for_timeout(1600)
+        pressed = page.get_attribute("#record", "aria-pressed")
+        with page.expect_download(timeout=8000) as clip:
+            page.click("#record")
+        size = len(open(clip.value.path(), "rb").read())
+        check(checks, pressed == "true" and clip.value.suggested_filename.endswith(".webm") and size > 0,
+              "recording_downloads_webm", (pressed, clip.value.suggested_filename, size))
+        check(checks, page.get_attribute("#record", "aria-pressed") == "false", "recording_stops_on_second_click",
+              page.get_attribute("#record", "aria-pressed"))
+    finally:
+        context.close()
+
+
+# Every function taking (browser, port, checks) is a scenario, run in
+# definition order; new scenarios need no list edit (and no merge conflict).
 SCENARIOS = [
-    keyboard_focus,
-    video_settings,
-    logout_and_errors,
-    ppv2_confirmation,
-    low_risk_ui,
-    language_coverage,
-    power_confirmation,
-    paste_as_typing,
-    target_keyboard_layouts,
-    custom_shortcuts,
-    media_drop_upload,
-    inline_save_feedback,
-    shortcut_sheet,
-    touch_fullscreen_toolbar,
-    input_websocket,
-    touch_gestures,
-    runtime_metrics,
+    function
+    for function in list(globals().values())
+    if inspect.isfunction(function)
+    and list(inspect.signature(function).parameters) == ["browser", "port", "checks"]
 ]
 
 if __name__ == "__main__":

@@ -484,3 +484,109 @@
     fitConsoleToVideo(true);
   });
 
+
+  // Screenshot and recording of the remote screen. Both work on whichever
+  // surface is live (MJPEG <img> or WebRTC <video>) and stay in the browser:
+  // nothing is uploaded, the file is downloaded locally.
+  function downloadBlob(blob, name) {
+    const url = URL.createObjectURL(blob),
+      link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  function captureStamp() {
+    return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  }
+  function liveVideoSize() {
+    const surface = activeVideoTransport === 'webrtc_h264' ? webrtcFeed : feed;
+    const width = surface instanceof HTMLVideoElement ? surface.videoWidth : surface.naturalWidth,
+      height = surface instanceof HTMLVideoElement ? surface.videoHeight : surface.naturalHeight;
+    return { surface, width, height };
+  }
+  function drawLiveFrame(canvas) {
+    const { surface, width, height } = liveVideoSize();
+    if (!width || !height || videoUiState !== 'playing') return false;
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    canvas.getContext('2d').drawImage(surface, 0, 0, width, height);
+    return true;
+  }
+  $('#screenshot')?.addEventListener('click', () => {
+    const canvas = document.createElement('canvas');
+    if (!drawLiveFrame(canvas)) {
+      toast('当前没有可截取的画面', true);
+      return;
+    }
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        toast('截图失败', true);
+        return;
+      }
+      downloadBlob(blob, `wingmankvm-${captureStamp()}.png`);
+      toast('已保存截图');
+    }, 'image/png');
+  });
+
+  // Recording draws frames into a canvas so MJPEG (an <img>) and WebRTC are
+  // recorded the same way, at the source resolution.
+  const RECORD_FPS = 15;
+  let recorder = null,
+    recordTimer = 0,
+    recordStarted = 0;
+  function syncRecordButton() {
+    const button = $('#record'),
+      recording = !!recorder;
+    if (!button) return;
+    button.classList.toggle('recording', recording);
+    button.setAttribute('aria-pressed', String(recording));
+    const seconds = recording ? Math.floor((performance.now() - recordStarted) / 1000) : 0;
+    $('.record-text', button).textContent = recording
+      ? `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
+      : '';
+  }
+  function stopRecording() {
+    if (recorder && recorder.state !== 'inactive') recorder.stop();
+  }
+  function startRecording() {
+    const canvas = document.createElement('canvas');
+    if (!drawLiveFrame(canvas)) {
+      toast('当前没有可录制的画面', true);
+      return;
+    }
+    const type = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(
+      (candidate) => globalThis.MediaRecorder?.isTypeSupported?.(candidate),
+    );
+    if (!type) {
+      toast('当前浏览器不支持录制', true);
+      return;
+    }
+    const chunks = [],
+      stream = canvas.captureStream(RECORD_FPS),
+      painter = setInterval(() => drawLiveFrame(canvas), 1000 / RECORD_FPS);
+    recorder = new MediaRecorder(stream, { mimeType: type });
+    recorder.ondataavailable = (event) => {
+      if (event.data.size) chunks.push(event.data);
+    };
+    recorder.onstop = () => {
+      clearInterval(painter);
+      clearInterval(recordTimer);
+      stream.getTracks().forEach((track) => track.stop());
+      recorder = null;
+      syncRecordButton();
+      if (chunks.length) {
+        downloadBlob(new Blob(chunks, { type: 'video/webm' }), `wingmankvm-${captureStamp()}.webm`);
+        toast('录制已保存');
+      }
+    };
+    recorder.start(1000);
+    recordStarted = performance.now();
+    recordTimer = setInterval(syncRecordButton, 1000);
+    syncRecordButton();
+    toast('开始录制，再次点击停止');
+  }
+  $('#record')?.addEventListener('click', () => (recorder ? stopRecording() : startRecording()));
+  window.addEventListener('pagehide', stopRecording);

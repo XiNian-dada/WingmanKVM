@@ -503,3 +503,31 @@
 .quick-menu-common .quick-more-sep {
   grid-column: 1 / -1;
 }
+
+/* Recording indicator on the console toolbar. */
+#record {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+#record .record-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--red);
+}
+#record.recording {
+  border-color: var(--red);
+  color: var(--red);
+}
+#record.recording .record-dot {
+  animation: record-blink 1s steps(2, start) infinite;
+}
+#record .record-text:empty {
+  display: none;
+}
+@keyframes record-blink {
+  to {
+    visibility: hidden;
+  }
+}
