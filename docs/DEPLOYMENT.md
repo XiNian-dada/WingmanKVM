@@ -22,9 +22,34 @@ sudo apt install -y sudo udev python3 coreutils util-linux libgpiod-tools v4l-ut
 
 官方安装器要求 systemd 和 Linux UDC，并部署完整的 HID 与 Mass Storage 复合 Gadget；当前不提供无 UDC 的 video-only 安装模式。手工启动二进制只适合源码开发和诊断，不代表受支持的生产部署，也不会替代 Gadget、权限和持久化服务。
 
-## 2. 构建 Linux 二进制
+## 2. 获取 Linux 二进制
 
-### 在目标机或同架构 Linux 上构建
+### 使用发布包安装（推荐）
+
+发布包由 GitHub Actions 在推送 `v*` tag 时构建，命名格式为 `wingmankvm-<版本>-<target>.tar.gz`，包含二进制、完整的 `deploy/` 目录、`LICENSE`、`README.md` 和 `CHANGELOG.md`。ARM64 主机选择 `aarch64-unknown-linux-gnu`，32 位 ARM 主机选择 `armv7-unknown-linux-gnueabihf`。
+
+1. 从 [Releases](https://github.com/XiNian-dada/WingmanKVM/releases) 下载对应架构的 `.tar.gz` 和同一 Release 的 `SHA256SUMS`，放在同一目录。
+2. 校验并解压：
+
+   ```bash
+   sha256sum -c --ignore-missing SHA256SUMS
+   mkdir -p wingmankvm-release
+   tar -xzf wingmankvm-<版本>-<target>.tar.gz -C wingmankvm-release
+   ```
+
+   `--ignore-missing` 允许只下载当前架构的发布包；校验失败时不要继续。
+3. 从解压出的 `deploy/` 目录运行安装器，并通过 `--release` 指向发布包：
+
+   ```bash
+   cd wingmankvm-release
+   sudo ./deploy/install.sh --release ../wingmankvm-<版本>-<target>.tar.gz
+   ```
+
+安装器发现发布包同目录存在 `SHA256SUMS` 时会再次核对校验和，然后解包到安全创建的临时目录，并复用 `--binary` 的文件安装、健康检查、失败回滚和升级恢复流程。临时目录在成功、失败和回滚路径都会清理。
+
+### 从源码构建
+
+#### 在目标机或同架构 Linux 上构建
 
 ```bash
 sudo apt install -y \
@@ -37,7 +62,7 @@ cargo build --release --locked
 
 需要近期的 stable Rust。`v4l2-sys-mit` 会通过 bindgen 使用 `linux/videodev2.h`、clang 和 libclang；如果构建时报找不到该头文件，请确认 Linux UAPI headers 已安装。
 
-### 在 Apple Silicon Mac 上构建 Linux ARM64 版本
+#### 在 Apple Silicon Mac 上构建 Linux ARM64 版本
 
 macOS ARM64 二进制不能直接在 ARM64 Linux 上运行。可以使用原生 ARM64 Docker 容器构建：
 
@@ -74,6 +99,14 @@ sudo ./deploy/install.sh --binary /path/to/wingmankvm
 ```bash
 sudo ./deploy/install.sh --binary ./target/release/wingmankvm
 ```
+
+如果使用第 2 节的发布包，则改用 `--release`，无需手工解出二进制：
+
+```bash
+sudo ./deploy/install.sh --release /path/to/wingmankvm-<版本>-<target>.tar.gz
+```
+
+安装器会在发布包同目录存在 `SHA256SUMS` 时校验其内容；`--binary` 与 `--release` 只能选择一个。
 
 安装器会验证二进制格式与 CPU 架构，并幂等地完成：
 
