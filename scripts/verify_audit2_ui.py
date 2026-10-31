@@ -10,10 +10,71 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     from playwright.sync_api import sync_playwright
     from verify_p2_ui import extract_html, read_assets, serve_static, check
-    from verify_p2b_ui import State, new_page
+    from verify_p2b_ui import GIF, State, api_route, bootstrap_payload, new_page
 except Exception as exc:  # pragma: no cover - environment guard
     print(json.dumps({"status": "FAIL", "error": f"Playwright/helper import failed: {exc}"}))
     sys.exit(2)
+
+
+
+PIP_STUB = """
+(() => {
+  let current = null;
+  window.__pipCalls = [];
+  window.__pipReject = false;
+  Object.defineProperty(Document.prototype, 'pictureInPictureEnabled', {configurable: true, get: () => true});
+  Object.defineProperty(Document.prototype, 'pictureInPictureElement', {configurable: true, get: () => current});
+  HTMLVideoElement.prototype.requestPictureInPicture = async function () {
+    if (window.__pipReject) throw new DOMException('denied', 'NotAllowedError');
+    window.__pipCalls.push(this.id || this.className);
+    current = this;
+    this.dispatchEvent(new Event('enterpictureinpicture'));
+    return {};
+  };
+  Document.prototype.exitPictureInPicture = async function () {
+    const element = current;
+    current = null;
+    element?.dispatchEvent(new Event('leavepictureinpicture'));
+  };
+})();
+"""
+
+FAKE_PEER = """
+(() => {
+  window.__statsCalls = 0;
+  window.__statsSeq = [];
+  window.__peers = [];
+  window.RTCPeerConnection = class {
+    constructor() {
+      this.iceGatheringState = 'complete';
+      this.connectionState = 'connected';
+      this.iceConnectionState = 'connected';
+      this.localDescription = {sdp: 'v=0'};
+      window.__peers.push(this);
+    }
+    addTransceiver() { return {}; }
+    async createOffer() { return {type: 'offer', sdp: 'v=0'}; }
+    async setLocalDescription() {}
+    async setRemoteDescription() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 64; canvas.height = 36;
+      const paint = canvas.getContext('2d');
+      setInterval(() => { paint.fillStyle = `hsl(${Date.now() % 360},50%,50%)`; paint.fillRect(0, 0, 64, 36); }, 50);
+      const stream = canvas.captureStream(20), track = stream.getVideoTracks()[0];
+      setTimeout(() => this.ontrack?.({track, streams: [stream]}), 0);
+    }
+    getReceivers() { return []; }
+    addEventListener() {}
+    removeEventListener() {}
+    close() { this.connectionState = 'closed'; }
+    async getStats() {
+      window.__statsCalls++;
+      const seq = window.__statsSeq;
+      return new Map((seq.length > 1 ? seq.shift() : seq[0] || []).map((entry) => [entry.id, entry]));
+    }
+  };
+})();
+"""
 
 
 def active_id(page):

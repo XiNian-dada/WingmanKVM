@@ -137,8 +137,8 @@ impl AppState {
         let config = Config::load_or_default(&config_path)?;
         let state_dir = config::state_dir();
         let auth = AuthStore::new(state_dir.join("auth.json"));
-        let audit = AuditLog::new(state_dir);
         let token_file = setup_token_file(&state_dir);
+        let audit = AuditLog::new(state_dir);
         let setup_token = if auth.is_initialized()? {
             if let Err(error) = remove_setup_token_file(&token_file) {
                 tracing::warn!(
