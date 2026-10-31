@@ -196,7 +196,8 @@
     const spec = POWER_CONFIRM[action],
       dialog = $('#power-confirm'),
       ok = $('#power-confirm-ok');
-    if (!spec || !dialog?.showModal) return Promise.resolve(confirm(tr(spec?.title || '')));
+    if (!spec || !dialog?.showModal)
+      return Promise.resolve(confirm(spec ? `${tr(spec.title)}\n\n${tr(spec.desc)}` : ''));
     $('#power-confirm-title').textContent = spec.title;
     $('#power-confirm-desc').textContent = spec.desc;
     $('.hold-label', ok).textContent = spec.ok;
