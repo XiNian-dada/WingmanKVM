@@ -39,6 +39,7 @@ pub(super) async fn status(
     let config = state.config.read().await.clone();
     let webrtc = state.webrtc.status();
     let system = blocking_system_snapshot(state.system.clone()).await?;
+    let hid_link = state.hid.link_status();
     Ok(no_store(Json(json!({
         "video": state.video.status(),
         "power": state.power.status().await,
@@ -46,6 +47,8 @@ pub(super) async fn status(
         "capabilities": capabilities_with_webrtc(&config, webrtc.available),
         "hid": {
             "keyboard_leds": state.hid.leds(),
+            "keyboard_reenumerating": hid_link.keyboard_reenumerating,
+            "mouse_reenumerating": hid_link.mouse_reenumerating,
         },
         "system": system,
         "runtime": state.metrics.snapshot(),
