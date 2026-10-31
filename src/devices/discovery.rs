@@ -14,6 +14,9 @@ pub struct DeviceDiscovery {
     pub absolute_pointer: Vec<DeviceCandidate>,
     pub gpio: Vec<DeviceCandidate>,
     pub mass_storage_luns: Vec<DeviceCandidate>,
+    /// Non-fatal scan failures. Older clients can ignore this additive field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,7 +142,7 @@ impl HidRole {
 
 pub async fn scan() -> DeviceDiscovery {
     let configfs_root = Path::new("/sys/kernel/config/usb_gadget");
-    let (video, hid_nodes, gpio) = tokio::join!(
+    let ((video, video_warnings), hid_nodes, gpio) = tokio::join!(
         scan_video(Path::new("/dev")),
         scan_hid_nodes(Path::new("/dev")),
         scan_prefix(Path::new("/dev"), "gpiochip", "gpio_chip"),
@@ -148,10 +151,14 @@ pub async fn scan() -> DeviceDiscovery {
         .iter()
         .map(|node| node.candidate.clone())
         .collect();
-    let (hid_roles, mass_storage_luns) = tokio::join!(
+    let ((hid_roles, hid_warnings), (mass_storage_luns, lun_warnings)) = tokio::join!(
         scan_hid_roles(configfs_root, hid_nodes),
         scan_luns(configfs_root),
     );
+
+    let mut warnings = video_warnings;
+    warnings.extend(hid_warnings);
+    warnings.extend(lun_warnings);
 
     DeviceDiscovery {
         video,
@@ -161,20 +168,33 @@ pub async fn scan() -> DeviceDiscovery {
         absolute_pointer: hid_roles.absolute_pointer,
         gpio,
         mass_storage_luns,
+        warnings,
     }
 }
 
-async fn scan_video(root: &Path) -> Vec<DeviceCandidate> {
+async fn spawn_scan<T, F>(label: &'static str, task: F) -> (T, Vec<String>)
+where
+    T: Default + Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    match tokio::task::spawn_blocking(task).await {
+        Ok(value) => (value, Vec::new()),
+        Err(error) => {
+            tracing::warn!(task = label, %error, "device discovery task failed");
+            (T::default(), vec![format!("{label}扫描失败: {error}")])
+        }
+    }
+}
+
+async fn scan_video(root: &Path) -> (Vec<DeviceCandidate>, Vec<String>) {
     let candidates = scan_prefix(root, "video", "video").await;
     #[cfg(target_os = "linux")]
     {
-        return tokio::task::spawn_blocking(move || probe_video_candidates(candidates))
-            .await
-            .unwrap_or_default();
+        return spawn_scan("视频设备", move || probe_video_candidates(candidates)).await;
     }
     #[cfg(not(target_os = "linux"))]
     {
-        candidates
+        (candidates, Vec::new())
     }
 }
 
@@ -380,11 +400,9 @@ fn device_number_from_metadata(_metadata: &std::fs::Metadata) -> Option<DeviceNu
     None
 }
 
-async fn scan_hid_roles(root: &Path, nodes: Vec<HidDeviceNode>) -> HidRoles {
+async fn scan_hid_roles(root: &Path, nodes: Vec<HidDeviceNode>) -> (HidRoles, Vec<String>) {
     let root = root.to_path_buf();
-    tokio::task::spawn_blocking(move || classify_hid_functions(&root, &nodes))
-        .await
-        .unwrap_or_default()
+    spawn_scan("HID 角色", move || classify_hid_functions(&root, &nodes)).await
 }
 
 fn classify_hid_functions(root: &Path, nodes: &[HidDeviceNode]) -> HidRoles {
@@ -489,11 +507,9 @@ fn parse_device_number(value: &str) -> Option<DeviceNumber> {
     })
 }
 
-async fn scan_luns(root: &Path) -> Vec<DeviceCandidate> {
+async fn scan_luns(root: &Path) -> (Vec<DeviceCandidate>, Vec<String>) {
     let root = root.to_path_buf();
-    tokio::task::spawn_blocking(move || scan_mass_storage_luns(&root))
-        .await
-        .unwrap_or_default()
+    spawn_scan("Mass Storage LUN", move || scan_mass_storage_luns(&root)).await
 }
 
 fn scan_mass_storage_luns(root: &Path) -> Vec<DeviceCandidate> {
@@ -675,6 +691,19 @@ mod tests {
             format!("{}:{}\n", device.major, device.minor),
         )
         .unwrap();
+    }
+
+    fn empty_discovery() -> DeviceDiscovery {
+        DeviceDiscovery {
+            video: Vec::new(),
+            hid: Vec::new(),
+            keyboard: Vec::new(),
+            mouse: Vec::new(),
+            absolute_pointer: Vec::new(),
+            gpio: Vec::new(),
+            mass_storage_luns: Vec::new(),
+            warnings: Vec::new(),
+        }
     }
 
     fn hid_node(path: &str, major: u64, minor: u64) -> HidDeviceNode {
@@ -952,6 +981,27 @@ mod tests {
                 "warnings": [],
             })
         );
+    }
+
+    #[tokio::test]
+    async fn failed_scan_task_returns_a_warning_instead_of_silently_empty_results() {
+        let (value, warnings) =
+            spawn_scan::<Vec<DeviceCandidate>, _>("测试设备", || panic!("probe panicked")).await;
+
+        assert!(value.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("测试设备扫描失败"));
+    }
+
+    #[test]
+    fn discovery_warnings_are_additive_and_omitted_when_empty() {
+        let mut discovery = empty_discovery();
+        let value = serde_json::to_value(&discovery).unwrap();
+        assert!(value.get("warnings").is_none());
+
+        discovery.warnings.push("视频设备扫描失败".into());
+        let value = serde_json::to_value(&discovery).unwrap();
+        assert_eq!(value["warnings"], serde_json::json!(["视频设备扫描失败"]));
     }
 
     #[test]

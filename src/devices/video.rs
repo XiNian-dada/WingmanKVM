@@ -258,7 +258,10 @@ fn publish_health(
 }
 
 fn unix_ms_now() -> Option<u64> {
-    let millis = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_millis();
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis();
     u64::try_from(millis).ok()
 }
 
@@ -434,9 +437,25 @@ fn capture_session(
 
                 let used = usize::try_from(metadata.bytesused).unwrap_or(0);
                 let source = &buffer[..used];
-                let jpeg = match config.encoding {
-                    VideoEncoding::MjpegPassthrough => Bytes::copy_from_slice(source),
-                    VideoEncoding::TranscodeJpeg => transcode_jpeg(source, config.jpeg_quality)?,
+                let jpeg = match encode_frame(source, config) {
+                    Ok(jpeg) => jpeg,
+                    Err(error) => {
+                        // A single corrupt or truncated frame must not tear down
+                        // the whole capture session and force a device reopen.
+                        tracing::warn!(%error, sequence, "failed to transcode JPEG frame; skipping");
+                        if health.tick(received_at) {
+                            publish_health(
+                                frame_tx,
+                                status_tx,
+                                config,
+                                &health,
+                                received_at,
+                                geometry,
+                                None,
+                            );
+                        }
+                        continue;
+                    }
                 };
                 // Sample after the frame has been received, transcoded and
                 // published, so freshness reflects publication rather than the
@@ -484,7 +503,15 @@ fn looks_like_jpeg(bytes: &[u8]) -> bool {
     bytes.len() >= 4 && bytes.starts_with(&[0xff, 0xd8]) && bytes.ends_with(&[0xff, 0xd9])
 }
 
-#[cfg(target_os = "linux")]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn encode_frame(source: &[u8], config: &VideoConfig) -> Result<Bytes, String> {
+    match config.encoding {
+        VideoEncoding::MjpegPassthrough => Ok(Bytes::copy_from_slice(source)),
+        VideoEncoding::TranscodeJpeg => transcode_jpeg(source, config.jpeg_quality),
+    }
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn transcode_jpeg(source: &[u8], quality: u8) -> Result<Bytes, String> {
     let image = image::load_from_memory_with_format(source, image::ImageFormat::Jpeg)
         .map_err(|error| error.to_string())?;
@@ -532,11 +559,8 @@ mod tests {
         watch::Receiver<VideoStatus>,
     ) {
         let (frame_tx, frame_rx) = watch::channel(None);
-        let (status_tx, status_rx) = watch::channel(VideoStatus::from_config(
-            config,
-            VideoState::Starting,
-            None,
-        ));
+        let (status_tx, status_rx) =
+            watch::channel(VideoStatus::from_config(config, VideoState::Starting, None));
         (frame_tx, frame_rx, status_tx, status_rx)
     }
 
@@ -721,5 +745,20 @@ mod tests {
         assert!(looks_like_jpeg(&[0xff, 0xd8, 0xff, 0xd9]));
         assert!(!looks_like_jpeg(&[0xff, 0xd8, 0x00]));
         assert!(!looks_like_jpeg(&[0x00, 0xd8, 0xff, 0xd9]));
+    }
+
+    #[test]
+    fn transcode_failure_is_a_per_frame_error_not_a_session_error() {
+        // Valid SOI/EOI markers with corrupt payload pass the cheap frame check
+        // but fail JPEG decoding.
+        let source = [0xff, 0xd8, 0x00, 0x01, 0xff, 0xd9];
+        assert!(looks_like_jpeg(&source));
+
+        let mut config = test_config();
+        config.encoding = VideoEncoding::TranscodeJpeg;
+        assert!(encode_frame(&source, &config).is_err());
+
+        config.encoding = VideoEncoding::MjpegPassthrough;
+        assert_eq!(encode_frame(&source, &config).unwrap().as_ref(), source);
     }
 }
