@@ -140,6 +140,222 @@
     toast(t('settings_reset_done', '已恢复默认设置'));
   });
 
+  const configExportBtn = $('#config-export-btn');
+  const configImportBtn = $('#config-import-btn');
+  const configImportFile = $('#config-import-file');
+  const configImportDialog = $('#config-import-dialog');
+  const configImportConfirm = $('#config-import-confirm');
+  let pendingConfigImport = null;
+  let configImportBusy = false;
+
+  async function configResponseError(response, fallback) {
+    try {
+      const data = await response.json();
+      if (data && data.error) return data.error;
+    } catch (_) {}
+    return fallback || `请求失败 (${response.status})`;
+  }
+
+  function configFilename(response) {
+    const disposition = response.headers.get('content-disposition') || '';
+    const match = /filename="?([^";]+)"?/i.exec(disposition);
+    return match ? match[1] : `wingmankvm-config-${new Date().toISOString().slice(0, 10)}.json`;
+  }
+
+  async function exportConfigFile() {
+    if (!configExportBtn || configExportBtn.disabled) return;
+    configExportBtn.disabled = true;
+    try {
+      const response = await fetch('/api/config/export', {
+        cache: 'no-store',
+        credentials: 'same-origin',
+      });
+      if (!response.ok) throw new Error(await configResponseError(response, '导出失败'));
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = configFilename(response);
+      link.rel = 'noopener';
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast('配置已导出');
+    } catch (err) {
+      toast(err.message || '导出失败', true);
+    } finally {
+      configExportBtn.disabled = false;
+    }
+  }
+
+  function setConfigImportStatus(message, bad = false) {
+    const status = $('#config-import-status');
+    if (!status) return;
+    status.textContent = message;
+    status.classList.toggle('error', bad);
+  }
+
+  function formatConfigValue(value) {
+    if (value === undefined) return '—';
+    try {
+      return JSON.stringify(value);
+    } catch (_) {
+      return String(value);
+    }
+  }
+
+  function renderConfigChanges(changes) {
+    const list = $('#config-import-diff');
+    if (!list) return;
+    list.textContent = '';
+    if (!changes.length) {
+      const empty = document.createElement('p');
+      empty.className = 'config-diff-empty';
+      empty.textContent = '没有差异';
+      list.append(empty);
+      return;
+    }
+    for (const change of changes) {
+      const item = document.createElement('div');
+      item.className = 'config-diff-item';
+      const path = document.createElement('code');
+      path.className = 'config-diff-path';
+      path.textContent = change.path;
+      const values = document.createElement('span');
+      values.className = 'config-diff-values';
+      const oldValue = document.createElement('span');
+      oldValue.className = 'config-diff-old';
+      oldValue.textContent = formatConfigValue(change.old);
+      const arrow = document.createElement('span');
+      arrow.textContent = '→';
+      const newValue = document.createElement('span');
+      newValue.className = 'config-diff-new';
+      newValue.textContent = formatConfigValue(change.new);
+      values.append(oldValue, arrow, newValue);
+      item.append(path, values);
+      list.append(item);
+    }
+  }
+
+  function openConfigImportDialog() {
+    if (!configImportDialog) return;
+    try {
+      if (typeof configImportDialog.showModal === 'function') configImportDialog.showModal();
+      else configImportDialog.show?.();
+    } catch (_) {
+      try {
+        configImportDialog.show?.();
+      } catch (__) {}
+    }
+  }
+
+  function resetConfigImportDialog() {
+    pendingConfigImport = null;
+    configImportBusy = false;
+    if (configImportConfirm) configImportConfirm.disabled = true;
+    const summary = $('#config-import-summary');
+    if (summary) summary.textContent = '';
+    setConfigImportStatus('');
+    renderConfigChanges([]);
+  }
+
+  function closeConfigImportDialog() {
+    resetConfigImportDialog();
+    try {
+      configImportDialog?.close?.();
+    } catch (_) {}
+  }
+
+  async function previewConfigImport(file) {
+    if (!file || !configImportDialog) return;
+    resetConfigImportDialog();
+    openConfigImportDialog();
+    if (file.size > 256 * 1024) {
+      setConfigImportStatus('配置文件超过 256 KiB 限制', true);
+      return;
+    }
+    let text;
+    try {
+      text = await file.text();
+    } catch (_) {
+      setConfigImportStatus('无法读取配置文件', true);
+      return;
+    }
+    pendingConfigImport = text;
+    configImportBusy = true;
+    try {
+      const preview = await request('/api/config/import/preview', { method: 'POST', body: text });
+      const changes = Array.isArray(preview.changes) ? preview.changes : [];
+      renderConfigChanges(changes);
+      const summary = $('#config-import-summary');
+      if (summary) summary.textContent = `共 ${changes.length} 处更改`;
+      if (configImportConfirm) configImportConfirm.disabled = changes.length === 0;
+      if (preview.restart_required) {
+        setConfigImportStatus('导入后需要重启服务以应用新的监听地址或端口。');
+      } else {
+        setConfigImportStatus(
+          changes.length ? '预览完成，确认后才会写入配置。' : '当前配置与导入文件一致，无需更改。',
+        );
+      }
+    } catch (err) {
+      pendingConfigImport = null;
+      renderConfigChanges([]);
+      const summary = $('#config-import-summary');
+      if (summary) summary.textContent = '';
+      setConfigImportStatus(`导入失败：${err.message}`, true);
+    } finally {
+      configImportBusy = false;
+    }
+  }
+
+  async function applyConfigImport() {
+    if (!pendingConfigImport || configImportBusy || !configImportConfirm) return;
+    configImportBusy = true;
+    configImportConfirm.disabled = true;
+    try {
+      const result = await request('/api/config/import', {
+        method: 'POST',
+        body: pendingConfigImport,
+      });
+      pendingConfigImport = null;
+      const count = Array.isArray(result.changes) ? result.changes.length : 0;
+      if (result.restart_required) {
+        setConfigImportStatus(
+          `配置导入成功：共 ${count} 处更改。新的监听地址或端口将在重启服务后生效。`,
+        );
+      } else {
+        setConfigImportStatus(`配置导入成功：共 ${count} 处更改。`);
+      }
+      toast('配置导入成功');
+    } catch (err) {
+      setConfigImportStatus(`导入失败：${err.message}`, true);
+      configImportConfirm.disabled = false;
+    } finally {
+      configImportBusy = false;
+    }
+  }
+
+  configExportBtn?.addEventListener('click', exportConfigFile);
+  configImportBtn?.addEventListener('click', () => {
+    if (configImportFile) {
+      configImportFile.value = '';
+      configImportFile.click();
+    }
+  });
+  configImportFile?.addEventListener('change', () => {
+    const file = configImportFile.files && configImportFile.files[0];
+    configImportFile.value = '';
+    previewConfigImport(file);
+  });
+  configImportConfirm?.addEventListener('click', applyConfigImport);
+  $('#config-import-cancel')?.addEventListener('click', closeConfigImportDialog);
+  $('#config-import-dialog-close')?.addEventListener('click', closeConfigImportDialog);
+  configImportDialog?.addEventListener('cancel', () => resetConfigImportDialog());
+  configImportDialog?.addEventListener('click', (event) => {
+    if (event.target === configImportDialog) closeConfigImportDialog();
+  });
+
   applyTheme(getPreferredTheme());
   applyRenderPixelated(getSetting('render_pixelated', true));
   setDisplayScale(readVideoUiPreference('scale', 'fit'));

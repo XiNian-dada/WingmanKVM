@@ -531,3 +531,116 @@
     visibility: hidden;
   }
 }
+
+/* Configuration export/import dialog (issue #83). */
+#config-import-dialog {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  outline: none;
+  z-index: 95;
+}
+#config-import-dialog:not([open]) {
+  display: none;
+}
+#config-import-dialog::backdrop {
+  background: #00000055;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.config-import-modal {
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(84dvh, 680px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--canvas);
+  color: var(--ink);
+  box-shadow:
+    0 16px 36px -10px rgba(0, 0, 0, 0.3),
+    0 0 0 1px var(--line);
+}
+.config-import-body {
+  padding: 16px 20px 8px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.config-import-copy {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 17px;
+}
+.config-import-summary,
+.config-import-status {
+  margin: 0;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--muted);
+}
+.config-import-status.error {
+  color: var(--red);
+}
+.config-diff-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+.config-diff-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+.config-diff-path {
+  font: 600 11px/15px "Geist Mono", ui-monospace, monospace;
+  color: var(--ink);
+  word-break: break-all;
+}
+.config-diff-values {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font: 11px/16px "Geist Mono", ui-monospace, monospace;
+  color: var(--muted);
+}
+.config-diff-old {
+  color: var(--red);
+  text-decoration: line-through;
+  word-break: break-all;
+}
+.config-diff-new {
+  color: var(--blue);
+  word-break: break-all;
+}
+.config-diff-empty {
+  padding: 10px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.config-import-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px 18px;
+}

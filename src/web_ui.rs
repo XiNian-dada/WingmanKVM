@@ -192,6 +192,22 @@ mod tests {
     }
 
     #[test]
+    fn config_backup_ui_and_scripts_present() {
+        assert!(INDEX_HTML.contains("id=\"config-export-btn\""));
+        assert!(INDEX_HTML.contains("id=\"config-import-btn\""));
+        assert!(INDEX_HTML.contains("id=\"config-import-file\""));
+        assert!(INDEX_HTML.contains("id=\"config-import-dialog\""));
+        assert!(INDEX_HTML.contains("id=\"config-import-diff\""));
+        assert!(INDEX_HTML.contains("id=\"config-import-confirm\""));
+        assert!(INDEX_HTML.contains("/api/config/export"));
+        assert!(INDEX_HTML.contains("/api/config/import/preview"));
+        assert!(INDEX_HTML.contains("/api/config/import"));
+        assert!(INDEX_HTML.contains("renderConfigChanges"));
+        assert!(INDEX_HTML.contains("config-diff-item"));
+        assert!(INDEX_HTML.contains("导入失败：${}"));
+    }
+
+    #[test]
     fn no_emojis_in_ui_and_clean_dialog_animation() {
         let has_emoji = INDEX_HTML.0.chars().any(|c| {
             matches!(c,
