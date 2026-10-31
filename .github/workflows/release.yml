@@ -1,0 +1,196 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# Build jobs only read the repository. The publish job opts in to
+# contents: write so the default token cannot create releases elsewhere.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "2"
+  # Same toolchain as regression.yml so release and CI binaries agree.
+  RUST_VERSION: "1.93.1"
+  # Pinned cross release. The matching container image provides the armv7
+  # glibc sysroot and cross toolchain, which is more reproducible than
+  # assembling Debian/Ubuntu multiarch packages on the runner.
+  CROSS_VERSION: "0.2.5"
+
+jobs:
+  version:
+    name: verify-release-version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        # Official action commit verified by the coordinator.
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Verify tag matches Cargo.toml
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(python3 scripts/check_release_version.py --print-version)
+          case "$EVENT_NAME" in
+            push)
+              python3 scripts/check_release_version.py "$REF_NAME"
+              ;;
+            workflow_dispatch)
+              if [ "$REF_TYPE" = "tag" ]; then
+                python3 scripts/check_release_version.py "$REF_NAME"
+              else
+                echo "workflow_dispatch without a tag: build only, no version check and no release"
+              fi
+              ;;
+            *)
+              echo "unsupported event: $EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build-${{ matrix.target }}
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # GitHub-hosted native ARM64 runner avoids emulation for aarch64.
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            builder: native
+          # cross runs the ARMv7 build in a pinned container with the armhf
+          # sysroot, linker and target C compiler already configured.
+          - target: armv7-unknown-linux-gnueabihf
+            runner: ubuntu-24.04
+            builder: cross
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        # Official action commit verified by the coordinator.
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Install system build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config clang libclang-dev linux-libc-dev
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
+          rustup default "$RUST_VERSION"
+          rustup show active-toolchain
+
+      - name: Install pinned cross for ARMv7
+        if: matrix.builder == 'cross'
+        run: cargo install cross --locked --version "$CROSS_VERSION"
+
+      - name: Build release binary
+        env:
+          TARGET: ${{ matrix.target }}
+          BUILDER: ${{ matrix.builder }}
+        run: |
+          set -euo pipefail
+          if [ "$BUILDER" = "native" ]; then
+            rustup target add "$TARGET"
+            cargo build --locked --release --target "$TARGET"
+          else
+            cross build --locked --release --target "$TARGET"
+          fi
+
+      - name: Package release archive
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          archive="wingmankvm-${VERSION}-${TARGET}"
+          staging="$RUNNER_TEMP/package/$archive"
+          rm -rf "$RUNNER_TEMP/package"
+          install -d -m 0755 "$staging"
+          install -m 0755 "target/$TARGET/release/wingmankvm" "$staging/wingmankvm"
+          cp -a deploy "$staging/deploy"
+          cp LICENSE README.md CHANGELOG.md "$staging/"
+          tar --owner=0 --group=0 --numeric-owner \
+            -C "$staging" -czf "$RUNNER_TEMP/$archive.tar.gz" .
+          ls -l "$RUNNER_TEMP/$archive.tar.gz"
+
+      - name: Upload release archive
+        # Official action commit verified by the coordinator.
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: wingmankvm-${{ matrix.target }}
+          path: ${{ runner.temp }}/wingmankvm-${{ needs.version.outputs.version }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish-github-release
+    needs: [version, build]
+    # workflow_dispatch is intentionally build-only; only tag pushes publish.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        # Official action commit verified by the coordinator.
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Download release archives
+        # Official action commit verified by the coordinator.
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
+        with:
+          pattern: wingmankvm-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -- *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "WingmanKVM $VERSION" \
+              --generate-notes
+          fi
