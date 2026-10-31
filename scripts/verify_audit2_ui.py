@@ -871,6 +871,7 @@ SCENARIOS = [
     input_websocket,
     touch_gestures,
     runtime_metrics,
+    screenshot_and_record,
 ]
 
 if __name__ == "__main__":
