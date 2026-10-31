@@ -17,6 +17,7 @@ pub static APP_CSS_PARTS: &[&str] = &[
     include_str!("../web/css/app/09-settings.css"),
     include_str!("../web/css/app/10-responsive.css"),
     include_str!("../web/css/app/11-late-overrides.css"),
+    include_str!("../web/css/app/12-component-overrides.css"),
 ];
 
 pub static APP_CSS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| APP_CSS_PARTS.concat());

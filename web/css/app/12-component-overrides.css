@@ -1,0 +1,90 @@
+/* Former inline styles. Kept last in the cascade with ID or component
+   selectors so they still win over the generic control rules. */
+.diagnostics-grid .diagnostics-card-wide {
+  grid-column: 1 / -1;
+}
+#passkey-login-container {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+#passkey-login-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-weight: 500;
+}
+#passkey-insecure-hint {
+  margin-top: 10px;
+  text-align: center;
+  color: var(--amber);
+}
+#settings-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+#diag-h264-failure {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+#passkey-add-btn {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+#passkey-list-container {
+  margin-top: 10px;
+}
+#passkey-empty-hint {
+  text-align: center;
+  padding: 8px 0;
+  color: var(--muted);
+}
+#passkey-items {
+  max-height: 160px;
+  margin-top: 6px;
+}
+#passkey-inspector-hint {
+  margin-top: 8px;
+  color: var(--amber);
+}
+.session-identity-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+#session-ip {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+}
+.session-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dialog-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+#setting-proxy-protocol {
+  min-width: 110px;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  background: var(--soft);
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+#setting-reset-btn {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+/* Symbol definitions only; never rendered. */
+.svg-sprite {
+  display: none;
+}
