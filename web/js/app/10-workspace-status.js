@@ -32,7 +32,10 @@
   $$('.tab-button').forEach((button) =>
     button.addEventListener('click', () => {
       const mode = button.dataset.panelTarget;
-      $$('.tab-button').forEach((item) => item.classList.toggle('active', item === button));
+      $$('.tab-button').forEach((item) => {
+        item.classList.toggle('active', item === button);
+        item.setAttribute('aria-selected', String(item === button));
+      });
       $$('[data-panel]').forEach((panel) => (panel.hidden = panel.dataset.panel !== mode));
     }),
   );

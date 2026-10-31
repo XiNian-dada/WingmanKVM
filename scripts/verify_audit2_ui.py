@@ -182,7 +182,72 @@ def ppv2_confirmation(browser, port, checks):
         context.close()
 
 
-SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation]
+def low_risk_ui(browser, port, checks):
+    """#43: status failure, inspector default, stale responses, ARIA state."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    context, page = new_page(browser, state, port)
+    try:
+        page.evaluate("() => document.querySelector('#video-feed').dispatchEvent(new Event('load'))")
+        page.wait_for_timeout(3500)
+        healthy = page.evaluate(
+            "() => !document.querySelector('#video-viewport').classList.contains('video-unhealthy')")
+        check(checks, healthy, "video_ready_before_status_failure", healthy)
+        page.route("**/api/status", lambda route: route.fulfill(status=500, body="{}"))
+        page.wait_for_timeout(3500)
+        unhealthy = page.evaluate(
+            "() => document.querySelector('#video-viewport').classList.contains('video-unhealthy')")
+        check(checks, not unhealthy, "status_failure_keeps_video_visible", unhealthy)
+
+        pressed = page.get_attribute("#input-state", "aria-pressed")
+        page.click("#input-state")
+        check(checks, pressed == "false" and page.get_attribute("#input-state", "aria-pressed") == "true",
+              "input_toggle_exposes_aria_pressed", pressed)
+        role = page.get_attribute("#input-state", "role")
+        check(checks, role is None, "input_toggle_keeps_button_role", role)
+        page.locator('[data-panel-target="media"]').click()
+        selected = page.get_attribute('[data-panel-target="media"]', "aria-selected")
+        check(checks, selected == "true", "inspector_tab_aria_selected", selected)
+    finally:
+        context.close()
+
+    state = State()
+    context = browser.new_context(viewport={"width": 1400, "height": 900})
+    try:
+        context.add_init_script(
+            "localStorage.setItem('wingman_setting_auto_expand_inspector','false')")
+        page = context.new_page()
+        from verify_p2b_ui import api_route, GIF
+        page.route("**/api/**", lambda route: api_route(route, state))
+        page.route("**/video_feed*", lambda route: route.fulfill(
+            status=200, content_type="image/gif", body=GIF))
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        open_ = page.evaluate("() => document.querySelector('#app').classList.contains('inspector-open')")
+        check(checks, not open_, "auto_expand_setting_respected", open_)
+
+        # Two scans where the first answers last: the newer result must win.
+        replies = []
+        def scan(route):
+            replies.append(route)
+        page.route("**/api/devices/scan", scan)
+        page.evaluate("() => document.querySelector('#scan-devices').click()")
+        page.evaluate("() => document.querySelector('#scan-devices').click()")
+        page.wait_for_timeout(200)
+        newer = {"video": [{"path": "/dev/video-new", "label": "newer"}]}
+        older = {"video": [{"path": "/dev/video-old", "label": "older"}]}
+        replies[-1].fulfill(status=200, content_type="application/json", body=json.dumps(newer))
+        page.wait_for_timeout(100)
+        replies[0].fulfill(status=200, content_type="application/json", body=json.dumps(older))
+        page.wait_for_timeout(200)
+        diag = page.text_content("#device-diagnostics") or ""
+        check(checks, "video-new" in diag and "video-old" not in diag,
+              "stale_scan_response_is_ignored", diag[:120])
+    finally:
+        context.close()
+
+
+SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation, low_risk_ui]
 
 if __name__ == "__main__":
     sys.exit(main())

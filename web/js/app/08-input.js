@@ -142,6 +142,7 @@
     const stateEl = $('#input-state');
     if (stateEl) {
       stateEl.classList.toggle('active', enabled);
+      stateEl.setAttribute('aria-pressed', String(enabled));
       const text = !enabled
         ? t('input_paused', '输入已暂停')
         : relative
@@ -195,6 +196,7 @@
       .forEach((b) => {
         if (VIRTUAL_MODIFIERS.has(b.dataset.key)) {
           b.classList.toggle('active', activeModifiers.has(b.dataset.key));
+          b.setAttribute('aria-pressed', String(activeModifiers.has(b.dataset.key)));
         }
       });
   }
