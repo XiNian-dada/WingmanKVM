@@ -628,6 +628,7 @@ pub(super) async fn commit_config(state: &AppState, config: &Config) -> Result<(
     state.proxy_protocol_updates.send_replace(config.server.proxy_protocol);
     state.power.set_power_led_config(power_led).await;
     state.hid.set_keyboard_device(config.hid.keyboard_device.clone());
+    state.notifier.update_config(config.notifications.clone());
     Ok(())
 }
 
