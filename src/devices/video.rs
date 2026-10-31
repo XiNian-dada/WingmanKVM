@@ -15,6 +15,11 @@ use crate::config::{VideoConfig, VideoEncoding};
 /// surfacing a genuinely dead or malformed stream.
 const FRAME_STALL_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// While the capture node is missing the supervisor blocks on the hot-plug
+/// watcher in slices this long, so a reconfigure is still noticed promptly.
+#[cfg(target_os = "linux")]
+const DEVICE_WAIT_SLICE: Duration = Duration::from_millis(500);
+
 #[derive(Debug, Clone)]
 pub struct VideoFrame {
     pub jpeg: Bytes,
@@ -34,10 +39,22 @@ pub enum VideoState {
     Unsupported,
 }
 
+/// Machine-readable cause for a non-ready state, so the UI can show a
+/// specific message instead of parsing `message`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoReason {
+    /// The configured device node (or its by-id symlink target) is absent:
+    /// the capture card was unplugged or is re-enumerating.
+    DeviceMissing,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct VideoStatus {
     pub state: VideoState,
     pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<VideoReason>,
     pub device: Option<PathBuf>,
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -56,6 +73,7 @@ impl VideoStatus {
         Self {
             state,
             message,
+            reason: None,
             device: config.device.clone(),
             width: config.width,
             height: config.height,
@@ -269,6 +287,53 @@ fn frame_age_ms_now(last_frame_unix_ms: u64) -> Option<u64> {
     Some(unix_ms_now()?.saturating_sub(last_frame_unix_ms))
 }
 
+#[derive(Debug)]
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+enum DeviceWait {
+    Present,
+    Reconfigure(VideoConfig),
+    Stopped,
+}
+
+/// Blocks while the configured capture node is absent, publishing a distinct
+/// `device_missing` state, and returns as soon as the hot-plug watcher sees
+/// it reappear (or a reconfigure / shutdown arrives).
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn wait_for_device(
+    config: &VideoConfig,
+    device: &std::path::Path,
+    command_rx: &mpsc::Receiver<VideoCommand>,
+    frame_tx: &watch::Sender<Option<Arc<VideoFrame>>>,
+    status_tx: &watch::Sender<VideoStatus>,
+    slice: Duration,
+) -> DeviceWait {
+    use super::hotplug::{Presence, presence, wait_until_present};
+
+    if presence(device) == Presence::Present {
+        return DeviceWait::Present;
+    }
+    tracing::warn!(device = %device.display(), "capture device missing; waiting for it to reappear");
+    frame_tx.send_replace(None);
+    let mut status = VideoStatus::from_config(
+        config,
+        VideoState::Offline,
+        Some(format!("采集卡已断开：未找到 {}", device.display())),
+    );
+    status.reason = Some(VideoReason::DeviceMissing);
+    status_tx.send_replace(status);
+    loop {
+        if wait_until_present(device, slice) == Presence::Present {
+            tracing::info!(device = %device.display(), "capture device reappeared");
+            return DeviceWait::Present;
+        }
+        match command_rx.try_recv() {
+            Ok(VideoCommand::Reconfigure(next)) => return DeviceWait::Reconfigure(next),
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => return DeviceWait::Stopped,
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn video_supervisor(
     mut config: VideoConfig,
@@ -295,10 +360,31 @@ fn video_supervisor(
             continue;
         };
 
+        let was_missing = status_tx.borrow().reason == Some(VideoReason::DeviceMissing);
+        match wait_for_device(
+            &config,
+            &device,
+            &command_rx,
+            &frame_tx,
+            &status_tx,
+            DEVICE_WAIT_SLICE,
+        ) {
+            DeviceWait::Present => {}
+            DeviceWait::Reconfigure(next) => {
+                config = next;
+                continue;
+            }
+            DeviceWait::Stopped => return,
+        }
+
         status_tx.send_replace(VideoStatus::from_config(
             &config,
             VideoState::Starting,
-            Some(format!("正在打开 {}", device.display())),
+            Some(if was_missing {
+                format!("采集卡已恢复，正在打开 {}", device.display())
+            } else {
+                format!("正在打开 {}", device.display())
+            }),
         ));
         let result = catch_unwind(AssertUnwindSafe(|| {
             capture_session(&config, &command_rx, &frame_tx, &status_tx)
@@ -325,6 +411,12 @@ fn video_supervisor(
                     Some("V4L2 驱动在停止视频流时异常，正在重试".into()),
                 ));
             }
+        }
+
+        // An unplugged card fails the session with ENODEV; skip the blind
+        // retry delay and go straight to the watcher, which wakes on replug.
+        if super::hotplug::presence(&device) == super::hotplug::Presence::Missing {
+            continue;
         }
 
         match command_rx.recv_timeout(Duration::from_secs(1)) {
@@ -760,5 +852,107 @@ mod tests {
 
         config.encoding = VideoEncoding::MjpegPassthrough;
         assert_eq!(encode_frame(&source, &config).unwrap().as_ref(), source);
+    }
+
+    #[test]
+    fn missing_device_reports_reason_and_wakes_on_replug() {
+        let root = crate::devices::hotplug::tests::temp_root("video-replug");
+        let node = root.join("video0");
+        let config = VideoConfig {
+            device: Some(node.clone()),
+            ..VideoConfig::default()
+        };
+        let (frame_tx, frame_rx, status_tx, status_rx) = channels(&config);
+        frame_tx.send_replace(Some(test_frame(1)));
+        let (_command_tx, command_rx) = mpsc::channel();
+
+        let worker = {
+            let (config, node) = (config.clone(), node.clone());
+            std::thread::spawn(move || {
+                let started = Instant::now();
+                let outcome = wait_for_device(
+                    &config,
+                    &node,
+                    &command_rx,
+                    &frame_tx,
+                    &status_tx,
+                    Duration::from_secs(10),
+                );
+                (outcome, started.elapsed())
+            })
+        };
+        std::thread::sleep(Duration::from_millis(150));
+        let missing = status_rx.borrow().clone();
+        assert_eq!(missing.state, VideoState::Offline);
+        assert_eq!(missing.reason, Some(VideoReason::DeviceMissing));
+        assert!(missing.message.as_deref().unwrap().contains("采集卡已断开"));
+        assert!(frame_rx.borrow().is_none(), "stale frame must be cleared");
+        let json = serde_json::to_value(&missing).unwrap();
+        assert_eq!(json["reason"], "device_missing");
+
+        std::fs::write(&node, b"").unwrap();
+        let (outcome, elapsed) = worker.join().unwrap();
+        assert!(matches!(outcome, DeviceWait::Present));
+        // Woken by the watcher, not by the 10 s slice timeout.
+        assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn present_device_returns_immediately_without_publishing() {
+        let root = crate::devices::hotplug::tests::temp_root("video-present");
+        let node = root.join("video0");
+        std::fs::write(&node, b"").unwrap();
+        let config = test_config();
+        let (frame_tx, _frame_rx, status_tx, status_rx) = channels(&config);
+        let (_command_tx, command_rx) = mpsc::channel();
+        let outcome = wait_for_device(
+            &config,
+            &node,
+            &command_rx,
+            &frame_tx,
+            &status_tx,
+            Duration::from_secs(10),
+        );
+        assert!(matches!(outcome, DeviceWait::Present));
+        assert_eq!(status_rx.borrow().reason, None);
+        assert!(serde_json::to_value(&*status_rx.borrow()).unwrap().get("reason").is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reconfigure_interrupts_missing_device_wait() {
+        let root = crate::devices::hotplug::tests::temp_root("video-reconf");
+        let config = test_config();
+        let (frame_tx, _frame_rx, status_tx, _status_rx) = channels(&config);
+        let (command_tx, command_rx) = mpsc::channel();
+        let mut next = test_config();
+        next.device = Some(root.join("video1"));
+        command_tx.send(VideoCommand::Reconfigure(next)).unwrap();
+        let outcome = wait_for_device(
+            &config,
+            &root.join("video0"),
+            &command_rx,
+            &frame_tx,
+            &status_tx,
+            Duration::from_millis(50),
+        );
+        match outcome {
+            DeviceWait::Reconfigure(cfg) => assert_eq!(cfg.device, Some(root.join("video1"))),
+            other => panic!("unexpected {other:?}"),
+        }
+        drop(command_tx);
+        assert!(matches!(
+            wait_for_device(
+                &config,
+                &root.join("video0"),
+                &command_rx,
+                &frame_tx,
+                &status_tx,
+                Duration::from_millis(50),
+            ),
+            DeviceWait::Stopped
+        ));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
