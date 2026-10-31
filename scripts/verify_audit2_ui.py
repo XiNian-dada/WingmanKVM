@@ -165,8 +165,9 @@ def ppv2_confirmation(browser, port, checks):
     posts = []
     context, page = new_page(browser, state, port)
     try:
+        # Only writes count: opening settings also reads the config.
         page.route("**/api/config", lambda route: (
-            posts.append(route.request.post_data),
+            route.request.method == "POST" and posts.append(route.request.post_data),
             route.fulfill(status=200, content_type="application/json",
                           body='{"server":{"proxy_protocol":"required"}}'))[-1])
         dialogs = []
@@ -1109,6 +1110,109 @@ def media_url_download(browser, port, checks):
         hidden = page.evaluate(
             "() => document.querySelector('#media-download-cancel').classList.contains('hidden')")
         check(checks, hidden, "url_download_cancel_finishes_ui", hidden)
+    finally:
+        context.close()
+
+
+def notification_settings(browser, port, checks):
+    """#84: notification settings never echo secrets; test results show inline."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    secret_token = "123456:TOKEN-should-never-render"
+    notifications = {
+        "webhook": {"enabled": True, "url_configured": True,
+                    "url_hint": "https://hooks.example.com"},
+        "ntfy": {"enabled": False, "server": "https://ntfy.sh", "topic": "kvm-alerts",
+                 "token_configured": False},
+        "telegram": {"enabled": False, "chat_id": "-100777", "bot_token_configured": False},
+        "events": {"login_succeeded": False, "login_failed": True, "power_led_changed": True,
+                   "hid_failing": True, "video_lost": True},
+        "hid_failure_threshold": 5, "hid_failure_window_seconds": 60,
+        "video_lost_seconds": 30, "rate_limit_seconds": 60,
+    }
+    posts, tests = [], []
+
+    def config_route(route):
+        if route.request.method == "POST":
+            body = json.loads(route.request.post_data or "{}")
+            posts.append(body)
+            patch = body.get("notifications", {})
+            telegram = patch.get("telegram", {})
+            if telegram.get("bot_token"):
+                notifications["telegram"]["bot_token_configured"] = True
+            if "enabled" in telegram:
+                notifications["telegram"]["enabled"] = telegram["enabled"]
+            if "chat_id" in telegram:
+                notifications["telegram"]["chat_id"] = telegram["chat_id"]
+            if patch.get("webhook", {}).get("clear_url"):
+                notifications["webhook"].update(url_configured=False, url_hint=None, enabled=False)
+        route.fulfill(status=200, content_type="application/json",
+                      body=json.dumps({"notifications": notifications}))
+
+    def test_route(route):
+        channel = json.loads(route.request.post_data or "{}").get("channel")
+        tests.append(channel)
+        if channel == "telegram":
+            route.fulfill(status=502, content_type="application/json",
+                          body=json.dumps({"error": "发送失败：服务返回 HTTP 401"}))
+        else:
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"ok": True, "channel": channel}))
+
+    page.route("**/api/config", config_route)
+    page.route("**/api/notifications/test", test_route)
+    try:
+        page.on("dialog", lambda dialog: dialog.accept())
+        page.click("#settings-toggle")
+        page.wait_for_function(
+            "() => document.querySelector('[data-notify-secret=\"webhook\"]').textContent.includes('已配置')",
+            timeout=5000)
+        form = page.locator("#notify-config")
+        state_text = page.text_content('[data-notify-secret="webhook"]') or ""
+        check(checks, "hooks.example.com" in state_text, "configured_webhook_shows_origin_only", state_text)
+        url_value = form.locator('input[name="webhook_url"]').input_value()
+        check(checks, url_value == "", "webhook_secret_input_left_empty", url_value)
+        check(checks, form.locator('input[name="event_login_succeeded"]').is_checked() is False
+              and form.locator('input[name="event_login_failed"]').is_checked(),
+              "event_toggles_reflect_config", None)
+        check(checks, form.locator('input[name="ntfy_topic"]').input_value() == "kvm-alerts",
+              "non_secret_fields_filled", form.locator('input[name="ntfy_topic"]').input_value())
+
+        form.locator('input[name="telegram_enabled"]').check()
+        form.locator('input[name="telegram_bot_token"]').fill(secret_token)
+        form.locator('button[type="submit"]').click()
+        page.wait_for_timeout(300)
+        sent = posts[-1]["notifications"] if posts else {}
+        check(checks, sent.get("telegram", {}).get("bot_token") == secret_token
+              and "url" not in sent.get("webhook", {}),
+              "save_sends_new_secret_and_omits_empty_ones", sent)
+        token_value = form.locator('input[name="telegram_bot_token"]').input_value()
+        html = page.content()
+        check(checks, token_value == "" and secret_token not in html,
+              "saved_secret_not_echoed_back", token_value)
+        tg_state = page.text_content('[data-notify-secret="telegram"]') or ""
+        check(checks, "已配置" in tg_state, "saved_secret_reported_as_configured", tg_state)
+        status = page.text_content("#notify-config .form-status") or ""
+        check(checks, "已保存" in status, "save_result_inline", status)
+
+        page.click('[data-notify-test="webhook"]')
+        page.wait_for_function(
+            "() => document.querySelector('[data-notify-result=\"webhook\"]').textContent.includes('已发送')",
+            timeout=5000)
+        check(checks, tests == ["webhook"], "test_button_posts_channel", tests)
+        page.click('[data-notify-test="telegram"]')
+        page.wait_for_function(
+            "() => document.querySelector('[data-notify-result=\"telegram\"]').classList.contains('error')",
+            timeout=5000)
+        error = page.text_content('[data-notify-result="telegram"]') or ""
+        check(checks, "HTTP 401" in error, "test_failure_shown_inline", error)
+
+        page.click('[data-notify-clear="webhook"]')
+        page.wait_for_timeout(300)
+        cleared = posts[-1].get("notifications", {}).get("webhook", {})
+        check(checks, cleared == {"clear_url": True}, "clear_sends_explicit_flag", cleared)
+        state_text = page.text_content('[data-notify-secret="webhook"]') or ""
+        check(checks, "未配置" in state_text, "cleared_secret_shows_unconfigured", state_text)
     finally:
         context.close()
 
