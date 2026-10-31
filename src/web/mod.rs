@@ -11,6 +11,7 @@ mod media;
 mod passkey;
 mod password_sync;
 mod power;
+mod security_headers;
 mod session;
 mod setup;
 mod status;
@@ -267,6 +268,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/passkey/login/finish", post(passkey_login_finish))
         .merge(protected)
         .with_state(state)
+        .layer(middleware::from_fn(security_headers::security_headers))
 }
 
 #[cfg(test)]
