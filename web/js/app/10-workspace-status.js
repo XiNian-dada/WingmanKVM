@@ -45,9 +45,6 @@
     inspectorToggle.textContent = open
       ? t('collapse_inspector', '收起面板')
       : t('open_inspector', '控制面板');
-    try {
-      localStorage.setItem('wingman_inspector_open', open ? 'true' : 'false');
-    } catch (_) {}
     requestAnimationFrame(() => {
       invalidateSurfaceBox();
       if (videoWorkspace === 'terminal') scheduleTerminalFit();
@@ -92,10 +89,11 @@
       if (latestSystemStatus) renderSystemMetrics(latestSystemStatus);
       renderVideoUi();
     } catch {
-      latestVideoStatus = { state: 'offline', message: '连接失败' };
+      // A failed status poll says nothing about the video stream itself: keep
+      // the last known video state (and a playing surface) instead of
+      // inventing "offline". Only the power LED reading is marked unknown.
       latestPowerStatus = { power_led: { configured: true, state: 'unknown', sense_error: '连接失败' } };
       renderPowerLed(latestPowerStatus);
-      renderVideoUi();
     } finally {
       statusTimer =
         app.classList.contains('hidden') || document.hidden

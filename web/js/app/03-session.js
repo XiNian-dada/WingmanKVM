@@ -216,12 +216,9 @@
       startVideo();
       refreshStatus();
       scanDevices();
-      let defaultOpen = !matchMedia('(max-width:900px)').matches;
-      try {
-        const saved = localStorage.getItem('wingman_inspector_open');
-        if (saved !== null) defaultOpen = saved === 'true';
-      } catch (_) {}
-      setInspectorOpen(defaultOpen);
+      // "Expand by default on wide screens" decides the initial state each
+      // time the console opens; manual toggles apply only to this visit.
+      setInspectorOpen(!matchMedia('(max-width:900px)').matches && getSetting('auto_expand_inspector', true));
       if (bootstrap.capabilities?.mass_storage) refreshMedia();
       else $('#media-list').textContent = '虚拟介质尚未配置';
       refreshPasskeys();
