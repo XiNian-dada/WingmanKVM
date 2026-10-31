@@ -10,10 +10,29 @@ pub static ICON_SVG: &str = include_str!("../web/icon.svg");
 mod tests {
     use super::{APP_CSS, APP_JS, ICON_SVG};
 
-    /// The full UI source as the browser assembles it, so structural
-    /// assertions keep working after the HTML/CSS/JS split.
-    static INDEX_HTML: std::sync::LazyLock<String> =
-        std::sync::LazyLock::new(|| [super::INDEX_HTML, APP_CSS, APP_JS].concat());
+    /// The full UI source as the browser assembles it, with all whitespace
+    /// removed so assertions check content rather than source formatting.
+    static INDEX_HTML: std::sync::LazyLock<UiSource> = std::sync::LazyLock::new(|| {
+        UiSource(compact(&[super::INDEX_HTML, APP_CSS, APP_JS].concat()))
+    });
+
+    fn compact(text: &str) -> String {
+        let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+        // Formatted CSS ends each block's last declaration with `;`.
+        compact.replace(";}", "}")
+    }
+
+    struct UiSource(String);
+
+    impl UiSource {
+        fn contains(&self, needle: &str) -> bool {
+            self.0.contains(&compact(needle))
+        }
+
+        fn matches(&self, needle: &str) -> std::vec::IntoIter<()> {
+            vec![(); self.0.matches(&compact(needle)).count()].into_iter()
+        }
+    }
 
     #[test]
     fn pointer_mode_selectors_only_offer_absolute_and_relative() {
@@ -113,7 +132,7 @@ mod tests {
 
     #[test]
     fn no_emojis_in_ui_and_clean_dialog_animation() {
-        let has_emoji = INDEX_HTML.chars().any(|c| {
+        let has_emoji = INDEX_HTML.0.chars().any(|c| {
             matches!(c,
                 '\u{1F300}'..='\u{1F9FF}' |
                 '\u{2600}'..='\u{27BF}' |
