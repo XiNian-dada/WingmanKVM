@@ -121,6 +121,7 @@ pub struct AppState {
     config_update: Arc<AsyncMutex<()>>,
     password_migration: Arc<AsyncMutex<()>>,
     setup_token: Arc<Mutex<Option<String>>>,
+    setup_scan: Arc<AsyncMutex<Option<(Instant, discovery::DeviceDiscovery)>>>,
     login_limiter: LoginLimiter,
     passkey_start_limiter: LoginLimiter,
     passkey_challenges: Arc<Mutex<HashMap<String, PasskeyChallengeState>>>,
@@ -183,6 +184,7 @@ impl AppState {
             config_update: Arc::new(AsyncMutex::new(())),
             password_migration: Arc::new(AsyncMutex::new(())),
             setup_token: Arc::new(Mutex::new(setup_token)),
+            setup_scan: Arc::new(AsyncMutex::new(None)),
             login_limiter: LoginLimiter::default(),
             passkey_start_limiter: LoginLimiter::with_budget(MAX_PASSKEY_STARTS_PER_IP),
             passkey_challenges,
@@ -1840,11 +1842,35 @@ async fn scan_devices() -> impl IntoResponse {
     no_store(Json(discovery::scan().await))
 }
 
+/// Results are reused briefly so unauthenticated callers during first setup
+/// cannot queue unbounded device probes.
+const SETUP_SCAN_CACHE_TTL: Duration = Duration::from_secs(3);
+
 async fn scan_setup_devices(State(state): State<AppState>) -> Result<Response, ApiError> {
     if state.auth.is_initialized().map_err(ApiError::internal)? {
         return Err(ApiError::new(StatusCode::UNAUTHORIZED, "需要登录"));
     }
-    Ok(no_store(Json(discovery::scan().await)))
+    Ok(no_store(Json(cached_setup_scan(&state.setup_scan, discovery::scan).await)))
+}
+
+/// Serializes setup scans and shares one result across callers within the TTL.
+async fn cached_setup_scan<F, Fut>(
+    cache: &AsyncMutex<Option<(Instant, discovery::DeviceDiscovery)>>,
+    scan: F,
+) -> discovery::DeviceDiscovery
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = discovery::DeviceDiscovery>,
+{
+    let mut cached = cache.lock().await;
+    if let Some((scanned_at, result)) = cached.as_ref()
+        && scanned_at.elapsed() < SETUP_SCAN_CACHE_TTL
+    {
+        return result.clone();
+    }
+    let result = scan().await;
+    *cached = Some((Instant::now(), result.clone()));
+    result
 }
 
 async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
@@ -4788,6 +4814,29 @@ mod tests {
         let res = build_webauthn(&headers);
         assert!(res.is_err());
         assert_eq!(res.err().unwrap().status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn concurrent_setup_scans_share_one_probe() {
+        let cache = Arc::new(AsyncMutex::new(None));
+        let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let cache = cache.clone();
+            let probes = probes.clone();
+            tasks.push(tokio::spawn(async move {
+                cached_setup_scan(&cache, || async move {
+                    probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    empty_discovery()
+                })
+                .await
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap();
+        }
+        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]
