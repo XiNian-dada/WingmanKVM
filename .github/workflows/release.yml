@@ -5,6 +5,14 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+  # Changes to the release machinery are build-checked on their PR; the
+  # publish job below only runs for tag pushes.
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/check_release_version.py
+      - Cargo.toml
+      - Cargo.lock
 
 # Build jobs only read the repository. The publish job opts in to
 # contents: write so the default token cannot create releases elsewhere.
@@ -34,8 +42,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout
-        # Official action commit verified by the coordinator.
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # same pin as regression.yml
         with:
           persist-credentials: false
 
@@ -52,7 +59,7 @@ jobs:
             push)
               python3 scripts/check_release_version.py "$REF_NAME"
               ;;
-            workflow_dispatch)
+            workflow_dispatch|pull_request)
               if [ "$REF_TYPE" = "tag" ]; then
                 python3 scripts/check_release_version.py "$REF_NAME"
               else
@@ -86,8 +93,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout
-        # Official action commit verified by the coordinator.
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # same pin as regression.yml
         with:
           persist-credentials: false
 
@@ -138,8 +144,7 @@ jobs:
           ls -l "$RUNNER_TEMP/$archive.tar.gz"
 
       - name: Upload release archive
-        # Official action commit verified by the coordinator.
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0, same pin as regression.yml
         with:
           name: wingmankvm-${{ matrix.target }}
           path: ${{ runner.temp }}/wingmankvm-${{ needs.version.outputs.version }}-${{ matrix.target }}.tar.gz
@@ -157,14 +162,12 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        # Official action commit verified by the coordinator.
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # same pin as regression.yml
         with:
           persist-credentials: false
 
       - name: Download release archives
-        # Official action commit verified by the coordinator.
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
           pattern: wingmankvm-*
           path: dist
