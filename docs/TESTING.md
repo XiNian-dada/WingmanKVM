@@ -74,7 +74,15 @@ or hardware test.
 python3 scripts/verify_p1_ui.py --repo . --output-dir "$SCRATCH/p1-ui" --browser-channel chromium
 python3 scripts/verify_p2_ui.py --repo . --output-dir "$SCRATCH/p2-ui" --browser-channel chromium
 python3 scripts/verify_p2b_ui.py --repo . --output-dir "$SCRATCH/p2b-ui" --browser-channel chromium
+python3 scripts/verify_audit2_ui.py --repo . --output-dir "$SCRATCH/audit2-ui" --browser-channel chromium
+# or all suites at once (macOS or Linux), with per-suite check counts:
+python3 scripts/verify_ui_suite.py --output-dir "$SCRATCH/ui" --browser-channel chromium
 ```
+
+All suites share `scripts/ui_harness.py` (static server, xterm assets, video
+feed mock, `check()` and the JSON report). A new suite only defines its API
+mock and scenarios; add it to `SUITES` in `verify_ui_suite.py` and to `CASES`
+in `verify_regressions.py` so CI runs it.
 
 Headless Chromium may refuse pointer lock/fullscreen. Those cases are recorded
 as `"ok": null, "skipped": true`; the orchestrator counts them as explicit
