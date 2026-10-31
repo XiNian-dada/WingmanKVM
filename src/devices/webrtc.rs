@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     process::{Child as StdChild, Command as StdCommand, ExitStatus, Stdio as StdStdio},
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Mutex, Weak, atomic::{AtomicU64, Ordering}},
     time::{Duration, Instant},
 };
 
@@ -72,6 +72,7 @@ const PROBE_REAP_TIMEOUT: Duration = Duration::from_secs(2);
 const PROBE_READ_CHUNK: usize = 16 * 1024;
 const MAX_RETAINED_PROBES: usize = 4;
 const PROBE_BUSY: &str = "H.264 编码器探测暂时不可用";
+const PROBE_PENDING: &str = "H.264 编码器正在后台探测";
 const PROBE_CLEANUP_FAILED: &str = "H.264 编码器探测清理失败";
 
 #[cfg(unix)]
@@ -196,6 +197,8 @@ struct Inner {
     sessions: Mutex<HashMap<String, Session>>,
     offer_lock: AsyncMutex<()>,
     udp_binding: AsyncMutex<Option<UdpBinding>>,
+    /// Guards startup probes from overwriting a newer `reconfigure` result.
+    probe_epoch: AtomicU64,
 }
 
 impl Drop for Inner {
@@ -329,22 +332,56 @@ fn lifecycle_decision(
     }
 }
 
-impl WebRtcManager {
-    pub fn new(video: VideoManager, config: H264Config) -> Self {
+/// Run the potentially slow FFmpeg probe without blocking the caller.
+///
+/// The epoch check prevents a startup probe that finishes after a
+/// `reconfigure` from overwriting the newer encoder choice.
+fn spawn_startup_probe(inner: Arc<Inner>, config: H264Config) {
+    let epoch = inner.probe_epoch.load(Ordering::SeqCst);
+    let probe = move || {
         let encoder = probe_encoder(&config);
         if let Err(message) = &encoder {
             tracing::info!(%message, "H.264 WebRTC transport is unavailable");
         }
-        Self {
-            inner: Arc::new(Inner {
-                video,
-                config: Mutex::new(config),
-                encoder: Mutex::new(encoder),
-                sessions: Mutex::new(HashMap::new()),
-                offer_lock: AsyncMutex::new(()),
-                udp_binding: AsyncMutex::new(None),
-            }),
+        if inner.probe_epoch.load(Ordering::SeqCst) == epoch {
+            *inner
+                .encoder
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = encoder;
         }
+    };
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn(async move {
+                if let Err(error) = tokio::task::spawn_blocking(probe).await {
+                    tracing::warn!(%error, "H.264 编码器后台探测失败");
+                }
+            });
+        }
+        Err(_) => {
+            // Construction outside a Tokio runtime still must not block; a
+            // dedicated thread performs the one-off probe.
+            std::thread::spawn(probe);
+        }
+    }
+}
+
+impl WebRtcManager {
+    pub fn new(video: VideoManager, config: H264Config) -> Self {
+        // Encoder discovery shells out to FFmpeg and may take seconds. Publish
+        // a "probing" state immediately and finish the probe in the background
+        // so startup can begin listening without waiting for the media stack.
+        let inner = Arc::new(Inner {
+            video,
+            config: Mutex::new(config.clone()),
+            encoder: Mutex::new(Err(PROBE_PENDING.to_owned())),
+            sessions: Mutex::new(HashMap::new()),
+            offer_lock: AsyncMutex::new(()),
+            udp_binding: AsyncMutex::new(None),
+            probe_epoch: AtomicU64::new(0),
+        });
+        spawn_startup_probe(Arc::clone(&inner), config);
+        Self { inner }
     }
 
     pub fn status(&self) -> WebRtcStatus {
@@ -390,6 +427,8 @@ impl WebRtcManager {
 
     pub async fn reconfigure(&self, config: H264Config) {
         let _offer_guard = self.inner.offer_lock.lock().await;
+        // Invalidate any startup probe that may still be running.
+        self.inner.probe_epoch.fetch_add(1, Ordering::SeqCst);
         let udp_bind_address = config.udp_bind_address;
         let probe_config = config.clone();
         let encoder = tokio::task::spawn_blocking(move || probe_encoder(&probe_config))
@@ -2054,6 +2093,7 @@ mod tests {
             sessions: Mutex::new(HashMap::new()),
             offer_lock: AsyncMutex::new(()),
             udp_binding: AsyncMutex::new(None),
+            probe_epoch: AtomicU64::new(0),
         })
     }
 
@@ -2286,6 +2326,39 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[tokio::test]
+    async fn new_returns_immediately_while_encoder_probe_is_suspended() {
+        let _serial = serial_probe_fixture();
+        let fixture = ProbeFixture::new();
+        let script = fixture.script("ffmpeg-slow", "sleep 1\nprintf 'V....D libx264\\n'");
+        let config = fixture.config(&script);
+
+        let started = Instant::now();
+        let manager = WebRtcManager::new(VideoManager::new(VideoConfig::default()), config);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "constructor must not wait for the encoder probe"
+        );
+        let probing = manager.status();
+        assert!(!probing.available);
+        assert!(
+            probing
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("探测"))
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !manager.status().available {
+            assert!(
+                Instant::now() < deadline,
+                "background probe should finish and publish the encoder"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[cfg(unix)]
     #[test]
     fn probe_stdout_flood_is_bounded() {
         let _serial = serial_probe_fixture();
@@ -2502,6 +2575,7 @@ mod tests {
                 sessions: Mutex::new(HashMap::new()),
                 offer_lock: AsyncMutex::new(()),
                 udp_binding: AsyncMutex::new(None),
+                probe_epoch: AtomicU64::new(0),
             }),
         };
         let sessions = crate::auth::SessionStore::new(Duration::from_secs(60));
