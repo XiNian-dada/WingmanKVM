@@ -10,6 +10,8 @@ PORT=8080
 SETUP_TOKEN=
 ACCESS_HOSTS=()
 ACCESS_HOSTNAMES=()
+MDNS_HOST=
+AVAHI_CONF=${WINGMANKVM_AVAHI_CONF:-/etc/avahi/avahi-daemon.conf}
 
 log() {
     printf '%s: %s\n' "$PROGRAM" "$*"
@@ -132,13 +134,41 @@ collect_hosts() {
     fi
 }
 
+# Sets MDNS_HOST to NAME.local when avahi-daemon is running. Passkey needs a
+# domain name rather than an IP, so this address is printed first.
+collect_mdns_host() {
+    local name=
+    command -v systemctl >/dev/null 2>&1 || return 0
+    systemctl is-active --quiet avahi-daemon.service 2>/dev/null || return 0
+    if [[ -f $AVAHI_CONF && -r $AVAHI_CONF ]]; then
+        name=$(awk '
+            /^[[:space:]]*\[/ { in_server = ($0 ~ /^[[:space:]]*\[server\]/); next }
+            in_server && /^[[:space:]]*host-name[[:space:]]*=/ {
+                sub(/^[^=]*=[[:space:]]*/, ""); sub(/[[:space:]]*$/, ""); print; exit
+            }
+        ' "$AVAHI_CONF")
+    fi
+    if [[ -z $name ]] && command -v hostname >/dev/null 2>&1; then
+        name=$(hostname -s 2>/dev/null || true)
+    fi
+    name=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')
+    ((${#name} >= 1 && ${#name} <= 63)) || return 0
+    [[ $name =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || return 0
+    MDNS_HOST=$name.local
+}
+
 main() {
     [[ $(id -u) -eq 0 ]] || die "run this command as root (for example with sudo)"
     read_port
 
     if [[ -s $STATE_DIR/auth.json ]]; then
         log "WingmanKVM 已完成初始化，无需一次性初始化地址"
-        log "打开 http://<KVM 主机 IP 或主机名>:$PORT/ 并使用管理员账号登录"
+        collect_mdns_host
+        if [[ -n $MDNS_HOST ]]; then
+            log "打开 http://$MDNS_HOST:$PORT/ 并使用管理员账号登录"
+        else
+            log "打开 http://<KVM 主机 IP 或主机名>:$PORT/ 并使用管理员账号登录"
+        fi
         return 0
     fi
 
@@ -151,12 +181,17 @@ main() {
     fi
 
     collect_hosts
+    collect_mdns_host
     log "WingmanKVM 尚未完成初始化，请在浏览器中打开以下任一地址："
     local host
+    if [[ -n $MDNS_HOST ]]; then
+        printf '  http://%s:%s/#setup=%s\n' "$MDNS_HOST" "$PORT" "$SETUP_TOKEN"
+    fi
     for host in "${ACCESS_HOSTS[@]}"; do
         printf '  http://%s:%s/#setup=%s\n' "$host" "$PORT" "$SETUP_TOKEN"
     done
     for host in "${ACCESS_HOSTNAMES[@]}"; do
+        [[ $host == "$MDNS_HOST" ]] && continue
         printf '  http://%s:%s/#setup=%s\n' "$host" "$PORT" "$SETUP_TOKEN"
     done
     log "该地址包含一次性令牌；创建管理员后令牌立即失效，令牌文件也会被删除"
