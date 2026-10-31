@@ -484,6 +484,7 @@
       "当前浏览器不支持录制": "目前瀏覽器不支援錄製",
       "录制已保存": "錄製已儲存",
       "开始录制，再次点击停止": "開始錄製，再次點擊停止",
+      "终端会话仍在后台运行": "終端工作階段仍在背景執行",
     },
     en: {
       "Wingman 简介": "About Wingman",
@@ -1005,5 +1006,6 @@
       "当前浏览器不支持录制": "This browser cannot record",
       "录制已保存": "Recording saved",
       "开始录制，再次点击停止": "Recording started; click again to stop",
+      "终端会话仍在后台运行": "The terminal session is still running in the background",
     },
   };

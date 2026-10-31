@@ -81,6 +81,7 @@
     socket.onopen = () => {
       if (terminalSocket !== socket) return;
       $('#terminal-reconnect')?.classList.add('hidden');
+      syncTerminalTabIndicator();
       scheduleTerminalFit();
       requestAnimationFrame(() => {
         terminalResize(terminal.cols, terminal.rows);
@@ -98,8 +99,17 @@
     socket.onclose = () => {
       if (terminalSocket !== socket) return;
       terminalSocket = null;
+      syncTerminalTabIndicator();
       if (videoWorkspace === 'terminal') $('#terminal-reconnect')?.classList.remove('hidden');
     };
+  }
+  // The terminal session deliberately survives switching to the video tab
+  // (#47); a dot on the tab shows it is still running in the background.
+  function syncTerminalTabIndicator() {
+    const tab = $('[data-workspace="terminal"]'),
+      running = !!terminalSocket && terminalSocket.readyState === WebSocket.OPEN && videoWorkspace !== 'terminal';
+    tab?.classList.toggle('session-live', running);
+    if (tab) tab.title = running ? tr('终端会话仍在后台运行') : '';
   }
   function terminalReset() {
     if (!terminal) return;
@@ -112,6 +122,7 @@
       terminalSocket = null;
       socket.close();
     }
+    syncTerminalTabIndicator();
     terminalReset();
     $('#terminal-reconnect')?.classList.remove('hidden');
   }
