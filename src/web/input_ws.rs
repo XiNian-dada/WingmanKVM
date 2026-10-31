@@ -35,24 +35,41 @@ pub(super) async fn input_ws(
 ) -> Response {
     let public_origin = state.config.read().await.server.public_origin.clone();
     let sessions = state.sessions.clone();
-    upgrade_input_ws(&sessions, &headers, ws, public_origin.as_deref(), move |text| {
-        let state = state.clone();
-        async move { input_reply(&state, &text).await }
-    })
+    let release_state = state.clone();
+    upgrade_input_ws(
+        &sessions,
+        &headers,
+        ws,
+        public_origin.as_deref(),
+        move |text| {
+            let state = state.clone();
+            async move { input_reply(&state, &text).await }
+        },
+        // A socket can end mid-chord (tab closed, crash, network drop, logout);
+        // never leave keys or buttons held on the target.
+        move || async move {
+            if let Err(error) = send_release_all(&release_state).await {
+                tracing::warn!(error = %error.message, "release after input socket closed failed");
+            }
+        },
+    )
 }
 
 /// Shared by the real route and tests: authorizes the upgrade and runs the
 /// socket loop with `execute` handling each text message.
-pub(super) fn upgrade_input_ws<F, Fut>(
+pub(super) fn upgrade_input_ws<F, Fut, R, RFut>(
     sessions: &SessionStore,
     headers: &HeaderMap,
     ws: WebSocketUpgrade,
     public_origin: Option<&str>,
     execute: F,
+    on_close: R,
 ) -> Response
 where
     F: Fn(String) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = serde_json::Value> + Send + 'static,
+    R: FnOnce() -> RFut + Send + 'static,
+    RFut: std::future::Future<Output = ()> + Send + 'static,
 {
     if let Err(error) = validate_terminal_origin(headers, public_origin) {
         return error.into_response();
@@ -62,16 +79,24 @@ where
     };
     ws.max_message_size(INPUT_WS_MAX_MESSAGE)
         .max_frame_size(INPUT_WS_MAX_MESSAGE)
-        .on_upgrade(move |socket| handle_input(socket, guard, execute))
+        .on_upgrade(move |socket| async move {
+            let used = handle_input(socket, guard, execute).await;
+            if used {
+                on_close().await;
+            }
+        })
 }
 
-async fn handle_input<F, Fut>(mut socket: WebSocket, guard: SessionGuard, execute: F)
+/// Runs the socket until it closes or the session ends; returns whether any
+/// message was processed (only then is a release needed).
+async fn handle_input<F, Fut>(mut socket: WebSocket, guard: SessionGuard, execute: F) -> bool
 where
     F: Fn(String) -> Fut,
     Fut: std::future::Future<Output = serde_json::Value>,
 {
+    let mut used = false;
     if !guard.is_active() {
-        return;
+        return used;
     }
     loop {
         let incoming = tokio::select! {
@@ -86,6 +111,7 @@ where
         };
         // Operations run strictly in arrival order, matching what the user
         // typed; a key press can never overtake an earlier release.
+        used = true;
         let reply = execute(text.to_string()).await;
         let send = socket.send(Message::Text(reply.to_string().into()));
         tokio::pin!(send);
@@ -95,6 +121,7 @@ where
             result = &mut send => if result.is_err() { break },
         }
     }
+    used
 }
 
 /// Executes one message and builds its reply. Malformed input is answered
@@ -158,6 +185,9 @@ mod tests {
         }
     }
 
+    /// Counts on_close releases across the test servers in this module.
+    static RELEASES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
     struct InputTestServer {
         address: SocketAddr,
         task: tokio::task::JoinHandle<()>,
@@ -176,10 +206,19 @@ mod tests {
             ws: WebSocketUpgrade,
         ) -> Response {
             // Echo executor: proves ordering and id round-trip without HID.
-            upgrade_input_ws(&sessions, &headers, ws, None, |text| async move {
-                let value: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-                json!({ "id": value["id"], "ok": true, "type": value["type"] })
-            })
+            upgrade_input_ws(
+                &sessions,
+                &headers,
+                ws,
+                None,
+                |text| async move {
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+                    json!({ "id": value["id"], "ok": true, "type": value["type"] })
+                },
+                || async {
+                    RELEASES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                },
+            )
         }
         let app = Router::new().route("/input", get(route)).with_state(sessions);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.ok()?;
@@ -228,9 +267,18 @@ mod tests {
             let value: serde_json::Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
             assert_eq!(value["id"], id, "replies arrive in send order");
         }
+        let releases_before = RELEASES.load(std::sync::atomic::Ordering::SeqCst);
         assert!(sessions.revoke(&token));
         let closed = tokio::time::timeout(Duration::from_secs(2), socket.next()).await.expect("socket closes after logout");
         assert!(matches!(closed, None | Some(Ok(Client::Close(_))) | Some(Err(_))));
+        // Held keys must be released once the socket ends.
+        for _ in 0..50 {
+            if RELEASES.load(std::sync::atomic::Ordering::SeqCst) > releases_before {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(RELEASES.load(std::sync::atomic::Ordering::SeqCst) > releases_before, "release on close");
     }
 
     #[tokio::test]
