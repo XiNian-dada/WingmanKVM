@@ -40,6 +40,7 @@
     $('#diagnostics-toggle').title = full;
   }
   function renderVideoUi() {
+    syncQualityOverlay();
     const dot = $('#status-dot'),
       label = $('#status-label'),
       meta = $('#video-transport-label'),
@@ -156,6 +157,7 @@
     videoFallback = false;
     videoFallbackReason = '';
     videoUiState = 'paused';
+    syncQualityOverlay();
     if (showPaused) renderVideoUi();
     updateDiagnosticsCard();
   }
@@ -179,10 +181,12 @@
     feed.onload = null;
     feed.onerror = null;
     feed.removeAttribute('src');
+    mjpegLoadEvents = 0;
     const url = `/video_feed?t=${Date.now()}`;
     const onLoad = () => {
       if (generation !== videoGeneration || !shouldVideoRun() || feed.getAttribute('src') !== url) return;
       reconnectDelay = 500;
+      mjpegLoadEvents++;
       markVideoPlaying(generation, 'mjpeg');
       fitConsoleToVideo();
     };
