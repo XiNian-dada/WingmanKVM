@@ -4,6 +4,21 @@
 
 The recommended way to deploy WingmanKVM is to prepare a Linux binary matching the target machine's architecture, then run the `deploy/install.sh` script included in the repository. The installer creates the user, permissions, USB Gadget, systemd services, and state directories; the first-run web wizard scans for and fills in the capture card, HID, and virtual media devices. A normal installation does not require writing configfs scripts by hand.
 
+## One-line install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts/get.sh | sudo bash -s -- --install-deps
+```
+
+The script detects `aarch64` / `armv7l`, downloads the latest Release, verifies it against `SHA256SUMS` and runs the installer. To pin a version or install without starting:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts/get.sh \
+  | sudo bash -s -- --version v1.2.3 --no-start
+```
+
+To review the script first, download it, read it, then run `sudo bash get.sh`.
+
 ## 1. System requirements
 
 The target KVM host needs:
