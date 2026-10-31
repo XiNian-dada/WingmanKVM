@@ -1085,6 +1085,140 @@ def pip_webrtc(browser, port, checks):
         context.close()
 
 
+def stats_report(at, scale=1, frames=None):
+    """One getStats() result; counters grow linearly with `scale`."""
+    return [
+        {"id": "T", "type": "transport", "selectedCandidatePairId": "P"},
+        {"id": "P", "type": "candidate-pair", "currentRoundTripTime": 0.025},
+        {"id": "AUDIO", "type": "inbound-rtp", "kind": "audio", "timestamp": at, "bytesReceived": 9e9},
+        {"id": "V", "type": "inbound-rtp", "kind": "video", "timestamp": at,
+         "bytesReceived": 125000 * scale, "packetsReceived": 990 * scale, "packetsLost": 10 * scale,
+         "framesDecoded": 30 * scale, "jitterBufferDelay": 1.5 * scale,
+         "jitterBufferEmittedCount": 30 * scale, "frameWidth": 1920, "frameHeight": 1080},
+    ]
+
+
+def overlay_rows(page):
+    return page.evaluate("""() => {
+      const out = {};
+      document.querySelectorAll('#quality-overlay dt:not(.hidden)').forEach((dt) => {
+        out[dt.textContent] = dt.nextElementSibling.textContent;
+      });
+      return out;
+    }""")
+
+
+def quality_overlay_webrtc(browser, port, checks):
+    """#81: stats deltas, persistence, and polling only while shown."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    context, page = media_page(browser, state, port, h264=True, stubs=(FAKE_PEER,))
+    try:
+        page.wait_for_function("() => /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
+        page.wait_for_timeout(1200)
+        check(checks, not page.locator("#quality-overlay").is_visible()
+              and page.evaluate("() => window.__statsCalls") == 0, "quality_off_by_default_without_polling", "")
+
+        # Two seconds apart: rates must divide by the real interval.
+        reports = [stats_report(10000, 1), stats_report(12000, 3), stats_report(12000, 3), stats_report(13000, 1),
+                   stats_report(14000, 2)]
+        page.evaluate("(reports) => { window.__statsSeq = reports; }", reports)
+        page.click("#quality-toggle")
+        check(checks, page.locator("#quality-overlay").is_visible()
+              and page.get_attribute("#quality-toggle", "aria-pressed") == "true", "quality_toggle_shows_overlay", "")
+        rows = overlay_rows(page)
+        check(checks, rows.get("接收码率") == "—", "quality_first_sample_has_no_rates", rows)
+        page.wait_for_function("() => document.querySelector('#quality-overlay').textContent.includes('Mbps')", timeout=4000)
+        rows = overlay_rows(page)
+        check(checks, rows == {"往返延迟": "25 ms", "接收码率": "1.00 Mbps", "丢包率": "1.0%", "解码帧率": "30",
+                               "抖动缓冲": "50 ms", "分辨率": "1920×1080"}, "quality_webrtc_stats_rendered", rows)
+        page.wait_for_function("() => window.__statsCalls >= 3", timeout=4000)
+        page.wait_for_timeout(50)
+        rows = overlay_rows(page)
+        check(checks, rows.get("接收码率") == "1.00 Mbps", "quality_cached_report_keeps_rates", rows)
+        page.wait_for_function("() => window.__statsCalls >= 4", timeout=4000)
+        page.wait_for_timeout(50)
+        rows = overlay_rows(page)
+        check(checks, rows.get("接收码率") == "—" and rows.get("解码帧率") == "—", "quality_counter_reset_not_negative", rows)
+        page.wait_for_function("() => window.__statsCalls >= 5", timeout=4000)
+        page.wait_for_timeout(50)
+        rows = overlay_rows(page)
+        check(checks, rows.get("接收码率") == "1.00 Mbps", "quality_recovers_after_reset", rows)
+
+        page.evaluate("""() => {
+          Object.defineProperty(document, 'hidden', {configurable: true, get: () => true});
+          document.dispatchEvent(new Event('visibilitychange'));
+        }""")
+        before = page.evaluate("() => window.__statsCalls")
+        page.wait_for_timeout(1300)
+        after = page.evaluate("() => window.__statsCalls")
+        check(checks, after == before, "quality_polling_stops_when_page_hidden", (before, after))
+        page.evaluate("""() => {
+          delete document.hidden;
+          document.dispatchEvent(new Event('visibilitychange'));
+        }""")
+        page.wait_for_function("() => /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
+
+        page.reload(wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        page.wait_for_function("() => /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
+        check(checks, page.locator("#quality-overlay").is_visible()
+              and page.get_attribute("#quality-toggle", "aria-pressed") == "true", "quality_setting_persists", "")
+        page.click("#quality-toggle")
+        before = page.evaluate("() => window.__statsCalls")
+        page.wait_for_timeout(1300)
+        check(checks, not page.locator("#quality-overlay").is_visible()
+              and page.evaluate("() => window.__statsCalls") == before, "quality_toggle_off_stops_polling", "")
+    finally:
+        context.close()
+
+
+def quality_overlay_mjpeg(browser, port, checks):
+    """#81: MJPEG is honest about where FPS comes from and about the bitrate."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10, frames_per_second=24.0)
+    context, page = media_page(browser, state, port, stubs=())
+    try:
+        wait_mjpeg_playing_once = """() => {
+          const feed = document.querySelector('#video-feed');
+          return feed.naturalWidth > 0 && /LIVE/.test(document.querySelector('#video-transport-label').textContent);
+        }"""
+        page.wait_for_function(wait_mjpeg_playing_once, timeout=5000)
+        page.click("#quality-toggle")
+        page.wait_for_timeout(100)
+        rows = overlay_rows(page)
+        check(checks, rows.get("帧率（服务端采集）") == "24" and rows.get("码率") == "不可用" and "丢包率" not in rows,
+              "quality_mjpeg_single_load_uses_server_fps", rows)
+
+        page.evaluate("""() => {
+          window.__loads = setInterval(
+            () => document.querySelector('#video-feed').dispatchEvent(new Event('load')), 100);
+        }""")
+        page.wait_for_function("""() => {
+          const dt = [...document.querySelectorAll('#quality-overlay dt')].find((e) => e.textContent.includes('浏览器实测'));
+          return dt && Number(dt.nextElementSibling.textContent) >= 6;
+        }""", timeout=5000)
+        rows = overlay_rows(page)
+        fps = float(rows.get("帧率（浏览器实测）", "0"))
+        check(checks, 6 <= fps <= 14 and "帧率（服务端采集）" not in rows, "quality_mjpeg_counts_load_events", rows)
+        page.evaluate("() => clearInterval(window.__loads)")
+
+        page.click("#lang-toggle")
+        page.click('[data-lang="en"]')
+        page.wait_for_timeout(1300)
+        rows = overlay_rows(page)
+        check(checks, rows.get("Bitrate") == "Unavailable" and "FPS (browser measured)" in rows,
+              "quality_overlay_translates", rows)
+
+        hit = page.evaluate("""() => {
+          const box = document.querySelector('#quality-overlay').getBoundingClientRect();
+          return document.elementFromPoint(box.left + 5, box.top + 5).closest('#quality-overlay') === null;
+        }""")
+        check(checks, hit, "quality_overlay_does_not_block_input", hit)
+    finally:
+        context.close()
+
+
 # Every function taking (browser, port, checks) is a scenario, run in
 # definition order; new scenarios need no list edit (and no merge conflict).
 SCENARIOS = [
