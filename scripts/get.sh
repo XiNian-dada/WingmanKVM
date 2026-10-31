@@ -32,6 +32,8 @@ Options:
   --install-deps          Passed to deploy/install.sh (Debian/Ubuntu/Armbian)
   --maintenance-mode MODE Passed to deploy/install.sh
   --health-url URL        Passed to deploy/install.sh
+  --mdns                  Passed to deploy/install.sh (LAN name wingmankvm.local)
+  --mdns-hostname NAME    Passed to deploy/install.sh
   -h, --help              Show this help
 
 Supported CPUs: aarch64 (arm64) and armv7l (armv7/armhf).
@@ -196,16 +198,16 @@ main() {
                 DOWNLOAD_ONLY=${1#*=}
                 shift
                 ;;
-            --no-start | --install-deps)
+            --no-start | --install-deps | --mdns)
                 INSTALL_ARGS+=("$1")
                 shift
                 ;;
-            --maintenance-mode | --health-url)
+            --maintenance-mode | --health-url | --mdns-hostname)
                 (($# >= 2)) || die "$1 requires a value"
                 INSTALL_ARGS+=("$1" "$2")
                 shift 2
                 ;;
-            --maintenance-mode=* | --health-url=*)
+            --maintenance-mode=* | --health-url=* | --mdns-hostname=*)
                 INSTALL_ARGS+=("$1")
                 shift
                 ;;
