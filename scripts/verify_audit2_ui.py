@@ -721,6 +721,28 @@ def touch_gestures(browser, port, checks):
         clicks = [b for p, b in posts if b.get("action") == "click"]
         check(checks, scrolls and all(b["delta"] < 0 for b in scrolls) and not clicks,
               "two_finger_drag_scrolls", posts)
+
+        # Lifting one finger mid-scroll must not burst wheel steps or drag.
+        posts.clear()
+        page.evaluate(touch, ["pointerdown", 1, 100, 300])
+        page.evaluate(touch, ["pointerdown", 2, 300, 300])
+        page.evaluate(touch, ["pointerup", 2, 300, 300])
+        for step in range(1, 4):
+            page.evaluate(touch, ["pointermove", 1, 100, 300 - step * 40])
+        page.evaluate(touch, ["pointerup", 1, 100, 180])
+        page.wait_for_timeout(200)
+        check(checks, not posts, "lifting_a_finger_ends_scroll_quietly", posts)
+
+        # The finger that takes control must not also drag the pointer.
+        page.click("#input-state")
+        posts.clear()
+        page.evaluate(touch, ["pointerdown", 1, 100, 100])
+        for step in range(1, 4):
+            page.evaluate(touch, ["pointermove", 1, 100 + step * 30, 100])
+        page.evaluate(touch, ["pointerup", 1, 190, 100])
+        page.wait_for_timeout(200)
+        enabled = page.get_attribute("#input-state", "aria-pressed")
+        check(checks, enabled == "true" and not posts, "takeover_touch_sends_nothing", (enabled, posts))
     finally:
         context.close()
 

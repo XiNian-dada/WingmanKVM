@@ -11,6 +11,8 @@
   const TOUCH_SCROLL_STEP_PX = 30;
   const TOUCH_TRACKPAD_GAIN = 1.5;
   const touches = new Map();
+  // Fingers whose only job was to take control; their later events are ignored.
+  const takeoverTouches = new Set();
   let touchGesture = 'none',
     touchLongPress = 0,
     touchScrollY = 0,
@@ -51,8 +53,9 @@
   }
   function claimTouch(event) {
     if (event.pointerType !== 'touch') return false;
-    // Native 1:1 mode with the pan tool active keeps its own drag handling.
-    if (consoleBox.classList.contains('mode-native') && isPanActive) return false;
+    // Native 1:1 mode keeps its own drag-to-pan while the pan tool is active
+    // or input is not being forwarded, exactly as before touch gestures.
+    if (consoleBox.classList.contains('mode-native') && (isPanActive || !inputEnabled())) return false;
     event.preventDefault();
     event.stopImmediatePropagation();
     return true;
@@ -66,7 +69,7 @@
         // Same as a mouse: the first tap takes control instead of clicking.
         setRemote(true);
         viewport.focus({ preventScroll: true });
-        touchGesture = 'consumed';
+        takeoverTouches.add(event.pointerId);
         return;
       }
       try {
@@ -84,7 +87,9 @@
           touchClick(event.clientX, event.clientY, 2);
           navigator.vibrate?.(15);
         }, TOUCH_LONG_PRESS_MS);
-      } else if (touches.size === 2) {
+      } else if (touchGesture === 'pending' || touchGesture === 'scroll') {
+        // A second (or further) finger: scroll, re-basing on the new midpoint
+        // so a changing finger count never turns into a burst of wheel steps.
         cancelLongPress();
         touchGesture = 'scroll';
         touchScrollY = touchMidpoint().y;
@@ -96,7 +101,13 @@
   viewport.addEventListener(
     'pointermove',
     (event) => {
-      if (event.pointerType !== 'touch' || !touches.has(event.pointerId)) return;
+      if (event.pointerType !== 'touch') return;
+      if (takeoverTouches.has(event.pointerId)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (!touches.has(event.pointerId)) return;
       claimTouch(event);
       const touch = touches.get(event.pointerId);
       touch.x = event.clientX;
@@ -111,7 +122,7 @@
         }
         return;
       }
-      if (touches.size !== 1 || touchGesture === 'longpress') return;
+      if (touches.size !== 1 || touchGesture === 'longpress' || touchGesture === 'ended') return;
       if (
         touchGesture === 'pending' &&
         Math.hypot(touch.x - touch.startX, touch.y - touch.startY) < TOUCH_TAP_SLOP_PX
@@ -134,10 +145,9 @@
 
   function endTouch(event) {
     if (event.pointerType !== 'touch') return;
-    if (touchGesture === 'consumed') {
+    if (takeoverTouches.delete(event.pointerId)) {
       event.preventDefault();
       event.stopImmediatePropagation();
-      touchGesture = 'none';
       return;
     }
     if (!touches.has(event.pointerId)) return;
@@ -151,6 +161,10 @@
     if (touches.size === 0) {
       cancelLongPress();
       touchGesture = 'none';
+    } else if (touchGesture === 'scroll') {
+      // Lifting a finger ends the scroll; the remaining finger does nothing
+      // until all fingers are up, so it cannot turn into a stray drag or tap.
+      touchGesture = 'ended';
     }
   }
   viewport.addEventListener('pointerup', endTouch, true);
