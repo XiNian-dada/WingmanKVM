@@ -112,7 +112,7 @@ sudo ./deploy/install.sh --release /path/to/wingmankvm-<版本>-<target>.tar.gz
 
 - 创建 `wingmankvm` 服务用户、`wingman` 网页终端用户和 `wingmankvm-hw` 硬件组；
 - 创建 `/var/lib/wingmankvm` 和 `/var/lib/wingmankvm/images`；
-- 安装 udev 规则、终端 profile、最小密码同步 helper 与 sudoers 规则；
+- 安装 udev 规则、终端 profile、最小密码同步 helper、`wingmankvm-doctor` 自检工具与 sudoers 规则；
 - 安装并启动 `wingmankvm-gadget.service`；
 - 创建 Boot Keyboard、Boot Relative Mouse、Absolute Pointer 和 Mass Storage LUN；
 - 在内核提供 HID function 设备号映射时创建 `/dev/wingmankvm-keyboard`、`/dev/wingmankvm-mouse`、`/dev/wingmankvm-absolute` 稳定链接；
@@ -257,7 +257,31 @@ find /sys/kernel/config/usb_gadget \
 
 如果修改过 `WINGMANKVM_GADGET_NAME`，相应替换第一条命令中的目录名。页面状态应显示实际协商的视频分辨率和帧率。视频设备被拔出或被其他进程占用时，采集 supervisor 会显示错误并按 1 秒退避重试，HID、GPIO、终端和虚拟介质不会因此一起退出。
 
+### 安装前/后自检：wingmankvm-doctor
+
+安装器会把自检工具安装到 `/usr/local/sbin/wingmankvm-doctor`；在源码或发布包目录中也可以直接运行 `deploy/wingmankvm-doctor`。它逐项输出 `[通过]`、`[警告]`、`[失败]`，并为警告和失败项给出中文修复建议（括号内附英文关键字便于搜索）：
+
+```bash
+sudo wingmankvm-doctor
+wingmankvm-doctor --json | python3 -m json.tool
+```
+
+普通用户可以直接运行，不需要 root；但读取其他用户的 systemd 状态、端口对应进程和部分 sysfs 属性时建议使用 `sudo`，否则相关项目可能只显示 `[警告]`。检查内容包括：
+
+- 内核 `configfs`、`libcomposite` 与 USB Gadget 目录；
+- `/sys/class/udc` 是否存在 UDC，以及 UDC 是否被其他 gadget 占用；
+- OTG/USB role 当前是否为 device，并提示常见 `role-switch` 路径；
+- `/dev/video*` 中是否存在同时支持 `Video Capture` 与 `MJPG` 的节点；缺少 `v4l2-ctl` 时降级为提示；
+- `python3`、`v4l2-ctl` 和 `gpioset`（要求 libgpiod 2.x）；
+- `8080` 端口占用、`wingmankvm.service` 与 `wingmankvm-gadget.service` 状态、`/healthz` 响应。
+
+`install.sh` 在安装前会以 `--preflight` 调用同一工具，只打印内核、UDC 和 USB role 的关键提示。该预检是建议性的，不会改变安装阻断条件：是否终止安装仍由安装器原有的平台检查决定。
+
+自动化测试或非常规目录布局可以通过环境变量替换所有 sysfs/dev 路径，例如 `WINGMANKVM_CONFIGFS_ROOT`、`WINGMANKVM_GADGETS_ROOT`、`WINGMANKVM_UDC_CLASS_ROOT`、`WINGMANKVM_MODULE_ROOT`、`WINGMANKVM_PROC_FILESYSTEMS`、`WINGMANKVM_DEV_ROOT`、`WINGMANKVM_USB_ROLE_ROOT`、`WINGMANKVM_USB_ROLE_PATH`、`WINGMANKVM_PORT`、`WINGMANKVM_HEALTH_URL`、`WINGMANKVM_SYSTEMCTL`、`WINGMANKVM_V4L2CTL`、`WINGMANKVM_GPIOSET` 和 `WINGMANKVM_MODPROBE`；完整列表见 `wingmankvm-doctor --help`。
+
 ## 8. 常见故障排查
+
+先运行 `sudo wingmankvm-doctor` 获取逐项结论；下面的命令用于进一步定位具体服务或设备。
 
 ### 找不到 UDC
 
