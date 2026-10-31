@@ -476,6 +476,284 @@
     pasteRun = null;
   });
 
+  // More shortcuts: less-used built-ins plus user-defined combinations.
+  const CUSTOM_COMBOS_KEY = 'wingman_custom_combos';
+  const BUILTIN_MENU_COMBOS = [
+    { id: 'caf1', key: 'F1', ctrl: true, alt: true, hold_ms: 100 },
+    { id: 'caf2', key: 'F2', ctrl: true, alt: true, hold_ms: 100 },
+    { id: 'caf3', key: 'F3', ctrl: true, alt: true, hold_ms: 100 },
+    { id: 'caf4', key: 'F4', ctrl: true, alt: true, hold_ms: 100 },
+    { id: 'caf5', key: 'F5', ctrl: true, alt: true, hold_ms: 100 },
+    { id: 'caf6', key: 'F6', ctrl: true, alt: true, hold_ms: 100 },
+    { id: 'caf7', key: 'F7', ctrl: true, alt: true, hold_ms: 100 },
+    { id: 'prtsc', key: 'PrintScreen', hold_ms: 60 },
+  ];
+  function comboKeyLabel(key) {
+    if (/^Key[A-Z]$/.test(key)) return key.slice(3);
+    if (/^Digit[0-9]$/.test(key)) return key.slice(5);
+    return (
+      {
+        Escape: 'Esc',
+        Space: 'Space',
+        PrintScreen: 'PrtSc',
+        ArrowUp: '↑',
+        ArrowDown: '↓',
+        ArrowLeft: '←',
+        ArrowRight: '→',
+      }[key] || key
+    );
+  }
+  function comboLabel(combo) {
+    const parts = [];
+    if (combo.ctrl) parts.push('Ctrl');
+    if (combo.alt) parts.push('Alt');
+    if (combo.shift) parts.push('Shift');
+    if (combo.meta) parts.push('Meta');
+    parts.push(comboKeyLabel(combo.key));
+    return parts.join('+');
+  }
+  function readCustomCombos() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(CUSTOM_COMBOS_KEY) || '[]');
+      if (!Array.isArray(raw)) return [];
+      return raw
+        .filter((combo) => combo && typeof combo.key === 'string' && combo.key)
+        .map((combo, index) => ({
+          id: String(combo.id || `custom_restored_${index}`),
+          key: combo.key,
+          ctrl: !!combo.ctrl,
+          alt: !!combo.alt,
+          shift: !!combo.shift,
+          meta: !!combo.meta,
+          hold_ms: Number(combo.hold_ms) || undefined,
+        }));
+    } catch (_) {
+      return [];
+    }
+  }
+  function writeCustomCombos(combos) {
+    try {
+      localStorage.setItem(CUSTOM_COMBOS_KEY, JSON.stringify(combos));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+  async function sendCombo(combo) {
+    if (!combo) return;
+    if (!inputEnabled()) setRemote(true);
+    try {
+      const res = await request('/api/key', {
+        method: 'POST',
+        body: JSON.stringify({
+          key: combo.key,
+          ctrl: !!combo.ctrl,
+          shift: !!combo.shift,
+          alt: !!combo.alt,
+          meta: !!combo.meta,
+          hold_ms: combo.hold_ms || (combo.key.startsWith('F') ? 100 : 40),
+        }),
+      });
+      if (res && res.keyboard_leds) renderKeyboardLeds(res.keyboard_leds);
+      toast(tr(`已发送组合键 ${comboLabel(combo)}`));
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+  function createComboItem(combo, custom) {
+    const row = document.createElement('div');
+    row.className = 'quick-more-row';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'quick-combo-item';
+    button.setAttribute('role', 'menuitem');
+    button.dataset.comboId = combo.id;
+    button.dataset.key = combo.key;
+    button.dataset.ctrl = String(!!combo.ctrl);
+    button.dataset.alt = String(!!combo.alt);
+    button.dataset.shift = String(!!combo.shift);
+    button.dataset.meta = String(!!combo.meta);
+    if (custom) button.dataset.customCombo = '1';
+    button.textContent = comboLabel(combo);
+    button.addEventListener('click', () => {
+      closeQuickMore();
+      sendCombo(combo);
+    });
+    row.append(button);
+    if (custom) {
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'quick-combo-delete';
+      remove.dataset.removeCombo = combo.id;
+      remove.title = tr('删除此组合键');
+      remove.setAttribute('aria-label', tr('删除此组合键'));
+      remove.textContent = '×';
+      remove.addEventListener('click', (event) => {
+        event.stopPropagation();
+        writeCustomCombos(readCustomCombos().filter((item) => item.id !== combo.id));
+        renderQuickCombos();
+        toast(tr('已删除自定义组合键'));
+      });
+      row.append(remove);
+    }
+    return row;
+  }
+  function renderQuickCombos() {
+    const menu = $('#quick-more-menu');
+    if (!menu) return;
+    menu.textContent = '';
+    BUILTIN_MENU_COMBOS.forEach((combo) => menu.append(createComboItem(combo, false)));
+    const custom = readCustomCombos();
+    if (custom.length) {
+      const separator = document.createElement('div');
+      separator.className = 'quick-more-sep';
+      menu.append(separator);
+      custom.forEach((combo) => menu.append(createComboItem(combo, true)));
+    }
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.id = 'quick-combo-add';
+    add.className = 'quick-more-action';
+    add.setAttribute('role', 'menuitem');
+    add.textContent = tr('+ 添加自定义组合');
+    add.addEventListener('click', () => {
+      closeQuickMore();
+      openComboDialog();
+    });
+    menu.append(add);
+  }
+  function closeQuickMore() {
+    $('#quick-more-menu')?.setAttribute('hidden', '');
+    $('#quick-more-toggle')?.setAttribute('aria-expanded', 'false');
+  }
+  function fillComboKeyOptions() {
+    const select = $('#combo-key');
+    if (!select || select.options.length) return;
+    const options = [];
+    for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') options.push([`Key${letter}`, letter]);
+    for (let digit = 0; digit <= 9; digit += 1) options.push([`Digit${digit}`, String(digit)]);
+    for (let fn = 1; fn <= 12; fn += 1) options.push([`F${fn}`, `F${fn}`]);
+    options.push(
+      ['Escape', 'Esc'],
+      ['Tab', 'Tab'],
+      ['Enter', 'Enter'],
+      ['Space', 'Space'],
+      ['Backspace', 'Backspace'],
+      ['Delete', 'Delete'],
+      ['Insert', 'Insert'],
+      ['Home', 'Home'],
+      ['End', 'End'],
+      ['PageUp', 'PageUp'],
+      ['PageDown', 'PageDown'],
+      ['ArrowUp', '↑'],
+      ['ArrowDown', '↓'],
+      ['ArrowLeft', '←'],
+      ['ArrowRight', '→'],
+      ['PrintScreen', 'PrtSc'],
+      ['Minus', '-'],
+      ['Equal', '='],
+      ['BracketLeft', '['],
+      ['BracketRight', ']'],
+      ['Backslash', '\\'],
+      ['Semicolon', ';'],
+      ['Quote', "'"],
+      ['Comma', ','],
+      ['Period', '.'],
+      ['Slash', '/'],
+    );
+    options.forEach(([value, label]) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      select.append(option);
+    });
+  }
+  function openComboDialog() {
+    const dialog = $('#combo-dialog');
+    if (!dialog) return;
+    fillComboKeyOptions();
+    $('#combo-form')?.reset();
+    try {
+      if (typeof dialog.showModal === 'function') dialog.showModal();
+      else dialog.show?.();
+    } catch (_) {
+      try {
+        dialog.show?.();
+      } catch (__) {}
+    }
+  }
+  function closeComboDialog() {
+    const dialog = $('#combo-dialog');
+    try {
+      dialog?.close?.();
+    } catch (_) {}
+  }
+  function addCustomCombo() {
+    const form = $('#combo-form'),
+      key = form?.querySelector('[name="key"]')?.value;
+    if (!form || !key) return;
+    const combo = {
+      ctrl: !!form.querySelector('[name="ctrl"]')?.checked,
+      alt: !!form.querySelector('[name="alt"]')?.checked,
+      shift: !!form.querySelector('[name="shift"]')?.checked,
+      meta: !!form.querySelector('[name="meta"]')?.checked,
+    };
+    if (!combo.ctrl && !combo.alt && !combo.shift && !combo.meta) {
+      toast(tr('请至少选择一个修饰键'), true);
+      return;
+    }
+    const custom = readCustomCombos();
+    if (custom.length >= 24) {
+      toast(tr('自定义组合键最多 24 个'), true);
+      return;
+    }
+    custom.push({
+      id: `custom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      key,
+      ...combo,
+    });
+    if (!writeCustomCombos(custom)) {
+      toast(tr('无法保存自定义组合键'), true);
+      return;
+    }
+    renderQuickCombos();
+    closeComboDialog();
+    toast(tr('已添加自定义组合键'));
+  }
+  const quickMoreToggle = $('#quick-more-toggle'),
+    quickMoreMenu = $('#quick-more-menu');
+  quickMoreToggle?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!quickMoreMenu) return;
+    const open = !quickMoreMenu.hasAttribute('hidden');
+    if (open) {
+      closeQuickMore();
+      return;
+    }
+    renderQuickCombos();
+    quickMoreMenu.removeAttribute('hidden');
+    quickMoreToggle.setAttribute('aria-expanded', 'true');
+    $('#power-menu')?.setAttribute('hidden', '');
+    $('#power-menu-toggle')?.setAttribute('aria-expanded', 'false');
+    $('#lang-menu')?.setAttribute('hidden', '');
+    $('#lang-toggle')?.setAttribute('aria-expanded', 'false');
+    $('#diagnostics-popover')?.setAttribute('hidden', '');
+    $('#diagnostics-toggle')?.setAttribute('aria-expanded', 'false');
+  });
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest('.quick-more')) closeQuickMore();
+  });
+  $$('[data-combo-close]').forEach((button) => button.addEventListener('click', closeComboDialog));
+  $('#combo-dialog')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) closeComboDialog();
+  });
+  $('#combo-form')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    addCustomCombo();
+  });
+  fillComboKeyOptions();
+  renderQuickCombos();
+
   let latestKeyboardLeds = { num_lock: false, caps_lock: false, scroll_lock: false, raw: 0 };
   function renderKeyboardLeds(leds) {
     if (!leds) return;

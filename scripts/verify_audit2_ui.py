@@ -317,8 +317,55 @@ def paste_as_typing(browser, port, checks):
         context.close()
 
 
+def custom_shortcuts(browser, port, checks):
+    """#50 / UX-02: custom combinations persist and send the right payload."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        # The mocked 1x1 feed makes fit mode narrow enough to hide quick keys;
+        # switch to fill so the console head keeps the shortcut strip visible.
+        page.evaluate("() => { const b = document.querySelector('#mode-button'); b.click(); b.click(); }")
+        page.wait_for_timeout(200)
+        page.click("#quick-more-toggle")
+        page.click("#quick-combo-add")
+        page.check('#combo-form input[name="ctrl"]')
+        page.check('#combo-form input[name="alt"]')
+        page.select_option("#combo-key", "KeyM")
+        page.click('#combo-form button[type="submit"]')
+        page.wait_for_timeout(200)
+        stored = json.loads(
+            page.evaluate("() => localStorage.getItem('wingman_custom_combos') || '[]'"))
+        saved = stored[0] if stored else {}
+        check(checks, saved.get("key") == "KeyM" and saved.get("ctrl") and saved.get("alt"),
+              "custom_shortcut_saved_to_local_storage", stored)
+
+        page.reload(wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        page.click("#quick-more-toggle")
+        item = page.locator("#quick-more-menu [data-custom-combo]").first
+        check(checks, item.count() == 1, "custom_shortcut_survives_reload", item.count())
+
+        state.key_posts.clear()
+        item.click()
+        page.wait_for_timeout(400)
+        payload = state.key_posts[-1] if state.key_posts else {}
+        check(checks, payload.get("key") == "KeyM" and payload.get("ctrl") is True
+              and payload.get("alt") is True and payload.get("shift") is False
+              and payload.get("meta") is False,
+              "custom_shortcut_sends_correct_payload", payload)
+
+        page.click("#quick-more-toggle")
+        page.click("#quick-more-menu [data-remove-combo]")
+        page.wait_for_timeout(200)
+        remaining = json.loads(
+            page.evaluate("() => localStorage.getItem('wingman_custom_combos') || '[]'"))
+        check(checks, remaining == [], "custom_shortcut_can_be_deleted", remaining)
+    finally:
+        context.close()
+
+
 SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation, low_risk_ui,
-             language_coverage, paste_as_typing]
+             language_coverage, paste_as_typing, custom_shortcuts]
 
 if __name__ == "__main__":
     sys.exit(main())

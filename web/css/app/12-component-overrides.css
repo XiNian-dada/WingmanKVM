@@ -109,8 +109,85 @@
   box-shadow: inset 0 0 0 3px var(--blue);
 }
 
+/* More shortcuts dropdown. */
+.quick-more {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+#quick-more-toggle {
+  white-space: nowrap;
+}
+.quick-more-menu {
+  min-width: 196px;
+  max-height: min(60vh, 360px);
+  overflow-y: auto;
+}
+.quick-more-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.quick-combo-item {
+  flex: 1;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--body);
+  font:
+    11px/1 "Geist Mono",
+    ui-monospace,
+    monospace;
+  text-align: left;
+  cursor: pointer;
+}
+.quick-combo-item:hover,
+.quick-combo-item:focus-visible {
+  background: var(--soft-2);
+  color: var(--ink);
+}
+.quick-combo-delete {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.quick-combo-delete:hover {
+  color: var(--red);
+  background: var(--red-soft);
+}
+.quick-more-sep {
+  height: 1px;
+  margin: 3px 4px;
+  background: var(--line);
+}
+.quick-more-action {
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--blue);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.quick-more-action:hover {
+  background: var(--soft-2);
+}
+
 /* Paste-as-typing and custom-combination dialogs. */
-#paste-key-dialog {
+#paste-key-dialog,
+#combo-dialog {
   position: fixed;
   inset: 0;
   width: 100vw;
@@ -127,15 +204,18 @@
   outline: none;
   z-index: 95;
 }
-#paste-key-dialog:not([open]) {
+#paste-key-dialog:not([open]),
+#combo-dialog:not([open]) {
   display: none;
 }
-#paste-key-dialog::backdrop {
+#paste-key-dialog::backdrop,
+#combo-dialog::backdrop {
   background: #00000055;
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
 }
-.paste-key-modal {
+.paste-key-modal,
+.combo-modal {
   width: min(560px, calc(100vw - 32px));
   max-height: min(86dvh, 680px);
   display: flex;
@@ -149,13 +229,20 @@
     0 16px 36px -10px rgba(0, 0, 0, 0.3),
     0 0 0 1px var(--line);
 }
-.paste-key-modal .dialog-head {
+.paste-key-modal .dialog-head,
+.combo-modal .dialog-head {
   gap: 8px;
 }
-.paste-key-modal .dialog-head button {
+.paste-key-modal .dialog-head button,
+.combo-modal .dialog-head button {
+  margin-left: 0;
+}
+.paste-key-modal .dialog-head button,
+.combo-modal .dialog-head button {
   margin-left: auto;
 }
-.paste-key-body {
+.paste-key-body,
+.combo-body {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -215,6 +302,30 @@
 .paste-key-status.error {
   color: var(--red);
 }
+.combo-modifiers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.combo-modifiers .check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  font-size: 12px;
+}
+#combo-key {
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--ink);
+}
 #keyboard-dialog .dialog-head {
   gap: 8px;
 }
@@ -224,7 +335,8 @@
 #keyboard-dialog .dialog-head [data-close] {
   margin-left: 0;
 }
-:root[data-theme="dark"] .paste-key-modal {
+:root[data-theme="dark"] .paste-key-modal,
+:root[data-theme="dark"] .combo-modal {
   background: var(--canvas);
   color: var(--ink);
 }
