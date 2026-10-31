@@ -105,8 +105,9 @@ find_free_udc() {
 
 require_requested_udc() {
     [ -n "$UDC_NAME" ] || return 0
-    [ -e "$UDC_CLASS_ROOT/$UDC_NAME" ] \
-        || die "configured UDC does not exist: $UDC_NAME"
+    # A missing UDC may still appear during boot; wait_for_udc handles that.
+    # Only a UDC that exists and is owned by another Gadget is fatal now.
+    [ -e "$UDC_CLASS_ROOT/$UDC_NAME" ] || return 0
     if other_gadget_using_udc "$UDC_NAME"; then
         die "UDC $UDC_NAME is already bound to another Gadget"
     fi
