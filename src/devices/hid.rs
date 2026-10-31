@@ -4,8 +4,8 @@ use std::{
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU8, Ordering},
         Arc,
+        atomic::{AtomicU8, Ordering},
     },
     time::Duration,
 };
@@ -19,6 +19,7 @@ use tokio::{
 };
 
 const WRITE_TIMEOUT: Duration = Duration::from_millis(500);
+const RELEASE_TIMEOUT: Duration = Duration::from_millis(500);
 const QUEUE_CAPACITY: usize = 64;
 const ABSOLUTE_COORDINATE_MAX: u16 = 32_767;
 const ABSOLUTE_COORDINATE_CENTER: u16 = 16_384;
@@ -215,6 +216,54 @@ enum MouseCommand {
     },
 }
 
+/// Worker-local handle cache. HID reports are tiny and frequent, so reopening
+/// the gadget node for every report adds latency and widens the rebind race.
+#[derive(Default)]
+struct HidDeviceCache {
+    devices: HashMap<PathBuf, AsyncFd<std::fs::File>>,
+    #[cfg(test)]
+    opens: usize,
+}
+
+impl HidDeviceCache {
+    fn get_or_open(&mut self, path: &Path) -> Result<&mut AsyncFd<std::fs::File>, HidError> {
+        if !self.devices.contains_key(path) {
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+                .open(path)
+                .map_err(|source| HidError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+            // SAFETY: This owned nonblocking File is never closed or replaced
+            // while registered; AsyncFd deregisters it before dropping the File.
+            let fd = unsafe { AsyncFd::register(file) }.map_err(|source| HidError::Io {
+                path: path.to_path_buf(),
+                source: source.into(),
+            })?;
+            self.devices.insert(path.to_path_buf(), fd);
+            #[cfg(test)]
+            {
+                self.opens += 1;
+            }
+        }
+        Ok(self
+            .devices
+            .get_mut(path)
+            .expect("cached HID device was just opened"))
+    }
+
+    fn invalidate(&mut self, path: &Path) {
+        self.devices.remove(path);
+    }
+
+    #[cfg(test)]
+    fn open_count(&self) -> usize {
+        self.opens
+    }
+}
+
 impl HidManager {
     pub fn new() -> Self {
         Self::with_keyboard_device(None)
@@ -228,7 +277,10 @@ impl HidManager {
 
         tokio::spawn(keyboard_worker(keyboard_rx));
         tokio::spawn(mouse_worker(mouse_rx));
-        tokio::spawn(keyboard_led_reader(keyboard_path_rx, Arc::clone(&keyboard_leds)));
+        tokio::spawn(keyboard_led_reader(
+            keyboard_path_rx,
+            Arc::clone(&keyboard_leds),
+        ));
 
         Self {
             keyboard_tx,
@@ -344,48 +396,51 @@ impl HidManager {
         let mut first_error = None;
         if let Some(path) = keyboard_path {
             let (reply, response) = oneshot::channel();
-            let result = match self
-                .keyboard_tx
-                .try_send(KeyboardCommand::Release { path, reply })
-            {
-                Ok(()) => match response.await {
-                    Ok(result) => result,
-                    Err(_) => Err(HidError::WorkerStopped),
-                },
-                Err(error) => Err(map_send_error(error)),
-            };
+            let result = send_release_command(
+                &self.keyboard_tx,
+                KeyboardCommand::Release { path, reply },
+                response,
+            )
+            .await;
             remember_first_error(&mut first_error, result);
         }
         if let Some(path) = relative_mouse_path {
             let (reply, response) = oneshot::channel();
-            let result = match self
-                .mouse_tx
-                .try_send(MouseCommand::Release { path, reply })
-            {
-                Ok(()) => match response.await {
-                    Ok(result) => result,
-                    Err(_) => Err(HidError::WorkerStopped),
-                },
-                Err(error) => Err(map_send_error(error)),
-            };
+            let result = send_release_command(
+                &self.mouse_tx,
+                MouseCommand::Release { path, reply },
+                response,
+            )
+            .await;
             remember_first_error(&mut first_error, result);
         }
         if let Some(path) = absolute_pointer_path {
             let (reply, response) = oneshot::channel();
-            let result = match self
-                .mouse_tx
-                .try_send(MouseCommand::ReleaseAbsolute { path, reply })
-            {
-                Ok(()) => match response.await {
-                    Ok(result) => result,
-                    Err(_) => Err(HidError::WorkerStopped),
-                },
-                Err(error) => Err(map_send_error(error)),
-            };
+            let result = send_release_command(
+                &self.mouse_tx,
+                MouseCommand::ReleaseAbsolute { path, reply },
+                response,
+            )
+            .await;
             remember_first_error(&mut first_error, result);
         }
         first_error.map_or(Ok(()), Err)
     }
+}
+
+/// Emergency releases must not be dropped just because the queue is briefly
+/// full. Wait for a short bounded window before reporting QueueFull.
+async fn send_release_command<T>(
+    tx: &mpsc::Sender<T>,
+    command: T,
+    response: oneshot::Receiver<Result<(), HidError>>,
+) -> Result<(), HidError> {
+    match tokio::time::timeout(RELEASE_TIMEOUT, tx.send(command)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => return Err(HidError::WorkerStopped),
+        Err(_) => return Err(HidError::QueueFull),
+    }
+    response.await.map_err(|_| HidError::WorkerStopped)?
 }
 
 fn remember_first_error(first_error: &mut Option<HidError>, result: Result<(), HidError>) {
@@ -404,6 +459,7 @@ fn map_send_error<T>(error: mpsc::error::TrySendError<T>) -> HidError {
 }
 
 async fn keyboard_worker(mut rx: mpsc::Receiver<KeyboardCommand>) {
+    let mut devices = HidDeviceCache::default();
     while let Some(command) = rx.recv().await {
         match command {
             KeyboardCommand::Key {
@@ -411,21 +467,18 @@ async fn keyboard_worker(mut rx: mpsc::Receiver<KeyboardCommand>) {
                 request,
                 reply,
             } => {
-                let result = send_key(&path, &request).await;
+                let result = send_key(&path, &request, &mut devices).await;
                 let _ = reply.send(result);
             }
             KeyboardCommand::Release { path, reply } => {
-                let result = send_report(&path, &[0; 8]).await;
+                let result = send_report(&path, &[0; 8], &mut devices).await;
                 let _ = reply.send(result);
             }
         }
     }
 }
 
-async fn keyboard_led_reader(
-    mut path_rx: watch::Receiver<Option<PathBuf>>,
-    leds: Arc<AtomicU8>,
-) {
+async fn keyboard_led_reader(mut path_rx: watch::Receiver<Option<PathBuf>>, leds: Arc<AtomicU8>) {
     loop {
         let current_path = path_rx.borrow_and_update().clone();
         let Some(path) = current_path else {
@@ -522,6 +575,7 @@ async fn keyboard_led_reader(
 }
 
 async fn mouse_worker(mut rx: mpsc::Receiver<MouseCommand>) {
+    let mut devices = HidDeviceCache::default();
     let mut absolute_states = HashMap::<PathBuf, AbsolutePointerState>::new();
     while let Some(command) = rx.recv().await {
         match command {
@@ -530,7 +584,7 @@ async fn mouse_worker(mut rx: mpsc::Receiver<MouseCommand>) {
                 request,
                 reply,
             } => {
-                let result = send_mouse_move(&path, request).await;
+                let result = send_mouse_move(&path, request, &mut devices).await;
                 let _ = reply.send(result);
             }
             MouseCommand::Click {
@@ -538,7 +592,7 @@ async fn mouse_worker(mut rx: mpsc::Receiver<MouseCommand>) {
                 request,
                 reply,
             } => {
-                let result = send_mouse_click(&path, request).await;
+                let result = send_mouse_click(&path, request, &mut devices).await;
                 let _ = reply.send(result);
             }
             MouseCommand::Scroll {
@@ -546,7 +600,7 @@ async fn mouse_worker(mut rx: mpsc::Receiver<MouseCommand>) {
                 request,
                 reply,
             } => {
-                let result = send_mouse_scroll(&path, request).await;
+                let result = send_mouse_scroll(&path, request, &mut devices).await;
                 let _ = reply.send(result);
             }
             MouseCommand::Absolute {
@@ -555,24 +609,28 @@ async fn mouse_worker(mut rx: mpsc::Receiver<MouseCommand>) {
                 reply,
             } => {
                 let state = absolute_states.entry(path.clone()).or_default();
-                let result = send_absolute_pointer(&path, request, state).await;
+                let result = send_absolute_pointer(&path, request, state, &mut devices).await;
                 let _ = reply.send(result);
             }
             MouseCommand::Release { path, reply } => {
-                let result = send_report(&path, &[0; 4]).await;
+                let result = send_report(&path, &[0; 4], &mut devices).await;
                 let _ = reply.send(result);
             }
             MouseCommand::ReleaseAbsolute { path, reply } => {
                 let state = absolute_states.entry(path.clone()).or_default();
                 state.buttons = 0;
-                let result = send_report(&path, &state.report(0)).await;
+                let result = send_report(&path, &state.report(0), &mut devices).await;
                 let _ = reply.send(result);
             }
         }
     }
 }
 
-async fn send_key(path: &Path, request: &KeyRequest) -> Result<(), HidError> {
+async fn send_key(
+    path: &Path,
+    request: &KeyRequest,
+    devices: &mut HidDeviceCache,
+) -> Result<(), HidError> {
     let key_modifier = match request.key.as_str() {
         "Control" | "ControlLeft" | "ControlRight" => 0x01,
         "Shift" | "ShiftLeft" | "ShiftRight" => 0x02,
@@ -592,59 +650,72 @@ async fn send_key(path: &Path, request: &KeyRequest) -> Result<(), HidError> {
         | (u8::from(request.meta) << 3);
     let report = [modifier, 0, keycode, 0, 0, 0, 0, 0];
 
-    send_report(path, &report).await?;
+    send_report(path, &report, devices).await?;
     tokio::time::sleep(Duration::from_millis(request.hold_ms.clamp(10, 500))).await;
-    send_report(path, &[0; 8]).await
+    send_report(path, &[0; 8], devices).await
 }
 
-async fn send_mouse_move(path: &Path, request: MouseMoveRequest) -> Result<(), HidError> {
+async fn send_mouse_move(
+    path: &Path,
+    request: MouseMoveRequest,
+    devices: &mut HidDeviceCache,
+) -> Result<(), HidError> {
     let mut dx = request.dx.clamp(-4096, 4096);
     let mut dy = request.dy.clamp(-4096, 4096);
     while dx != 0 || dy != 0 {
         let step_x = dx.clamp(-127, 127) as i8;
         let step_y = dy.clamp(-127, 127) as i8;
-        send_report(path, &[0, step_x as u8, step_y as u8, 0]).await?;
+        send_report(path, &[0, step_x as u8, step_y as u8, 0], devices).await?;
         dx -= i16::from(step_x);
         dy -= i16::from(step_y);
     }
     Ok(())
 }
 
-async fn send_mouse_click(path: &Path, request: MouseClickRequest) -> Result<(), HidError> {
+async fn send_mouse_click(
+    path: &Path,
+    request: MouseClickRequest,
+    devices: &mut HidDeviceCache,
+) -> Result<(), HidError> {
     validate_mouse_button(request.button)?;
-    send_report(path, &[request.button, 0, 0, 0]).await?;
-    send_report(path, &[0; 4]).await
+    send_report(path, &[request.button, 0, 0, 0], devices).await?;
+    send_report(path, &[0; 4], devices).await
 }
 
-async fn send_mouse_scroll(path: &Path, request: MouseScrollRequest) -> Result<(), HidError> {
+async fn send_mouse_scroll(
+    path: &Path,
+    request: MouseScrollRequest,
+    devices: &mut HidDeviceCache,
+) -> Result<(), HidError> {
     let mut delta = request.delta.clamp(-4096, 4096);
     while delta != 0 {
         let step = delta.clamp(-127, 127) as i8;
-        send_report(path, &[0, 0, 0, step as u8]).await?;
+        send_report(path, &[0, 0, 0, step as u8], devices).await?;
         delta -= i16::from(step);
     }
-    send_report(path, &[0; 4]).await
+    send_report(path, &[0; 4], devices).await
 }
 
 async fn send_absolute_pointer(
     path: &Path,
     request: AbsolutePointerRequest,
     state: &mut AbsolutePointerState,
+    devices: &mut HidDeviceCache,
 ) -> Result<(), HidError> {
     match request {
         AbsolutePointerRequest::Move { x, y } => {
             validate_absolute_position(x, y)?;
             state.set_position(x, y);
-            send_report(path, &state.report(0)).await
+            send_report(path, &state.report(0), devices).await
         }
         AbsolutePointerRequest::Click { x, y, button } => {
             let reports = absolute_click_reports(state, x, y, button)?;
-            send_all_reports(path, &reports).await
+            send_all_reports(path, &reports, devices).await
         }
         AbsolutePointerRequest::Scroll { x, y, delta } => {
             validate_absolute_position(x, y)?;
             state.set_position(x, y);
-            send_absolute_scroll(path, *state, delta).await
+            send_absolute_scroll(path, *state, delta, devices).await
         }
     }
 }
@@ -669,11 +740,12 @@ async fn send_absolute_scroll(
     path: &Path,
     state: AbsolutePointerState,
     delta: i16,
+    devices: &mut HidDeviceCache,
 ) -> Result<(), HidError> {
     let reports = absolute_scroll_reports(state, delta);
     let mut first_error = None;
     for report in &reports[..reports.len() - 1] {
-        let result = send_report(path, report).await;
+        let result = send_report(path, report, devices).await;
         if let Err(error) = result {
             first_error = Some(error);
             break;
@@ -681,7 +753,12 @@ async fn send_absolute_scroll(
     }
     remember_first_error(
         &mut first_error,
-        send_report(path, reports.last().expect("scroll reports include reset")).await,
+        send_report(
+            path,
+            reports.last().expect("scroll reports include reset"),
+            devices,
+        )
+        .await,
     );
     first_error.map_or(Ok(()), Err)
 }
@@ -701,10 +778,11 @@ fn absolute_scroll_reports(state: AbsolutePointerState, delta: i16) -> Vec<[u8; 
 async fn send_all_reports<const REPORT_LENGTH: usize>(
     path: &Path,
     reports: &[[u8; REPORT_LENGTH]],
+    devices: &mut HidDeviceCache,
 ) -> Result<(), HidError> {
     let mut first_error = None;
     for report in reports {
-        remember_first_error(&mut first_error, send_report(path, report).await);
+        remember_first_error(&mut first_error, send_report(path, report, devices).await);
     }
     first_error.map_or(Ok(()), Err)
 }
@@ -729,21 +807,37 @@ fn validate_absolute_position(x: u16, y: u16) -> Result<(), HidError> {
     }
 }
 
-async fn send_report(path: &Path, report: &[u8]) -> Result<(), HidError> {
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(path)
-        .map_err(|source| HidError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    // SAFETY: This owned nonblocking File is never closed or replaced while
-    // registered; AsyncFd deregisters it before dropping the File.
-    let fd = unsafe { AsyncFd::register(file) }.map_err(|source| HidError::Io {
-        path: path.to_path_buf(),
-        source: source.into(),
-    })?;
+async fn send_report(
+    path: &Path,
+    report: &[u8],
+    devices: &mut HidDeviceCache,
+) -> Result<(), HidError> {
+    match write_cached_report(path, report, devices).await {
+        Ok(()) => Ok(()),
+        Err(first @ HidError::Io { .. }) => {
+            // The gadget may have been rebound under us. Drop the stale handle
+            // and retry once with a freshly opened device.
+            devices.invalidate(path);
+            tracing::warn!(%first, path = %path.display(), "HID write failed; reopening device");
+            let retry = write_cached_report(path, report, devices).await;
+            if retry.is_err() {
+                devices.invalidate(path);
+            }
+            retry
+        }
+        Err(error) => {
+            devices.invalidate(path);
+            Err(error)
+        }
+    }
+}
+
+async fn write_cached_report(
+    path: &Path,
+    report: &[u8],
+    devices: &mut HidDeviceCache,
+) -> Result<(), HidError> {
+    let fd = devices.get_or_open(path)?;
     let deadline = Instant::now() + WRITE_TIMEOUT;
 
     loop {
@@ -1005,6 +1099,106 @@ mod tests {
 
         assert!(matches!(result, Err(HidError::WorkerStopped)));
         assert_eq!(mouse_releases.await.unwrap(), (true, true));
+    }
+
+    #[tokio::test]
+    async fn release_all_waits_for_queue_capacity_instead_of_dropping_the_release() {
+        let (keyboard_tx, mut keyboard_rx) = mpsc::channel(1);
+        let (mouse_tx, _mouse_rx) = mpsc::channel(1);
+        let (keyboard_path_tx, _) = watch::channel(None);
+        let manager = HidManager {
+            keyboard_tx,
+            mouse_tx,
+            keyboard_leds: Arc::new(AtomicU8::new(0)),
+            keyboard_path_tx,
+        };
+        let (dummy_reply, _dummy_response) = oneshot::channel();
+        manager
+            .keyboard_tx
+            .try_send(KeyboardCommand::Key {
+                path: PathBuf::from("keyboard"),
+                request: KeyRequest {
+                    key: "KeyA".into(),
+                    ctrl: false,
+                    shift: false,
+                    alt: false,
+                    meta: false,
+                    hold_ms: 25,
+                },
+                reply: dummy_reply,
+            })
+            .expect("queue has one slot");
+
+        let release = tokio::spawn(async move {
+            manager
+                .release_all(Some(PathBuf::from("keyboard")), None, None)
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !release.is_finished(),
+            "release_all must wait for capacity instead of returning QueueFull"
+        );
+
+        match keyboard_rx.recv().await.expect("queued key command") {
+            KeyboardCommand::Key { reply, .. } => {
+                let _ = reply.send(Ok(()));
+            }
+            _ => panic!("unexpected keyboard command"),
+        }
+        match keyboard_rx.recv().await.expect("release command") {
+            KeyboardCommand::Release { reply, .. } => {
+                let _ = reply.send(Ok(()));
+            }
+            _ => panic!("unexpected keyboard command"),
+        }
+
+        assert!(release.await.unwrap().is_ok());
+    }
+
+    #[cfg(unix)]
+    fn cached_test_device(path: PathBuf) -> (HidDeviceCache, std::os::unix::net::UnixStream) {
+        use std::os::fd::{FromRawFd, IntoRawFd};
+
+        let (stream, peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        // SAFETY: into_raw_fd transfers the only owner of this descriptor.
+        let file = unsafe { std::fs::File::from_raw_fd(stream.into_raw_fd()) };
+        // SAFETY: the File is owned by AsyncFd for its whole registration.
+        let fd = unsafe { AsyncFd::register(file) }.unwrap();
+        let mut devices = HidDeviceCache::default();
+        devices.devices.insert(path, fd);
+        (devices, peer)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn consecutive_reports_reuse_the_cached_device_handle() {
+        let path = PathBuf::from("/virtual/wingmankvm-hidg0");
+        let (mut devices, _peer) = cached_test_device(path.clone());
+
+        send_report(&path, &[0; 4], &mut devices).await.unwrap();
+        send_report(&path, &[0; 4], &mut devices).await.unwrap();
+        assert_eq!(
+            devices.open_count(),
+            0,
+            "two reports must reuse the already cached handle"
+        );
+
+        devices.invalidate(&path);
+        assert!(!devices.devices.contains_key(&path));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_failure_discards_the_cached_device_handle() {
+        let path = PathBuf::from("/virtual/wingmankvm-hidg0");
+        let (mut devices, peer) = cached_test_device(path.clone());
+        drop(peer);
+
+        let result = send_report(&path, &[0; 4], &mut devices).await;
+        assert!(result.is_err());
+        assert!(!devices.devices.contains_key(&path));
     }
 
     #[test]
