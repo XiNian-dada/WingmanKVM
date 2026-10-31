@@ -265,6 +265,217 @@
   $$('[data-quick-key]').forEach((button) =>
     button.addEventListener('click', () => sendQuickKey(button.dataset.quickKey)),
   );
+
+  // Paste-as-typing: turn arbitrary text into US-layout keystrokes. Kept pure
+  // so the mapping can be exercised without touching the network or DOM.
+  const US_UNSHIFTED_SYMBOLS = {
+    '`': 'Backquote',
+    '-': 'Minus',
+    '=': 'Equal',
+    '[': 'BracketLeft',
+    ']': 'BracketRight',
+    '\\': 'Backslash',
+    ';': 'Semicolon',
+    "'": 'Quote',
+    ',': 'Comma',
+    '.': 'Period',
+    '/': 'Slash',
+  };
+  const US_SHIFTED_SYMBOLS = {
+    '~': 'Backquote',
+    '!': 'Digit1',
+    '@': 'Digit2',
+    '#': 'Digit3',
+    $: 'Digit4',
+    '%': 'Digit5',
+    '^': 'Digit6',
+    '&': 'Digit7',
+    '*': 'Digit8',
+    '(': 'Digit9',
+    ')': 'Digit0',
+    _: 'Minus',
+    '+': 'Equal',
+    '{': 'BracketLeft',
+    '}': 'BracketRight',
+    '|': 'Backslash',
+    ':': 'Semicolon',
+    '"': 'Quote',
+    '<': 'Comma',
+    '>': 'Period',
+    '?': 'Slash',
+  };
+  function textToKeystrokes(text) {
+    const strokes = [],
+      unsupported = [],
+      seenUnsupported = new Set(),
+      normalized = String(text ?? '').replace(/\r\n?/g, '\n');
+    for (const ch of Array.from(normalized)) {
+      let key = null,
+        shift = false;
+      if (/^[a-z]$/.test(ch)) key = `Key${ch.toUpperCase()}`;
+      else if (/^[A-Z]$/.test(ch)) {
+        key = `Key${ch}`;
+        shift = true;
+      } else if (/^[0-9]$/.test(ch)) key = `Digit${ch}`;
+      else if (ch === ' ') key = 'Space';
+      else if (ch === '\n') key = 'Enter';
+      else if (ch === '\t') key = 'Tab';
+      else if (US_UNSHIFTED_SYMBOLS[ch]) key = US_UNSHIFTED_SYMBOLS[ch];
+      else if (US_SHIFTED_SYMBOLS[ch]) {
+        key = US_SHIFTED_SYMBOLS[ch];
+        shift = true;
+      }
+      if (!key) {
+        if (!seenUnsupported.has(ch)) {
+          seenUnsupported.add(ch);
+          unsupported.push(ch);
+        }
+        continue;
+      }
+      strokes.push({ key, shift, ctrl: false, alt: false, meta: false });
+    }
+    return { strokes, unsupported };
+  }
+  function displayUnsupportedChar(ch) {
+    return /[\u0000-\u001f\u007f]/.test(ch)
+      ? `U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`
+      : ch;
+  }
+  let pasteRun = null;
+  function setPasteStatus(text, tone = '') {
+    const el = $('#paste-key-status');
+    if (!el) return;
+    el.textContent = text;
+    el.classList.toggle('error', tone === 'error');
+  }
+  function updatePasteProgress(done, total) {
+    const bar = $('#paste-key-bar'),
+      progress = $('#paste-key-progress');
+    if (bar) bar.style.width = total ? `${Math.round((done / total) * 100)}%` : '0%';
+    if (progress) {
+      progress.setAttribute('aria-valuemax', String(total));
+      progress.setAttribute('aria-valuenow', String(done));
+    }
+  }
+  function openPasteDialog() {
+    const dialog = $('#paste-key-dialog'),
+      input = $('#paste-key-text'),
+      unsupportedEl = $('#paste-key-unsupported'),
+      sendButton = $('#paste-key-send'),
+      cancelButton = $('#paste-key-cancel');
+    if (!dialog) return;
+    if (input) input.value = '';
+    if (unsupportedEl) {
+      unsupportedEl.hidden = true;
+      unsupportedEl.textContent = '';
+    }
+    updatePasteProgress(0, 0);
+    setPasteStatus('');
+    if (sendButton) sendButton.disabled = false;
+    if (cancelButton) cancelButton.textContent = tr('取消');
+    try {
+      if (typeof dialog.showModal === 'function') dialog.showModal();
+      else dialog.show?.();
+    } catch (_) {
+      try {
+        dialog.show?.();
+      } catch (__) {}
+    }
+    setTimeout(() => input?.focus(), 0);
+  }
+  function closePasteDialog() {
+    const dialog = $('#paste-key-dialog');
+    try {
+      dialog?.close?.();
+    } catch (_) {}
+  }
+  async function startPasteTyping() {
+    const input = $('#paste-key-text'),
+      unsupportedEl = $('#paste-key-unsupported'),
+      sendButton = $('#paste-key-send'),
+      cancelButton = $('#paste-key-cancel');
+    const { strokes, unsupported } = textToKeystrokes(input ? input.value : '');
+    if (unsupported.length) {
+      if (unsupportedEl) {
+        unsupportedEl.hidden = false;
+        unsupportedEl.textContent = `${tr('无法表示的字符：')}${unsupported
+          .map(displayUnsupportedChar)
+          .join(' ')}`;
+      }
+      setPasteStatus(tr('已阻止发送，请先移除无法表示的字符'), 'error');
+      toast(tr('文本包含无法表示的字符，已阻止发送'), true);
+      return;
+    }
+    if (unsupportedEl) {
+      unsupportedEl.hidden = true;
+      unsupportedEl.textContent = '';
+    }
+    if (!strokes.length) {
+      setPasteStatus(tr('没有可发送的字符'));
+      return;
+    }
+    if (!inputEnabled()) setRemote(true);
+    resetVirtualModifiers();
+    let canceled = false;
+    pasteRun = {
+      cancel: () => {
+        canceled = true;
+      },
+    };
+    if (sendButton) sendButton.disabled = true;
+    if (cancelButton) cancelButton.textContent = tr('取消发送');
+    updatePasteProgress(0, strokes.length);
+    setPasteStatus(tr(`正在键入 0 / ${strokes.length}`));
+    let sent = 0;
+    try {
+      while (sent < strokes.length) {
+        if (canceled) break;
+        const stroke = strokes[sent];
+        await sendKey(stroke.key, {
+          ctrlKey: stroke.ctrl,
+          shiftKey: stroke.shift,
+          altKey: stroke.alt,
+          metaKey: stroke.meta,
+        });
+        sent += 1;
+        updatePasteProgress(sent, strokes.length);
+        setPasteStatus(tr(`正在键入 ${sent} / ${strokes.length}`));
+        if (sent < strokes.length) await new Promise((resolve) => setTimeout(resolve, 15));
+      }
+      if (canceled) {
+        setPasteStatus(tr(`已取消，已发送 ${sent} / ${strokes.length}`));
+      } else {
+        setPasteStatus(tr(`已发送完成（${strokes.length} 个按键）`));
+        toast(tr(`已发送 ${strokes.length} 个按键`));
+      }
+    } catch (error) {
+      setPasteStatus(`${tr('发送失败：')}${error.message}`, 'error');
+      toast(error.message, true);
+    } finally {
+      pasteRun = null;
+      if (sendButton) sendButton.disabled = false;
+      if (cancelButton) cancelButton.textContent = tr('取消');
+    }
+  }
+  $('#paste-typing-btn')?.addEventListener('click', openPasteDialog);
+  $$('[data-paste-close]').forEach((button) => button.addEventListener('click', closePasteDialog));
+  $('#paste-key-send')?.addEventListener('click', startPasteTyping);
+  $('#paste-key-cancel')?.addEventListener('click', () => {
+    if (pasteRun) {
+      pasteRun.cancel();
+      setPasteStatus(tr('正在取消…'));
+      return;
+    }
+    closePasteDialog();
+  });
+  $('#paste-key-dialog')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) closePasteDialog();
+  });
+  $('#paste-key-dialog')?.addEventListener('close', () => {
+    pasteRun?.cancel();
+    pasteRun = null;
+  });
+
   let latestKeyboardLeds = { num_lock: false, caps_lock: false, scroll_lock: false, raw: 0 };
   function renderKeyboardLeds(leds) {
     if (!leds) return;

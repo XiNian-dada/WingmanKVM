@@ -288,8 +288,37 @@ def language_coverage(browser, port, checks):
         context.close()
 
 
+def paste_as_typing(browser, port, checks):
+    """#51 / UX-03: pasted text is typed as US-layout keystrokes."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        page.click("#input-state")
+        page.click("#keyboard-toggle")
+        page.click("#paste-typing-btn")
+        page.fill("#paste-key-text", "Ab1!\n")
+        page.click("#paste-key-send")
+        page.wait_for_timeout(700)
+        sequence = [(post.get("key"), bool(post.get("shift"))) for post in state.key_posts]
+        expected = [("KeyA", True), ("KeyB", False), ("Digit1", False),
+                    ("Digit1", True), ("Enter", False)]
+        check(checks, sequence == expected, "paste_typing_sends_us_sequence", sequence)
+
+        state.key_posts.clear()
+        page.fill("#paste-key-text", "中文")
+        page.click("#paste-key-send")
+        page.wait_for_timeout(300)
+        check(checks, not state.key_posts, "paste_typing_blocks_unsupported_chars",
+              state.key_posts)
+        hint = page.text_content("#paste-key-unsupported") or ""
+        check(checks, "中" in hint and "文" in hint,
+              "paste_typing_lists_unsupported_chars", hint)
+    finally:
+        context.close()
+
+
 SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation, low_risk_ui,
-             language_coverage]
+             language_coverage, paste_as_typing]
 
 if __name__ == "__main__":
     sys.exit(main())
