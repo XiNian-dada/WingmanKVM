@@ -9,6 +9,7 @@ BINARY=
 RELEASE_ARCHIVE=
 RELEASE_TMPDIR=
 NO_START=false
+INSTALL_DEPS=false
 MAINTENANCE_MODE=
 WINGMAN_CREATED=false
 DEST_ROOT=/
@@ -24,12 +25,13 @@ SERVICES_START_ATTEMPTED=false
 
 usage() {
     cat <<EOF
-Usage: sudo ./deploy/$PROGRAM (--binary /path/to/wingmankvm | --release /path/to/wingmankvm-VERSION-TARGET.tar.gz) [--no-start] [--health-url URL] [--maintenance-mode MODE]
+Usage: sudo ./deploy/$PROGRAM (--binary /path/to/wingmankvm | --release /path/to/wingmankvm-VERSION-TARGET.tar.gz) [--no-start] [--install-deps] [--health-url URL] [--maintenance-mode MODE]
 
 Options:
   --binary PATH  Linux WingmanKVM executable to install
   --release FILE Release tar.gz to verify and install; the binary is read from it
   --no-start     Install files only; do not enable or start services
+  --install-deps Install missing runtime packages with apt-get on Debian, Ubuntu or Armbian
   --health-url U Local loopback http /healthz override (IP literal only)
   --maintenance-mode MODE  restricted (default) or explicit privileged root maintenance
   -h, --help     Show this help
@@ -51,6 +53,123 @@ die() {
 
 require_command() {
     command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+MISSING_ITEMS=()
+MISSING_PACKAGES=()
+
+add_missing_package() {
+    local package=$1 existing
+    for existing in "${MISSING_PACKAGES[@]}"; do
+        [[ $existing == "$package" ]] && return 0
+    done
+    MISSING_PACKAGES+=("$package")
+}
+
+check_dependency() {
+    local command=$1 package=$2
+    if [[ $command == /* ]]; then
+        if [[ ! -x $command ]]; then
+            MISSING_ITEMS+=("$command")
+            add_missing_package "$package"
+        fi
+    elif ! command -v "$command" >/dev/null 2>&1; then
+        MISSING_ITEMS+=("$command")
+        add_missing_package "$package"
+    fi
+}
+
+collect_missing_dependencies() {
+    local entry command package
+    local -a dependencies=(
+        "awk:mawk" "cmp:diffutils" "flock:util-linux" "getent:libc-bin"
+        "groupadd:passwd" "install:coreutils" "mktemp:coreutils" "od:coreutils"
+        "python3:python3" "systemctl:systemd" "timeout:coreutils"
+        "udevadm:udev" "useradd:passwd" "usermod:passwd" "visudo:sudo"
+    )
+
+    MISSING_ITEMS=()
+    MISSING_PACKAGES=()
+    for entry in "${dependencies[@]}"; do
+        IFS=: read -r command package <<<"$entry"
+        check_dependency "$command" "$package"
+    done
+    if [[ -n $RELEASE_ARCHIVE ]]; then
+        check_dependency tar tar
+        check_dependency sha256sum coreutils
+    fi
+    check_dependency /bin/bash bash
+    check_dependency /usr/bin/sudo sudo
+    check_dependency /usr/sbin/chpasswd passwd
+
+    # v4l-utils is used for post-install diagnostics; it is recommended but not
+    # required by the installer itself.
+    if ! command -v v4l2-ctl >/dev/null 2>&1; then
+        add_missing_package v4l-utils
+    fi
+}
+
+debian_family_supported() {
+    local family
+    [[ -r /etc/os-release ]] || return 1
+    family=$( (
+        # shellcheck source=/dev/null
+        . /etc/os-release
+        printf '%s %s' "${ID:-}" "${ID_LIKE:-}"
+    ) 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    case " $family " in
+        *" debian "* | *" ubuntu "* | *" armbian "*) return 0 ;;
+    esac
+    return 1
+}
+
+install_missing_dependencies() {
+    collect_missing_dependencies
+    if ((${#MISSING_PACKAGES[@]} == 0)); then
+        log "all runtime packages are already installed"
+        return 0
+    fi
+    if ! debian_family_supported; then
+        die "--install-deps supports Debian, Ubuntu and Armbian only; missing commands: ${MISSING_ITEMS[*]}; install them manually before running the installer"
+    fi
+    require_command apt-get
+    log "installing runtime packages: ${MISSING_PACKAGES[*]}"
+    DEBIAN_FRONTEND=noninteractive apt-get update \
+        || die "apt-get update failed; check network and package sources, then retry with --install-deps"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${MISSING_PACKAGES[@]}" \
+        || die "apt-get install failed; install these packages manually: ${MISSING_PACKAGES[*]}"
+    collect_missing_dependencies
+    if ((${#MISSING_ITEMS[@]} > 0)); then
+        die "dependencies are still missing after apt-get: ${MISSING_ITEMS[*]}"
+    fi
+    log "runtime packages installed"
+}
+
+check_libgpiod() {
+    local version=
+    if ! command -v gpioset >/dev/null 2>&1; then
+        log "optional GPIO power control: gpioset is not installed; the installer never installs libgpiod automatically"
+        log "on Debian bookworm use libgpiod-tools 2.x from bookworm-backports when GPIO power control is needed"
+        return 0
+    fi
+    version=$(gpioset --version 2>/dev/null | head -n 1 || true)
+    case $version in
+        *"v2."*) log "detected libgpiod 2.x: $version" ;;
+        *)
+            warn "gpioset is not libgpiod 2.x ($version); timed power pulses need libgpiod 2.x from bookworm-backports; the installer will not replace it automatically"
+            ;;
+    esac
+}
+
+ensure_runtime_dependencies() {
+    if $INSTALL_DEPS; then
+        install_missing_dependencies
+    fi
+    collect_missing_dependencies
+    if ((${#MISSING_ITEMS[@]} > 0)); then
+        die "missing required commands: ${MISSING_ITEMS[*]}; rerun with --install-deps on Debian/Ubuntu/Armbian, or install them manually"
+    fi
+    check_libgpiod
 }
 
 source_file() {
@@ -849,6 +968,10 @@ while (($# > 0)); do
             NO_START=true
             shift
             ;;
+        --install-deps)
+            INSTALL_DEPS=true
+            shift
+            ;;
         -h | --help)
             usage
             exit 0
@@ -865,25 +988,7 @@ done
 [[ $(id -u) -eq 0 ]] || die "run this installer as root (for example with sudo)"
 DEST_ROOT=/
 
-require_command awk
-require_command cmp
-require_command flock
-require_command getent
-require_command groupadd
-require_command install
-require_command mktemp
-require_command od
-require_command python3
-require_command systemctl
-require_command timeout
-require_command udevadm
-require_command useradd
-require_command usermod
-require_command visudo
-
-[[ -x /bin/bash ]] || die "/bin/bash is required for the web terminal"
-[[ -x /usr/bin/sudo ]] || die "sudo is required; install it before running this installer"
-[[ -x /usr/sbin/chpasswd ]] || die "/usr/sbin/chpasswd is required for terminal password setup"
+ensure_runtime_dependencies
 
 if [[ -n $RELEASE_ARCHIVE ]]; then
     prepare_release_archive
