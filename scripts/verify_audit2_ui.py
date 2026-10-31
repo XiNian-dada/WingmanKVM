@@ -361,6 +361,42 @@ def paste_as_typing(browser, port, checks):
         hint = page.text_content("#paste-key-unsupported") or ""
         check(checks, "中" in hint and "文" in hint,
               "paste_typing_lists_unsupported_chars", hint)
+
+        # With Caps Lock on at the target, letter case must still come out right.
+        state.key_posts.clear()
+        from verify_p2b_ui import api_route
+        class CapsOnRoute:
+            """Wraps a route so the mocked status reports Caps Lock on."""
+            def __init__(self, route):
+                self.route, self.request = route, route.request
+            def fulfill(self, **kwargs):
+                body = kwargs.get("body", "").replace('"caps_lock": false', '"caps_lock": true')
+                return self.route.fulfill(**{**kwargs, "body": body})
+        def caps_on(route):
+            return api_route(CapsOnRoute(route), state)
+        page.unroute("**/api/**")
+        page.route("**/api/**", caps_on)
+        page.wait_for_timeout(3500)
+        page.fill("#paste-key-text", "Ab")
+        page.click("#paste-key-send")
+        page.wait_for_timeout(500)
+        sequence = [(post.get("key"), bool(post.get("shift"))) for post in state.key_posts]
+        check(checks, sequence == [("KeyA", False), ("KeyB", True)], "paste_typing_respects_caps_lock", sequence)
+        page.unroute("**/api/**")
+        page.route("**/api/**", lambda route: api_route(route, state))
+        page.wait_for_timeout(3500)
+
+        # Turning forwarding off mid-paste stops the run and reports it.
+        state.key_posts.clear()
+        page.fill("#paste-key-text", "a" * 200)
+        page.click("#paste-key-send")
+        page.wait_for_timeout(300)
+        page.locator("#input-state").evaluate("b => b.click()")
+        page.wait_for_timeout(600)
+        sent = len(state.key_posts)
+        status = page.text_content("#paste-key-status") or ""
+        check(checks, 0 < sent < 200 and "已中断" in status, "paste_typing_stops_when_forwarding_off",
+              (sent, status))
     finally:
         context.close()
 

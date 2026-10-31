@@ -455,6 +455,7 @@
       "触屏工具": "觸控工具",
       "释放": "釋放",
       "退出全屏": "退出全螢幕",
+      "已中断：键鼠转发已关闭，已发送 ${} / ${}": "已中斷：鍵鼠轉發已關閉，已傳送 ${} / ${}",
     },
     en: {
       "Wingman 简介": "About Wingman",
@@ -947,5 +948,6 @@
       "接管": "Take control",
       "释放": "Release",
       "退出全屏": "Exit fullscreen",
+      "已中断：键鼠转发已关闭，已发送 ${} / ${}": "Interrupted: forwarding was turned off after ${} / ${}",
     },
   };

@@ -437,14 +437,24 @@
     if (cancelButton) cancelButton.textContent = tr('取消发送');
     updatePasteProgress(0, strokes.length);
     setPasteStatus(tr(`正在键入 0 / ${strokes.length}`));
-    let sent = 0;
+    let sent = 0,
+      interrupted = false;
+    // Letters are typed for the target's current Caps Lock state, otherwise
+    // a pasted password would arrive with every letter's case inverted.
+    const capsLock = !!latestKeyboardLeds.caps_lock;
     try {
       while (sent < strokes.length) {
         if (canceled) break;
+        // sendKey() only toasts when forwarding is off; stop instead of
+        // reporting a partial paste as complete.
+        if (!inputEnabled()) {
+          interrupted = true;
+          break;
+        }
         const stroke = strokes[sent];
         await sendKey(stroke.key, {
           ctrlKey: stroke.ctrl,
-          shiftKey: stroke.shift,
+          shiftKey: stroke.shift !== (capsLock && stroke.key.startsWith('Key')),
           altKey: stroke.alt,
           metaKey: stroke.meta,
         });
@@ -453,7 +463,11 @@
         setPasteStatus(tr(`正在键入 ${sent} / ${strokes.length}`));
         if (sent < strokes.length) await new Promise((resolve) => setTimeout(resolve, 15));
       }
-      if (canceled) {
+      if (interrupted) {
+        const message = tr(`已中断：键鼠转发已关闭，已发送 ${sent} / ${strokes.length}`);
+        setPasteStatus(message, 'error');
+        toast(message, true);
+      } else if (canceled) {
         setPasteStatus(tr(`已取消，已发送 ${sent} / ${strokes.length}`));
       } else {
         setPasteStatus(tr(`已发送完成（${strokes.length} 个按键）`));
