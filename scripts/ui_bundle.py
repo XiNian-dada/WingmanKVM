@@ -1,6 +1,7 @@
 """Assemble the browser UI as one self-contained HTML document.
 
-The UI ships as web/index.html plus /assets/app.css and /assets/app.js.
+The UI ships as web/index.html plus /assets/app.css and /assets/app.js
+(the latter assembled from the ordered fragments in web/js/app/).
 Verification and screenshot harnesses serve a single page, so this inlines
 the first-party assets exactly where the browser would load them.
 """
@@ -21,4 +22,7 @@ def load_index_html(repo=REPO):
         if marker not in html:
             raise RuntimeError(f"asset marker not found in web/index.html: {marker}")
     html = html.replace(CSS_LINK, "<style>\n" + read("css", "app.css") + "</style>", 1)
-    return html.replace(JS_TAG, "<script>\n" + read("js", "app.js") + "</script>", 1)
+    # Same ordering as src/web_ui.rs APP_JS_PARTS: fragments sorted by name.
+    parts_dir = os.path.join(repo, "web", "js", "app")
+    script = "".join(read("js", "app", name) for name in sorted(os.listdir(parts_dir)) if name.endswith(".js"))
+    return html.replace(JS_TAG, "<script>\n" + script + "</script>", 1)

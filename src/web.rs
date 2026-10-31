@@ -301,7 +301,7 @@ async fn app_css() -> impl IntoResponse {
 }
 
 async fn app_js() -> impl IntoResponse {
-    no_store(([(CONTENT_TYPE, "text/javascript; charset=utf-8")], APP_JS))
+    no_store(([(CONTENT_TYPE, "text/javascript; charset=utf-8")], APP_JS.as_str()))
 }
 
 async fn xterm_css() -> impl IntoResponse {

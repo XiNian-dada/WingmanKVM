@@ -3,7 +3,26 @@
 
 pub static INDEX_HTML: &str = include_str!("../web/index.html");
 pub static APP_CSS: &str = include_str!("../web/css/app.css");
-pub static APP_JS: &str = include_str!("../web/js/app.js");
+/// The app script is one IIFE split into ordered feature fragments. They share
+/// closure state, so they are concatenated rather than loaded as modules.
+pub static APP_JS_PARTS: &[&str] = &[
+    include_str!("../web/js/app/00-core.js"),
+    include_str!("../web/js/app/01-i18n.js"),
+    include_str!("../web/js/app/02-theme-layout.js"),
+    include_str!("../web/js/app/03-session.js"),
+    include_str!("../web/js/app/04-video-settings.js"),
+    include_str!("../web/js/app/05-power.js"),
+    include_str!("../web/js/app/06-devices.js"),
+    include_str!("../web/js/app/07-video.js"),
+    include_str!("../web/js/app/08-input.js"),
+    include_str!("../web/js/app/09-terminal.js"),
+    include_str!("../web/js/app/10-workspace-status.js"),
+    include_str!("../web/js/app/11-media.js"),
+    include_str!("../web/js/app/12-passkey.js"),
+    include_str!("../web/js/app/13-settings-boot.js"),
+];
+
+pub static APP_JS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| APP_JS_PARTS.concat());
 pub static ICON_SVG: &str = include_str!("../web/icon.svg");
 
 #[cfg(test)]
@@ -13,7 +32,7 @@ mod tests {
     /// The full UI source as the browser assembles it, with all whitespace
     /// removed so assertions check content rather than source formatting.
     static INDEX_HTML: std::sync::LazyLock<UiSource> = std::sync::LazyLock::new(|| {
-        UiSource(compact(&[super::INDEX_HTML, APP_CSS, APP_JS].concat()))
+        UiSource(compact(&[super::INDEX_HTML, APP_CSS, APP_JS.as_str()].concat()))
     });
 
     fn compact(text: &str) -> String {
