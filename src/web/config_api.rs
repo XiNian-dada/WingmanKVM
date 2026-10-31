@@ -907,7 +907,7 @@ fn civil_date_from_days(days: i64) -> (i64, u32, u32) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     struct TestDirectory(PathBuf);
@@ -932,7 +932,7 @@ mod tests {
         }
     }
 
-    fn test_state(config: Config, path: PathBuf) -> AppState {
+    pub(in crate::web) fn test_state(config: Config, path: PathBuf) -> AppState {
         let (video, _) = VideoManager::test_source(config.video.clone());
         let webrtc = WebRtcManager::test_stub(video.clone(), config.video.h264.clone());
         AppState {
@@ -960,6 +960,7 @@ mod tests {
             system: Arc::new(crate::system::SystemMonitor::new()),
             metrics: Arc::new(RuntimeMetrics::new()),
             notifier: crate::notify::Notifier::new(Default::default()),
+            update: OnlineUpdate::new(OnlineUpdateOptions::system(path.parent().unwrap().to_path_buf())),
         }
     }
 
