@@ -62,7 +62,7 @@ curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts
 curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts/get.sh | sudo bash -s -- --install-deps
 ```
 
-希望用 `http://wingmankvm.local:8080` 这样的局域网域名访问（Passkey 需要域名而非 IP）时加上 `--mdns`，可用 `--mdns-hostname NAME` 自定义名称：
+希望用 `http://wingmankvm.local:8080` 这样的局域网域名访问（地址不随 IP 变化；Passkey 仍需 HTTPS 反向代理）时加上 `--mdns`，可用 `--mdns-hostname NAME` 自定义名称：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts/get.sh | sudo bash -s -- --install-deps --mdns

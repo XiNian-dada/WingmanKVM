@@ -39,7 +39,7 @@ Options:
   --health-url U Local loopback http /healthz override (IP literal only)
   --maintenance-mode MODE  restricted (default) or explicit privileged root maintenance
   --mdns         Advertise WingmanKVM on the LAN as NAME.local with avahi-daemon
-                 (needed for Passkey, which requires a domain name instead of an IP)
+                 (stable LAN address; Passkey still requires HTTPS)
   --mdns-hostname NAME  mDNS host label used with --mdns (default: wingmankvm)
   -h, --help     Show this help
 
@@ -1089,7 +1089,7 @@ show_first_run_access() {
     if ((${#access_hosts[@]} == 0)); then
         access_hosts+=(127.0.0.1)
     fi
-    # Passkey needs a domain name, so the mDNS name goes first when available.
+    # The mDNS name survives IP changes, so it goes first when available.
     candidate=$(mdns_access_host)
     if [[ -n $candidate ]]; then
         access_hosts=("$candidate" "${access_hosts[@]}")

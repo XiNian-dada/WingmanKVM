@@ -61,7 +61,7 @@ Browser                     <──  LAN  ────────────�
    cd wingmankvm && sudo ./deploy/install.sh --release ../wingmankvm-<版本>-<架构>.tar.gz
    ```
 
-   To reach the KVM as `http://wingmankvm.local:8080` on the LAN, add `--install-deps --mdns` (and optionally `--mdns-hostname NAME`); Passkey requires a domain name rather than an IP, so this makes Passkey usable out of the box.
+   To reach the KVM as `http://wingmankvm.local:8080` on the LAN, add `--install-deps --mdns` (and optionally `--mdns-hostname NAME`) for a stable address. Passkey still requires HTTPS (see the reverse proxy section of the deployment guide).
 
 3. When installation finishes, the terminal prints a one-time setup link `http://<IP>:8080/#setup=...` (with `--mdns`, the `.local` address is listed first). Open it in a browser on the same LAN, set the administrator account, and confirm the automatically detected devices to enter the console.
 

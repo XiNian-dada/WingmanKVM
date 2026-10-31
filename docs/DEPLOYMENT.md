@@ -50,7 +50,7 @@ curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts
 curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts/get.sh \
   | sudo bash -s -- --version v1.2.3 --no-start
 
-# 启用局域网域名 wingmankvm.local（Passkey 需要域名访问）
+# 启用局域网域名 wingmankvm.local（Passkey 仍需 HTTPS）
 curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts/get.sh \
   | sudo bash -s -- --install-deps --mdns
 ```
@@ -166,7 +166,7 @@ sudo ./deploy/install.sh --install-deps --release /path/to/wingmankvm-<版本>-<
 
 ### 局域网域名访问（mDNS，`wingmankvm.local`）
 
-追加 `--mdns` 后，安装器会通过 avahi-daemon 在局域网内广播 `wingmankvm.local`，并在安装完成提示和 `wingmankvm-setup-url` 中优先输出 `http://wingmankvm.local:8080/...`，随后才列出 IP 地址。Passkey（WebAuthn）要求使用域名而不能用 IP 访问，启用 mDNS 后 Passkey 即可开箱可用。
+追加 `--mdns` 后，安装器会通过 avahi-daemon 在局域网内广播 `wingmankvm.local`，并在安装完成提示和 `wingmankvm-setup-url` 中优先输出 `http://wingmankvm.local:8080/...`，随后才列出 IP 地址。这样访问地址不随 IP 变化。注意：Passkey（WebAuthn）要求安全上下文，`http://*.local` 不满足，仍须通过 HTTPS 反向代理访问才能使用 Passkey。
 
 ```bash
 # 与 --install-deps 一起使用时会自动安装 avahi-daemon
