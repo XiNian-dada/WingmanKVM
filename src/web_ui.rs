@@ -73,6 +73,18 @@ mod tests {
     }
 
     #[test]
+    fn index_markup_container_tags_are_balanced() {
+        // An unbalanced container silently re-parents later sections (an
+        // orphan `</div>` once pushed the power controls out of their panel).
+        let html = super::INDEX_HTML;
+        for tag in ["div", "section", "aside", "main", "form", "details", "dialog", "nav", "header", "label"] {
+            let opens = html.matches(&format!("<{tag}>")).count() + html.matches(&format!("<{tag} ")).count();
+            let closes = html.matches(&format!("</{tag}>")).count();
+            assert_eq!(opens, closes, "<{tag}> open/close count mismatch");
+        }
+    }
+
+    #[test]
     fn pointer_mode_selectors_only_offer_absolute_and_relative() {
         let selector = r#"<select name="pointer_mode"><option value="absolute">绝对</option><option value="relative">相对</option></select>"#;
         assert_eq!(INDEX_HTML.matches(selector).count(), 2);
