@@ -66,7 +66,7 @@
       detach.addEventListener('click', () => {
         if (
           writableMountedDisk(status, name) &&
-          !confirm('请先在目标机中弹出此 U 盘。确认已经弹出并继续吗？')
+          !confirm(tr('请先在目标机中弹出此 U 盘。确认已经弹出并继续吗？'))
         )
           return;
         runMediaAction(
@@ -82,7 +82,7 @@
         force.textContent = '强制弹出';
         force.title = '强制弹出可能损坏镜像文件系统';
         force.addEventListener('click', () => {
-          if (!confirm('强制弹出可能损坏镜像文件系统，确定继续吗？')) return;
+          if (!confirm(tr('强制弹出可能损坏镜像文件系统，确定继续吗？'))) return;
           runMediaAction(
             () => request('/api/media/detach', { method: 'POST', body: JSON.stringify({ force: true }) }),
             '介质已强制弹出',

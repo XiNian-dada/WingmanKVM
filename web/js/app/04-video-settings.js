@@ -88,7 +88,7 @@
   $('#pan-toggle')?.addEventListener('click', () => setPanMode(!isPanActive));
   $('#pan-toggle')?.addEventListener('dblclick', () => {
     centerNativeViewport();
-    toast(t('pan_mode', '平移') + ': 已居中');
+    toast('平移: 已居中');
   });
   // Single source of truth for interpolation: the video panel select and the
   // settings dialog toggle both read and write the `render_pixelated` setting.

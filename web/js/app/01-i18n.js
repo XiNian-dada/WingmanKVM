@@ -389,7 +389,105 @@
   function t(key, fallback = '') {
     return I18N[currentLang]?.[key] ?? I18N['zh-CN']?.[key] ?? fallback ?? key;
   }
+  // Phrase translation for everything without a data-i18n key: static markup
+  // and text that scripts write at runtime. Every text node and attribute
+  // remembers its source (Simplified Chinese) text and the value last written
+  // here; when script replaces the value, that becomes the new source. A
+  // MutationObserver translates runtime writes as they happen.
+  const TRANSLATED_ATTRS = ['title', 'aria-label', 'placeholder', 'data-help'];
+  const CJK = /[\u4e00-\u9fff]/;
+  const phraseSources = new WeakMap();
+  // Keys containing `${}` are templates: each placeholder matches any text,
+  // which is carried into the translation in order.
+  const phrasePatterns = {};
+  function patternsFor(lang) {
+    if (!phrasePatterns[lang]) {
+      const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      phrasePatterns[lang] = Object.entries(PHRASES[lang] || {})
+        .filter(([source]) => source.includes('${}'))
+        .map(([source, target]) => [
+          new RegExp(`^${source.split('${}').map(escape).join('(.+?)')}$`),
+          target,
+        ]);
+    }
+    return phrasePatterns[lang];
+  }
+  // Translate a Simplified Chinese source string for the current language.
+  function tr(source) {
+    if (currentLang === 'zh-CN') return source;
+    const exact = PHRASES[currentLang]?.[source];
+    if (exact) return exact;
+    for (const [pattern, target] of patternsFor(currentLang)) {
+      const match = source.match(pattern);
+      if (match) {
+        let index = 1;
+        // Placeholder values are often phrases themselves (e.g. a mode name).
+        return target.replace(/\$\{\}/g, () => tr(match[index++] ?? ''));
+      }
+    }
+    return source;
+  }
+  function untranslatable(el) {
+    return !el || !!el.closest('script,style,#terminal-host,[data-i18n]');
+  }
+  function translatePhrase(holder, key, current, write) {
+    const records = phraseSources.get(holder) || new Map();
+    let record = records.get(key);
+    if (!record || record.applied !== current) record = { raw: current, applied: current };
+    const source = record.raw.trim();
+    const next = source ? record.raw.replace(source, tr(source)) : record.raw;
+    if (next !== current) write(next);
+    record.applied = next;
+    records.set(key, record);
+    phraseSources.set(holder, records);
+  }
+  function translateTextNode(node) {
+    if (untranslatable(node.parentElement)) return;
+    const known = phraseSources.get(node)?.get('text');
+    if (!known && !CJK.test(node.nodeValue)) return;
+    translatePhrase(node, 'text', node.nodeValue, (next) => (node.nodeValue = next));
+  }
+  function translateAttributes(el) {
+    // data-i18n keys only own an element's text; its attributes still go
+    // through phrase translation.
+    if (!el || el.closest('script,style') || el.parentElement?.closest('#terminal-host')) return;
+    for (const attr of TRANSLATED_ATTRS) {
+      const value = el.getAttribute(attr);
+      if (value === null) continue;
+      if (!phraseSources.get(el)?.get(attr) && !CJK.test(value)) continue;
+      translatePhrase(el, attr, value, (next) => el.setAttribute(attr, next));
+    }
+  }
+  function translateTree(root) {
+    if (root.nodeType === Node.TEXT_NODE) return translateTextNode(root);
+    if (root.nodeType !== Node.ELEMENT_NODE) return;
+    translateAttributes(root);
+    root.querySelectorAll('*').forEach(translateAttributes);
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) translateTextNode(node);
+  }
+  const phraseObserver = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      if (m.type === 'characterData') translateTextNode(m.target);
+      else if (m.type === 'attributes') translateAttributes(m.target);
+      else m.addedNodes.forEach(translateTree);
+    }
+  });
+  function collectStaticPhrases() {
+    translateTree(document.body);
+    phraseObserver.observe(document.body, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: TRANSLATED_ATTRS,
+    });
+  }
+  function translateStaticPhrases() {
+    translateTree(document.body);
+  }
   function updateI18nElements() {
+    translateStaticPhrases();
     $$('[data-i18n]').forEach((el) => {
       const key = el.dataset.i18n;
       if (!key || !I18N[currentLang]?.[key]) return;
@@ -420,6 +518,7 @@
     } catch (_) {}
     document.documentElement.lang = currentLang;
     updateI18nElements();
+    applyTheme(getPreferredTheme());
     syncInputUi();
     renderVideoUi();
     if (app.classList.contains('inspector-open')) {

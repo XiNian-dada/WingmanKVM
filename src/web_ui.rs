@@ -7,6 +7,7 @@ pub static APP_CSS: &str = include_str!("../web/css/app.css");
 /// closure state, so they are concatenated rather than loaded as modules.
 pub static APP_JS_PARTS: &[&str] = &[
     include_str!("../web/js/app/00-core.js"),
+    include_str!("../web/js/app/01-i18n-phrases.js"),
     include_str!("../web/js/app/01-i18n.js"),
     include_str!("../web/js/app/02-theme-layout.js"),
     include_str!("../web/js/app/03-session.js"),

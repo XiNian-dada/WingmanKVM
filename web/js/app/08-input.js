@@ -153,7 +153,7 @@
       const textSpan = stateEl.querySelector('.input-text');
       if (textSpan) textSpan.textContent = text;
       else stateEl.textContent = text;
-      stateEl.title = text + ' (点击切换键鼠转发)';
+      stateEl.title = `${text} ${tr('(点击切换键鼠转发)')}`;
     }
     $('#input-release')?.classList.toggle('hidden', !enabled);
     updateDiagnosticsCard();

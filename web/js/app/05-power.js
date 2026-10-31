@@ -187,12 +187,12 @@
       duration = '0.5',
       label = '电源';
     if (action === 'reset') {
-      if (!confirm('确定复位吗？')) return;
+      if (!confirm(tr('确定复位吗？'))) return;
       url = '/reset';
       duration = '0.5';
       label = '复位';
     } else if (action === 'force-off') {
-      if (!confirm('确定长按电源 5 秒吗？这可能强制关机。')) return;
+      if (!confirm(tr('确定长按电源 5 秒吗？这可能强制关机。'))) return;
       url = '/power';
       duration = '5';
       label = '强制关机';

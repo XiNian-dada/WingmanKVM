@@ -134,6 +134,7 @@
   applyTheme(getPreferredTheme());
   applyRenderPixelated(getSetting('render_pixelated', true));
   setDisplayScale(readVideoUiPreference('scale', 'fit'));
+  collectStaticPhrases();
   try {
     const savedLang = localStorage.getItem('wingman_lang');
     if (savedLang && ['zh-CN', 'zh-TW', 'en'].includes(savedLang)) setLanguage(savedLang);

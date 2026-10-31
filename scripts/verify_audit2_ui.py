@@ -247,7 +247,39 @@ def low_risk_ui(browser, port, checks):
         context.close()
 
 
-SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation, low_risk_ui]
+def language_coverage(browser, port, checks):
+    """#39: switching to English translates static labels and help text."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        page.click("#lang-toggle")
+        page.click('[data-lang="en"]')
+        page.wait_for_timeout(200)
+        leftover = page.evaluate("""() => {
+          const cjk = /[\\u4e00-\\u9fff]/;
+          const out = [];
+          const walk = document.createTreeWalker(document.querySelector('#inspector'), NodeFilter.SHOW_TEXT);
+          for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+            if (cjk.test(n.nodeValue) && n.parentElement.offsetParent !== null) out.push(n.nodeValue.trim());
+          }
+          return out;
+        }""")
+        check(checks, not leftover, "visible_inspector_text_translated", leftover[:8])
+        help_text = page.get_attribute('#video-config [name="transport"]', "name") and page.evaluate(
+            "() => document.querySelector('#video-config .field-help').dataset.help")
+        check(checks, help_text and not any("\u4e00" <= c <= "\u9fff" for c in help_text),
+              "help_text_translated", help_text)
+        page.click("#lang-toggle")
+        page.click('[data-lang="zh-CN"]')
+        page.wait_for_timeout(200)
+        label = page.text_content('[data-panel="video"] .field span') or ""
+        check(checks, "播放方式" in label, "switching_back_restores_source_text", label)
+    finally:
+        context.close()
+
+
+SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation, low_risk_ui,
+             language_coverage]
 
 if __name__ == "__main__":
     sys.exit(main())
