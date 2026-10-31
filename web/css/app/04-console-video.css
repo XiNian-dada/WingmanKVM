@@ -209,8 +209,11 @@
   }
 }
 @container (max-width:880px) {
-  .quick-keys {
+  .quick-keys > [data-quick-key] {
     display: none !important;
+  }
+  .quick-menu-common {
+    display: block !important;
   }
 }
 @container (max-width:580px) {
@@ -240,8 +243,8 @@
     display: none !important;
   }
 }
-#app.keyboard-open .quick-keys,
-#app:has(#keyboard-dialog[open]) .quick-keys {
+#app.keyboard-open .quick-keys > [data-quick-key],
+#app:has(#keyboard-dialog[open]) .quick-keys > [data-quick-key] {
   display: none !important;
 }
 #app.keyboard-open .perf-chip-full,

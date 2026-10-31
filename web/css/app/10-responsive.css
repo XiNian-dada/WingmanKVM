@@ -373,8 +373,11 @@
   .window-dots {
     display: none !important;
   }
-  .quick-keys {
+  .quick-keys > [data-quick-key] {
     display: none !important;
+  }
+  .quick-menu-common {
+    display: block !important;
   }
   #video-transport-label {
     display: none !important;

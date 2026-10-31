@@ -336,6 +336,81 @@ def power_confirmation(browser, port, checks):
         context.close()
 
 
+def paste_as_typing(browser, port, checks):
+    """#51 / UX-03: pasted text is typed as US-layout keystrokes."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        page.click("#input-state")
+        page.click("#keyboard-toggle")
+        page.click("#paste-typing-btn")
+        page.fill("#paste-key-text", "Ab1!\n")
+        page.click("#paste-key-send")
+        page.wait_for_timeout(700)
+        sequence = [(post.get("key"), bool(post.get("shift"))) for post in state.key_posts]
+        expected = [("KeyA", True), ("KeyB", False), ("Digit1", False),
+                    ("Digit1", True), ("Enter", False)]
+        check(checks, sequence == expected, "paste_typing_sends_us_sequence", sequence)
+
+        state.key_posts.clear()
+        page.fill("#paste-key-text", "中文")
+        page.click("#paste-key-send")
+        page.wait_for_timeout(300)
+        check(checks, not state.key_posts, "paste_typing_blocks_unsupported_chars",
+              state.key_posts)
+        hint = page.text_content("#paste-key-unsupported") or ""
+        check(checks, "中" in hint and "文" in hint,
+              "paste_typing_lists_unsupported_chars", hint)
+    finally:
+        context.close()
+
+
+def custom_shortcuts(browser, port, checks):
+    """#50 / UX-02: custom combinations persist and send the right payload."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        # The combos menu stays reachable even when the console is narrow.
+        page.click("#quick-more-toggle")
+        common = page.locator(".quick-menu-common").is_visible()
+        check(checks, common, "narrow_console_menu_lists_common_keys", common)
+        page.click("#quick-combo-add")
+        page.check('#combo-form input[name="ctrl"]')
+        page.check('#combo-form input[name="alt"]')
+        page.select_option("#combo-key", "KeyM")
+        page.click('#combo-form button[type="submit"]')
+        page.wait_for_timeout(200)
+        stored = json.loads(
+            page.evaluate("() => localStorage.getItem('wingman_custom_combos') || '[]'"))
+        saved = stored[0] if stored else {}
+        check(checks, saved.get("key") == "KeyM" and saved.get("ctrl") and saved.get("alt"),
+              "custom_shortcut_saved_to_local_storage", stored)
+
+        page.reload(wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        page.click("#quick-more-toggle")
+        item = page.locator("#quick-more-menu [data-custom-combo]").first
+        check(checks, item.count() == 1, "custom_shortcut_survives_reload", item.count())
+
+        state.key_posts.clear()
+        item.click()
+        page.wait_for_timeout(400)
+        payload = state.key_posts[-1] if state.key_posts else {}
+        check(checks, payload.get("key") == "KeyM" and payload.get("ctrl") is True
+              and payload.get("alt") is True and payload.get("shift") is False
+              and payload.get("meta") is False,
+              "custom_shortcut_sends_correct_payload", payload)
+
+        page.click("#quick-more-toggle")
+        page.click("#quick-more-menu [data-remove-combo]")
+        page.wait_for_timeout(200)
+        remaining = json.loads(
+            page.evaluate("() => localStorage.getItem('wingman_custom_combos') || '[]'"))
+        check(checks, remaining == [], "custom_shortcut_can_be_deleted", remaining)
+    finally:
+        context.close()
+
+
 def media_drop_upload(browser, port, checks):
     """#54: dropping an image onto the media panel uploads it; others rejected."""
     state = State()
@@ -378,7 +453,7 @@ def media_drop_upload(browser, port, checks):
         context.close()
 
 SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation, low_risk_ui,
-             language_coverage, power_confirmation, media_drop_upload]
+             language_coverage, power_confirmation, media_drop_upload, paste_as_typing, custom_shortcuts]
 
 if __name__ == "__main__":
     sys.exit(main())
