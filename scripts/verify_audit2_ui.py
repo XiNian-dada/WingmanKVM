@@ -853,9 +853,25 @@ def runtime_metrics(browser, port, checks):
     finally:
         context.close()
 
-SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation, low_risk_ui,
-             language_coverage, power_confirmation, media_drop_upload, paste_as_typing, custom_shortcuts, inline_save_feedback, shortcut_sheet, touch_fullscreen_toolbar, input_websocket, touch_gestures, runtime_metrics
-             language_coverage, target_keyboard_layouts]
+SCENARIOS = [
+    keyboard_focus,
+    video_settings,
+    logout_and_errors,
+    ppv2_confirmation,
+    low_risk_ui,
+    language_coverage,
+    power_confirmation,
+    paste_as_typing,
+    target_keyboard_layouts,
+    custom_shortcuts,
+    media_drop_upload,
+    inline_save_feedback,
+    shortcut_sheet,
+    touch_fullscreen_toolbar,
+    input_websocket,
+    touch_gestures,
+    runtime_metrics,
+]
 
 if __name__ == "__main__":
     sys.exit(main())
