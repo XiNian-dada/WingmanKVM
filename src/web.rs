@@ -2680,9 +2680,31 @@ async fn detach_media(
     Ok(no_store(Json(status)))
 }
 
-async fn video_feed(State(state): State<AppState>) -> Response {
-    let mut frames = state.video.subscribe();
-    let stream = async_stream::stream! {
+async fn video_feed(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    // Bind the stream to the live session so logout, revocation, or expiry
+    // ends it, matching the terminal and WebRTC lifecycles.
+    let Some(guard) = session_token(&headers).and_then(|token| state.sessions.validate_guard(token))
+    else {
+        return ApiError::new(StatusCode::UNAUTHORIZED, "需要登录").into_response();
+    };
+    let frames = state.video.subscribe();
+    let mut response = mjpeg_body(frames, guard).into_response();
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("multipart/x-mixed-replace; boundary=frame"),
+    );
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
+    );
+    response
+}
+
+fn mjpeg_body(
+    mut frames: watch::Receiver<Option<Arc<crate::devices::video::VideoFrame>>>,
+    guard: SessionGuard,
+) -> Body {
+    Body::from_stream(async_stream::stream! {
         loop {
             let frame = frames.borrow_and_update().clone();
             if let Some(frame) = frame {
@@ -2694,21 +2716,13 @@ async fn video_feed(State(state): State<AppState>) -> Response {
                 yield Ok::<Bytes, Infallible>(frame.jpeg.clone());
                 yield Ok::<Bytes, Infallible>(Bytes::from_static(b"\r\n"));
             }
-            if frames.changed().await.is_err() {
-                break;
+            tokio::select! {
+                biased;
+                _ = guard.wait_for_end() => break,
+                changed = frames.changed() => if changed.is_err() { break },
             }
         }
-    };
-    let mut response = Body::from_stream(stream).into_response();
-    response.headers_mut().insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("multipart/x-mixed-replace; boundary=frame"),
-    );
-    response.headers_mut().insert(
-        CACHE_CONTROL,
-        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
-    );
-    response
+    })
 }
 
 async fn webrtc_offer(
@@ -4862,6 +4876,24 @@ mod tests {
             }
         });
         assert_eq!(status_json["hid"]["keyboard_leds"]["caps_lock"], true);
+    }
+
+    #[tokio::test]
+    async fn mjpeg_stream_ends_when_the_session_is_revoked() {
+        let sessions = SessionStore::default();
+        let token = sessions.create().unwrap();
+        let guard = sessions.validate_guard(&token).unwrap();
+        let (_frames_tx, frames) = watch::channel(None);
+        let body = mjpeg_body(frames, guard);
+        let reader = tokio::spawn(axum::body::to_bytes(body, usize::MAX));
+        tokio::task::yield_now().await;
+        assert!(sessions.revoke(&token));
+        let bytes = tokio::time::timeout(Duration::from_secs(1), reader)
+            .await
+            .expect("stream must end after revocation")
+            .unwrap()
+            .unwrap();
+        assert!(bytes.is_empty());
     }
 
     #[tokio::test]
