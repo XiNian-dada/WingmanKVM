@@ -7,7 +7,7 @@ pub(super) const CONFIG_EXPORT_FORMAT: &str = "wingmankvm-config";
 pub(super) const CONFIG_IMPORT_BODY_LIMIT: usize = 256 * 1024;
 
 pub(super) async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
-    no_store(Json(state.config.read().await.clone()))
+    no_store(Json(state.config.read().await.redacted_json()))
 }
 
 /// Download document for `GET /api/config/export`.
@@ -228,16 +228,19 @@ pub(super) async fn update_config(
     State(state): State<AppState>,
     ConnectInfo(connection): ConnectInfo<ClientConnection>,
     headers: HeaderMap,
-    ApiJson(FullConfigUpdate(config)): ApiJson<FullConfigUpdate>,
+    ApiJson(FullConfigUpdate(mut config)): ApiJson<FullConfigUpdate>,
 ) -> Result<impl IntoResponse, ApiError> {
     let _update_guard = state.config_update.lock().await;
-    validate_config(&config)?;
     let previous = state.config.read().await.clone();
+    // The browser never sees notification secrets, so a full update that
+    // leaves them empty keeps the stored values.
+    config.notifications.inherit_secrets(&previous.notifications);
+    validate_config(&config)?;
     let listener_changed = previous.server.listen_address != config.server.listen_address
         || previous.server.port != config.server.port;
     commit_config(&state, &config).await?;
     audit_config_change(&state, connection, &headers, &previous, &config).await;
-    let mut response = no_store(Json(config)).into_response();
+    let mut response = no_store(Json(config.redacted_json())).into_response();
     if listener_changed {
         response.headers_mut().insert(
             "x-wingmankvm-restart-required",
@@ -254,6 +257,7 @@ pub(super) struct ConfigPatch {
     pub(super) hid: Option<HidPatch>,
     pub(super) power: Option<PowerPatch>,
     pub(super) media: Option<MediaPatch>,
+    pub(super) notifications: Option<NotificationsPatch>,
 }
 
 #[derive(Deserialize)]
@@ -450,10 +454,13 @@ pub(super) async fn patch_config(
     if let Some(media) = patch.media {
         apply_media_patch(&mut config.media, media);
     }
+    if let Some(notifications) = patch.notifications {
+        apply_notifications_patch(&mut config.notifications, notifications);
+    }
     validate_config(&config)?;
     commit_config(&state, &config).await?;
     audit_config_change(&state, connection, &headers, &previous, &config).await;
-    Ok(no_store(Json(config)))
+    Ok(no_store(Json(config.redacted_json())))
 }
 
 /// Audit only the names of changed top-level sections; never their values.
@@ -464,6 +471,7 @@ pub(super) fn changed_sections(previous: &Config, current: &Config) -> Vec<&'sta
         ("hid", previous.hid != current.hid),
         ("power", previous.power != current.power),
         ("media", previous.media != current.media),
+        ("notifications", previous.notifications != current.notifications),
     ]
     .into_iter()
     .filter_map(|(name, changed)| changed.then_some(name))
@@ -659,6 +667,141 @@ pub(super) fn apply_media_patch(config: &mut config::MediaConfig, patch: MediaPa
     }
 }
 
+/// Notification settings. Secret fields follow "empty keeps, explicit
+/// `clear_*` removes": the browser never receives stored secrets, so it can
+/// only send a new value or ask for removal.
+#[derive(Deserialize)]
+pub(super) struct NotificationsPatch {
+    pub(super) webhook: Option<WebhookPatch>,
+    pub(super) ntfy: Option<NtfyPatch>,
+    pub(super) telegram: Option<TelegramPatch>,
+    pub(super) events: Option<NotificationEventsPatch>,
+    pub(super) hid_failure_threshold: Option<u32>,
+    pub(super) hid_failure_window_seconds: Option<u64>,
+    pub(super) video_lost_seconds: Option<u64>,
+    pub(super) rate_limit_seconds: Option<u64>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct WebhookPatch {
+    pub(super) enabled: Option<bool>,
+    pub(super) url: Option<String>,
+    #[serde(default)]
+    pub(super) clear_url: bool,
+}
+
+#[derive(Deserialize)]
+pub(super) struct NtfyPatch {
+    pub(super) enabled: Option<bool>,
+    pub(super) server: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(super) topic: Option<Option<String>>,
+    pub(super) token: Option<String>,
+    #[serde(default)]
+    pub(super) clear_token: bool,
+}
+
+#[derive(Deserialize)]
+pub(super) struct TelegramPatch {
+    pub(super) enabled: Option<bool>,
+    pub(super) bot_token: Option<String>,
+    #[serde(default)]
+    pub(super) clear_bot_token: bool,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(super) chat_id: Option<Option<String>>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct NotificationEventsPatch {
+    pub(super) login_succeeded: Option<bool>,
+    pub(super) login_failed: Option<bool>,
+    pub(super) power_led_changed: Option<bool>,
+    pub(super) hid_failing: Option<bool>,
+    pub(super) video_lost: Option<bool>,
+}
+
+fn apply_secret(target: &mut Option<String>, value: Option<String>, clear: bool) {
+    if clear {
+        *target = None;
+    }
+    if let Some(value) = optional_string(value) {
+        *target = Some(value);
+    }
+}
+
+pub(super) fn apply_notifications_patch(
+    config: &mut config::NotificationsConfig,
+    patch: NotificationsPatch,
+) {
+    if let Some(webhook) = patch.webhook {
+        if let Some(enabled) = webhook.enabled {
+            config.webhook.enabled = enabled;
+        }
+        apply_secret(&mut config.webhook.url, webhook.url, webhook.clear_url);
+        if webhook.clear_url {
+            config.webhook.enabled = false;
+        }
+    }
+    if let Some(ntfy) = patch.ntfy {
+        if let Some(enabled) = ntfy.enabled {
+            config.ntfy.enabled = enabled;
+        }
+        if let Some(server) = ntfy.server {
+            let server = server.trim();
+            config.ntfy.server = if server.is_empty() {
+                config::DEFAULT_NTFY_SERVER.to_owned()
+            } else {
+                server.to_owned()
+            };
+        }
+        if let Some(topic) = ntfy.topic {
+            config.ntfy.topic = optional_string(topic);
+        }
+        apply_secret(&mut config.ntfy.token, ntfy.token, ntfy.clear_token);
+    }
+    if let Some(telegram) = patch.telegram {
+        if let Some(enabled) = telegram.enabled {
+            config.telegram.enabled = enabled;
+        }
+        apply_secret(
+            &mut config.telegram.bot_token,
+            telegram.bot_token,
+            telegram.clear_bot_token,
+        );
+        if telegram.clear_bot_token {
+            config.telegram.enabled = false;
+        }
+        if let Some(chat_id) = telegram.chat_id {
+            config.telegram.chat_id = optional_string(chat_id);
+        }
+    }
+    if let Some(events) = patch.events {
+        for (target, value) in [
+            (&mut config.events.login_succeeded, events.login_succeeded),
+            (&mut config.events.login_failed, events.login_failed),
+            (&mut config.events.power_led_changed, events.power_led_changed),
+            (&mut config.events.hid_failing, events.hid_failing),
+            (&mut config.events.video_lost, events.video_lost),
+        ] {
+            if let Some(value) = value {
+                *target = value;
+            }
+        }
+    }
+    if let Some(value) = patch.hid_failure_threshold {
+        config.hid_failure_threshold = value;
+    }
+    if let Some(value) = patch.hid_failure_window_seconds {
+        config.hid_failure_window_seconds = value;
+    }
+    if let Some(value) = patch.video_lost_seconds {
+        config.video_lost_seconds = value;
+    }
+    if let Some(value) = patch.rate_limit_seconds {
+        config.rate_limit_seconds = value;
+    }
+}
+
 pub(super) async fn persist_config(path: &Path, config: &Config) -> Result<(), ApiError> {
     let path = path.to_path_buf();
     let config = config.clone();
@@ -690,6 +833,7 @@ pub(super) async fn commit_config(state: &AppState, config: &Config) -> Result<(
     state.proxy_protocol_updates.send_replace(config.server.proxy_protocol);
     state.power.set_power_led_config(power_led).await;
     state.hid.set_keyboard_device(config.hid.keyboard_device.clone());
+    state.notifier.update_config(config.notifications.clone());
     Ok(())
 }
 
@@ -1313,5 +1457,61 @@ mod tests {
         let patch = serde_json::from_value(json!({"public_origin": null})).unwrap();
         apply_server_patch(&mut config, patch);
         assert_eq!(config.public_origin, None);
+    }
+
+    #[test]
+    fn notification_patch_keeps_secrets_unless_replaced_or_cleared() {
+        let mut config = config::NotificationsConfig::default();
+        let patch = serde_json::from_value(json!({
+            "webhook": {"enabled": true, "url": "https://hooks.example.com/abc"},
+            "ntfy": {"enabled": true, "topic": "kvm", "token": "tk_one"},
+            "telegram": {"enabled": true, "bot_token": "1:AAA", "chat_id": "42"},
+            "events": {"login_succeeded": false},
+            "video_lost_seconds": 45
+        }))
+        .unwrap();
+        apply_notifications_patch(&mut config, patch);
+        assert!(config.validate().is_ok());
+        assert_eq!(config.webhook.url.as_deref(), Some("https://hooks.example.com/abc"));
+        assert!(!config.events.login_succeeded);
+        assert!(config.events.login_failed);
+        assert_eq!(config.video_lost_seconds, 45);
+
+        // Empty secrets (what the browser sends back) keep the stored ones.
+        let patch = serde_json::from_value(json!({
+            "webhook": {"url": ""},
+            "ntfy": {"token": "  "},
+            "telegram": {"bot_token": "", "chat_id": "43"}
+        }))
+        .unwrap();
+        apply_notifications_patch(&mut config, patch);
+        assert_eq!(config.webhook.url.as_deref(), Some("https://hooks.example.com/abc"));
+        assert_eq!(config.ntfy.token.as_deref(), Some("tk_one"));
+        assert_eq!(config.telegram.bot_token.as_deref(), Some("1:AAA"));
+        assert_eq!(config.telegram.chat_id.as_deref(), Some("43"));
+
+        // Explicit clears remove the secret and disable channels that need it.
+        let patch = serde_json::from_value(json!({
+            "webhook": {"clear_url": true},
+            "ntfy": {"clear_token": true},
+            "telegram": {"clear_bot_token": true}
+        }))
+        .unwrap();
+        apply_notifications_patch(&mut config, patch);
+        assert!(config.webhook.url.is_none() && !config.webhook.enabled);
+        assert!(config.ntfy.token.is_none() && config.ntfy.enabled);
+        assert!(config.telegram.bot_token.is_none() && !config.telegram.enabled);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn notification_patch_output_is_validated() {
+        let mut config = Config::default();
+        let patch = serde_json::from_value(json!({
+            "webhook": {"enabled": true, "url": "ftp://hooks.example.com/abc"}
+        }))
+        .unwrap();
+        apply_notifications_patch(&mut config.notifications, patch);
+        assert!(validate_config(&config).is_err());
     }
 }

@@ -28,6 +28,7 @@
     refreshPasskeys();
     refreshSessions();
     refreshAudit();
+    refreshNotifications();
     try {
       if (typeof settingsDialog.showModal === 'function') {
         settingsDialog.showModal();

@@ -381,6 +381,43 @@
               </div>
             </details>
           </div>
+          <div class="settings-group settings-notify">
+            <span class="settings-group-title">通知推送</span>
+            <div class="hint">关键事件发生时推送到 Webhook、ntfy 或 Telegram。密钥保存后不会再显示，留空即保持不变。</div>
+            <form id="notify-config" class="side-grid" autocomplete="off">
+              <div class="notify-channel wide" data-notify-channel="webhook">
+                <label class="check wide"><input name="webhook_enabled" type="checkbox"><span>启用 Webhook</span></label>
+                <label class="field wide"><span>Webhook URL</span><input name="webhook_url" type="url" inputmode="url" class="mono" placeholder="https://example.com/hook"></label>
+                <div class="notify-actions wide"><span class="notify-secret-state" data-notify-secret="webhook"></span><button class="secondary" type="button" data-notify-clear="webhook">清除 URL</button><button class="secondary" type="button" data-notify-test="webhook">发送测试</button></div>
+                <div class="hint notify-result wide" data-notify-result="webhook" role="status"></div>
+              </div>
+              <div class="notify-channel wide" data-notify-channel="ntfy">
+                <label class="check wide"><input name="ntfy_enabled" type="checkbox"><span>启用 ntfy</span></label>
+                <label class="field"><span>ntfy 服务器</span><input name="ntfy_server" type="url" inputmode="url" class="mono" placeholder="https://ntfy.sh"></label>
+                <label class="field"><span>主题</span><input name="ntfy_topic" class="mono" maxlength="64" placeholder="wingman-alerts"></label>
+                <label class="field wide"><span>访问令牌（可选）</span><input name="ntfy_token" type="password" class="mono" autocomplete="new-password"></label>
+                <div class="notify-actions wide"><span class="notify-secret-state" data-notify-secret="ntfy"></span><button class="secondary" type="button" data-notify-clear="ntfy">清除令牌</button><button class="secondary" type="button" data-notify-test="ntfy">发送测试</button></div>
+                <div class="hint notify-result wide" data-notify-result="ntfy" role="status"></div>
+              </div>
+              <div class="notify-channel wide" data-notify-channel="telegram">
+                <label class="check wide"><input name="telegram_enabled" type="checkbox"><span>启用 Telegram</span></label>
+                <label class="field"><span>Bot Token</span><input name="telegram_bot_token" type="password" class="mono" autocomplete="new-password" placeholder="123456:ABC…"></label>
+                <label class="field"><span>Chat ID</span><input name="telegram_chat_id" class="mono" placeholder="-1001234567890"></label>
+                <div class="notify-actions wide"><span class="notify-secret-state" data-notify-secret="telegram"></span><button class="secondary" type="button" data-notify-clear="telegram">清除 Token</button><button class="secondary" type="button" data-notify-test="telegram">发送测试</button></div>
+                <div class="hint notify-result wide" data-notify-result="telegram" role="status"></div>
+              </div>
+              <label class="check wide"><input name="event_login_succeeded" type="checkbox"><span>登录成功</span></label>
+              <label class="check wide"><input name="event_login_failed" type="checkbox"><span>登录失败（按限流间隔汇总）</span></label>
+              <label class="check wide"><input name="event_power_led_changed" type="checkbox"><span>被控机电源指示灯变化</span></label>
+              <label class="check wide"><input name="event_hid_failing" type="checkbox"><span>键鼠写入持续失败</span></label>
+              <label class="check wide"><input name="event_video_lost" type="checkbox"><span>视频信号丢失与恢复</span></label>
+              <label class="field"><span>视频丢失多少秒后通知</span><input name="video_lost_seconds" type="number" min="5" max="3600"></label>
+              <label class="field"><span>限流间隔（秒）</span><input name="rate_limit_seconds" type="number" min="10" max="3600"></label>
+              <label class="field"><span>键鼠失败次数阈值</span><input name="hid_failure_threshold" type="number" min="1" max="1000"></label>
+              <label class="field"><span>键鼠失败统计窗口（秒）</span><input name="hid_failure_window_seconds" type="number" min="5" max="3600"></label>
+              <div class="side-actions wide"><button class="primary" type="submit" data-i18n="save">保存</button></div>
+            </form>
+          </div>
           <div class="settings-group">
             <span class="settings-group-title" data-i18n="settings_group_system">系统与重置</span>
             <div class="settings-item">

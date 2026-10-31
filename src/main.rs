@@ -6,6 +6,7 @@ mod audit;
 mod client_ip;
 mod config;
 mod devices;
+mod notify;
 mod proxy_protocol;
 mod system;
 mod web;

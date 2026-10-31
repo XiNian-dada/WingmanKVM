@@ -44,6 +44,7 @@ pub static APP_JS_PARTS: &[&str] = &[
     include_str!("../web/js/app/11-media.js"),
     include_str!("../web/js/app/12-passkey.js"),
     include_str!("../web/js/app/12a-sessions-audit.js"),
+    include_str!("../web/js/app/12b-notifications.js"),
     include_str!("../web/js/app/13-settings-boot.js"),
 ];
 
