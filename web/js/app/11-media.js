@@ -245,7 +245,10 @@
     const form = event.currentTarget,
       bar = $('#upload-bar'),
       progress = bar.parentElement,
-      xhr = new XMLHttpRequest();
+      xhr = new XMLHttpRequest(),
+      // Capture the fields before syncMediaBusy() disables them: disabled
+      // controls are omitted from FormData, which would upload nothing.
+      body = new FormData(form);
     mediaBusy = true;
     syncMediaBusy();
     xhr.open('POST', '/api/media/upload');
@@ -276,6 +279,6 @@
     };
     xhr.onerror = () => finish(false, '上传连接失败');
     xhr.onabort = () => finish(false, '上传已取消');
-    xhr.send(new FormData(form));
+    xhr.send(body);
   });
 
