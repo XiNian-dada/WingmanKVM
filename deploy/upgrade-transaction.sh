@@ -69,6 +69,7 @@ _tx_exact_destination() {
         /usr/local/bin/wingmankvm | \
             /usr/local/sbin/wingmankvm-gadget | \
             /usr/local/sbin/wingmankvm-set-wingman-password | \
+            /usr/local/sbin/wingmankvm-setup-url | \
             /etc/sudoers.d/wingmankvm | \
             /etc/sudoers.d/wingmankvm-maintenance-root | \
             /etc/udev/rules.d/99-wingmankvm.rules | \

@@ -14,6 +14,7 @@ TIMEOUT, LOGIN_TIMEOUT, WS_TIMEOUT, READY_TIMEOUT = 20.0, 30.0, 5.0, 20.0
 NAMES = ("setup_preserves_server_config", "terminal_ws_origin_policy", "concurrent_config_patch", "login_rate_limit_concurrency")
 ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 TOKEN = re.compile(r"setup_token=([A-Za-z0-9_-]+)")
+TOKEN_FILE = re.compile(r"^([A-Za-z0-9_-]{16,})\s*$", re.MULTILINE)
 
 def free_port(exclude=None):
     for _ in range(50):
@@ -95,8 +96,18 @@ class Runner:
         try: return self.req("GET", "/healthz", origin=False, timeout=2.0)[0] == 200
         except (OSError, http.client.HTTPException): return False
     def token(self):
-        try: match = TOKEN.search(ANSI.sub("", self.log.read_text(errors="ignore")))
-        except OSError: return None
+        # New builds write a 0600 state file; older builds logged the token.
+        # Accept both so this harness can test upgrades as well as first boot.
+        match = None
+        try:
+            match = TOKEN_FILE.search((self.state / "setup-token").read_text(errors="ignore"))
+        except OSError:
+            pass
+        if not match:
+            try:
+                match = TOKEN.search(ANSI.sub("", self.log.read_text(errors="ignore")))
+            except OSError:
+                return None
         if match:
             if match.group(1) not in self.secrets: self.secrets.append(match.group(1))
             return match.group(1)

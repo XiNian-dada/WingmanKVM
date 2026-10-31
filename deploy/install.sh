@@ -481,6 +481,7 @@ load_deployment_sources() {
     UDEV_RULES=$(source_file 99-wingmankvm.rules)
     WINGMAN_PROFILE=$(source_file wingman.bash_profile)
     PASSWORD_HELPER=$(source_file wingmankvm-set-wingman-password)
+    SETUP_URL_HELPER=$(source_file wingmankvm-setup-url)
     SUDOERS_RULE=$(source_file wingmankvm-sudoers)
     MAINTENANCE_ROOT_SUDOERS=$(source_file wingmankvm-maintenance-root-sudoers)
     GADGET_SCRIPT=$(source_file wingmankvm-gadget)
@@ -492,6 +493,7 @@ load_deployment_sources() {
     bash -n "$WINGMAN_PROFILE" || die "login profile failed shell syntax validation"
     sh -n "$GADGET_SCRIPT" || die "Gadget helper failed shell syntax validation"
     sh -n "$PASSWORD_HELPER" || die "password helper failed shell syntax validation"
+    bash -n "$SETUP_URL_HELPER" || die "setup URL helper failed shell syntax validation"
     visudo -cf "$SUDOERS_RULE" >/dev/null || die "sudoers source failed validation"
     visudo -cf "$MAINTENANCE_ROOT_SUDOERS" >/dev/null || die "optional root sudoers source failed validation"
 }
@@ -504,6 +506,8 @@ install_managed_files() {
         "$(dest_path /usr/local/sbin/wingmankvm-gadget)" 0755 root root
     tx_add_managed "$PASSWORD_HELPER" \
         "$(dest_path /usr/local/sbin/wingmankvm-set-wingman-password)" 0755 root root
+    tx_add_managed "$SETUP_URL_HELPER" \
+        "$(dest_path /usr/local/sbin/wingmankvm-setup-url)" 0755 root root
     tx_add_managed "$SUDOERS_RULE" \
         "$(dest_path /etc/sudoers.d/wingmankvm)" 0440 root root
     tx_add_managed "$UDEV_RULES" \
@@ -813,11 +817,14 @@ finish_no_start() {
     log "file publication succeeded but was NOT runtime verified (--no-start)"
     log "any services that were already running were left unchanged"
     log "review /etc/wingmankvm/gadget.env, then run: systemctl enable --now wingmankvm-gadget.service wingmankvm.service"
+    log "after the first start, print the one-time setup link with: sudo wingmankvm-setup-url"
 }
 
 show_first_run_access() {
     local service_log=
     local setup_token=
+    local token_file=$STATE_DIR/setup-token
+    local token_value=
     local listen_address=
     local port=8080
     local -a access_hosts=()
@@ -848,6 +855,16 @@ show_first_run_access() {
 
     if [[ $listen_address =~ :([0-9]+)$ ]]; then
         port=${BASH_REMATCH[1]}
+    fi
+
+    # The service publishes the token in its 0600 state file. Keep the journal
+    # fallback for upgrades from releases that logged the token instead.
+    if [[ -f $token_file && -r $token_file && ! -L $token_file ]]; then
+        read -r token_value <"$token_file" || true
+        token_value=${token_value%$'\r'}
+        if [[ $token_value =~ ^[A-Za-z0-9_-]{16,}$ ]]; then
+            setup_token=$token_value
+        fi
     fi
 
     # The route lookup yields the source address the host would normally use
@@ -917,8 +934,9 @@ show_first_run_access() {
     if [[ -n $setup_token ]]; then
         log "the first-run link contains the one-time setup token"
     else
-        log "get the first-run token with: journalctl -u wingmankvm.service -b | grep setup_token"
+        log "start WingmanKVM once, then print the link with: sudo wingmankvm-setup-url"
     fi
+    log "reprint the one-time link at any time before setup with: sudo wingmankvm-setup-url"
 }
 
 # Source guard: the verification harness sources only the definitions above.
