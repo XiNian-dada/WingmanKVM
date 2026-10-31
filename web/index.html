@@ -429,6 +429,21 @@
             <span class="settings-group-title" data-i18n="settings_group_system">系统与重置</span>
             <div class="settings-item">
               <div class="settings-item-copy">
+                <strong>在线升级</strong>
+                <span>从 GitHub Release 检查新版本；升级会下载并校验 SHA256，失败自动回滚。</span>
+              </div>
+              <button id="update-check-btn" class="secondary" type="button">检查更新</button>
+            </div>
+            <div id="update-panel" class="update-panel hidden" role="region" aria-label="在线升级">
+              <div id="update-current" class="hint"></div>
+              <strong id="update-title"></strong>
+              <pre id="update-notes" class="update-notes mono hidden"></pre>
+              <a id="update-link" class="hint hidden" target="_blank" rel="noopener noreferrer">在 GitHub 查看完整说明</a>
+              <div class="side-actions"><button id="update-apply-btn" class="primary hidden" type="button"></button></div>
+              <div id="update-progress" class="hint update-progress" role="status" aria-live="polite"></div>
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-copy">
                 <strong>导出配置</strong>
                 <span>将设备、视频、HID、电源与虚拟介质设置保存为 JSON 文件，不包含账户或 Passkey。</span>
               </div>

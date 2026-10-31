@@ -234,6 +234,56 @@ class Harness:
         self.record("unsupported_architecture_rejected", not problems,
                     "; ".join(problems) or "rejected")
 
+    def check_online_upgrade_shares_logic(self) -> None:
+        """deploy/wingmankvm-online-upgrade reuses get.sh's architecture
+        detection, download and SHA256SUMS verification verbatim."""
+        helper = self.repo / "deploy" / "wingmankvm-online-upgrade"
+        problems = []
+
+        def function(text: str, name: str) -> str:
+            start = text.find(f"\n{name}() {{\n")
+            if start < 0:
+                return ""
+            end = text.find("\n}\n", start)
+            return text[start:end + 3]
+
+        get_text = self.script.read_text(encoding="utf-8")
+        helper_text = helper.read_text(encoding="utf-8")
+        for name in ("detect_target", "download_file", "verify_archive"):
+            body = function(get_text, name)
+            if not body or body != function(helper_text, name):
+                problems.append(f"{name} differs from scripts/get.sh")
+        for forbidden in ("WINGMANKVM_API_URL:-", "WINGMANKVM_DOWNLOAD_BASE:-", "WINGMANKVM_REPO:-"):
+            if forbidden in helper_text:
+                problems.append(f"helper honours environment override {forbidden}")
+        # Sourced functions: tag validation and maintenance-mode preservation.
+        root = self.scratch / "online-root"
+        (root / "etc" / "sudoers.d").mkdir(parents=True)
+        probe = (
+            f'source "{helper}"\nDEST_ROOT="{root}"\n'
+            'for t in v1.2.3 v1.2.3-rc.1 1.2.3 "v1.2.3 x" "v1.2.3/../x"; do '
+            'valid_tag "$t" && echo "ok:$t" || echo "no:$t"; done\n'
+            'printf \'{"tag_name": "v4.5.6", "x": 1}\\n\' | parse_latest_tag\n'
+            'echo "args:$(maintenance_args | tr \'\\n\' \' \')"\n'
+            f': >"{root}/etc/sudoers.d/wingmankvm-maintenance-root"\n'
+            'echo "args:$(maintenance_args | tr \'\\n\' \' \')"\n'
+            f'echo "wingman ALL=(ALL:ALL) ALL" >"{root}/etc/sudoers.d/wingmankvm"\n'
+            'maintenance_args >/dev/null && echo legacy:allowed || echo legacy:refused\n'
+        )
+        result = subprocess.run(["bash", "-c", probe], text=True, capture_output=True, timeout=30)
+        expected = [
+            "ok:v1.2.3", "no:v1.2.3-rc.1", "no:1.2.3", "no:v1.2.3 x", "no:v1.2.3/../x",
+            "v4.5.6", "args:", "args:--maintenance-mode privileged ", "legacy:refused",
+        ]
+        if result.stdout.splitlines() != expected:
+            problems.append(f"sourced helper output {result.stdout.splitlines()!r} {result.stderr.strip()}")
+        bad = subprocess.run(["bash", str(helper), "--start", "--evil"], text=True,
+                             capture_output=True, timeout=30)
+        if bad.returncode == 0 or "takes no arguments" not in bad.stderr:
+            problems.append("helper accepted extra arguments")
+        self.record("online_upgrade_shares_get_logic", not problems,
+                    "; ".join(problems) or "identical and strict")
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -253,6 +303,7 @@ def main() -> int:
             harness.check_file_version()
             harness.check_checksum_failure()
             harness.check_unsupported_arch()
+            harness.check_online_upgrade_shares_logic()
             summary["checks"] = harness.checks
             summary["status"] = "PASS" if all(
                 item["status"] == "pass" for item in harness.checks
