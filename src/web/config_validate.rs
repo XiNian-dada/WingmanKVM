@@ -17,6 +17,10 @@ pub(super) fn validate_config(config: &Config) -> Result<(), ApiError> {
         config::NormalizedOrigin::parse(origin)
             .map_err(|reason| ApiError::bad_request(format!("无效的 server.public_origin: {reason}")))?;
     }
+    config
+        .notifications
+        .validate()
+        .map_err(ApiError::bad_request)?;
     if config.server.trusted_http_proxies.len() > 64
         || config.server.trusted_http_proxies.iter().any(|ip| ip.is_unspecified() || ip.is_multicast())
     {

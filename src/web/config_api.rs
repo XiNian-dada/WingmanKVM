@@ -1,7 +1,229 @@
 use super::*;
 
+use axum::http::header::CONTENT_DISPOSITION;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+pub(super) const CONFIG_EXPORT_FORMAT: &str = "wingmankvm-config";
+pub(super) const CONFIG_IMPORT_BODY_LIMIT: usize = 256 * 1024;
+
 pub(super) async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
-    no_store(Json(state.config.read().await.clone()))
+    no_store(Json(state.config.read().await.redacted_json()))
+}
+
+/// Download document for `GET /api/config/export`.
+///
+/// Only [`Config`] is included. Accounts, password hashes, Passkeys, sessions
+/// and audit logs live in `auth.json` and in memory, never in this structure.
+#[derive(Debug, Serialize)]
+pub(super) struct ConfigExport {
+    pub(super) format: &'static str,
+    pub(super) version: u32,
+    pub(super) exported_at: String,
+    pub(super) config: Config,
+}
+
+impl ConfigExport {
+    fn new(mut config: Config) -> Self {
+        // Backups are often shared or stored loosely; notification
+        // credentials stay on the device. The ntfy topic is included because
+        // anyone who knows it can read the topic.
+        let notifications = &mut config.notifications;
+        notifications.webhook.url = None;
+        notifications.ntfy.token = None;
+        notifications.ntfy.topic = None;
+        notifications.telegram.bot_token = None;
+        let (_, exported_at) = utc_date_and_timestamp();
+        Self {
+            format: CONFIG_EXPORT_FORMAT,
+            version: CONFIG_VERSION,
+            exported_at,
+            config,
+        }
+    }
+}
+
+/// Upload document accepted by the preview and import endpoints.
+///
+/// Fields are optional here so every rejection can be reported as a clear,
+/// localized JSON error instead of a generic deserialization failure.
+#[derive(Debug, Deserialize)]
+pub(super) struct ConfigImportFile {
+    format: Option<String>,
+    version: Option<u32>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    exported_at: Option<String>,
+    config: Option<serde_json::Value>,
+}
+
+impl ConfigImportFile {
+    fn into_config(self) -> Result<Config, ApiError> {
+        let format = self
+            .format
+            .ok_or_else(|| ApiError::bad_request("不是 WingmanKVM 配置导出文件：缺少 format"))?;
+        if format != CONFIG_EXPORT_FORMAT {
+            return Err(ApiError::bad_request(format!(
+                "不是 WingmanKVM 配置导出文件：format 必须为 {CONFIG_EXPORT_FORMAT}"
+            )));
+        }
+        let version = self
+            .version
+            .ok_or_else(|| ApiError::bad_request("配置导出文件缺少 version"))?;
+        if version != CONFIG_VERSION {
+            return Err(ApiError::bad_request(format!(
+                "配置版本 {version} 不受支持，本机仅支持版本 {CONFIG_VERSION}"
+            )));
+        }
+        let value = self
+            .config
+            .ok_or_else(|| ApiError::bad_request("配置导出文件缺少 config 内容"))?;
+        if let Some(content_version) = value.get("version").and_then(serde_json::Value::as_u64) {
+            if content_version != u64::from(CONFIG_VERSION) {
+                return Err(ApiError::bad_request(format!(
+                    "配置内容版本 {content_version} 不受支持，本机仅支持版本 {CONFIG_VERSION}"
+                )));
+            }
+        }
+        reject_retired_hid_timing_fields(&value).map_err(ApiError::bad_request)?;
+        let config: Config = serde_json::from_value(value)
+            .map_err(|error| ApiError::bad_request(format!("配置内容无效：{error}")))?;
+        validate_config(&config)?;
+        Ok(config)
+    }
+}
+
+#[derive(Debug, PartialEq, Serialize)]
+pub(super) struct ConfigChange {
+    pub(super) path: String,
+    pub(super) old: serde_json::Value,
+    pub(super) new: serde_json::Value,
+}
+
+pub(super) fn collect_config_changes(
+    old: &serde_json::Value,
+    new: &serde_json::Value,
+    path: &str,
+    changes: &mut Vec<ConfigChange>,
+) {
+    match (old, new) {
+        (serde_json::Value::Object(old), serde_json::Value::Object(new)) => {
+            let mut keys: Vec<&String> = old.keys().chain(new.keys()).collect();
+            keys.sort_unstable();
+            keys.dedup();
+            for key in keys {
+                let child = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                collect_config_changes(
+                    old.get(key).unwrap_or(&serde_json::Value::Null),
+                    new.get(key).unwrap_or(&serde_json::Value::Null),
+                    &child,
+                    changes,
+                );
+            }
+        }
+        _ if old != new => changes.push(ConfigChange {
+            path: path.to_owned(),
+            old: old.clone(),
+            new: new.clone(),
+        }),
+        _ => {}
+    }
+}
+
+pub(super) fn config_changes(old: &Config, new: &Config) -> Vec<ConfigChange> {
+    let old = serde_json::to_value(old).unwrap_or(serde_json::Value::Null);
+    let new = serde_json::to_value(new).unwrap_or(serde_json::Value::Null);
+    let mut changes = Vec::new();
+    collect_config_changes(&old, &new, "", &mut changes);
+    changes
+}
+
+pub(super) fn listen_address_changed(previous: &Config, next: &Config) -> bool {
+    previous.server.listen_address != next.server.listen_address
+        || previous.server.port != next.server.port
+}
+
+/// Exports the live configuration as a downloadable JSON document.
+///
+/// The response body is deliberately built from [`Config`] alone; `auth.json`,
+/// Passkey credentials, sessions and audit logs are never serialized here.
+pub(super) async fn export_config(
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    let config = state.config.read().await.clone();
+    let (date, _) = utc_date_and_timestamp();
+    let document = ConfigExport::new(config);
+    let mut body = serde_json::to_vec_pretty(&document).map_err(ApiError::internal)?;
+    body.push(b'\n');
+    let disposition = format!("attachment; filename=\"wingmankvm-config-{date}.json\"");
+    let disposition = HeaderValue::from_str(&disposition).map_err(ApiError::internal)?;
+    let mut response = (
+        [
+            (CONTENT_TYPE, "application/json; charset=utf-8"),
+            (CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response();
+    response.headers_mut().insert(CONTENT_DISPOSITION, disposition);
+    Ok(response)
+}
+
+pub(super) async fn preview_import_config(
+    State(state): State<AppState>,
+    ApiJson(file): ApiJson<ConfigImportFile>,
+) -> Result<impl IntoResponse, ApiError> {
+    let imported = file.into_config()?;
+    let current = state.config.read().await.clone();
+    let changes = config_changes(&current, &imported);
+    Ok(no_store(Json(json!({
+        "changes": changes,
+        "restart_required": listen_address_changed(&current, &imported),
+    }))))
+}
+
+pub(super) async fn import_config(
+    State(state): State<AppState>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
+    headers: HeaderMap,
+    ApiJson(file): ApiJson<ConfigImportFile>,
+) -> Result<Response, ApiError> {
+    let imported = file.into_config()?;
+    let (response, previous, current) = import_config_with_state(state.clone(), imported).await?;
+    audit_config_change(&state, connection, &headers, &previous, &current).await;
+    Ok(response)
+}
+
+async fn import_config_with_state(
+    state: AppState,
+    mut imported: Config,
+) -> Result<(Response, Config, Config), ApiError> {
+    let _update_guard = state.config_update.lock().await;
+    let previous = state.config.read().await.clone();
+    // Exports omit notification credentials; keep the device's own.
+    imported.notifications.inherit_secrets(&previous.notifications);
+    if imported.notifications.ntfy_topic().is_none() {
+        imported.notifications.ntfy.topic.clone_from(&previous.notifications.ntfy.topic);
+    }
+    let changes = config_changes(&previous, &imported);
+    let restart_required = listen_address_changed(&previous, &imported);
+    commit_config(&state, &imported).await?;
+    let mut response = no_store(Json(json!({
+        "ok": true,
+        "restart_required": restart_required,
+        "changes": changes,
+    })))
+    .into_response();
+    if restart_required {
+        response.headers_mut().insert(
+            "x-wingmankvm-restart-required",
+            HeaderValue::from_static("true"),
+        );
+    }
+    Ok((response, previous, imported))
 }
 
 pub(super) struct FullConfigUpdate(Config);
@@ -23,16 +245,19 @@ pub(super) async fn update_config(
     State(state): State<AppState>,
     ConnectInfo(connection): ConnectInfo<ClientConnection>,
     headers: HeaderMap,
-    ApiJson(FullConfigUpdate(config)): ApiJson<FullConfigUpdate>,
+    ApiJson(FullConfigUpdate(mut config)): ApiJson<FullConfigUpdate>,
 ) -> Result<impl IntoResponse, ApiError> {
     let _update_guard = state.config_update.lock().await;
-    validate_config(&config)?;
     let previous = state.config.read().await.clone();
+    // The browser never sees notification secrets, so a full update that
+    // leaves them empty keeps the stored values.
+    config.notifications.inherit_secrets(&previous.notifications);
+    validate_config(&config)?;
     let listener_changed = previous.server.listen_address != config.server.listen_address
         || previous.server.port != config.server.port;
     commit_config(&state, &config).await?;
     audit_config_change(&state, connection, &headers, &previous, &config).await;
-    let mut response = no_store(Json(config)).into_response();
+    let mut response = no_store(Json(config.redacted_json())).into_response();
     if listener_changed {
         response.headers_mut().insert(
             "x-wingmankvm-restart-required",
@@ -49,6 +274,7 @@ pub(super) struct ConfigPatch {
     pub(super) hid: Option<HidPatch>,
     pub(super) power: Option<PowerPatch>,
     pub(super) media: Option<MediaPatch>,
+    pub(super) notifications: Option<NotificationsPatch>,
 }
 
 #[derive(Deserialize)]
@@ -245,10 +471,13 @@ pub(super) async fn patch_config(
     if let Some(media) = patch.media {
         apply_media_patch(&mut config.media, media);
     }
+    if let Some(notifications) = patch.notifications {
+        apply_notifications_patch(&mut config.notifications, notifications);
+    }
     validate_config(&config)?;
     commit_config(&state, &config).await?;
     audit_config_change(&state, connection, &headers, &previous, &config).await;
-    Ok(no_store(Json(config)))
+    Ok(no_store(Json(config.redacted_json())))
 }
 
 /// Audit only the names of changed top-level sections; never their values.
@@ -259,6 +488,7 @@ pub(super) fn changed_sections(previous: &Config, current: &Config) -> Vec<&'sta
         ("hid", previous.hid != current.hid),
         ("power", previous.power != current.power),
         ("media", previous.media != current.media),
+        ("notifications", previous.notifications != current.notifications),
     ]
     .into_iter()
     .filter_map(|(name, changed)| changed.then_some(name))
@@ -454,6 +684,141 @@ pub(super) fn apply_media_patch(config: &mut config::MediaConfig, patch: MediaPa
     }
 }
 
+/// Notification settings. Secret fields follow "empty keeps, explicit
+/// `clear_*` removes": the browser never receives stored secrets, so it can
+/// only send a new value or ask for removal.
+#[derive(Deserialize)]
+pub(super) struct NotificationsPatch {
+    pub(super) webhook: Option<WebhookPatch>,
+    pub(super) ntfy: Option<NtfyPatch>,
+    pub(super) telegram: Option<TelegramPatch>,
+    pub(super) events: Option<NotificationEventsPatch>,
+    pub(super) hid_failure_threshold: Option<u32>,
+    pub(super) hid_failure_window_seconds: Option<u64>,
+    pub(super) video_lost_seconds: Option<u64>,
+    pub(super) rate_limit_seconds: Option<u64>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct WebhookPatch {
+    pub(super) enabled: Option<bool>,
+    pub(super) url: Option<String>,
+    #[serde(default)]
+    pub(super) clear_url: bool,
+}
+
+#[derive(Deserialize)]
+pub(super) struct NtfyPatch {
+    pub(super) enabled: Option<bool>,
+    pub(super) server: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(super) topic: Option<Option<String>>,
+    pub(super) token: Option<String>,
+    #[serde(default)]
+    pub(super) clear_token: bool,
+}
+
+#[derive(Deserialize)]
+pub(super) struct TelegramPatch {
+    pub(super) enabled: Option<bool>,
+    pub(super) bot_token: Option<String>,
+    #[serde(default)]
+    pub(super) clear_bot_token: bool,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(super) chat_id: Option<Option<String>>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct NotificationEventsPatch {
+    pub(super) login_succeeded: Option<bool>,
+    pub(super) login_failed: Option<bool>,
+    pub(super) power_led_changed: Option<bool>,
+    pub(super) hid_failing: Option<bool>,
+    pub(super) video_lost: Option<bool>,
+}
+
+fn apply_secret(target: &mut Option<String>, value: Option<String>, clear: bool) {
+    if clear {
+        *target = None;
+    }
+    if let Some(value) = optional_string(value) {
+        *target = Some(value);
+    }
+}
+
+pub(super) fn apply_notifications_patch(
+    config: &mut config::NotificationsConfig,
+    patch: NotificationsPatch,
+) {
+    if let Some(webhook) = patch.webhook {
+        if let Some(enabled) = webhook.enabled {
+            config.webhook.enabled = enabled;
+        }
+        apply_secret(&mut config.webhook.url, webhook.url, webhook.clear_url);
+        if webhook.clear_url {
+            config.webhook.enabled = false;
+        }
+    }
+    if let Some(ntfy) = patch.ntfy {
+        if let Some(enabled) = ntfy.enabled {
+            config.ntfy.enabled = enabled;
+        }
+        if let Some(server) = ntfy.server {
+            let server = server.trim();
+            config.ntfy.server = if server.is_empty() {
+                config::DEFAULT_NTFY_SERVER.to_owned()
+            } else {
+                server.to_owned()
+            };
+        }
+        if let Some(topic) = ntfy.topic {
+            config.ntfy.topic = optional_string(topic);
+        }
+        apply_secret(&mut config.ntfy.token, ntfy.token, ntfy.clear_token);
+    }
+    if let Some(telegram) = patch.telegram {
+        if let Some(enabled) = telegram.enabled {
+            config.telegram.enabled = enabled;
+        }
+        apply_secret(
+            &mut config.telegram.bot_token,
+            telegram.bot_token,
+            telegram.clear_bot_token,
+        );
+        if telegram.clear_bot_token {
+            config.telegram.enabled = false;
+        }
+        if let Some(chat_id) = telegram.chat_id {
+            config.telegram.chat_id = optional_string(chat_id);
+        }
+    }
+    if let Some(events) = patch.events {
+        for (target, value) in [
+            (&mut config.events.login_succeeded, events.login_succeeded),
+            (&mut config.events.login_failed, events.login_failed),
+            (&mut config.events.power_led_changed, events.power_led_changed),
+            (&mut config.events.hid_failing, events.hid_failing),
+            (&mut config.events.video_lost, events.video_lost),
+        ] {
+            if let Some(value) = value {
+                *target = value;
+            }
+        }
+    }
+    if let Some(value) = patch.hid_failure_threshold {
+        config.hid_failure_threshold = value;
+    }
+    if let Some(value) = patch.hid_failure_window_seconds {
+        config.hid_failure_window_seconds = value;
+    }
+    if let Some(value) = patch.video_lost_seconds {
+        config.video_lost_seconds = value;
+    }
+    if let Some(value) = patch.rate_limit_seconds {
+        config.rate_limit_seconds = value;
+    }
+}
+
 pub(super) async fn persist_config(path: &Path, config: &Config) -> Result<(), ApiError> {
     let path = path.to_path_buf();
     let config = config.clone();
@@ -485,6 +850,7 @@ pub(super) async fn commit_config(state: &AppState, config: &Config) -> Result<(
     state.proxy_protocol_updates.send_replace(config.server.proxy_protocol);
     state.power.set_power_led_config(power_led).await;
     state.hid.set_keyboard_device(config.hid.keyboard_device.clone());
+    state.notifier.update_config(config.notifications.clone());
     Ok(())
 }
 
@@ -499,9 +865,313 @@ pub(super) fn optional_path(value: Option<String>) -> Option<PathBuf> {
     optional_string(value).map(PathBuf::from)
 }
 
+/// Current UTC date and RFC 3339 timestamp without pulling in a date crate.
+fn utc_date_and_timestamp() -> (String, String) {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let days = (seconds / 86_400) as i64;
+    let within_day = seconds % 86_400;
+    let (year, month, day) = civil_date_from_days(days);
+    let hour = within_day / 3_600;
+    let minute = within_day % 3_600 / 60;
+    let second = within_day % 60;
+    (
+        format!("{year:04}-{month:02}-{day:02}"),
+        format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z"),
+    )
+}
+
+/// Converts days since 1970-01-01 to a proleptic Gregorian date.
+fn civil_date_from_days(days: i64) -> (i64, u32, u32) {
+    let days = days + 719_468;
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let day_of_era = days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096)
+            / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * month_prime + 2) / 5 + 1) as u32;
+    let month = if month_prime < 10 {
+        month_prime + 3
+    } else {
+        month_prime - 9
+    } as u32;
+    if month <= 2 {
+        year += 1;
+    }
+    (year, month, day)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let mut random = [0_u8; 8];
+            getrandom::fill(&mut random).unwrap();
+            let path = std::env::temp_dir().join(format!(
+                "wingmankvm-config-backup-test-{}-{:016x}",
+                std::process::id(),
+                u64::from_ne_bytes(random)
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_state(config: Config, path: PathBuf) -> AppState {
+        let (video, _) = VideoManager::test_source(config.video.clone());
+        let webrtc = WebRtcManager::test_stub(video.clone(), config.video.h264.clone());
+        AppState {
+            proxy_protocol_updates: watch::channel(config.server.proxy_protocol).0,
+            config: Arc::new(RwLock::new(config)),
+            config_path: Arc::new(path.clone()),
+            auth: AuthStore::new(path.with_file_name("auth.json")),
+            audit: AuditLog::new(path.parent().unwrap()),
+            sessions: SessionStore::default(),
+            setup: Arc::new(AsyncMutex::new(())),
+            config_update: Arc::new(AsyncMutex::new(())),
+            password_migration: Arc::new(AsyncMutex::new(())),
+            setup_token: Arc::new(Mutex::new(None)),
+            setup_scan: Arc::new(AsyncMutex::new(None)),
+            login_limiter: LoginLimiter::default(),
+            passkey_start_limiter: LoginLimiter::with_budget(MAX_PASSKEY_STARTS_PER_IP),
+            passkey_challenges: Arc::new(Mutex::new(HashMap::new())),
+            hid: HidManager::new(),
+            power: PowerManager::new(),
+            media: Arc::new(MediaManager::default()),
+            media_upload: Arc::new(AsyncMutex::new(())),
+            media_download: Arc::new(MediaDownloadManager::new().unwrap()),
+            video,
+            webrtc,
+            system: Arc::new(crate::system::SystemMonitor::new()),
+            metrics: Arc::new(RuntimeMetrics::new()),
+            notifier: crate::notify::Notifier::new(Default::default()),
+        }
+    }
+
+    #[test]
+    fn export_document_only_contains_configuration() {
+        let mut config = Config::default();
+        config.server.port = 9090;
+        config.video.width = Some(1920);
+        let document = ConfigExport::new(config.clone());
+        let value = serde_json::to_value(&document).unwrap();
+        let keys: std::collections::BTreeSet<&str> =
+            value.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            ["config", "exported_at", "format", "version"]
+                .into_iter()
+                .collect()
+        );
+        assert_eq!(value["format"], CONFIG_EXPORT_FORMAT);
+        assert_eq!(value["version"], CONFIG_VERSION);
+        assert_eq!(value["config"], serde_json::to_value(&config).unwrap());
+        assert!(value["exported_at"].as_str().unwrap().ends_with('Z'));
+
+        let text = serde_json::to_string(&document).unwrap().to_ascii_lowercase();
+        for forbidden in [
+            "password",
+            "passkey",
+            "session_id",
+            "auth.json",
+            "setup_token",
+            "audit",
+        ] {
+            assert!(!text.contains(forbidden), "{forbidden} leaked into export");
+        }
+    }
+
+    #[test]
+    fn export_import_roundtrip_is_lossless() {
+        let mut config = Config::default();
+        config.server.port = 9090;
+        config.server.public_origin = Some("https://kvm.example.com".to_owned());
+        config.video.width = Some(1920);
+        config.video.h264.bitrate_kbps = 8_000;
+        config.hid.pointer_mode = PointerMode::Relative;
+        config.power.short_press_ms = 750;
+        config.media.max_upload_bytes = 1_024;
+
+        let document = serde_json::to_value(ConfigExport::new(config.clone())).unwrap();
+        let file: ConfigImportFile = serde_json::from_value(document).unwrap();
+        let imported = file.into_config().expect("valid export must import");
+        assert_eq!(imported, config);
+        assert!(config_changes(&config, &imported).is_empty());
+    }
+
+    #[test]
+    fn import_rejects_wrong_format_version_and_invalid_configuration() {
+        let exported = serde_json::to_value(ConfigExport::new(Config::default())).unwrap();
+
+        let mut wrong_format = exported.clone();
+        wrong_format["format"] = json!("other-tool");
+        let error = serde_json::from_value::<ConfigImportFile>(wrong_format)
+            .unwrap()
+            .into_config()
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("format"), "{}", error.message);
+
+        let mut wrong_version = exported.clone();
+        wrong_version["version"] = json!(CONFIG_VERSION + 1);
+        let error = serde_json::from_value::<ConfigImportFile>(wrong_version)
+            .unwrap()
+            .into_config()
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(
+            error.message.contains("不受支持") && error.message.contains("2"),
+            "{}",
+            error.message
+        );
+
+        let mut missing_version = exported.clone();
+        missing_version.as_object_mut().unwrap().remove("version");
+        let error = serde_json::from_value::<ConfigImportFile>(missing_version)
+            .unwrap()
+            .into_config()
+            .unwrap_err();
+        assert!(error.message.contains("version"), "{}", error.message);
+
+        let mut content_version = exported.clone();
+        content_version["config"]["version"] = json!(99);
+        let error = serde_json::from_value::<ConfigImportFile>(content_version)
+            .unwrap()
+            .into_config()
+            .unwrap_err();
+        assert!(
+            error.message.contains("配置内容版本 99"),
+            "{}",
+            error.message
+        );
+
+        let mut invalid = exported;
+        invalid["config"]["server"]["port"] = json!(0);
+        let error = serde_json::from_value::<ConfigImportFile>(invalid)
+            .unwrap()
+            .into_config()
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("server.port"), "{}", error.message);
+    }
+
+    #[test]
+    fn diff_lists_changed_field_paths_with_old_and_new_values() {
+        let old = Config::default();
+        let mut new = old.clone();
+        new.server.port = 9090;
+        new.server.public_origin = Some("https://kvm.example.com".to_owned());
+        new.video.width = Some(1920);
+        new.hid.mouse_device = Some(PathBuf::from("/dev/hidg1"));
+
+        let changes = config_changes(&old, &new);
+        let by_path: std::collections::HashMap<&str, &ConfigChange> =
+            changes.iter().map(|change| (change.path.as_str(), change)).collect();
+        assert_eq!(changes.len(), 4, "{changes:?}");
+        assert_eq!(by_path["server.port"].old, json!(8080));
+        assert_eq!(by_path["server.port"].new, json!(9090));
+        assert_eq!(by_path["server.public_origin"].old, serde_json::Value::Null);
+        assert_eq!(
+            by_path["server.public_origin"].new,
+            json!("https://kvm.example.com")
+        );
+        assert_eq!(by_path["video.width"].old, serde_json::Value::Null);
+        assert_eq!(by_path["video.width"].new, json!(1920));
+        assert_eq!(by_path["hid.mouse_device"].new, json!("/dev/hidg1"));
+    }
+
+    #[tokio::test]
+    async fn failed_import_validation_leaves_live_and_persisted_config_unchanged() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("config.json");
+        let config = Config::default();
+        config.save_atomic(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let state = test_state(config, path.clone());
+
+        let mut document = serde_json::to_value(ConfigExport::new(Config::default())).unwrap();
+        document["config"]["server"]["port"] = json!(0);
+        let file: ConfigImportFile = serde_json::from_value(document).unwrap();
+        assert!(file.into_config().is_err());
+
+        assert_eq!(state.config.read().await.server.port, 8080);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn import_waits_for_an_in_flight_config_update() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("config.json");
+        let config = Config::default();
+        config.save_atomic(&path).unwrap();
+        let state = test_state(config, path.clone());
+
+        let guard = state.config_update.lock().await;
+        let mut imported = state.config.read().await.clone();
+        imported.server.port = 9090;
+        let task = tokio::spawn({
+            let state = state.clone();
+            async move { import_config_with_state(state, imported).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!task.is_finished(), "import must wait for the save lock");
+        assert_eq!(state.config.read().await.server.port, 8080);
+        assert_eq!(Config::load(&path).unwrap().server.port, 8080);
+
+        drop(guard);
+        task.await.unwrap().expect("import should complete");
+        assert_eq!(state.config.read().await.server.port, 9090);
+        assert_eq!(Config::load(&path).unwrap().server.port, 9090);
+    }
+
+    fn with_notification_secrets(mut config: Config) -> Config {
+        let notifications = &mut config.notifications;
+        notifications.webhook.url = Some("https://hooks.example/SECRET-WEBHOOK".into());
+        notifications.ntfy.token = Some("SECRET-NTFY-TOKEN".into());
+        notifications.ntfy.topic = Some("SECRET-NTFY-TOPIC".into());
+        notifications.telegram.bot_token = Some("123456:SECRET-BOT-TOKEN".into());
+        notifications.telegram.chat_id = Some("12345".into());
+        config
+    }
+
+    #[test]
+    fn export_omits_notification_secrets() {
+        let config = with_notification_secrets(Config::default());
+        let text = serde_json::to_string(&ConfigExport::new(config)).unwrap();
+        assert!(!text.contains("SECRET-"), "notification secret leaked: {text}");
+        assert!(text.contains("12345"), "non-secret settings stay in the export");
+    }
+
+    #[tokio::test]
+    async fn import_keeps_existing_notification_secrets() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("config.json");
+        let config = with_notification_secrets(Config::default());
+        config.save_atomic(&path).unwrap();
+        let state = test_state(config.clone(), path);
+
+        let document = serde_json::to_value(ConfigExport::new(config.clone())).unwrap();
+        let file: ConfigImportFile = serde_json::from_value(document).unwrap();
+        import_config_with_state(state.clone(), file.into_config().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(state.config.read().await.notifications, config.notifications);
+    }
 
     #[test]
     fn changed_sections_reports_only_top_level_names() {
@@ -841,5 +1511,61 @@ mod tests {
         let patch = serde_json::from_value(json!({"public_origin": null})).unwrap();
         apply_server_patch(&mut config, patch);
         assert_eq!(config.public_origin, None);
+    }
+
+    #[test]
+    fn notification_patch_keeps_secrets_unless_replaced_or_cleared() {
+        let mut config = config::NotificationsConfig::default();
+        let patch = serde_json::from_value(json!({
+            "webhook": {"enabled": true, "url": "https://hooks.example.com/abc"},
+            "ntfy": {"enabled": true, "topic": "kvm", "token": "tk_one"},
+            "telegram": {"enabled": true, "bot_token": "1:AAA", "chat_id": "42"},
+            "events": {"login_succeeded": false},
+            "video_lost_seconds": 45
+        }))
+        .unwrap();
+        apply_notifications_patch(&mut config, patch);
+        assert!(config.validate().is_ok());
+        assert_eq!(config.webhook.url.as_deref(), Some("https://hooks.example.com/abc"));
+        assert!(!config.events.login_succeeded);
+        assert!(config.events.login_failed);
+        assert_eq!(config.video_lost_seconds, 45);
+
+        // Empty secrets (what the browser sends back) keep the stored ones.
+        let patch = serde_json::from_value(json!({
+            "webhook": {"url": ""},
+            "ntfy": {"token": "  "},
+            "telegram": {"bot_token": "", "chat_id": "43"}
+        }))
+        .unwrap();
+        apply_notifications_patch(&mut config, patch);
+        assert_eq!(config.webhook.url.as_deref(), Some("https://hooks.example.com/abc"));
+        assert_eq!(config.ntfy.token.as_deref(), Some("tk_one"));
+        assert_eq!(config.telegram.bot_token.as_deref(), Some("1:AAA"));
+        assert_eq!(config.telegram.chat_id.as_deref(), Some("43"));
+
+        // Explicit clears remove the secret and disable channels that need it.
+        let patch = serde_json::from_value(json!({
+            "webhook": {"clear_url": true},
+            "ntfy": {"clear_token": true},
+            "telegram": {"clear_bot_token": true}
+        }))
+        .unwrap();
+        apply_notifications_patch(&mut config, patch);
+        assert!(config.webhook.url.is_none() && !config.webhook.enabled);
+        assert!(config.ntfy.token.is_none() && config.ntfy.enabled);
+        assert!(config.telegram.bot_token.is_none() && !config.telegram.enabled);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn notification_patch_output_is_validated() {
+        let mut config = Config::default();
+        let patch = serde_json::from_value(json!({
+            "webhook": {"enabled": true, "url": "ftp://hooks.example.com/abc"}
+        }))
+        .unwrap();
+        apply_notifications_patch(&mut config.notifications, patch);
+        assert!(validate_config(&config).is_err());
     }
 }

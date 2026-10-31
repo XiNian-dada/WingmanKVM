@@ -1,7 +1,7 @@
   // Connection quality overlay. `connectionQuality` always holds the latest
-  // computed numbers (null = unknown) so other features, e.g. adaptive bitrate
-  // (#82), can read them; such a consumer must also extend qualityShouldRun(),
-  // since sampling only runs while the overlay is showing.
+  // computed numbers (null = unknown). Sampling runs while the overlay is shown
+  // or while adaptive bitrate (#82, 07c) needs WebRTC stats; the overlay
+  // itself is only visible when the user turned it on.
   const connectionQuality = {
     transport: 'none',
     updatedAt: 0,
@@ -25,7 +25,7 @@
     qualityTransport = null,
     qualityBaseline = null;
   const qualityRows = {};
-  for (const key of ['rtt', 'bitrate', 'loss', 'fps', 'jitter', 'size']) {
+  for (const key of ['rtt', 'bitrate', 'loss', 'fps', 'jitter', 'adaptive', 'size']) {
     const label = document.createElement('dt'),
       value = document.createElement('dd');
     $('#quality-overlay').append(label, value);
@@ -59,6 +59,7 @@
       setQualityRow('loss', '丢包率', qualityNumber(q.packetLossPct, '%', 1));
       setQualityRow('fps', '解码帧率', qualityNumber(q.fps));
       setQualityRow('jitter', '抖动缓冲', qualityNumber(q.jitterBufferMs, ' ms'));
+      setQualityRow('adaptive', '自适应码率', adaptiveBitrateText());
     } else {
       setQualityRow('rtt', null);
       // The browser exposes no byte counts for a multipart <img>.
@@ -66,6 +67,7 @@
       setQualityRow('loss', null);
       setQualityRow('fps', q.fpsSource === 'browser' ? '帧率（浏览器实测）' : '帧率（服务端采集）', qualityNumber(q.fps));
       setQualityRow('jitter', null);
+      setQualityRow('adaptive', null);
     }
     setQualityRow('size', '分辨率', size);
   }
@@ -174,12 +176,13 @@
       }
     } else applyMjpegStats();
     connectionQuality.updatedAt = Date.now();
+    if (activeVideoTransport === 'webrtc_h264') adaptiveBitrateTick();
     renderQualityOverlay();
     qualityTimer = setTimeout(() => sampleQuality(run), QUALITY_INTERVAL_MS);
   }
   function qualityShouldRun() {
     return (
-      qualityEnabled &&
+      (qualityEnabled || adaptiveBitrateWantsStats()) &&
       !document.hidden &&
       shouldVideoRun() &&
       videoUiState === 'playing' &&
@@ -190,11 +193,11 @@
   // Called on every video state change; does nothing unless the answer changed.
   function syncQualityOverlay() {
     const transport = qualityShouldRun() ? activeVideoTransport : null;
+    $('#quality-overlay').classList.toggle('hidden', !transport || !qualityEnabled);
     if (transport === qualityTransport) return;
     qualityTransport = transport;
     clearTimeout(qualityTimer);
     const run = ++qualityRun;
-    $('#quality-overlay').classList.toggle('hidden', !transport);
     resetConnectionQuality(transport || 'none');
     if (transport) sampleQuality(run);
   }

@@ -912,6 +912,7 @@
       menu.append(separator);
       custom.forEach((combo) => menu.append(createComboItem(combo, true)));
     }
+    renderKeyboardMacroMenu(menu);
     const add = document.createElement('button');
     add.type = 'button';
     add.id = 'quick-combo-add';
@@ -1105,6 +1106,10 @@
     const key = normalizeKey(event);
     if (!key) return;
     event.preventDefault();
+    // Hook the forwarding path itself: local shortcuts and keys typed into
+    // local controls have already returned above, so only keys that really
+    // reach the target are recorded.
+    recordMacroKey(key, event);
     sendKey(key, event).catch(handleHidError);
   });
   function normalizeKey(event) {

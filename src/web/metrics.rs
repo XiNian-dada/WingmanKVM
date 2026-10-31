@@ -33,6 +33,16 @@ impl RuntimeMetrics {
         }
     }
 
+    /// Cumulative (ok, failed) HID counters and the latest error message.
+    pub(super) fn hid_counts(&self) -> (u64, u64, Option<String>) {
+        let last = self.last_hid_error.lock().unwrap_or_else(|p| p.into_inner());
+        (
+            self.hid_ok.load(Ordering::Relaxed),
+            self.hid_failed.load(Ordering::Relaxed),
+            last.as_ref().map(|(message, _)| message.clone()),
+        )
+    }
+
     /// Counts an open input WebSocket until the returned guard is dropped.
     pub(super) fn input_socket_opened(self: &Arc<Self>) -> InputSocketGuard {
         self.input_sockets.fetch_add(1, Ordering::Relaxed);

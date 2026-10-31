@@ -35,6 +35,8 @@ pub static APP_JS_PARTS: &[&str] = &[
     include_str!("../web/js/app/07-video.js"),
     include_str!("../web/js/app/07a-pip.js"),
     include_str!("../web/js/app/07b-quality.js"),
+    include_str!("../web/js/app/07z-keyboard-macros.js"),
+    include_str!("../web/js/app/07c-adaptive-bitrate.js"),
     include_str!("../web/js/app/08-input.js"),
     include_str!("../web/js/app/08a-input-socket.js"),
     include_str!("../web/js/app/08b-touch.js"),
@@ -43,6 +45,7 @@ pub static APP_JS_PARTS: &[&str] = &[
     include_str!("../web/js/app/11-media.js"),
     include_str!("../web/js/app/12-passkey.js"),
     include_str!("../web/js/app/12a-sessions-audit.js"),
+    include_str!("../web/js/app/12b-notifications.js"),
     include_str!("../web/js/app/13-settings-boot.js"),
 ];
 
@@ -192,6 +195,22 @@ mod tests {
         assert!(INDEX_HTML.contains("setSetting"));
         assert!(INDEX_HTML.contains("settings-modal-pop"));
         assert!(INDEX_HTML.contains("place-items:center"));
+    }
+
+    #[test]
+    fn config_backup_ui_and_scripts_present() {
+        assert!(INDEX_HTML.contains("id=\"config-export-btn\""));
+        assert!(INDEX_HTML.contains("id=\"config-import-btn\""));
+        assert!(INDEX_HTML.contains("id=\"config-import-file\""));
+        assert!(INDEX_HTML.contains("id=\"config-import-dialog\""));
+        assert!(INDEX_HTML.contains("id=\"config-import-diff\""));
+        assert!(INDEX_HTML.contains("id=\"config-import-confirm\""));
+        assert!(INDEX_HTML.contains("/api/config/export"));
+        assert!(INDEX_HTML.contains("/api/config/import/preview"));
+        assert!(INDEX_HTML.contains("/api/config/import"));
+        assert!(INDEX_HTML.contains("renderConfigChanges"));
+        assert!(INDEX_HTML.contains("config-diff-item"));
+        assert!(INDEX_HTML.contains("导入失败：${}"));
     }
 
     #[test]

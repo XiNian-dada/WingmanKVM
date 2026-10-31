@@ -10,6 +10,7 @@ mod login;
 mod metrics;
 mod media;
 mod media_download;
+mod notifications;
 mod passkey;
 mod password_sync;
 mod power;
@@ -32,6 +33,7 @@ use self::login::*;
 use self::metrics::*;
 use self::media::*;
 use self::media_download::*;
+use self::notifications::*;
 use self::passkey::*;
 use self::password_sync::*;
 use self::power::*;
@@ -129,6 +131,7 @@ pub struct AppState {
     webrtc: WebRtcManager,
     system: Arc<crate::system::SystemMonitor>,
     metrics: Arc<RuntimeMetrics>,
+    notifier: crate::notify::Notifier,
 }
 
 impl AppState {
@@ -185,6 +188,10 @@ impl AppState {
         });
 
         let hid = HidManager::with_keyboard_device(config.hid.keyboard_device.clone());
+        let metrics = Arc::new(RuntimeMetrics::new());
+        let notifier = crate::notify::Notifier::new(config.notifications.clone());
+        audit.set_observer(audit_observer(notifier.clone()));
+        spawn_event_sources(notifier.clone(), video.clone(), power.clone(), metrics.clone());
 
         Ok(Self {
             proxy_protocol_updates: watch::channel(config.server.proxy_protocol).0,
@@ -211,7 +218,8 @@ impl AppState {
             video,
             webrtc,
             system: Arc::new(crate::system::SystemMonitor::new()),
-            metrics: Arc::new(RuntimeMetrics::new()),
+            metrics,
+            notifier,
         })
     }
 
@@ -245,11 +253,21 @@ pub fn router(state: AppState) -> Router {
             "/api/config",
             get(get_config).put(update_config).post(patch_config),
         )
+        .route("/api/config/export", get(export_config))
+        .route(
+            "/api/config/import/preview",
+            post(preview_import_config).layer(DefaultBodyLimit::max(CONFIG_IMPORT_BODY_LIMIT)),
+        )
+        .route(
+            "/api/config/import",
+            post(import_config).layer(DefaultBodyLimit::max(CONFIG_IMPORT_BODY_LIMIT)),
+        )
         .route("/api/logout", post(logout))
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/revoke", post(revoke_session))
         .route("/api/sessions/revoke-others", post(revoke_other_sessions))
         .route("/api/audit", get(audit_log))
+        .route("/api/notifications/test", post(test_notification))
         .route("/api/key", post(key))
         .route("/api/mouse/move", post(mouse_move))
         .route("/api/mouse/absolute", post(mouse_absolute))
@@ -265,6 +283,7 @@ pub fn router(state: AppState) -> Router {
             post(webrtc_offer).layer(DefaultBodyLimit::max(64 * 1024)),
         )
         .route("/api/webrtc/close", post(webrtc_close))
+        .route("/api/webrtc/bitrate", post(webrtc_bitrate))
         .route("/api/terminal/ws", get(terminal_ws))
         .route("/power", post(power))
         .route("/reset", post(reset))

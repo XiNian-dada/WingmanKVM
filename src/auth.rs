@@ -571,6 +571,11 @@ impl SessionGuard {
     /// Expiry is driven by the stored monotonic deadline rather than the
     /// periodic pruning task, so a terminal closes on time even when no other
     /// request touches the session map.
+    /// Whether both guards belong to the same login session (token).
+    pub fn same_session(&self, other: &SessionGuard) -> bool {
+        self.cancellation.same_channel(&other.cancellation)
+    }
+
     pub async fn wait_for_end(&self) {
         if !self.is_active() {
             return;

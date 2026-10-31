@@ -135,6 +135,7 @@
       abort = webrtcAbort;
     webrtcPeer = null;
     webrtcSessionId = null;
+    resetAdaptiveBitrate(null);
     webrtcAbort = null;
     abort?.abort();
     if (peer) {
@@ -325,6 +326,7 @@
         return;
       }
       webrtcSessionId = answer?.session_id || null;
+      resetAdaptiveBitrate(webrtcSessionId, answer?.bitrate_kbps, answer?.min_bitrate_kbps);
       if (!answer?.sdp || !/H264\/90000/i.test(answer.sdp)) throw new Error('未协商 H.264');
       clearTimeout(videoFirstFrameTimer);
       videoFirstFrameTimer = setTimeout(
