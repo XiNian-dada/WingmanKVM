@@ -45,7 +45,9 @@
   }
 
   function interactiveTarget(target) {
-    return !!target.closest('input,textarea,select,button,a,[contenteditable="true"],dialog');
+    return !!target.closest(
+      'input,textarea,select,button,a,summary,[role="button"],[role="tab"],[contenteditable="true"],dialog',
+    );
   }
   function inputEnabled() {
     return remoteWanted && pageActive && videoWorkspace === 'video' && !app.classList.contains('hidden');
@@ -174,8 +176,11 @@
   $$('#remote-input,.remote-input-mirror').forEach((input) =>
     input.addEventListener('change', (event) => setRemote(event.target.checked)),
   );
-  $('#input-state')?.addEventListener('click', () => {
+  $('#input-state')?.addEventListener('click', (event) => {
     setRemote(!remoteWanted);
+    // A pointer click would otherwise leave focus on this button, where
+    // typing is treated as local UI input and Enter toggles forwarding off.
+    if (remoteWanted && event.detail > 0) viewport.focus({ preventScroll: true });
     if (getSetting('release_key_toast', true))
       toast(
         remoteWanted ? t('toast_input_started', '已开启键鼠转发') : t('toast_input_paused', '已暂停键鼠转发'),
@@ -610,6 +615,9 @@
       b.textContent = key === 'Spacebar' ? '空格' : key;
       b.dataset.key = key;
       if (key === 'Spacebar') b.className = 'grow';
+      // Keep focus off on-screen keys so a later physical Enter/Space cannot
+      // re-activate the last key that was clicked.
+      b.addEventListener('pointerdown', (event) => event.preventDefault());
       b.addEventListener('click', () => {
         if (VIRTUAL_MODIFIERS.has(key)) {
           if (activeModifiers.has(key)) activeModifiers.delete(key);
