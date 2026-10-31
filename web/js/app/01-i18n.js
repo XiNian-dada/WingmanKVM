@@ -408,6 +408,9 @@
       const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       phrasePatterns[lang] = Object.entries(PHRASES[lang] || {})
         .filter(([source]) => source.includes('${}'))
+        // Longest (most specific) template first, so a short template cannot
+        // swallow a longer sentence through its last placeholder.
+        .sort(([a], [b]) => b.length - a.length)
         .map(([source, target]) => [
           new RegExp(`^${source.split('${}').map(escape).join('(.+?)')}$`),
           target,

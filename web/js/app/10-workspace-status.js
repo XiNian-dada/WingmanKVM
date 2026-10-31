@@ -112,6 +112,7 @@
       if (status.hid?.keyboard_leds) renderKeyboardLeds(status.hid.keyboard_leds);
       if (status.client) renderClientInfo(status.client);
       if (latestSystemStatus) renderSystemMetrics(latestSystemStatus);
+      if (status.runtime) renderRuntimeMetrics(status.runtime, status.webrtc);
       renderVideoUi();
     } catch {
       // A failed status poll says nothing about the video stream itself: keep
@@ -259,6 +260,16 @@
   }
   function clampPercent(value) {
     return Math.min(100, Math.max(0, Number(value) || 0));
+  }
+  // Service-side counters: version and uptime, live connections, and whether
+  // keyboard/mouse writes are reaching the target (with the latest error).
+  function renderRuntimeMetrics(runtime, webrtc) {
+    setText('#diag-version', `v${runtime.version} · ${formatUptime(runtime.uptime_seconds)}`);
+    setText('#diag-connections', `键鼠 ${runtime.input_sockets} · WebRTC ${webrtc?.sessions ?? 0}`);
+    const hid = runtime.hid || {};
+    let text = `成功 ${hid.ok ?? 0} · 失败 ${hid.failed ?? 0}`;
+    if (hid.last_error) text += ` · 最近错误：${hid.last_error}（${formatUptime(hid.last_error_age_seconds || 1)}前）`;
+    setText('#diag-hid', text);
   }
   function renderSystemMetrics(sys) {
     if (!sys) return;

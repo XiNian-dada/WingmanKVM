@@ -3,19 +3,19 @@ use super::*;
 // HTTP handlers and the input WebSocket share these operations so both
 // transports enforce identical pointer-mode checks and error mapping.
 
-pub(super) async fn send_key(state: &AppState, request: KeyRequest) -> Result<serde_json::Value, ApiError> {
+async fn send_key_unrecorded(state: &AppState, request: KeyRequest) -> Result<serde_json::Value, ApiError> {
     let path = state.config.read().await.hid.keyboard_device.clone();
     state.hid.key(path, request).await.map_err(map_hid_error)?;
     Ok(json!({ "keyboard_leds": state.hid.leds() }))
 }
 
-pub(super) async fn send_mouse_move(state: &AppState, request: MouseMoveRequest) -> Result<(), ApiError> {
+async fn send_mouse_move_unrecorded(state: &AppState, request: MouseMoveRequest) -> Result<(), ApiError> {
     let config = state.config.read().await.hid.clone();
     let path = relative_mouse_path(&config)?;
     state.hid.mouse_move(path, request).await.map_err(map_hid_error)
 }
 
-pub(super) async fn send_mouse_absolute(
+async fn send_mouse_absolute_unrecorded(
     state: &AppState,
     request: AbsolutePointerRequest,
 ) -> Result<(), ApiError> {
@@ -33,19 +33,19 @@ pub(super) async fn send_mouse_absolute(
         .map_err(map_hid_error)
 }
 
-pub(super) async fn send_mouse_click(state: &AppState, request: MouseClickRequest) -> Result<(), ApiError> {
+async fn send_mouse_click_unrecorded(state: &AppState, request: MouseClickRequest) -> Result<(), ApiError> {
     let config = state.config.read().await.hid.clone();
     let path = relative_mouse_path(&config)?;
     state.hid.mouse_click(path, request).await.map_err(map_hid_error)
 }
 
-pub(super) async fn send_mouse_scroll(state: &AppState, request: MouseScrollRequest) -> Result<(), ApiError> {
+async fn send_mouse_scroll_unrecorded(state: &AppState, request: MouseScrollRequest) -> Result<(), ApiError> {
     let config = state.config.read().await.hid.clone();
     let path = relative_mouse_path(&config)?;
     state.hid.mouse_scroll(path, request).await.map_err(map_hid_error)
 }
 
-pub(super) async fn send_release_all(state: &AppState) -> Result<(), ApiError> {
+async fn send_release_all_unrecorded(state: &AppState) -> Result<(), ApiError> {
     let config = state.config.read().await.hid.clone();
     state
         .hid
@@ -56,6 +56,44 @@ pub(super) async fn send_release_all(state: &AppState) -> Result<(), ApiError> {
         )
         .await
         .map_err(map_hid_error)
+}
+
+// Every keyboard/mouse operation, over HTTP or the input WebSocket, is
+// counted for the diagnostics panel.
+pub(super) async fn send_key(state: &AppState, request: KeyRequest) -> Result<serde_json::Value, ApiError> {
+    let result = send_key_unrecorded(state, request).await;
+    state.metrics.record_hid(&result);
+    result
+}
+
+pub(super) async fn send_mouse_move(state: &AppState, request: MouseMoveRequest) -> Result<(), ApiError> {
+    let result = send_mouse_move_unrecorded(state, request).await;
+    state.metrics.record_hid(&result);
+    result
+}
+
+pub(super) async fn send_mouse_absolute(state: &AppState, request: AbsolutePointerRequest) -> Result<(), ApiError> {
+    let result = send_mouse_absolute_unrecorded(state, request).await;
+    state.metrics.record_hid(&result);
+    result
+}
+
+pub(super) async fn send_mouse_click(state: &AppState, request: MouseClickRequest) -> Result<(), ApiError> {
+    let result = send_mouse_click_unrecorded(state, request).await;
+    state.metrics.record_hid(&result);
+    result
+}
+
+pub(super) async fn send_mouse_scroll(state: &AppState, request: MouseScrollRequest) -> Result<(), ApiError> {
+    let result = send_mouse_scroll_unrecorded(state, request).await;
+    state.metrics.record_hid(&result);
+    result
+}
+
+pub(super) async fn send_release_all(state: &AppState) -> Result<(), ApiError> {
+    let result = send_release_all_unrecorded(state).await;
+    state.metrics.record_hid(&result);
+    result
 }
 
 pub(super) async fn key(

@@ -6,6 +6,7 @@ mod extract;
 mod input;
 mod input_ws;
 mod login;
+mod metrics;
 mod media;
 mod passkey;
 mod password_sync;
@@ -24,6 +25,7 @@ use self::extract::*;
 use self::input::*;
 use self::input_ws::*;
 use self::login::*;
+use self::metrics::*;
 use self::media::*;
 use self::passkey::*;
 use self::password_sync::*;
@@ -113,6 +115,7 @@ pub struct AppState {
     video: VideoManager,
     webrtc: WebRtcManager,
     system: Arc<crate::system::SystemMonitor>,
+    metrics: Arc<RuntimeMetrics>,
 }
 
 impl AppState {
@@ -176,6 +179,7 @@ impl AppState {
             video,
             webrtc,
             system: Arc::new(crate::system::SystemMonitor::new()),
+            metrics: Arc::new(RuntimeMetrics::new()),
         })
     }
 

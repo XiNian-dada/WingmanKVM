@@ -48,6 +48,7 @@ pub(super) async fn status(
             "keyboard_leds": state.hid.leds(),
         },
         "system": system,
+        "runtime": state.metrics.snapshot(),
         "client": {
             "ip": client.ip.to_string(),
             "port": client.port,
