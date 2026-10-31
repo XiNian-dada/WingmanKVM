@@ -531,3 +531,15 @@
     visibility: hidden;
   }
 }
+#pip[aria-pressed="true"] {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+/* Must stay rendered: some browsers will not play or PiP a display:none video. */
+.pip-source {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}

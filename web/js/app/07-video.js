@@ -1,5 +1,7 @@
   function shouldVideoRun() {
-    return !app.classList.contains('hidden') && !document.hidden && videoWorkspace === 'video';
+    // An active Picture-in-Picture window keeps the picture visible while the
+    // tab is in the background, so only then may video outlive a hidden page.
+    return !app.classList.contains('hidden') && (!document.hidden || isPipActive()) && videoWorkspace === 'video';
   }
   function showVideoSurface(kind) {
     feed.classList.toggle('hidden', kind !== 'mjpeg');
@@ -144,6 +146,7 @@
     videoGeneration++;
     clearVideoTimers();
     reconnectDelay = 500;
+    closePip();
     cleanupWebrtc();
     feed.onload = null;
     feed.onerror = null;
@@ -226,6 +229,7 @@
     if (generation !== videoGeneration || !shouldVideoRun() || activeVideoTransport !== 'webrtc_h264') return;
     videoFallbackReason = String(reason);
     console.warn('H.264 回退到 MJPEG:', videoFallbackReason);
+    closePip();
     cleanupWebrtc();
     startMjpeg(generation, true);
   }

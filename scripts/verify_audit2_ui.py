@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     from playwright.sync_api import sync_playwright
     from verify_p2_ui import extract_html, read_assets, serve_static, check
-    from verify_p2b_ui import State, new_page
+    from verify_p2b_ui import GIF, State, api_route, bootstrap_payload, new_page
 except Exception as exc:  # pragma: no cover - environment guard
     print(json.dumps({"status": "FAIL", "error": f"Playwright/helper import failed: {exc}"}))
     sys.exit(2)
@@ -886,6 +886,201 @@ def screenshot_and_record(browser, port, checks):
               "recording_downloads_webm", (pressed, clip.value.suggested_filename, size))
         check(checks, page.get_attribute("#record", "aria-pressed") == "false", "recording_stops_on_second_click",
               page.get_attribute("#record", "aria-pressed"))
+    finally:
+        context.close()
+
+
+PIP_STUB = """
+(() => {
+  let current = null;
+  window.__pipCalls = [];
+  window.__pipReject = false;
+  Object.defineProperty(Document.prototype, 'pictureInPictureEnabled', {configurable: true, get: () => true});
+  Object.defineProperty(Document.prototype, 'pictureInPictureElement', {configurable: true, get: () => current});
+  HTMLVideoElement.prototype.requestPictureInPicture = async function () {
+    if (window.__pipReject) throw new DOMException('denied', 'NotAllowedError');
+    window.__pipCalls.push(this.id || this.className);
+    current = this;
+    this.dispatchEvent(new Event('enterpictureinpicture'));
+    return {};
+  };
+  Document.prototype.exitPictureInPicture = async function () {
+    const element = current;
+    current = null;
+    element?.dispatchEvent(new Event('leavepictureinpicture'));
+  };
+})();
+"""
+
+FAKE_PEER = """
+(() => {
+  window.__statsCalls = 0;
+  window.__statsSeq = [];
+  window.__peers = [];
+  window.RTCPeerConnection = class {
+    constructor() {
+      this.iceGatheringState = 'complete';
+      this.connectionState = 'connected';
+      this.iceConnectionState = 'connected';
+      this.localDescription = {sdp: 'v=0'};
+      window.__peers.push(this);
+    }
+    addTransceiver() { return {}; }
+    async createOffer() { return {type: 'offer', sdp: 'v=0'}; }
+    async setLocalDescription() {}
+    async setRemoteDescription() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 64; canvas.height = 36;
+      const paint = canvas.getContext('2d');
+      setInterval(() => { paint.fillStyle = `hsl(${Date.now() % 360},50%,50%)`; paint.fillRect(0, 0, 64, 36); }, 50);
+      const stream = canvas.captureStream(20), track = stream.getVideoTracks()[0];
+      setTimeout(() => this.ontrack?.({track, streams: [stream]}), 0);
+    }
+    getReceivers() { return []; }
+    addEventListener() {}
+    removeEventListener() {}
+    close() { this.connectionState = 'closed'; }
+    async getStats() {
+      window.__statsCalls++;
+      const seq = window.__statsSeq;
+      return new Map((seq.length > 1 ? seq.shift() : seq[0] || []).map((entry) => [entry.id, entry]));
+    }
+  };
+})();
+"""
+
+
+def media_page(browser, state, port, h264=False, stubs=(PIP_STUB,)):
+    """new_page with init scripts, plus an optional negotiable H.264 backend."""
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    for stub in stubs:
+        page.add_init_script(stub)
+    page.route("**/api/**", lambda route: api_route(route, state))
+    page.route("**/video_feed*", lambda route: route.fulfill(
+        status=200, content_type="image/gif", body=GIF))
+    if h264:
+        def bootstrap(route):
+            body = bootstrap_payload(state)
+            body["capabilities"]["video_webrtc_h264"] = True
+            body["webrtc"] = {"available": True}
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+        page.route("**/api/bootstrap", bootstrap)
+        page.route("**/api/webrtc/offer", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({"type": "answer", "session_id": "s1", "sdp": "a=rtpmap:96 H264/90000"})))
+        page.route("**/api/webrtc/close", lambda route: route.fulfill(
+            status=200, content_type="application/json", body="{}"))
+    page.goto(f"http://127.0.0.1:{port}/", wait_until="load", timeout=15000)
+    page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+    page.bring_to_front()
+    return context, page
+
+
+def wait_mjpeg_playing(page):
+    page.wait_for_function("() => document.querySelector('#video-feed').naturalWidth > 0", timeout=5000)
+    page.wait_for_function("""() => {
+      document.querySelector('#video-feed').dispatchEvent(new Event('load'));
+      return /LIVE/.test(document.querySelector('#video-transport-label').textContent);
+    }""", timeout=5000)
+
+
+def pip_unsupported_hides_button(browser, port, checks):
+    """#79: no PiP support, no button."""
+    state = State()
+    stub = """Object.defineProperty(Document.prototype, 'pictureInPictureEnabled',
+      {configurable: true, get: () => false});"""
+    context, page = media_page(browser, state, port, stubs=(stub,))
+    try:
+        check(checks, not page.locator("#pip").is_visible(), "pip_hidden_when_unsupported", "")
+    finally:
+        context.close()
+
+
+def pip_mjpeg(browser, port, checks):
+    """#79: MJPEG PiP plays a hidden canvas-fed video and cleans up."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10, frames_per_second=30)
+    context, page = media_page(browser, state, port)
+    source = "() => { const v = document.querySelector('video.pip-source'); return v ? !!v.srcObject : null; }"
+    try:
+        check(checks, page.locator("#pip").is_visible(), "pip_button_visible", "")
+        page.click('[data-workspace="terminal"]')
+        page.wait_for_timeout(200)
+        page.evaluate("() => document.querySelector('#pip').click()")
+        page.wait_for_timeout(100)
+        toast = page.text_content("#toast") or ""
+        check(checks, "没有可显示" in toast and not page.evaluate("() => window.__pipCalls.length"),
+              "pip_requires_live_picture", toast)
+        page.click('[data-workspace="video"]')
+        wait_mjpeg_playing(page)
+
+        page.click("#pip")
+        page.wait_for_function("() => window.__pipCalls.length === 1", timeout=5000)
+        check(checks, page.evaluate("() => window.__pipCalls[0]") == "pip-source" and page.evaluate(source) is True,
+              "pip_mjpeg_uses_canvas_video", page.evaluate("() => window.__pipCalls"))
+        check(checks, page.get_attribute("#pip", "aria-pressed") == "true", "pip_button_pressed", "")
+
+        # Backgrounding the tab must keep the stream alive while in PiP...
+        hide = """(hidden) => {
+          Object.defineProperty(document, 'hidden', {configurable: true, get: () => hidden});
+          document.dispatchEvent(new Event('visibilitychange'));
+        }"""
+        page.evaluate(hide, True)
+        page.wait_for_timeout(100)
+        check(checks, bool(page.get_attribute("#video-feed", "src")) and page.evaluate(source) is True,
+              "pip_keeps_video_when_tab_hidden", "")
+        # ...and closing the PiP window from the background stops it.
+        page.evaluate("() => document.exitPictureInPicture()")
+        page.wait_for_timeout(100)
+        check(checks, not page.get_attribute("#video-feed", "src") and page.evaluate(source) is None
+              and page.get_attribute("#pip", "aria-pressed") == "false",
+              "pip_leave_in_background_stops_video", "")
+        page.evaluate(hide, False)
+        page.wait_for_timeout(200)
+        wait_mjpeg_playing(page)
+
+        # A workspace switch stops video, which must end PiP and its resources.
+        page.click("#pip")
+        page.wait_for_function("() => window.__pipCalls.length === 2", timeout=5000)
+        page.click('[data-workspace="terminal"]')
+        page.wait_for_timeout(200)
+        check(checks, page.evaluate("() => document.pictureInPictureElement") is None and page.evaluate(source) is None
+              and page.get_attribute("#pip", "aria-pressed") == "false", "pip_cleans_up_on_stop", "")
+        page.click('[data-workspace="video"]')
+        wait_mjpeg_playing(page)
+
+        page.evaluate("() => { window.__pipReject = true; }")
+        page.click("#pip")
+        page.wait_for_timeout(300)
+        check(checks, "无法进入" in (page.text_content("#toast") or "") and page.evaluate(source) is None
+              and page.get_attribute("#pip", "aria-pressed") == "false", "pip_rejection_reports_and_cleans_up", "")
+    finally:
+        context.close()
+
+
+def pip_webrtc(browser, port, checks):
+    """#79: WebRTC PiP uses the live <video>; fallback to MJPEG ends it."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    context, page = media_page(browser, state, port, h264=True, stubs=(PIP_STUB, FAKE_PEER))
+    try:
+        page.wait_for_function("() => document.querySelector('#webrtc-feed').videoWidth > 0", timeout=8000)
+        page.wait_for_function("() => /H.264/.test(document.querySelector('#video-transport-label').textContent)"
+                               " && /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
+        page.click("#pip")
+        page.wait_for_function("() => window.__pipCalls.length === 1", timeout=5000)
+        check(checks, page.evaluate("() => window.__pipCalls[0]") == "webrtc-feed"
+              and page.get_attribute("#pip", "aria-pressed") == "true", "pip_webrtc_uses_video_element",
+              page.evaluate("() => window.__pipCalls"))
+        page.evaluate("""() => {
+          const peer = window.__peers.at(-1);
+          peer.connectionState = 'failed';
+          peer.onconnectionstatechange();
+        }""")
+        page.wait_for_timeout(200)
+        check(checks, page.evaluate("() => document.pictureInPictureElement") is None
+              and page.get_attribute("#pip", "aria-pressed") == "false", "pip_ends_on_transport_fallback", "")
     finally:
         context.close()
 
