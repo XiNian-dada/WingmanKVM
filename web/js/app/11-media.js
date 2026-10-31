@@ -13,10 +13,10 @@
     $$('.media-operation').forEach(
       (control) => (control.disabled = locked || control.dataset.mediaLocked === 'true'),
     );
-    $$('#media-upload input,#media-upload button:not(#upload-cancel)').forEach(
-      (control) => (control.disabled = mediaBusy),
-    );
-    $('#media-refresh').disabled = mediaBusy;
+    $$(
+      '#media-upload input,#media-upload button:not(#upload-cancel),#media-download input,#media-download button:not(#media-download-cancel)',
+    ).forEach((control) => (control.disabled = mediaBusy || mediaDownloadBusy));
+    $('#media-refresh').disabled = mediaBusy || mediaDownloadBusy;
     $('#media-list').setAttribute('aria-busy', String(locked));
   }
   async function runMediaAction(action, success) {
@@ -243,7 +243,7 @@
   $('#media-refresh').addEventListener('click', refreshMedia);
   $('#media-upload').addEventListener('submit', (event) => {
     event.preventDefault();
-    if (mediaBusy) return;
+    if (mediaBusy || mediaDownloadBusy) return;
     const form = event.currentTarget,
       bar = $('#upload-bar'),
       progress = bar.parentElement,
@@ -306,6 +306,136 @@
     xhr.onerror = () => finish(false, '上传连接失败');
     xhr.onabort = () => finish(false, '上传已取消');
     xhr.send(body);
+  });
+
+  // URL downloads run as a server-side background job. Polling continues even
+  // if the user closes the inspector, so the image still lands on the device.
+  let mediaDownloadId = '',
+    mediaDownloadTimer = 0,
+    mediaDownloadRate = 0,
+    mediaDownloadLastAt = 0,
+    mediaDownloadLastReceived = 0;
+  function setMediaDownloadProgress(value, text) {
+    const bar = $('#media-download-bar'),
+      progress = bar.parentElement;
+    const percent = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+    bar.style.width = `${percent}%`;
+    progress.setAttribute('aria-valuenow', String(Math.round(percent)));
+    if (text !== undefined) $('#media-download-stats').textContent = text;
+  }
+  function stopMediaDownloadPolling() {
+    clearTimeout(mediaDownloadTimer);
+    mediaDownloadTimer = 0;
+  }
+  function finishMediaDownload(state, error) {
+    stopMediaDownloadPolling();
+    mediaDownloadId = '';
+    mediaDownloadBusy = false;
+    const cancel = $('#media-download-cancel');
+    cancel.classList.add('hidden');
+    cancel.disabled = false;
+    if (state === 'done') {
+      setMediaDownloadProgress(100, '');
+      toast('镜像下载完成');
+      $('#media-download-form').reset();
+      refreshMedia();
+    } else if (state === 'cancelled') {
+      setMediaDownloadProgress(0, '');
+      toast('下载已取消');
+    } else {
+      const message = error || '下载失败';
+      setMediaDownloadProgress(0, message);
+      toast(message, true);
+    }
+    syncMediaBusy();
+  }
+  function renderMediaDownloadProgress(status) {
+    const received = Number(status?.received) || 0,
+      total = Number(status?.total) || 0,
+      now = performance.now(),
+      elapsed = (now - mediaDownloadLastAt) / 1000;
+    if (elapsed >= 0.5) {
+      const instant = (received - mediaDownloadLastReceived) / elapsed;
+      if (instant >= 0) mediaDownloadRate = mediaDownloadRate ? mediaDownloadRate * 0.7 + instant * 0.3 : instant;
+      mediaDownloadLastAt = now;
+      mediaDownloadLastReceived = received;
+    }
+    const receivedText = formatBytes(received),
+      speed = mediaDownloadRate > 0 ? `${formatBytes(mediaDownloadRate)}/s` : '';
+    let text;
+    if (total > 0) {
+      const percent = Math.round((received / total) * 100);
+      text = speed
+        ? tr(`已下载 ${receivedText} / ${formatBytes(total)} · 速度 ${speed}`)
+        : tr(`已下载 ${receivedText} / ${formatBytes(total)} · ${percent}%`);
+      setMediaDownloadProgress(percent, text);
+    } else {
+      text = speed ? tr(`已下载 ${receivedText} · 速度 ${speed}`) : tr(`已下载 ${receivedText}`);
+      setMediaDownloadProgress(0, text);
+    }
+  }
+  async function pollMediaDownload() {
+    if (!mediaDownloadId) return;
+    try {
+      const status = await request(`/api/media/download/${encodeURIComponent(mediaDownloadId)}`);
+      renderMediaDownloadProgress(status);
+      if (status.state === 'running') {
+        mediaDownloadTimer = setTimeout(pollMediaDownload, 700);
+        return;
+      }
+      finishMediaDownload(status.state, status.error);
+    } catch (error) {
+      finishMediaDownload('failed', error.message);
+    }
+  }
+  $('#media-download-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (mediaBusy || mediaDownloadBusy) return;
+    const form = event.currentTarget,
+      url = form.elements.url.value.trim(),
+      sha256 = form.elements.sha256.value.trim();
+    if (!/^https?:\/\//i.test(url)) {
+      toast('只支持 http 或 https 下载地址', true);
+      return;
+    }
+    if (sha256 && !/^[0-9a-f]{64}$/i.test(sha256)) {
+      toast('SHA256 必须是 64 位十六进制字符串', true);
+      return;
+    }
+    mediaDownloadBusy = true;
+    mediaDownloadRate = 0;
+    mediaDownloadLastAt = performance.now();
+    mediaDownloadLastReceived = 0;
+    setMediaDownloadProgress(0, tr('正在下载…'));
+    syncMediaBusy();
+    try {
+      const payload = { url };
+      if (sha256) payload.sha256 = sha256;
+      const status = await request('/api/media/download', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      mediaDownloadId = status.id;
+      const cancel = $('#media-download-cancel');
+      cancel.classList.remove('hidden');
+      cancel.disabled = false;
+      renderMediaDownloadProgress(status);
+      pollMediaDownload();
+    } catch (error) {
+      finishMediaDownload('failed', error.message);
+    }
+  });
+  $('#media-download-cancel').addEventListener('click', async (event) => {
+    if (!mediaDownloadId) return;
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await request('/api/media/download/cancel', { method: 'POST' });
+      $('#media-download-stats').textContent = tr('正在取消…');
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message, true);
+    }
   });
 
   // Drag an image anywhere onto the media panel to upload it.

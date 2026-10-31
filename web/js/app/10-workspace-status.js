@@ -134,6 +134,7 @@
   const mediaChoices = new Map();
   let mediaBusy = false,
     mediaServerBusy = false,
+    mediaDownloadBusy = false,
     mediaStatus = {};
   function mediaItems(data) {
     return Array.isArray(data) ? data : data?.items || data?.images || [];

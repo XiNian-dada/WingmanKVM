@@ -1018,6 +1018,101 @@ def sessions_and_audit(browser, port, checks):
         context.close()
 
 
+def media_url_download(browser, port, checks):
+    """#69: URL download request, progress, list refresh and cancellation."""
+    state = State()
+    downloads, cancels, media_calls = [], [], []
+    mode = {"id": "job-success", "phase": "running", "polls": 0}
+    context, page = new_page(browser, state, port)
+    try:
+        def media_list(route):
+            media_calls.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "images": [{"name": "downloaded.iso", "size": 4194304, "mounted": False}],
+                "status": {"state": "detached"}}))
+
+        def download(route):
+            path = urllib.parse.urlsplit(route.request.url).path
+            method = route.request.method
+            if path == "/api/media/download" and method == "POST":
+                downloads.append(json.loads(route.request.post_data or "{}"))
+                mode.update(id="job-success" if len(downloads) == 1 else "job-cancel",
+                            phase="running", polls=0)
+                body = {"id": mode["id"], "state": "running", "received": 0,
+                        "total": 4194304, "error": None, "name": "downloaded.iso"}
+                return route.fulfill(status=202, content_type="application/json",
+                                     body=json.dumps(body))
+            if path == "/api/media/download/cancel":
+                cancels.append(route.request.post_data)
+                mode["phase"] = "cancelled"
+                body = {"id": mode["id"], "state": "running", "received": 1048576,
+                        "total": 4194304, "error": None, "name": "downloaded.iso"}
+                return route.fulfill(status=200, content_type="application/json",
+                                     body=json.dumps(body))
+            if mode["phase"] == "cancelled":
+                body = {"id": mode["id"], "state": "cancelled", "received": 1048576,
+                        "total": 4194304, "error": None, "name": "downloaded.iso"}
+            elif mode["id"] == "job-success":
+                mode["polls"] += 1
+                done = mode["polls"] >= 4
+                body = {"id": mode["id"], "state": "done" if done else "running",
+                        "received": 4194304 if done else 1048576,
+                        "total": 4194304, "error": None, "name": "downloaded.iso"}
+            else:
+                body = {"id": mode["id"], "state": "running", "received": 524288,
+                        "total": 4194304, "error": None, "name": "downloaded.iso"}
+            return route.fulfill(status=200, content_type="application/json",
+                                 body=json.dumps(body))
+
+        page.route("**/api/media", media_list)
+        page.route("**/api/media/download**", download)
+        page.locator('[data-panel-target="media"]').click()
+        page.locator("#media-download summary").click()
+        form = page.locator("#media-download-form")
+        digest = "a" * 64
+        form.locator('input[name="url"]').fill("http://127.0.0.1:9/image.iso")
+        form.locator('input[name="sha256"]').fill(digest)
+        form.locator('button[type="submit"]').click()
+        page.wait_for_timeout(900)
+
+        check(checks, downloads and downloads[0].get("url") == "http://127.0.0.1:9/image.iso"
+              and downloads[0].get("sha256") == digest,
+              "url_download_submits_url_and_sha256", downloads)
+        stats = page.text_content("#media-download-stats") or ""
+        check(checks, "已下载" in stats and "MB" in stats and "速度" in stats and "/s" in stats,
+              "url_download_renders_progress", stats)
+
+        try:
+            page.wait_for_function(
+                "() => (document.querySelector('#media-list')?.textContent || '').includes('downloaded.iso')",
+                timeout=5000)
+        except Exception:
+            pass
+        listed = page.text_content("#media-list") or ""
+        check(checks, "downloaded.iso" in listed and media_calls,
+              "url_download_done_refreshes_list", (listed, len(media_calls)))
+
+        form.locator('input[name="url"]').fill("http://127.0.0.1:9/other.iso")
+        form.locator('button[type="submit"]').click()
+        page.wait_for_timeout(400)
+        started = len(downloads) == 2
+        page.click("#media-download-cancel")
+        page.wait_for_timeout(400)
+        check(checks, started and len(cancels) == 1,
+              "url_download_cancel_requested", (started, cancels))
+        try:
+            page.wait_for_function(
+                "() => document.querySelector('#media-download-cancel').classList.contains('hidden')",
+                timeout=5000)
+        except Exception:
+            pass
+        hidden = page.evaluate(
+            "() => document.querySelector('#media-download-cancel').classList.contains('hidden')")
+        check(checks, hidden, "url_download_cancel_finishes_ui", hidden)
+    finally:
+        context.close()
+
+
 # Every function taking (browser, port, checks) is a scenario, run in
 # definition order; new scenarios need no list edit (and no merge conflict).
 SCENARIOS = [

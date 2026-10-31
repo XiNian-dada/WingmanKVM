@@ -9,6 +9,7 @@ mod input_ws;
 mod login;
 mod metrics;
 mod media;
+mod media_download;
 mod passkey;
 mod password_sync;
 mod power;
@@ -29,6 +30,7 @@ use self::input_ws::*;
 use self::login::*;
 use self::metrics::*;
 use self::media::*;
+use self::media_download::*;
 use self::passkey::*;
 use self::password_sync::*;
 use self::power::*;
@@ -121,6 +123,7 @@ pub struct AppState {
     power: PowerManager,
     media: Arc<MediaManager>,
     media_upload: Arc<AsyncMutex<()>>,
+    media_download: Arc<MediaDownloadManager>,
     video: VideoManager,
     webrtc: WebRtcManager,
     system: Arc<crate::system::SystemMonitor>,
@@ -187,6 +190,9 @@ impl AppState {
             power,
             media: Arc::new(MediaManager::default()),
             media_upload: Arc::new(AsyncMutex::new(())),
+            media_download: Arc::new(
+                MediaDownloadManager::new().map_err(|error| anyhow::anyhow!(error))?,
+            ),
             video,
             webrtc,
             system: Arc::new(crate::system::SystemMonitor::new()),
@@ -251,6 +257,15 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/media/upload",
             post(upload_media).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/media/download",
+            post(download_media).get(download_media_status),
+        )
+        .route("/api/media/download/cancel", post(cancel_media_download))
+        .route(
+            "/api/media/download/{id}",
+            get(download_media_status_by_id),
         )
         .route("/api/media/attach", post(attach_media))
         .route("/api/media/detach", post(detach_media))
