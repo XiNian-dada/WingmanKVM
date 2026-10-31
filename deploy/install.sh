@@ -503,6 +503,8 @@ load_deployment_sources() {
     MAINTENANCE_ROOT_SUDOERS=$(source_file wingmankvm-maintenance-root-sudoers)
     GADGET_SCRIPT=$(source_file wingmankvm-gadget)
     DOCTOR_SCRIPT=$(source_file wingmankvm-doctor)
+    ONLINE_UPGRADE_HELPER=$(source_file wingmankvm-online-upgrade)
+    ONLINE_UPGRADE_SERVICE=$(source_file wingmankvm-online-upgrade.service)
     GADGET_ENV_EXAMPLE=$(source_file gadget.env.example)
     GADGET_SERVICE=$(source_file wingmankvm-gadget.service)
     APPLICATION_SERVICE=$(source_file wingmankvm.service)
@@ -511,6 +513,7 @@ load_deployment_sources() {
     bash -n "$WINGMAN_PROFILE" || die "login profile failed shell syntax validation"
     sh -n "$GADGET_SCRIPT" || die "Gadget helper failed shell syntax validation"
     bash -n "$DOCTOR_SCRIPT" || die "doctor helper failed shell syntax validation"
+    bash -n "$ONLINE_UPGRADE_HELPER" || die "online upgrade helper failed shell syntax validation"
     sh -n "$PASSWORD_HELPER" || die "password helper failed shell syntax validation"
     bash -n "$SETUP_URL_HELPER" || die "setup URL helper failed shell syntax validation"
     visudo -cf "$SUDOERS_RULE" >/dev/null || die "sudoers source failed validation"
@@ -525,6 +528,8 @@ install_managed_files() {
         "$(dest_path /usr/local/sbin/wingmankvm-gadget)" 0755 root root
     tx_add_managed "$DOCTOR_SCRIPT" \
         "$(dest_path /usr/local/sbin/wingmankvm-doctor)" 0755 root root
+    tx_add_managed "$ONLINE_UPGRADE_HELPER" \
+        "$(dest_path /usr/local/sbin/wingmankvm-online-upgrade)" 0755 root root
     tx_add_managed "$PASSWORD_HELPER" \
         "$(dest_path /usr/local/sbin/wingmankvm-set-wingman-password)" 0755 root root
     tx_add_managed "$SETUP_URL_HELPER" \
@@ -537,6 +542,8 @@ install_managed_files() {
         "$(dest_path /etc/systemd/system/wingmankvm-gadget.service)" 0644 root root
     tx_add_managed "$APPLICATION_SERVICE" \
         "$(dest_path /etc/systemd/system/wingmankvm.service)" 0644 root root
+    tx_add_managed "$ONLINE_UPGRADE_SERVICE" \
+        "$(dest_path /etc/systemd/system/wingmankvm-online-upgrade.service)" 0644 root root
     tx_add_preserved "$GADGET_ENV_EXAMPLE" \
         "$(dest_path /etc/wingmankvm/gadget.env)" 0644 root root
     stage_maintenance_mode

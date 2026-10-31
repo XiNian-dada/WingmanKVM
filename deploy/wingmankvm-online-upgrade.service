@@ -1,0 +1,21 @@
+[Unit]
+Description=WingmanKVM online upgrade to the latest GitHub release (on demand)
+Documentation=file:///usr/share/doc/wingmankvm/UPGRADE_RECOVERY.md
+After=network-online.target
+Wants=network-online.target
+# Started only by /usr/local/sbin/wingmankvm-online-upgrade --start through the
+# fixed sudo rule; there is no [Install] section, so it never runs at boot.
+# Running in its own unit keeps the upgrade alive while the installer restarts
+# wingmankvm.service.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/wingmankvm-online-upgrade --run
+# Progress for the web UI: root-owned 0755 directory, 0644 status file. It is
+# kept after the run so the restarted service can show the outcome.
+RuntimeDirectory=wingmankvm-online-upgrade
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+PrivateTmp=true
+UMask=0022
+TimeoutStartSec=20min

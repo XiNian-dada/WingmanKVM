@@ -36,10 +36,12 @@ MANAGED = {
     "usr/local/sbin/wingmankvm-set-wingman-password": 0o755,
     "usr/local/sbin/wingmankvm-setup-url": 0o755,
     "usr/local/sbin/wingmankvm-doctor": 0o755,
+    "usr/local/sbin/wingmankvm-online-upgrade": 0o755,
     "etc/sudoers.d/wingmankvm": 0o440,
     "etc/udev/rules.d/99-wingmankvm.rules": 0o644,
     "etc/systemd/system/wingmankvm-gadget.service": 0o644,
     "etc/systemd/system/wingmankvm.service": 0o644,
+    "etc/systemd/system/wingmankvm-online-upgrade.service": 0o644,
 }
 USER_DATA = {
     "var/lib/wingmankvm/config.json": b'{"server":{"listen_address":"127.0.0.1","port":8080}}\n',

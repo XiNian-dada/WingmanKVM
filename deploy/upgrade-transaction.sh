@@ -71,11 +71,13 @@ _tx_exact_destination() {
             /usr/local/sbin/wingmankvm-set-wingman-password | \
             /usr/local/sbin/wingmankvm-setup-url | \
             /usr/local/sbin/wingmankvm-doctor | \
+            /usr/local/sbin/wingmankvm-online-upgrade | \
             /etc/sudoers.d/wingmankvm | \
             /etc/sudoers.d/wingmankvm-maintenance-root | \
             /etc/udev/rules.d/99-wingmankvm.rules | \
             /etc/systemd/system/wingmankvm-gadget.service | \
             /etc/systemd/system/wingmankvm.service | \
+            /etc/systemd/system/wingmankvm-online-upgrade.service | \
             /etc/wingmankvm/gadget.env)
             return 0
             ;;
@@ -511,9 +513,11 @@ safe_dest() {
         /usr/local/bin/wingmankvm | /usr/local/sbin/wingmankvm-gadget | \
             /usr/local/sbin/wingmankvm-set-wingman-password | \
             /usr/local/sbin/wingmankvm-setup-url | /usr/local/sbin/wingmankvm-doctor | \
+            /usr/local/sbin/wingmankvm-online-upgrade | \
             /etc/sudoers.d/wingmankvm | /etc/sudoers.d/wingmankvm-maintenance-root | /etc/udev/rules.d/99-wingmankvm.rules | \
             /etc/systemd/system/wingmankvm-gadget.service | \
-            /etc/systemd/system/wingmankvm.service | /etc/wingmankvm/gadget.env)
+            /etc/systemd/system/wingmankvm.service | \
+            /etc/systemd/system/wingmankvm-online-upgrade.service | /etc/wingmankvm/gadget.env)
             return 0 ;;
     esac
     return 1
