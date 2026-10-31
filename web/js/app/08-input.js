@@ -1,6 +1,7 @@
   const SETTING_DEFAULTS = {
     suppress_hid_timeout: false,
     capture_pulse: true,
+    paste_shortcut: true,
     release_key_toast: true,
     render_pixelated: true,
     auto_expand_inspector: true,
@@ -362,14 +363,14 @@
       progress.setAttribute('aria-valuenow', String(done));
     }
   }
-  function openPasteDialog() {
+  function openPasteDialog(prefill = '') {
     const dialog = $('#paste-key-dialog'),
       input = $('#paste-key-text'),
       unsupportedEl = $('#paste-key-unsupported'),
       sendButton = $('#paste-key-send'),
       cancelButton = $('#paste-key-cancel');
     if (!dialog) return;
-    if (input) input.value = '';
+    if (input) input.value = typeof prefill === 'string' ? prefill : '';
     if (unsupportedEl) {
       unsupportedEl.hidden = true;
       unsupportedEl.textContent = '';
@@ -660,6 +661,16 @@
       menu.append(separator);
       custom.forEach((combo) => menu.append(createComboItem(combo, true)));
     }
+    const paste = document.createElement('button');
+    paste.type = 'button';
+    paste.className = 'quick-more-action';
+    paste.setAttribute('role', 'menuitem');
+    paste.textContent = tr('粘贴为键入…');
+    paste.addEventListener('click', () => {
+      closeQuickMore();
+      openPasteDialog();
+    });
+    menu.append(paste);
     const add = document.createElement('button');
     add.type = 'button';
     add.id = 'quick-combo-add';
@@ -850,10 +861,32 @@
       return;
     }
     if (!inputEnabled() || interactiveTarget(event.target) || event.repeat) return;
+    // Local Cmd/Ctrl+V pastes *this* computer's clipboard: let the browser fire
+    // its paste event (handled below) instead of sending the keystroke, which
+    // would only paste the target's own clipboard.
+    if (
+      (event.metaKey || event.ctrlKey) &&
+      !event.altKey &&
+      event.code === 'KeyV' &&
+      getSetting('paste_shortcut', true)
+    )
+      return;
     const key = normalizeKey(event);
     if (!key) return;
     event.preventDefault();
     sendKey(key, event).catch(handleHidError);
+  });
+  document.addEventListener('paste', (event) => {
+    if (!inputEnabled() || interactiveTarget(event.target) || !getSetting('paste_shortcut', true)) return;
+    const text = event.clipboardData?.getData('text/plain') || '';
+    event.preventDefault();
+    if (!text) {
+      toast(tr('剪贴板中没有文本'), true);
+      return;
+    }
+    // Reuse the dialog so the user sees progress and can cancel mid-way.
+    openPasteDialog(text);
+    startPasteTyping();
   });
   function normalizeKey(event) {
     const code = event.code;

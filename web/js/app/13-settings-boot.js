@@ -8,6 +8,8 @@
     if (hidCheckbox) hidCheckbox.checked = getSetting('suppress_hid_timeout', false);
     const pulseCheckbox = $('#setting-capture-pulse');
     if (pulseCheckbox) pulseCheckbox.checked = getSetting('capture_pulse', true);
+    const pasteCheckbox = $('#setting-paste-shortcut');
+    if (pasteCheckbox) pasteCheckbox.checked = getSetting('paste_shortcut', true);
     const releaseCheckbox = $('#setting-release-toast');
     if (releaseCheckbox) releaseCheckbox.checked = getSetting('release_key_toast', true);
     const pixelCheckbox = $('#setting-render-pixelated');
@@ -56,6 +58,10 @@
   });
   $('#setting-capture-pulse')?.addEventListener('change', (e) => {
     setSetting('capture_pulse', e.target.checked);
+    toast(t('settings_saved', '设置已保存'));
+  });
+  $('#setting-paste-shortcut')?.addEventListener('change', (e) => {
+    setSetting('paste_shortcut', e.target.checked);
     toast(t('settings_saved', '设置已保存'));
   });
   $('#setting-release-toast')?.addEventListener('change', (e) => {

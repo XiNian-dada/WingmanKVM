@@ -456,6 +456,10 @@
       "释放": "釋放",
       "退出全屏": "退出全螢幕",
       "已中断：键鼠转发已关闭，已发送 ${} / ${}": "已中斷：鍵鼠轉發已關閉，已傳送 ${} / ${}",
+      "剪贴板中没有文本": "剪貼簿中沒有文字",
+      "粘贴为键入…": "貼上為鍵入…",
+      "Cmd/Ctrl+V 粘贴为键入": "Cmd/Ctrl+V 貼上為鍵入",
+      "转发键鼠时，在画面上按 Cmd/Ctrl+V 会把本机剪贴板文字逐字键入被控机；关闭后按键原样发送": "轉發鍵鼠時，在畫面上按 Cmd/Ctrl+V 會把本機剪貼簿文字逐字鍵入被控機；關閉後按鍵原樣傳送",
     },
     en: {
       "Wingman 简介": "About Wingman",
@@ -949,5 +953,9 @@
       "释放": "Release",
       "退出全屏": "Exit fullscreen",
       "已中断：键鼠转发已关闭，已发送 ${} / ${}": "Interrupted: forwarding was turned off after ${} / ${}",
+      "剪贴板中没有文本": "The clipboard has no text",
+      "粘贴为键入…": "Paste as typing…",
+      "Cmd/Ctrl+V 粘贴为键入": "Cmd/Ctrl+V pastes as typing",
+      "转发键鼠时，在画面上按 Cmd/Ctrl+V 会把本机剪贴板文字逐字键入被控机；关闭后按键原样发送": "While forwarding, Cmd/Ctrl+V on the screen types this computer's clipboard text into the target; when off, the keystroke is sent as-is",
     },
   };

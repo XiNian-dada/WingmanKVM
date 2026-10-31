@@ -587,10 +587,42 @@ def touch_fullscreen_toolbar(browser, port, checks):
     finally:
         context.close()
 
+
+def paste_shortcut(browser, port, checks):
+    """Cmd/Ctrl+V on the screen types the local clipboard; the setting turns it off."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        context.grant_permissions(["clipboard-read", "clipboard-write"], origin=f"http://127.0.0.1:{port}")
+        page.evaluate("() => navigator.clipboard.writeText('ab')")
+        page.click("#input-state")
+        page.locator("#video-viewport").focus()
+        state.key_posts.clear()
+        page.keyboard.press("ControlOrMeta+v")
+        page.wait_for_timeout(600)
+        keys = [post.get("key") for post in state.key_posts]
+        check(checks, keys == ["KeyA", "KeyB"], "cmd_v_types_local_clipboard", state.key_posts)
+        page.evaluate("() => document.querySelector('#paste-key-dialog').close()")
+
+        page.evaluate("() => localStorage.setItem('wingman_setting_paste_shortcut', 'false')")
+        page.locator("#video-viewport").focus()
+        state.key_posts.clear()
+        page.keyboard.press("ControlOrMeta+v")
+        page.wait_for_timeout(300)
+        keys = [post.get("key") for post in state.key_posts]
+        check(checks, keys == ["KeyV"], "cmd_v_forwarded_when_setting_off", state.key_posts)
+
+        page.click("#quick-more-toggle")
+        page.get_by_role("menuitem", name="粘贴为键入…").click()
+        opened = page.evaluate("() => document.querySelector('#paste-key-dialog').open")
+        check(checks, opened, "combos_menu_opens_paste_dialog", opened)
+    finally:
+        context.close()
+
 SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation, low_risk_ui,
              language_coverage, power_confirmation, media_drop_upload, paste_as_typing, custom_shortcuts,
              inline_save_feedback, shortcut_sheet,
-             touch_fullscreen_toolbar]
+             touch_fullscreen_toolbar, paste_shortcut]
 
 if __name__ == "__main__":
     sys.exit(main())
