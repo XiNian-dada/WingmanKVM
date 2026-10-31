@@ -1,4 +1,5 @@
 mod assets;
+mod audit_api;
 mod config_api;
 mod config_validate;
 mod error;
@@ -8,6 +9,7 @@ mod input_ws;
 mod login;
 mod metrics;
 mod media;
+mod media_download;
 mod passkey;
 mod password_sync;
 mod power;
@@ -18,6 +20,7 @@ mod stream;
 mod terminal;
 
 use self::assets::*;
+use self::audit_api::*;
 use self::config_api::*;
 use self::config_validate::*;
 use self::error::*;
@@ -27,6 +30,7 @@ use self::input_ws::*;
 use self::login::*;
 use self::metrics::*;
 use self::media::*;
+use self::media_download::*;
 use self::passkey::*;
 use self::password_sync::*;
 use self::power::*;
@@ -50,10 +54,12 @@ use axum::{
     Json, Router,
     body::Body,
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
-    extract::{ConnectInfo, DefaultBodyLimit, Form, Multipart, Path as AxumPath, Request, State},
+    extract::{
+        ConnectInfo, DefaultBodyLimit, Form, Multipart, Path as AxumPath, Query, Request, State,
+    },
     http::{
         HeaderMap, HeaderValue, Method, StatusCode,
-        header::{CACHE_CONTROL, CONTENT_TYPE, COOKIE, HOST, LOCATION, ORIGIN, SET_COOKIE},
+        header::{CACHE_CONTROL, CONTENT_TYPE, COOKIE, HOST, LOCATION, ORIGIN, SET_COOKIE, USER_AGENT},
     },
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
@@ -71,7 +77,11 @@ use crate::proxy_protocol::ProxyProtocolMode;
 use crate::client_ip::{self, ClientAddress, ClientConnection};
 
 use crate::{
-    auth::{AuthError, AuthRecord, AuthStore, PasswordPolicyError, SessionGuard, SessionStore},
+    audit::{AuditEvent, AuditLog},
+    auth::{
+        AuthError, AuthRecord, AuthStore, LoginMethod, PasswordPolicyError, SessionGuard,
+        SessionMetadata, SessionStore, SessionSummary,
+    },
     config::{
         self, CONFIG_VERSION, Config, GpioBias, GpioInputConfig, GpioPulseConfig, H264Encoder,
         HidConfig, PointerMode, VideoEncoding,
@@ -99,6 +109,7 @@ pub struct AppState {
     proxy_protocol_updates: watch::Sender<ProxyProtocolMode>,
     config_path: Arc<PathBuf>,
     auth: AuthStore,
+    audit: AuditLog,
     sessions: SessionStore,
     setup: Arc<AsyncMutex<()>>,
     config_update: Arc<AsyncMutex<()>>,
@@ -112,6 +123,7 @@ pub struct AppState {
     power: PowerManager,
     media: Arc<MediaManager>,
     media_upload: Arc<AsyncMutex<()>>,
+    media_download: Arc<MediaDownloadManager>,
     video: VideoManager,
     webrtc: WebRtcManager,
     system: Arc<crate::system::SystemMonitor>,
@@ -124,6 +136,7 @@ impl AppState {
         let config = Config::load_or_default(&config_path)?;
         let state_dir = config::state_dir();
         let auth = AuthStore::new(state_dir.join("auth.json"));
+        let audit = AuditLog::new(state_dir);
         let setup_token = if auth.is_initialized()? {
             None
         } else {
@@ -163,6 +176,7 @@ impl AppState {
             config: Arc::new(RwLock::new(config)),
             config_path: Arc::new(config_path),
             auth,
+            audit,
             sessions,
             setup: Arc::new(AsyncMutex::new(())),
             config_update: Arc::new(AsyncMutex::new(())),
@@ -176,6 +190,9 @@ impl AppState {
             power,
             media: Arc::new(MediaManager::default()),
             media_upload: Arc::new(AsyncMutex::new(())),
+            media_download: Arc::new(
+                MediaDownloadManager::new().map_err(|error| anyhow::anyhow!(error))?,
+            ),
             video,
             webrtc,
             system: Arc::new(crate::system::SystemMonitor::new()),
@@ -214,6 +231,10 @@ pub fn router(state: AppState) -> Router {
             get(get_config).put(update_config).post(patch_config),
         )
         .route("/api/logout", post(logout))
+        .route("/api/sessions", get(list_sessions))
+        .route("/api/sessions/revoke", post(revoke_session))
+        .route("/api/sessions/revoke-others", post(revoke_other_sessions))
+        .route("/api/audit", get(audit_log))
         .route("/api/key", post(key))
         .route("/api/mouse/move", post(mouse_move))
         .route("/api/mouse/absolute", post(mouse_absolute))
@@ -236,6 +257,15 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/media/upload",
             post(upload_media).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/media/download",
+            post(download_media).get(download_media_status),
+        )
+        .route("/api/media/download/cancel", post(cancel_media_download))
+        .route(
+            "/api/media/download/{id}",
+            get(download_media_status_by_id),
         )
         .route("/api/media/attach", post(attach_media))
         .route("/api/media/detach", post(detach_media))

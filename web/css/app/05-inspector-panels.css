@@ -236,6 +236,31 @@
   padding: 8px;
   background: var(--canvas);
 }
+.url-download {
+  margin-top: 10px;
+  padding: 0 18px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--soft);
+}
+.url-download summary {
+  padding: 12px 0;
+  color: var(--body);
+  cursor: pointer;
+  font-size: 12px;
+}
+.url-download .field {
+  display: block;
+  margin-bottom: 10px;
+}
+.url-download input {
+  height: auto;
+  padding: 8px;
+  background: var(--canvas);
+}
+.url-download .upload-progress {
+  margin-top: 10px;
+}
 .upload-progress {
   height: 3px;
   margin-top: 12px;

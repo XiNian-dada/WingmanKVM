@@ -199,10 +199,28 @@ pub(super) async fn passkey_login_finish(
         rp_origin,
         expires_at,
     }) = challenge_state else {
+        state
+            .audit
+            .record(
+                AuditEvent::LoginFailed,
+                Some(client_ip),
+                None,
+                Some("method=passkey".to_owned()),
+            )
+            .await;
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "无效或已过期的认证挑战"));
     };
 
     if Instant::now() > expires_at {
+        state
+            .audit
+            .record(
+                AuditEvent::LoginFailed,
+                Some(client_ip),
+                None,
+                Some("method=passkey".to_owned()),
+            )
+            .await;
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "认证挑战已过期"));
     }
 
@@ -218,6 +236,15 @@ pub(super) async fn passkey_login_finish(
         Ok(res) => res,
         Err(e) => {
             tracing::warn!(error = %e, "WebAuthn authentication failed");
+            state
+                .audit
+                .record(
+                    AuditEvent::LoginFailed,
+                    Some(client_ip),
+                    None,
+                    Some("method=passkey".to_owned()),
+                )
+                .await;
             return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Passkey 验证失败"));
         }
     };
@@ -232,10 +259,36 @@ pub(super) async fn passkey_login_finish(
     }).await.map_err(map_auth_error)?;
     let Some((username, terminal_ready)) = login else {
         tracing::warn!("Passkey login rejected: credential was removed after the challenge started");
+        state
+            .audit
+            .record(
+                AuditEvent::LoginFailed,
+                Some(client_ip),
+                None,
+                Some("method=passkey".to_owned()),
+            )
+            .await;
         return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Passkey 验证失败"));
     };
 
-    let session = state.sessions.create().map_err(ApiError::internal)?;
+    let session = state
+        .sessions
+        .create_with_metadata(SessionMetadata {
+            client_ip: Some(client_ip),
+            user_agent: client_user_agent(&headers),
+            login_method: Some(LoginMethod::Passkey),
+        })
+        .map_err(ApiError::internal)?;
+    let session_id = state.sessions.session_id(&session);
+    state
+        .audit
+        .record(
+            AuditEvent::LoginSucceeded,
+            Some(client_ip),
+            session_id,
+            Some("method=passkey".to_owned()),
+        )
+        .await;
     let session_secure = state.config.read().await.server.session_cookie_secure();
     Ok(with_session_cookie(
         Json(json!({
@@ -317,6 +370,7 @@ pub(super) struct PasskeyRegisterFinishRequest {
 
 pub(super) async fn passkey_register_finish(
     State(state): State<AppState>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<PasskeyRegisterFinishRequest>,
 ) -> Result<Response, ApiError> {
@@ -363,6 +417,17 @@ pub(super) async fn passkey_register_finish(
         Ok((cred.id.clone(), cred.name.clone()))
     }).await.map_err(map_auth_error)?;
 
+    let (ip, session) = audit_actor(&state, connection, &headers).await;
+    state
+        .audit
+        .record(
+            AuditEvent::PasskeyAdded,
+            ip,
+            session,
+            Some(format!("id={id}")),
+        )
+        .await;
+
     Ok(Json(json!({
         "ok": true,
         "id": id,
@@ -401,24 +466,49 @@ pub(super) struct PasskeyDeleteRequest {
 
 pub(super) async fn passkey_delete(
     State(state): State<AppState>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
+    headers: HeaderMap,
     ApiJson(request): ApiJson<PasskeyDeleteRequest>,
 ) -> Result<Response, ApiError> {
+    delete_passkey(state, request.id, connection, headers).await
+}
+
+pub(super) async fn passkey_delete_path(
+    State(state): State<AppState>,
+    ApiPath(id): ApiPath<String>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    delete_passkey(state, id, connection, headers).await
+}
+
+async fn delete_passkey(
+    state: AppState,
+    id: String,
+    connection: ClientConnection,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let audit_id = id.clone();
     let removed = state.auth.update_async(move |record| {
-        record.remove_passkey(&request.id)
+        record.remove_passkey(&id)
     }).await.map_err(map_auth_error)?;
 
     if !removed {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "找不到该 Passkey"));
     }
 
-    Ok(Json(json!({ "ok": true })).into_response())
-}
+    let (ip, session) = audit_actor(&state, connection, &headers).await;
+    state
+        .audit
+        .record(
+            AuditEvent::PasskeyRemoved,
+            ip,
+            session,
+            Some(format!("id={audit_id}")),
+        )
+        .await;
 
-pub(super) async fn passkey_delete_path(
-    State(state): State<AppState>,
-    ApiPath(id): ApiPath<String>,
-) -> Result<Response, ApiError> {
-    passkey_delete(State(state), ApiJson(PasskeyDeleteRequest { id })).await
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 #[cfg(test)]

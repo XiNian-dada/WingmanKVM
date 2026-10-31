@@ -26,6 +26,8 @@
     if (!settingsDialog) return;
     syncSettingsDialogUi();
     refreshPasskeys();
+    refreshSessions();
+    refreshAudit();
     try {
       if (typeof settingsDialog.showModal === 'function') {
         settingsDialog.showModal();

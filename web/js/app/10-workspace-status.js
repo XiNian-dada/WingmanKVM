@@ -3,6 +3,7 @@
       terminalMode = next === 'terminal',
       changed = videoWorkspace !== next;
     videoWorkspace = next;
+    syncTerminalTabIndicator();
     invalidateSurfaceBox();
     $('#terminal-window').hidden = !terminalMode;
     $('#video-viewport').hidden = terminalMode;
@@ -133,6 +134,7 @@
   const mediaChoices = new Map();
   let mediaBusy = false,
     mediaServerBusy = false,
+    mediaDownloadBusy = false,
     mediaStatus = {};
   function mediaItems(data) {
     return Array.isArray(data) ? data : data?.items || data?.images || [];

@@ -9,6 +9,8 @@ pub(super) struct PowerForm {
 
 pub(super) async fn power(
     State(state): State<AppState>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
+    headers: HeaderMap,
     ApiForm(form): ApiForm<PowerForm>,
 ) -> Result<Response, ApiError> {
     let config = state.config.read().await.power.clone();
@@ -43,6 +45,22 @@ pub(super) async fn power(
         )
         .await
         .map_err(map_power_error)?;
+    let (ip, session) = audit_actor(&state, connection, &headers).await;
+    state
+        .audit
+        .record(
+            AuditEvent::PowerAction,
+            ip,
+            session,
+            Some(
+                match press {
+                    PowerPress::Short => "press",
+                    PowerPress::Long => "force_off",
+                }
+                .to_owned(),
+            ),
+        )
+        .await;
     let location = format!("/?power_duration={:.2}&power_pid={pid}", form.duration);
     let mut response = StatusCode::SEE_OTHER.into_response();
     response.headers_mut().insert(
@@ -59,6 +77,8 @@ pub(super) struct ResetForm {
 
 pub(super) async fn reset(
     State(state): State<AppState>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
+    headers: HeaderMap,
     ApiForm(form): ApiForm<ResetForm>,
 ) -> Result<Response, ApiError> {
     if form
@@ -75,6 +95,16 @@ pub(super) async fn reset(
         .ok_or_else(|| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "GPIO 重启控制尚未配置"))?;
     let duration = snapshot.pulse_ms as f64 / 1_000.0;
     let pid = state.power.pulse(snapshot).await.map_err(map_power_error)?;
+    let (ip, session) = audit_actor(&state, connection, &headers).await;
+    state
+        .audit
+        .record(
+            AuditEvent::PowerAction,
+            ip,
+            session,
+            Some("reset".to_owned()),
+        )
+        .await;
     let location = format!("/?reset_duration={duration:.2}&reset_pid={pid}");
     let mut response = StatusCode::SEE_OTHER.into_response();
     response.headers_mut().insert(
@@ -99,6 +129,8 @@ pub(super) struct GpioTestRequest {
 
 pub(super) async fn gpio_test(
     State(state): State<AppState>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
+    headers: HeaderMap,
     ApiJson(request): ApiJson<GpioTestRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let duration_ms = request.duration_ms.unwrap_or(GPIO_TEST_PULSE_MS);
@@ -109,19 +141,31 @@ pub(super) async fn gpio_test(
         ));
     }
     let config = state.config.read().await.power.clone();
-    let snapshot = match request.target {
-        GpioTestTarget::Power => {
+    let (snapshot, target) = match request.target {
+        GpioTestTarget::Power => (
             power_pulse_snapshot(&config, Some(duration_ms)).ok_or_else(|| {
                 ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "GPIO 电源控制尚未配置")
-            })?
-        }
-        GpioTestTarget::Reset => {
+            })?,
+            "power",
+        ),
+        GpioTestTarget::Reset => (
             reset_pulse_snapshot(&config, Some(duration_ms)).ok_or_else(|| {
                 ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "GPIO 重启控制尚未配置")
-            })?
-        }
+            })?,
+            "reset",
+        ),
     };
     let pid = state.power.pulse(snapshot).await.map_err(map_power_error)?;
+    let (ip, session) = audit_actor(&state, connection, &headers).await;
+    state
+        .audit
+        .record(
+            AuditEvent::GpioTest,
+            ip,
+            session,
+            Some(target.to_owned()),
+        )
+        .await;
     Ok(no_store(Json(json!({ "ok": true, "pid": pid }))))
 }
 

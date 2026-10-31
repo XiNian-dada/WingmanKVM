@@ -4,7 +4,7 @@
 Reuses the P2b mocked API harness: real DOM, real browser keyboard/pointer
 events and the real UI state machine; no hardware is touched.
 """
-import argparse, inspect, json, os, sys
+import argparse, inspect, json, os, sys, time, urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -886,6 +886,229 @@ def screenshot_and_record(browser, port, checks):
               "recording_downloads_webm", (pressed, clip.value.suggested_filename, size))
         check(checks, page.get_attribute("#record", "aria-pressed") == "false", "recording_stops_on_second_click",
               page.get_attribute("#record", "aria-pressed"))
+    finally:
+        context.close()
+
+
+def terminal_kept_in_background(browser, port, checks):
+    """#47: switching to video keeps the terminal session and marks its tab."""
+    from verify_p2b_ui import api_route, bootstrap_payload, GIF
+    state = State()
+    payload = bootstrap_payload(state)
+    payload["terminal_ready"] = True
+    sockets = []
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    try:
+        page = context.new_page()
+        page.route_web_socket("**/api/terminal/ws", lambda ws: sockets.append(ws))
+        page.route("**/api/bootstrap", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(payload)))
+        page.route("**/api/**", lambda route: api_route(route, state))
+        page.route("**/video_feed*", lambda route: route.fulfill(status=200, content_type="image/gif", body=GIF))
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        page.click('[data-workspace="terminal"]')
+        page.wait_for_timeout(500)
+        page.click('[data-workspace="video"]')
+        page.wait_for_timeout(300)
+        live = page.evaluate("() => document.querySelector('[data-workspace=\"terminal\"]').classList.contains('session-live')")
+        check(checks, len(sockets) == 1 and live, "terminal_session_kept_and_marked", (len(sockets), live))
+        page.click('[data-workspace="terminal"]')
+        page.wait_for_timeout(300)
+        live = page.evaluate("() => document.querySelector('[data-workspace=\"terminal\"]').classList.contains('session-live')")
+        check(checks, len(sockets) == 1 and not live, "returning_reuses_session_and_clears_mark", (len(sockets), live))
+    finally:
+        context.close()
+
+
+def sessions_and_audit(browser, port, checks):
+    """#68: session list, revocation controls and the audit log render."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    now_ms = int(time.time() * 1000)
+    sessions = [
+        {"id": "pub-current", "created_at_unix_ms": now_ms - 3_600_000,
+         "last_seen_unix_ms": now_ms - 5_000, "client_ip": "203.0.113.5",
+         "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+         "login_method": "password", "current": True},
+        {"id": "pub-other", "created_at_unix_ms": now_ms - 7_200_000,
+         "last_seen_unix_ms": now_ms - 120_000, "client_ip": "198.51.100.7",
+         "user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                       "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile Safari/604.1",
+         "login_method": "passkey", "current": False},
+    ]
+    audit_entries = [
+        {"ts": now_ms - 2_000, "event": "login_succeeded", "ip": "203.0.113.5",
+         "session": "pub-current", "detail": "method=password"},
+        {"ts": now_ms - 60_000, "event": "power_action", "ip": "198.51.100.7",
+         "session": "pub-other", "detail": "press"},
+    ]
+    calls = {"sessions": 0, "audit": 0, "revoke": [], "others": 0}
+
+    def sessions_route(route):
+        calls["sessions"] += 1
+        route.fulfill(status=200, content_type="application/json",
+                      body=json.dumps({"sessions": sessions}))
+
+    def audit_route(route):
+        calls["audit"] += 1
+        route.fulfill(status=200, content_type="application/json",
+                      body=json.dumps({"entries": audit_entries}))
+
+    def revoke_route(route):
+        calls["revoke"].append(json.loads(route.request.post_data or "{}").get("id"))
+        route.fulfill(status=200, content_type="application/json", body='{"ok":true}')
+
+    def others_route(route):
+        calls["others"] += 1
+        route.fulfill(status=200, content_type="application/json",
+                      body='{"ok":true,"revoked":1}')
+
+    page.route("**/api/sessions", sessions_route)
+    page.route("**/api/sessions/revoke", revoke_route)
+    page.route("**/api/sessions/revoke-others", others_route)
+    page.route("**/api/audit*", audit_route)
+    try:
+        page.on("dialog", lambda dialog: dialog.accept())
+        page.click("#settings-toggle")
+        page.wait_for_selector("#session-items [data-session-id]", timeout=5000)
+        rows = page.evaluate("""() => [...document.querySelectorAll(
+          '#session-items [data-session-id]')].map(el => ({
+            id: el.dataset.sessionId,
+            current: el.dataset.sessionCurrent,
+            text: el.textContent || '',
+            button: el.querySelector('button[data-session-revoke]')?.textContent || ''
+          }))""")
+        check(checks, len(rows) == 2, "session_list_renders_both_devices", rows)
+        current = next((row for row in rows if row["id"] == "pub-current"), {})
+        other = next((row for row in rows if row["id"] == "pub-other"), {})
+        check(checks, current.get("current") == "true" and "当前会话" in current.get("text", ""),
+              "current_session_is_marked", current)
+        check(checks, current.get("button") == "退出登录", "current_session_button_is_logout",
+              current.get("button"))
+        check(checks, other.get("current") == "false" and other.get("button") == "下线",
+              "other_session_button_is_revoke", other)
+        check(checks, "203.0.113.5" in current.get("text", "")
+              and "密码登录" in current.get("text", "")
+              and "macOS" in current.get("text", ""),
+              "session_row_shows_ip_method_and_device", current.get("text"))
+
+        before = calls["sessions"]
+        page.click('#session-items [data-session-id="pub-other"] button[data-session-revoke]')
+        page.wait_for_timeout(400)
+        check(checks, calls["revoke"] == ["pub-other"], "revoke_sends_the_selected_id", calls)
+        check(checks, calls["sessions"] > before, "revoke_refreshes_the_session_list", calls)
+
+        page.click("#sessions-revoke-others")
+        page.wait_for_timeout(400)
+        check(checks, calls["others"] == 1, "revoke_others_sends_the_request", calls)
+
+        page.click("#audit-details summary")
+        page.wait_for_selector("#audit-items .audit-item", timeout=5000)
+        entries = page.evaluate("""() => [...document.querySelectorAll(
+          '#audit-items .audit-item')].map(el => el.textContent || '')""")
+        check(checks, len(entries) == 2, "audit_entries_render", entries)
+        check(checks, "登录成功" in entries[0] and "203.0.113.5" in entries[0]
+              and "method=password" in entries[0],
+              "audit_entry_shows_event_ip_and_detail", entries[0])
+        check(checks, "电源操作" in entries[1] and "press" in entries[1],
+              "audit_second_entry_renders", entries[1])
+    finally:
+        context.close()
+
+
+def media_url_download(browser, port, checks):
+    """#69: URL download request, progress, list refresh and cancellation."""
+    state = State()
+    downloads, cancels, media_calls = [], [], []
+    mode = {"id": "job-success", "phase": "running", "polls": 0}
+    context, page = new_page(browser, state, port)
+    try:
+        def media_list(route):
+            media_calls.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "images": [{"name": "downloaded.iso", "size": 4194304, "mounted": False}],
+                "status": {"state": "detached"}}))
+
+        def download(route):
+            path = urllib.parse.urlsplit(route.request.url).path
+            method = route.request.method
+            if path == "/api/media/download" and method == "POST":
+                downloads.append(json.loads(route.request.post_data or "{}"))
+                mode.update(id="job-success" if len(downloads) == 1 else "job-cancel",
+                            phase="running", polls=0)
+                body = {"id": mode["id"], "state": "running", "received": 0,
+                        "total": 4194304, "error": None, "name": "downloaded.iso"}
+                return route.fulfill(status=202, content_type="application/json",
+                                     body=json.dumps(body))
+            if path == "/api/media/download/cancel":
+                cancels.append(route.request.post_data)
+                mode["phase"] = "cancelled"
+                body = {"id": mode["id"], "state": "running", "received": 1048576,
+                        "total": 4194304, "error": None, "name": "downloaded.iso"}
+                return route.fulfill(status=200, content_type="application/json",
+                                     body=json.dumps(body))
+            if mode["phase"] == "cancelled":
+                body = {"id": mode["id"], "state": "cancelled", "received": 1048576,
+                        "total": 4194304, "error": None, "name": "downloaded.iso"}
+            elif mode["id"] == "job-success":
+                mode["polls"] += 1
+                done = mode["polls"] >= 4
+                body = {"id": mode["id"], "state": "done" if done else "running",
+                        "received": 4194304 if done else 1048576,
+                        "total": 4194304, "error": None, "name": "downloaded.iso"}
+            else:
+                body = {"id": mode["id"], "state": "running", "received": 524288,
+                        "total": 4194304, "error": None, "name": "downloaded.iso"}
+            return route.fulfill(status=200, content_type="application/json",
+                                 body=json.dumps(body))
+
+        page.route("**/api/media", media_list)
+        page.route("**/api/media/download**", download)
+        page.locator('[data-panel-target="media"]').click()
+        page.locator("#media-download summary").click()
+        form = page.locator("#media-download-form")
+        digest = "a" * 64
+        form.locator('input[name="url"]').fill("http://127.0.0.1:9/image.iso")
+        form.locator('input[name="sha256"]').fill(digest)
+        form.locator('button[type="submit"]').click()
+        page.wait_for_timeout(900)
+
+        check(checks, downloads and downloads[0].get("url") == "http://127.0.0.1:9/image.iso"
+              and downloads[0].get("sha256") == digest,
+              "url_download_submits_url_and_sha256", downloads)
+        stats = page.text_content("#media-download-stats") or ""
+        check(checks, "已下载" in stats and "MB" in stats and "速度" in stats and "/s" in stats,
+              "url_download_renders_progress", stats)
+
+        try:
+            page.wait_for_function(
+                "() => (document.querySelector('#media-list')?.textContent || '').includes('downloaded.iso')",
+                timeout=5000)
+        except Exception:
+            pass
+        listed = page.text_content("#media-list") or ""
+        check(checks, "downloaded.iso" in listed and media_calls,
+              "url_download_done_refreshes_list", (listed, len(media_calls)))
+
+        form.locator('input[name="url"]').fill("http://127.0.0.1:9/other.iso")
+        form.locator('button[type="submit"]').click()
+        page.wait_for_timeout(400)
+        started = len(downloads) == 2
+        page.click("#media-download-cancel")
+        page.wait_for_timeout(400)
+        check(checks, started and len(cancels) == 1,
+              "url_download_cancel_requested", (started, cancels))
+        try:
+            page.wait_for_function(
+                "() => document.querySelector('#media-download-cancel').classList.contains('hidden')",
+                timeout=5000)
+        except Exception:
+            pass
+        hidden = page.evaluate(
+            "() => document.querySelector('#media-download-cancel').classList.contains('hidden')")
+        check(checks, hidden, "url_download_cancel_finishes_ui", hidden)
     finally:
         context.close()
 
