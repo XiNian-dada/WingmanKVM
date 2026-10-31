@@ -213,7 +213,7 @@
     display: none !important;
   }
   .quick-menu-common {
-    display: block !important;
+    display: grid !important;
   }
 }
 @container (max-width:580px) {

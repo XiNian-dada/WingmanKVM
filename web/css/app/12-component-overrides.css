@@ -495,3 +495,11 @@
     display: none;
   }
 }
+
+.quick-menu-common {
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+}
+.quick-menu-common .quick-more-sep {
+  grid-column: 1 / -1;
+}

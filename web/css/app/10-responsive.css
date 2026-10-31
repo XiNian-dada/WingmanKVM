@@ -377,7 +377,7 @@
     display: none !important;
   }
   .quick-menu-common {
-    display: block !important;
+    display: grid !important;
   }
   #video-transport-label {
     display: none !important;
