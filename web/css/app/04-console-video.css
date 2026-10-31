@@ -188,7 +188,6 @@
 }
 @container (max-width:1080px) {
   .console-actions #mode-button .mode-text,
-  .console-actions #input-state .input-text,
   #video-transport-label,
   .keyboard-led-strip .led-name,
   .console-actions #pan-toggle .pan-text {
@@ -216,7 +215,6 @@
 }
 @container (max-width:580px) {
   .console-actions #mode-button .mode-text,
-  .console-actions #input-state .input-text,
   #video-transport-label,
   .keyboard-led-strip .led-name,
   .console-actions #pan-toggle .pan-text {
@@ -281,8 +279,8 @@
   padding: 0;
   justify-content: center;
 }
-#app.keyboard-open .console-actions #input-state .input-text,
-#app:has(#keyboard-dialog[open]) .console-actions #input-state .input-text {
+#app.keyboard-open .console-actions #mode-button .mode-text,
+#app:has(#keyboard-dialog[open]) .console-actions #mode-button .mode-text {
   display: none !important;
 }
 #app.keyboard-open .console-actions #input-state,

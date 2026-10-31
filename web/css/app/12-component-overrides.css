@@ -88,3 +88,23 @@
 .svg-sprite {
   display: none;
 }
+
+/* Forwarding toggle: outlined call to action when idle, solid when the
+   keyboard and mouse are going to the target. */
+.console-actions #input-state {
+  border: 1px solid var(--line-strong);
+  background: var(--canvas);
+  color: var(--ink);
+  font-weight: 600;
+}
+.console-actions #input-state.active {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: #fff;
+}
+.console-actions #input-state.active::before {
+  background: #fff;
+}
+#video-viewport.remote {
+  box-shadow: inset 0 0 0 3px var(--blue);
+}

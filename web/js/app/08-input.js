@@ -143,6 +143,9 @@
     if (stateEl) {
       stateEl.classList.toggle('active', enabled);
       stateEl.setAttribute('aria-pressed', String(enabled));
+      // Short, always-visible label: whether typing goes to the target must be
+      // obvious at a glance. The long explanation stays in the tooltip.
+      const label = !enabled ? '点击接管' : relative ? (captured ? '已捕获' : '点击捕获') : '正在控制';
       const text = !enabled
         ? t('input_paused', '输入已暂停')
         : relative
@@ -151,8 +154,8 @@
             : t('input_click_to_capture', '点击画面或按 Enter 捕获鼠标')
           : t('input_forwarding', '键鼠正在转发');
       const textSpan = stateEl.querySelector('.input-text');
-      if (textSpan) textSpan.textContent = text;
-      else stateEl.textContent = text;
+      if (textSpan) textSpan.textContent = label;
+      else stateEl.textContent = label;
       stateEl.title = `${text} ${tr('(点击切换键鼠转发)')}`;
     }
     $('#input-release')?.classList.toggle('hidden', !enabled);

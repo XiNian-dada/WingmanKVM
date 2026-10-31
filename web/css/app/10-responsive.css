@@ -37,9 +37,6 @@
     padding: 0;
     justify-content: center;
   }
-  .console-actions #input-state .input-text {
-    display: none !important;
-  }
   .console-actions #input-state {
     padding: 0 7px;
     gap: 4px;
@@ -406,9 +403,6 @@
     display: inline-flex !important;
     align-items: center !important;
     justify-content: center !important;
-  }
-  #input-state .input-text {
-    display: none !important;
   }
   #input-state {
     white-space: nowrap !important;

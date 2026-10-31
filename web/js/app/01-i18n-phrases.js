@@ -391,6 +391,9 @@
       "离线": "離線",
       "等待首帧": "等待首幀",
       "实时 · ${}": "即時 · ${}",
+      "点击接管": "點擊接管",
+      "点击捕获": "點擊捕獲",
+      "已捕获": "已捕獲",
     },
     en: {
       "Wingman 简介": "About Wingman",
@@ -815,5 +818,9 @@
       "实时 · ${}": "Live · ${}",
       "回退 · ${}": "Fallback · ${}",
       "回退 MJPEG": "MJPEG fallback",
+      "点击接管": "Take control",
+      "正在控制": "Controlling",
+      "点击捕获": "Click to capture",
+      "已捕获": "Captured",
     },
   };
