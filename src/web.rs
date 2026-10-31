@@ -645,15 +645,34 @@ struct Capabilities {
     video_webrtc_h264: bool,
 }
 
+async fn load_bootstrap_auth(auth: AuthStore) -> Result<(bool, Option<AuthRecord>), String> {
+    tokio::task::spawn_blocking(move || Ok::<_, AuthError>((auth.is_initialized()?, auth.load()?)))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
 async fn bootstrap(
     State(state): State<AppState>,
     ConnectInfo(connection): ConnectInfo<ClientConnection>,
     headers: HeaderMap,
 ) -> Response {
     let client = state.client_address(connection, &headers).await;
-    let setup_required = !state.auth.is_initialized().unwrap_or(false);
+    // An unreadable auth store is not "first run": report it instead of
+    // steering the operator into a setup flow whose token is already gone.
+    let (initialized, record) = match load_bootstrap_auth(state.auth.clone()).await {
+        Ok(stored) => stored,
+        Err(error) => {
+            tracing::error!(%error, "authentication store is unreadable");
+            return ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "认证数据不可读，请检查 auth.json 的权限与服务日志",
+            )
+            .into_response();
+        }
+    };
+    let setup_required = !initialized;
     let authenticated = !setup_required && is_authenticated(&state, &headers);
-    let record = state.auth.load().ok().flatten();
     let has_passkeys = record
         .as_ref()
         .is_some_and(|record| !record.passkeys.is_empty());
@@ -4826,6 +4845,22 @@ mod tests {
         let res = build_webauthn(&headers);
         assert!(res.is_err());
         assert_eq!(res.err().unwrap().status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_auth_distinguishes_missing_from_unreadable_store() {
+        let root = std::env::temp_dir().join(format!("wingman-bootstrap-{}", generate_token().unwrap()));
+        std::fs::create_dir_all(&root).unwrap();
+        let missing = AuthStore::new(root.join("auth.json"));
+        let (initialized, record) = load_bootstrap_auth(missing).await.unwrap();
+        assert!(!initialized);
+        assert!(record.is_none());
+
+        // A regular file used as a parent directory makes metadata fail with ENOTDIR.
+        std::fs::write(root.join("not-a-dir"), b"x").unwrap();
+        let unreadable = AuthStore::new(root.join("not-a-dir").join("auth.json"));
+        assert!(load_bootstrap_auth(unreadable).await.is_err());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[tokio::test]
