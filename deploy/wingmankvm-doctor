@@ -1,0 +1,687 @@
+#!/usr/bin/env bash
+# WingmanKVM pre-install self-check and troubleshooting helper.
+#
+# Every filesystem path can be overridden with WINGMANKVM_* environment
+# variables so the checks can run against fixtures in tests. The installer only
+# uses --preflight as an advisory summary; it never changes install gating.
+set -uo pipefail
+
+PROGRAM=${0##*/}
+JSON=false
+PREFLIGHT=false
+ENV_FILE=
+
+usage() {
+    cat <<'EOF'
+用法: wingmankvm-doctor [--json] [--preflight] [--env-file PATH]
+
+普通用户即可运行；读取 systemd、端口进程和部分 sysfs 属性时建议使用 sudo，
+否则这些项目可能降级为 [警告]。
+
+选项:
+  --json            以 JSON 输出检查结果，便于脚本消费
+  --preflight       只运行安装前关键检查（configfs/libcomposite/UDC/USB role），
+                    始终返回 0，供 install.sh 打印提示而不改变安装阻断逻辑
+  --env-file PATH   从 gadget.env 读取 WINGMANKVM_USB_ROLE_PATH（环境变量优先）
+  -h, --help        显示本帮助
+
+可用环境变量（默认值）:
+  WINGMANKVM_CONFIGFS_ROOT   /sys/kernel/config
+  WINGMANKVM_GADGETS_ROOT    $WINGMANKVM_CONFIGFS_ROOT/usb_gadget
+  WINGMANKVM_UDC_CLASS_ROOT  /sys/class/udc
+  WINGMANKVM_MODULE_ROOT     /sys/module
+  WINGMANKVM_MODPROBE        modprobe
+  WINGMANKVM_PROC_FILESYSTEMS /proc/filesystems
+  WINGMANKVM_DEV_ROOT        /dev
+  WINGMANKVM_USB_ROLE_PATH   （显式配置的 role 文件；为空时自动发现）
+  WINGMANKVM_USB_ROLE_ROOT   /sys/class/usb_role
+  WINGMANKVM_OTG_ROLE_FILES  额外的 role 候选文件，冒号分隔
+  WINGMANKVM_GADGET_NAME     wingmankvm
+  WINGMANKVM_GADGET_UDC      （期望绑定的 UDC；为空时自动选择）
+  WINGMANKVM_PORT            8080
+  WINGMANKVM_HEALTH_URL      http://127.0.0.1:$WINGMANKVM_PORT/healthz
+  WINGMANKVM_HEALTH_TIMEOUT  3
+  WINGMANKVM_SYSTEMCTL       systemctl
+  WINGMANKVM_V4L2CTL         v4l2-ctl
+  WINGMANKVM_GPIOSET         gpioset
+  WINGMANKVM_APP_SERVICE     wingmankvm.service
+  WINGMANKVM_GADGET_SERVICE  wingmankvm-gadget.service
+EOF
+}
+
+while (($# > 0)); do
+    case $1 in
+        --json)
+            JSON=true
+            shift
+            ;;
+        --preflight)
+            PREFLIGHT=true
+            shift
+            ;;
+        --env-file)
+            (($# >= 2)) || {
+                printf '%s: error: --env-file 需要路径\n' "$PROGRAM" >&2
+                exit 2
+            }
+            ENV_FILE=$2
+            shift 2
+            ;;
+        --env-file=*)
+            ENV_FILE=${1#*=}
+            shift
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            printf '%s: error: 未知参数: %s\n' "$PROGRAM" "$1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+CONFIGFS_ROOT=${WINGMANKVM_CONFIGFS_ROOT:-/sys/kernel/config}
+GADGETS_ROOT=${WINGMANKVM_GADGETS_ROOT:-$CONFIGFS_ROOT/usb_gadget}
+UDC_CLASS_ROOT=${WINGMANKVM_UDC_CLASS_ROOT:-/sys/class/udc}
+MODULE_ROOT=${WINGMANKVM_MODULE_ROOT:-/sys/module}
+MODPROBE=${WINGMANKVM_MODPROBE:-modprobe}
+PROC_FILESYSTEMS=${WINGMANKVM_PROC_FILESYSTEMS:-/proc/filesystems}
+DEV_ROOT=${WINGMANKVM_DEV_ROOT:-/dev}
+USB_ROLE_PATH=${WINGMANKVM_USB_ROLE_PATH:-}
+USB_ROLE_ROOT=${WINGMANKVM_USB_ROLE_ROOT:-/sys/class/usb_role}
+OTG_ROLE_FILES=${WINGMANKVM_OTG_ROLE_FILES:-}
+GADGET_NAME=${WINGMANKVM_GADGET_NAME:-wingmankvm}
+REQUESTED_UDC=${WINGMANKVM_GADGET_UDC:-}
+PORT=${WINGMANKVM_PORT:-8080}
+HEALTH_URL=${WINGMANKVM_HEALTH_URL:-http://127.0.0.1:${PORT}/healthz}
+HEALTH_TIMEOUT=${WINGMANKVM_HEALTH_TIMEOUT:-3}
+SYSTEMCTL=${WINGMANKVM_SYSTEMCTL:-systemctl}
+V4L2CTL=${WINGMANKVM_V4L2CTL:-v4l2-ctl}
+GPIOSET=${WINGMANKVM_GPIOSET:-gpioset}
+APP_SERVICE=${WINGMANKVM_APP_SERVICE:-wingmankvm.service}
+GADGET_SERVICE=${WINGMANKVM_GADGET_SERVICE:-wingmankvm-gadget.service}
+
+# Read only the one assignment we need from gadget.env. Never source the file as
+# root: it is administrator-editable and may contain arbitrary shell syntax.
+load_env_file() {
+    local file=$1 line value
+    [[ -r $file ]] || return 0
+    while IFS= read -r line; do
+        line=${line%%#*}
+        case $line in
+            WINGMANKVM_USB_ROLE_PATH=*)
+                value=${line#*=}
+                value=$(printf '%s' "$value" | tr -d "[:space:]\"'")
+                [[ -n $value ]] || continue
+                USB_ROLE_PATH=$value
+                ;;
+        esac
+    done <"$file"
+}
+if [[ -n $ENV_FILE && -z $USB_ROLE_PATH ]]; then
+    load_env_file "$ENV_FILE"
+fi
+
+case $PORT in
+    '' | *[!0-9]*)
+        printf '%s: error: WINGMANKVM_PORT 必须是非负整数: %s\n' "$PROGRAM" "$PORT" >&2
+        exit 2
+        ;;
+esac
+case $HEALTH_TIMEOUT in
+    '' | *[!0-9]*)
+        printf '%s: error: WINGMANKVM_HEALTH_TIMEOUT 必须是非负整数: %s\n' "$PROGRAM" "$HEALTH_TIMEOUT" >&2
+        exit 2
+        ;;
+esac
+
+CHECK_IDS=()
+CHECK_STATUS=()
+CHECK_TITLE=()
+CHECK_DETAIL=()
+CHECK_HINT=()
+
+add_check() {
+    CHECK_IDS+=("$1")
+    CHECK_STATUS+=("$2")
+    CHECK_TITLE+=("$3")
+    CHECK_DETAIL+=("${4:-}")
+    CHECK_HINT+=("${5:-}")
+}
+
+status_label() {
+    case $1 in
+        pass) printf '通过' ;;
+        warn) printf '警告' ;;
+        fail) printf '失败' ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+have() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+read_text() {
+    if [[ -r $1 ]]; then
+        tr -d '\000\r\n' <"$1"
+    fi
+}
+
+join_words() {
+    local IFS=' '
+    printf '%s' "$*"
+}
+
+check_configfs() {
+    local status detail hint
+    if [[ -d $GADGETS_ROOT ]]; then
+        status=pass
+        detail="configfs USB Gadget 目录可用: $GADGETS_ROOT"
+        hint=
+    elif [[ -d $CONFIGFS_ROOT ]] && grep -qw configfs "$PROC_FILESYSTEMS" 2>/dev/null; then
+        status=warn
+        detail="configfs 已在内核中启用，但 $GADGETS_ROOT 尚不存在"
+        hint="执行 sudo modprobe libcomposite 后重试；确认已挂载 configfs: sudo mount -t configfs configfs /sys/kernel/config（关键字: configfs, libcomposite）"
+    elif [[ -d $CONFIGFS_ROOT ]]; then
+        status=warn
+        detail="目录 $CONFIGFS_ROOT 存在，但未确认内核已启用 configfs"
+        hint="检查 /proc/filesystems 是否包含 configfs；执行 sudo modprobe libcomposite 并确认挂载（关键字: configfs mount, libcomposite）"
+    elif grep -qw configfs "$PROC_FILESYSTEMS" 2>/dev/null; then
+        status=warn
+        detail="内核支持 configfs，但 $CONFIGFS_ROOT 未挂载"
+        hint="执行 sudo mount -t configfs configfs /sys/kernel/config（关键字: configfs mount）"
+    else
+        status=fail
+        detail="内核未提供 configfs 文件系统"
+        hint="使用启用 CONFIG_CONFIGFS_FS 的内核；检查 /proc/filesystems 中的 configfs，重新安装内核或设备树匹配的内核（关键字: CONFIG_CONFIGFS_FS, configfs）"
+    fi
+    add_check configfs "$status" "内核 configfs" "$detail" "$hint"
+}
+
+check_libcomposite() {
+    local status detail hint
+    if [[ -d $MODULE_ROOT/libcomposite ]]; then
+        status=pass
+        detail="libcomposite 模块已加载（$MODULE_ROOT/libcomposite）"
+        hint=
+    elif [[ -d $GADGETS_ROOT ]]; then
+        status=pass
+        detail="USB Gadget configfs 已可用（libcomposite 可能已内建）"
+        hint=
+    elif have "$MODPROBE" && "$MODPROBE" -n libcomposite >/dev/null 2>&1; then
+        status=warn
+        detail="libcomposite 尚未加载，但系统能够加载该模块"
+        hint="执行 sudo modprobe libcomposite（关键字: libcomposite, modprobe）"
+    else
+        status=fail
+        detail="内核缺少 libcomposite / USB Gadget configfs 支持"
+        hint="确认内核启用 CONFIG_USB_LIBCOMPOSITE 与 CONFIG_USB_CONFIGFS，或安装匹配的 modules 包后 sudo modprobe libcomposite（关键字: libcomposite, CONFIG_USB_CONFIGFS）"
+    fi
+    add_check libcomposite "$status" "内核 libcomposite" "$detail" "$hint"
+}
+
+list_udcs() {
+    local path
+    shopt -s nullglob
+    for path in "$UDC_CLASS_ROOT"/*; do
+        [[ -e $path ]] || continue
+        printf '%s\n' "${path##*/}"
+    done
+    shopt -u nullglob
+}
+
+check_udc() {
+    local status detail hint udc udcs=()
+    while IFS= read -r udc; do
+        [[ -n $udc ]] && udcs+=("$udc")
+    done < <(list_udcs)
+    if ((${#udcs[@]} == 0)); then
+        status=fail
+        detail="$UDC_CLASS_ROOT 下没有可用的 USB Device Controller (UDC)"
+        hint="确认使用具备 Device/OTG 能力的 USB 口；检查设备树 dr_mode/role-switch、USB role 和内核模块，再执行 ls -l /sys/class/udc（关键字: UDC, OTG, role-switch, dwc3）"
+    else
+        status=pass
+        detail="检测到 UDC: $(join_words "${udcs[@]}")"
+        hint=
+    fi
+    add_check udc "$status" "USB Device Controller (UDC)" "$detail" "$hint"
+}
+
+check_udc_busy() {
+    local status detail hint free=() occupied=() own= udc gadget_dir gadget_name value line
+    local -a udcs=() gadget_files=()
+    while IFS= read -r line; do
+        [[ -n $line ]] && udcs+=("$line")
+    done < <(list_udcs)
+    shopt -s nullglob
+    gadget_files=("$GADGETS_ROOT"/*/UDC)
+    shopt -u nullglob
+
+    if ((${#udcs[@]} == 0)); then
+        add_check udc_busy fail "UDC 占用情况" "没有 UDC，无法检查是否被其他 gadget 占用" \
+            "先让 OTG 口出现 UDC，再执行 cat $GADGETS_ROOT/*/UDC（关键字: UDC, gadget）"
+        return
+    fi
+
+    for udc in "${udcs[@]}"; do
+        local bound_by=
+        if ((${#gadget_files[@]} > 0)); then
+            for gadget_dir in "${gadget_files[@]}"; do
+                value=$(read_text "$gadget_dir")
+                [[ $value == "$udc" ]] || continue
+                gadget_name=${gadget_dir%/UDC}
+                gadget_name=${gadget_name##*/}
+                if [[ $gadget_name == "$GADGET_NAME" ]]; then
+                    own=$udc
+                else
+                    bound_by=$gadget_name
+                    occupied+=("$gadget_name=$udc")
+                fi
+            done
+        fi
+        [[ -n $bound_by ]] || free+=("$udc")
+    done
+
+    if [[ -n $REQUESTED_UDC ]]; then
+        if [[ ! -e $UDC_CLASS_ROOT/$REQUESTED_UDC ]]; then
+            status=fail
+            detail="配置的 UDC $REQUESTED_UDC 不存在"
+            hint="检查 WINGMANKVM_GADGET_UDC 与 ls -l /sys/class/udc；留空可自动选择空闲 UDC（关键字: WINGMANKVM_GADGET_UDC, UDC）"
+        elif printf '%s\n' "${occupied[@]:-}" | grep -qx "[^=]*=$REQUESTED_UDC"; then
+            status=fail
+            detail="配置的 UDC $REQUESTED_UDC 已被其他 gadget 占用: $(join_words "${occupied[@]}")"
+            hint="停止占用该 UDC 的旧 gadget/service，或修改 WINGMANKVM_GADGET_UDC；用 cat $GADGETS_ROOT/*/UDC 定位（关键字: UDC busy, gadget）"
+        else
+            status=pass
+            detail="配置的 UDC $REQUESTED_UDC 可用"
+            hint=
+        fi
+    elif ((${#occupied[@]} > 0)) && ((${#free[@]} == 0)); then
+        status=fail
+        detail="所有 UDC 已被其他 gadget 占用: $(join_words "${occupied[@]}")"
+        hint="停止旧 gadget/板厂 service，或腾出一个 UDC；用 cat $GADGETS_ROOT/*/UDC 定位占用者（关键字: UDC busy, configfs）"
+    elif ((${#occupied[@]} > 0)); then
+        status=warn
+        detail="部分 UDC 被其他 gadget 占用: $(join_words "${occupied[@]}")；仍有空闲: $(join_words "${free[@]}")"
+        hint="WingmanKVM 会自动选择空闲 UDC；若要使用被占用的那个，先停止对应 gadget service（关键字: UDC busy）"
+    elif [[ -n $own ]]; then
+        status=pass
+        detail="WingmanKVM 已绑定 UDC $own"
+        hint=
+    else
+        status=pass
+        detail="所有 UDC 均未被其他 gadget 占用: $(join_words "${udcs[@]}")"
+        hint=
+    fi
+    add_check udc_busy "$status" "UDC 占用情况" "$detail" "$hint"
+}
+
+role_candidates() {
+    local path entry extra
+    if [[ -n $USB_ROLE_PATH ]]; then
+        printf '%s\n' "$USB_ROLE_PATH"
+        return 0
+    fi
+    shopt -s nullglob
+    for path in "$USB_ROLE_ROOT"/*/role "$USB_ROLE_ROOT"/*/state; do
+        [[ -r $path ]] || continue
+        printf '%s\n' "$path"
+    done
+    shopt -u nullglob
+    if [[ -n $OTG_ROLE_FILES ]]; then
+        local IFS=':'
+        for entry in $OTG_ROLE_FILES; do
+            [[ -n $entry ]] && printf '%s\n' "$entry"
+        done
+    fi
+    return 0
+}
+
+check_usb_role() {
+    local status detail hint path value line found=0 device=0 host=0 unknown=0
+    local -a candidates=()
+    while IFS= read -r line; do
+        [[ -n $line ]] && candidates+=("$line")
+    done < <(role_candidates)
+
+    if [[ -n $USB_ROLE_PATH && ! -e $USB_ROLE_PATH ]]; then
+        add_check usb_role fail "OTG / USB role 模式" "配置的 USB role 路径不存在: $USB_ROLE_PATH" \
+            "检查 gadget.env 中的 WINGMANKVM_USB_ROLE_PATH，或留空让 Gadget 自动处理（关键字: USB role, role-switch, WINGMANKVM_USB_ROLE_PATH）"
+        return
+    fi
+
+    if ((${#candidates[@]} == 0)); then
+        add_check usb_role warn "OTG / USB role 模式" \
+            "未发现 USB role switch；若 $UDC_CLASS_ROOT 为空，OTG 口可能处于 host 模式或未启用 Device 模式" \
+            "检查设备树 dr_mode/role-switch；常见路径: /sys/class/usb_role/*/role（如 fe800000.usb-role-switch/role），写入 device 或 peripheral；板级文档可搜索 OTG, role-switch, dwc3（关键字: USB role, OTG）"
+        return
+    fi
+
+    for path in "${candidates[@]}"; do
+        [[ -r $path ]] || continue
+        value=$(read_text "$path")
+        case $value in
+            device | peripheral)
+                found=1
+                device=$((device + 1))
+                ;;
+            host)
+                found=1
+                host=$((host + 1))
+                ;;
+            *)
+                found=1
+                unknown=$((unknown + 1))
+                ;;
+        esac
+    done
+
+    if ((found == 0)); then
+        status=warn
+        detail="找到 role 候选路径但无法读取内容"
+        hint="使用 sudo 运行本工具，并检查 ls -l /sys/class/usb_role/*/role（关键字: USB role, permission）"
+    elif ((device > 0)); then
+        status=pass
+        detail="检测到 Device/Peripheral USB role"
+        hint=
+    elif ((host > 0)); then
+        status=warn
+        detail="USB role 当前为 host，OTG 口不会提供 UDC"
+        hint="在确认硬件支持 Device 模式后写入 device/peripheral，例如: echo device | sudo tee /sys/class/usb_role/*/role；路径因板而异（关键字: USB role, OTG, role-switch）"
+    else
+        status=warn
+        detail="USB role 内容无法识别（既不是 device 也不是 host）"
+        hint="检查 /sys/class/usb_role/*/role 的取值与板级文档（关键字: USB role, role-switch）"
+    fi
+    add_check usb_role "$status" "OTG / USB role 模式" "$detail" "$hint"
+}
+
+check_video() {
+    local status detail hint path output found=() no_mjpeg=() no_capture=()
+    local -a devices
+    shopt -s nullglob
+    devices=("$DEV_ROOT"/video[0-9]*)
+    shopt -u nullglob
+
+    if ((${#devices[@]} == 0)); then
+        add_check video warn "视频采集设备 (Video Capture + MJPG)" \
+            "$DEV_ROOT 下没有 /dev/video* 节点" \
+            "连接 HDMI 采集卡后检查 ls -l /dev/video*；用 v4l2-ctl --list-devices 确认驱动（关键字: V4L2, video capture, MJPG）"
+        return
+    fi
+
+    if ! have "$V4L2CTL"; then
+        add_check video warn "视频采集设备 (Video Capture + MJPG)" \
+            "发现 ${#devices[@]} 个 video 节点，但缺少 v4l2-ctl，无法验证能力" \
+            "安装 v4l-utils（Debian/Ubuntu: sudo apt install v4l-utils；Fedora: sudo dnf install v4l-utils），再执行 v4l2-ctl -d $DEV_ROOT/video0 --all（关键字: v4l2-ctl, v4l-utils）"
+        return
+    fi
+
+    for path in "${devices[@]}"; do
+        output=$("$V4L2CTL" -d "$path" --all 2>&1) || true
+        if ! printf '%s\n' "$output" | grep -Eq 'Video Capture|V4L2_CAP_VIDEO_CAPTURE'; then
+            no_capture+=("${path##*/}")
+        elif printf '%s\n' "$output" | grep -q 'MJPG'; then
+            found+=("${path##*/}")
+        else
+            no_mjpeg+=("${path##*/}")
+        fi
+    done
+
+    if ((${#found[@]} > 0)); then
+        status=pass
+        detail="找到支持 Video Capture + MJPG 的设备: $(join_words "${found[@]}")"
+        hint=
+    else
+        status=fail
+        detail="未找到同时支持 Video Capture 与 MJPG 的节点"
+        if ((${#no_mjpeg[@]} > 0)); then
+            detail="${detail}；支持采集但无 MJPG: $(join_words "${no_mjpeg[@]}")"
+        fi
+        if ((${#no_capture[@]} > 0)); then
+            detail="${detail}；非采集节点: $(join_words "${no_capture[@]}")"
+        fi
+        hint="逐个执行 v4l2-ctl -d $DEV_ROOT/videoN --list-formats-ext；选择带 Video Capture 和 MJPG 的节点。采集卡可能同时暴露 metadata/raw 节点（关键字: Video Capture, MJPG, v4l2-ctl）"
+    fi
+    add_check video "$status" "视频采集设备 (Video Capture + MJPG)" "$detail" "$hint"
+}
+
+check_python3() {
+    local version
+    if have python3; then
+        version=$(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null || true)
+        if [[ -n $version ]]; then
+            add_check python3 pass "依赖命令 python3" "python3 可用（${version}）" ""
+        else
+            add_check python3 warn "依赖命令 python3" "python3 存在但无法运行" \
+                "检查 python3 安装与动态库依赖；重新安装 python3（关键字: python3）"
+        fi
+    else
+        add_check python3 fail "依赖命令 python3" "未找到 python3" \
+            "安装 Python 3（Debian/Ubuntu: sudo apt install python3；Fedora: sudo dnf install python3）；安装器需要 python3（关键字: python3）"
+    fi
+}
+
+check_v4l2ctl() {
+    if have "$V4L2CTL"; then
+        add_check v4l2_ctl pass "依赖命令 v4l2-ctl" "v4l2-ctl 可用" ""
+    else
+        add_check v4l2_ctl warn "依赖命令 v4l2-ctl" "未找到 v4l2-ctl；视频能力检查会降级" \
+            "安装 v4l-utils（Debian/Ubuntu: sudo apt install v4l-utils；Fedora: sudo dnf install v4l-utils）（关键字: v4l2-ctl, v4l-utils）"
+    fi
+}
+
+check_gpioset() {
+    local version
+    if ! have "$GPIOSET"; then
+        add_check gpioset warn "依赖命令 gpioset" "未找到 gpioset；不使用 GPIO 电源控制时可忽略" \
+            "如需电源控制，安装 libgpiod 2.x 工具（Debian/Ubuntu: sudo apt install gpiod libgpiod-dev；Fedora: sudo dnf install libgpiod-utils）（关键字: gpioset, libgpiod 2.x）"
+        return
+    fi
+    version=$("$GPIOSET" --version 2>&1 || true)
+    if printf '%s\n' "$version" | grep -Eq '(^|[[:space:]])v?2\.'; then
+        add_check gpioset pass "依赖命令 gpioset" "gpioset 2.x 可用: $(printf '%s' "$version" | head -n 1)" ""
+    else
+        add_check gpioset fail "依赖命令 gpioset" "gpioset 版本不是 2.x: $(printf '%s' "$version" | head -n 1)" \
+            "升级到 libgpiod 2.x 后执行 gpioset --version；当前命令格式要求 2.x（关键字: gpioset 2.x, libgpiod）"
+    fi
+}
+
+check_port() {
+    local output
+    local ss_bin=${WINGMANKVM_SSCTL:-ss}
+    if ! have "$ss_bin"; then
+        add_check port warn "端口 $PORT 占用情况" "未找到 ss，无法检查监听端口" \
+            "安装 iproute2（Debian/Ubuntu: sudo apt install iproute2），或用 sudo netstat -ltnp 检查 ${PORT}（关键字: ss, netstat, port 8080）"
+        return
+    fi
+    output=$("$ss_bin" -H -ltn 2>/dev/null || true)
+    if printf '%s\n' "$output" | grep -Eq "[:.]${PORT}[[:space:]]"; then
+        add_check port warn "端口 $PORT 占用情况" "端口 $PORT 已被监听" \
+            "用 sudo ss -ltnp 'sport = :$PORT' 定位进程；若是旧的 wingmankvm 可保留，否则停止占用服务或在配置中改用空闲端口（关键字: port 8080, listen）"
+    else
+        add_check port pass "端口 $PORT 占用情况" "端口 $PORT 空闲" ""
+    fi
+}
+
+# Set by check_service for check_health.
+APP_STATE=unknown
+
+check_service() {
+    local id=$1 service=$2 label=$3 state
+    if ! have "$SYSTEMCTL"; then
+        add_check "$id" warn "$label" "未找到 systemctl，无法检查服务状态" \
+            "确认系统使用 systemd，或手动执行 systemctl status ${service}（关键字: systemd, systemctl）"
+        return
+    fi
+    state=$("$SYSTEMCTL" is-active "$service" 2>/dev/null | head -n 1 || true)
+    [[ -n $state ]] || state=unknown
+    [[ $id == service_app ]] && APP_STATE=$state
+    case $state in
+        active)
+            add_check "$id" pass "$label" "$service 正在运行" ""
+            ;;
+        failed)
+            add_check "$id" fail "$label" "$service 处于 failed 状态" \
+                "查看日志: journalctl -u $service -b --no-pager；修复后 sudo systemctl restart ${service}（关键字: systemd failed, journalctl）"
+            ;;
+        activating | deactivating)
+            add_check "$id" warn "$label" "$service 状态为 $state" \
+                "稍后重试 systemctl status ${service}；若卡住查看 journalctl -u $service -b（关键字: systemd, journalctl）"
+            ;;
+        *)
+            add_check "$id" warn "$label" "$service 未运行（状态: ${state}）" \
+                "安装或启动: sudo systemctl enable --now ${service}；查看 systemctl status $service 与 journalctl -u $service -b（关键字: systemd, enable --now）"
+            ;;
+    esac
+}
+
+check_health() {
+    local code rc hint
+    if ! have curl && ! have wget && ! have python3; then
+        add_check health warn "/healthz 响应" "缺少 curl/wget/python3，无法探测 $HEALTH_URL" \
+            "安装 curl 或 wget 后重试: curl -fsS ${HEALTH_URL}（关键字: healthz, curl）"
+        return
+    fi
+    if [[ $APP_STATE != active ]]; then
+        add_check health warn "/healthz 响应" "应用服务未运行，未验证 $HEALTH_URL" \
+            "启动 wingmankvm.service 后执行 curl -fsS ${HEALTH_URL}（关键字: healthz, systemd）"
+        return
+    fi
+
+    if have curl; then
+        code=$(curl -sS --max-time "$HEALTH_TIMEOUT" -o /dev/null -w '%{http_code}' "$HEALTH_URL" 2>/dev/null)
+        rc=$?
+    elif have wget; then
+        if wget -q -T "$HEALTH_TIMEOUT" -O /dev/null "$HEALTH_URL" 2>/dev/null; then
+            code=200
+            rc=0
+        else
+            code=
+            rc=1
+        fi
+    else
+        if python3 - "$HEALTH_URL" "$HEALTH_TIMEOUT" >/dev/null 2>&1 <<'PY'
+import sys, urllib.request
+url, timeout = sys.argv[1], float(sys.argv[2])
+with urllib.request.urlopen(url, timeout=timeout) as response:
+    if response.status != 200:
+        raise SystemExit(1)
+PY
+        then
+            code=200
+            rc=0
+        else
+            code=
+            rc=1
+        fi
+    fi
+
+    if ((rc == 0)) && [[ $code == 200 ]]; then
+        add_check health pass "/healthz 响应" "$HEALTH_URL 返回 HTTP 200" ""
+    else
+        if [[ -n $code ]]; then
+            hint="HTTP 状态码 ${code}；查看 journalctl -u $APP_SERVICE -b --no-pager，并直接执行 curl -v ${HEALTH_URL}（关键字: healthz, 8080）"
+        else
+            hint="无法连接 ${HEALTH_URL}；确认服务监听地址与防火墙，执行 curl -v $HEALTH_URL 和 journalctl -u $APP_SERVICE -b（关键字: healthz, 8080, firewall）"
+        fi
+        add_check health fail "/healthz 响应" "$HEALTH_URL 未返回 HTTP 200" "$hint"
+    fi
+}
+
+run_checks() {
+    check_configfs
+    check_libcomposite
+    check_udc
+    check_udc_busy
+    check_usb_role
+    $PREFLIGHT && return 0
+    check_video
+    check_python3
+    check_v4l2ctl
+    check_gpioset
+    check_port
+    check_service service_app "$APP_SERVICE" "systemd 服务 wingmankvm"
+    check_service service_gadget "$GADGET_SERVICE" "systemd 服务 wingmankvm-gadget"
+    check_health
+}
+
+json_escape() {
+    printf '%s' "$1" | tr '\n\r\t' '   ' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+emit_json() {
+    local i pass=0 warn=0 fail=0 ok=false
+    for i in "${!CHECK_IDS[@]}"; do
+        case ${CHECK_STATUS[$i]} in
+            pass) pass=$((pass + 1)) ;;
+            warn) warn=$((warn + 1)) ;;
+            fail) fail=$((fail + 1)) ;;
+        esac
+    done
+    ((fail == 0)) && ok=true
+    printf '{\n'
+    printf '  "version": 1,\n'
+    printf '  "ok": %s,\n' "$ok"
+    printf '  "checks": [\n'
+    for i in "${!CHECK_IDS[@]}"; do
+        printf '    {"id": "%s", "status": "%s", "title": "%s", "detail": "%s", "hint": "%s"}' \
+            "$(json_escape "${CHECK_IDS[$i]}")" \
+            "$(json_escape "${CHECK_STATUS[$i]}")" \
+            "$(json_escape "${CHECK_TITLE[$i]}")" \
+            "$(json_escape "${CHECK_DETAIL[$i]}")" \
+            "$(json_escape "${CHECK_HINT[$i]}")"
+        if ((i + 1 < ${#CHECK_IDS[@]})); then
+            printf ','
+        fi
+        printf '\n'
+    done
+    printf '  ],\n'
+    printf '  "summary": {"pass": %d, "warn": %d, "fail": %d}\n' "$pass" "$warn" "$fail"
+    printf '}\n'
+}
+
+emit_human() {
+    local i pass=0 warn=0 fail=0
+    if [[ $(id -u) -ne 0 ]]; then
+        printf '提示: 普通用户可运行；读取 systemd 状态、端口进程和部分 sysfs 属性时建议使用 sudo。\n\n'
+    fi
+    for i in "${!CHECK_IDS[@]}"; do
+        case ${CHECK_STATUS[$i]} in
+            pass) pass=$((pass + 1)) ;;
+            warn) warn=$((warn + 1)) ;;
+            fail) fail=$((fail + 1)) ;;
+        esac
+        printf '[%s] %s\n' "$(status_label "${CHECK_STATUS[$i]}")" "${CHECK_TITLE[$i]}"
+        if [[ -n ${CHECK_DETAIL[$i]} ]]; then
+            printf '       %s\n' "${CHECK_DETAIL[$i]}"
+        fi
+        if [[ ${CHECK_STATUS[$i]} != pass && -n ${CHECK_HINT[$i]} ]]; then
+            printf '       修复: %s\n' "${CHECK_HINT[$i]}"
+        fi
+    done
+    printf '\n汇总: 通过 %d，警告 %d，失败 %d\n' "$pass" "$warn" "$fail"
+    if ((fail > 0)); then
+        printf '存在失败项；修复后重新运行 %s。\n' "$PROGRAM"
+    fi
+}
+
+run_checks
+
+if $JSON; then
+    emit_json
+else
+    emit_human
+fi
+
+if $PREFLIGHT; then
+    exit 0
+fi
+for status in "${CHECK_STATUS[@]}"; do
+    [[ $status == fail ]] && exit 1
+done
+exit 0

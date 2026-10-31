@@ -436,6 +436,23 @@ has_configured_role_switch() {
     return 1
 }
 
+# Advisory only: print the doctor's key findings before the installer's own
+# platform gates run. Failures here never block installation; check_platform
+# below remains the single authority for what is fatal.
+run_doctor_preflight() {
+    local doctor=$1 environment_file=$2 output status
+    log "running advisory preflight: wingmankvm-doctor --preflight"
+    set +e
+    output=$(bash "$doctor" --preflight --env-file "$environment_file" 2>&1)
+    status=$?
+    set -e
+    [[ -z $output ]] || printf '%s\n' "$output"
+    if ((status != 0)); then
+        warn "wingmankvm-doctor preflight exited with status $status; installer checks remain authoritative"
+    fi
+    return 0
+}
+
 check_platform() {
     local environment_file=$1
     local udcs=()
@@ -485,6 +502,7 @@ load_deployment_sources() {
     SUDOERS_RULE=$(source_file wingmankvm-sudoers)
     MAINTENANCE_ROOT_SUDOERS=$(source_file wingmankvm-maintenance-root-sudoers)
     GADGET_SCRIPT=$(source_file wingmankvm-gadget)
+    DOCTOR_SCRIPT=$(source_file wingmankvm-doctor)
     GADGET_ENV_EXAMPLE=$(source_file gadget.env.example)
     GADGET_SERVICE=$(source_file wingmankvm-gadget.service)
     APPLICATION_SERVICE=$(source_file wingmankvm.service)
@@ -492,6 +510,7 @@ load_deployment_sources() {
     bash -n "$SCRIPT_DIR/install.sh" || die "installer failed shell syntax validation"
     bash -n "$WINGMAN_PROFILE" || die "login profile failed shell syntax validation"
     sh -n "$GADGET_SCRIPT" || die "Gadget helper failed shell syntax validation"
+    bash -n "$DOCTOR_SCRIPT" || die "doctor helper failed shell syntax validation"
     sh -n "$PASSWORD_HELPER" || die "password helper failed shell syntax validation"
     bash -n "$SETUP_URL_HELPER" || die "setup URL helper failed shell syntax validation"
     visudo -cf "$SUDOERS_RULE" >/dev/null || die "sudoers source failed validation"
@@ -504,6 +523,8 @@ install_managed_files() {
         "$(dest_path /usr/local/bin/wingmankvm)" 0755 root root
     tx_add_managed "$GADGET_SCRIPT" \
         "$(dest_path /usr/local/sbin/wingmankvm-gadget)" 0755 root root
+    tx_add_managed "$DOCTOR_SCRIPT" \
+        "$(dest_path /usr/local/sbin/wingmankvm-doctor)" 0755 root root
     tx_add_managed "$PASSWORD_HELPER" \
         "$(dest_path /usr/local/sbin/wingmankvm-set-wingman-password)" 0755 root root
     tx_add_managed "$SETUP_URL_HELPER" \
@@ -1046,6 +1067,7 @@ ENVIRONMENT_CHECK=$GADGET_ENV_EXAMPLE
 if [[ -e $(dest_path /etc/wingmankvm/gadget.env) || -L $(dest_path /etc/wingmankvm/gadget.env) ]]; then
     ENVIRONMENT_CHECK=$(dest_path /etc/wingmankvm/gadget.env)
 fi
+run_doctor_preflight "$DOCTOR_SCRIPT" "$ENVIRONMENT_CHECK"
 check_platform "$ENVIRONMENT_CHECK"
 resolve_health_url
 
