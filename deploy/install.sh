@@ -22,10 +22,14 @@ GADGET_WAS_ENABLED=false
 GADGET_STARTED_BY_US=false
 START_FAILURE=
 SERVICES_START_ATTEMPTED=false
+MDNS_ENABLED=false
+MDNS_HOSTNAME=wingmankvm
+MDNS_HOSTNAME_EXPLICIT=false
+CONFIGURED_PORT=8080
 
 usage() {
     cat <<EOF
-Usage: sudo ./deploy/$PROGRAM (--binary /path/to/wingmankvm | --release /path/to/wingmankvm-VERSION-TARGET.tar.gz) [--no-start] [--install-deps] [--health-url URL] [--maintenance-mode MODE]
+Usage: sudo ./deploy/$PROGRAM (--binary /path/to/wingmankvm | --release /path/to/wingmankvm-VERSION-TARGET.tar.gz) [--no-start] [--install-deps] [--health-url URL] [--maintenance-mode MODE] [--mdns [--mdns-hostname NAME]]
 
 Options:
   --binary PATH  Linux WingmanKVM executable to install
@@ -34,6 +38,9 @@ Options:
   --install-deps Install missing runtime packages with apt-get on Debian, Ubuntu or Armbian
   --health-url U Local loopback http /healthz override (IP literal only)
   --maintenance-mode MODE  restricted (default) or explicit privileged root maintenance
+  --mdns         Advertise WingmanKVM on the LAN as NAME.local with avahi-daemon
+                 (needed for Passkey, which requires a domain name instead of an IP)
+  --mdns-hostname NAME  mDNS host label used with --mdns (default: wingmankvm)
   -h, --help     Show this help
 
 Exactly one of --binary or --release is required.
@@ -106,6 +113,9 @@ collect_missing_dependencies() {
     # required by the installer itself.
     if ! command -v v4l2-ctl >/dev/null 2>&1; then
         add_missing_package v4l-utils
+    fi
+    if $MDNS_ENABLED; then
+        check_dependency avahi-daemon avahi-daemon
     fi
 }
 
@@ -618,6 +628,7 @@ PY
         host=127.0.0.1
         port=8080
     fi
+    CONFIGURED_PORT=$port
     if [[ -n $HEALTH_URL ]]; then
         python3 -I - "$HEALTH_URL" <<'PY' || die "invalid --health-url"
 import ipaddress, sys, urllib.parse
@@ -841,6 +852,147 @@ finish_no_start() {
     log "after the first start, print the one-time setup link with: sudo wingmankvm-setup-url"
 }
 
+# mDNS (avahi) support. Runs after the managed-file transaction commits and is
+# intentionally best effort: avahi files are owned by the avahi package, not by
+# the upgrade transaction, so a later failure never rolls them back and an
+# upgrade without --mdns leaves an existing advertisement unchanged.
+valid_mdns_hostname() {
+    local name=$1
+    ((${#name} >= 1 && ${#name} <= 63)) || return 1
+    [[ $name =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]
+}
+
+mdns_service_path() {
+    dest_path /etc/avahi/services/wingmankvm.service
+}
+
+mdns_conf_path() {
+    dest_path /etc/avahi/avahi-daemon.conf
+}
+
+write_mdns_service_file() {
+    local port=$1 target tmp
+    target=$(mdns_service_path)
+    install -d -m 0755 "$(dirname -- "$target")" || return 1
+    tmp=$(mktemp "$(dirname -- "$target")/.wingmankvm.service.XXXXXX") || return 1
+    cat >"$tmp" <<AVAHI_EOF
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!-- Installed by WingmanKVM deploy/install.sh --mdns -->
+<service-group>
+  <name replace-wildcards="yes">WingmanKVM on %h</name>
+  <service>
+    <type>_http._tcp</type>
+    <port>$port</port>
+    <txt-record>path=/</txt-record>
+  </service>
+</service-group>
+AVAHI_EOF
+    if ! chmod 0644 "$tmp" || ! mv -f -- "$tmp" "$target"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+}
+
+# Prints the host-name= value from the [server] section, if any.
+mdns_conf_host_name() {
+    local conf=$1
+    [[ -f $conf && -r $conf ]] || return 0
+    awk '
+        /^[[:space:]]*\[/ { in_server = ($0 ~ /^[[:space:]]*\[server\]/); next }
+        in_server && /^[[:space:]]*host-name[[:space:]]*=/ {
+            sub(/^[^=]*=[[:space:]]*/, ""); sub(/[[:space:]]*$/, ""); print; exit
+        }
+    ' "$conf"
+}
+
+# Sets host-name= in the [server] section without touching anything else. The
+# first edit keeps a one-time backup next to the file for manual restore.
+set_mdns_conf_host_name() {
+    local conf=$1 name=$2 tmp
+    [[ -f $conf && ! -L $conf ]] || return 1
+    [[ -e $conf.wingmankvm.bak ]] || cp -p -- "$conf" "$conf.wingmankvm.bak" || return 1
+    tmp=$(mktemp "$conf.XXXXXX") || return 1
+    if ! awk -v name="$name" '
+        function emit() { if (!done) { print "host-name=" name; done = 1 } }
+        /^[[:space:]]*\[/ {
+            if (in_server) emit()
+            in_server = ($0 ~ /^[[:space:]]*\[server\]/)
+            if (in_server) seen_server = 1
+            print; next
+        }
+        in_server && /^[[:space:]]*#?[[:space:]]*host-name[[:space:]]*=/ { emit(); next }
+        { print }
+        END {
+            if (in_server) emit()
+            else if (!seen_server) { print "[server]"; print "host-name=" name }
+        }
+    ' "$conf" >"$tmp"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    chmod 0644 "$tmp"
+    if ! mv -f -- "$tmp" "$conf"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+}
+
+configure_mdns() {
+    local port=$1 conf system_name current restart_needed=false
+    $MDNS_ENABLED || return 0
+    if ! write_mdns_service_file "$port"; then
+        warn "mDNS: could not write $(mdns_service_path); LAN name advertising was skipped"
+        return 0
+    fi
+    log "mDNS: advertising _http._tcp on port $port via $(mdns_service_path)"
+
+    # Least intrusive: never change the system hostname. Only set avahi's own
+    # host-name when the requested label differs from what avahi would use.
+    conf=$(mdns_conf_path)
+    system_name=$(hostname -s 2>/dev/null || hostname 2>/dev/null || true)
+    system_name=$(printf '%s' "$system_name" | tr '[:upper:]' '[:lower:]')
+    current=$(mdns_conf_host_name "$conf")
+    if [[ -n $current ]]; then
+        current=$(printf '%s' "$current" | tr '[:upper:]' '[:lower:]')
+    else
+        current=$system_name
+    fi
+    if [[ $current != "$MDNS_HOSTNAME" ]]; then
+        if [[ -f $conf ]] && set_mdns_conf_host_name "$conf" "$MDNS_HOSTNAME"; then
+            log "mDNS: set host-name=$MDNS_HOSTNAME in $conf (backup: $conf.wingmankvm.bak); the system hostname is unchanged"
+            restart_needed=true
+        else
+            warn "mDNS: could not set host-name in $conf; avahi keeps announcing ${current:-the system hostname}.local"
+        fi
+    fi
+
+    if $NO_START; then
+        log "mDNS: --no-start given; run later: systemctl enable --now avahi-daemon.service"
+        return 0
+    fi
+    systemctl enable avahi-daemon.service >/dev/null 2>&1 \
+        || warn "mDNS: could not enable avahi-daemon.service"
+    if $restart_needed || ! systemctl is-active --quiet avahi-daemon.service; then
+        systemctl restart avahi-daemon.service \
+            || warn "mDNS: avahi-daemon.service failed to (re)start; check: systemctl status avahi-daemon.service"
+    else
+        systemctl reload avahi-daemon.service >/dev/null 2>&1 || true
+    fi
+}
+
+# Prints NAME.local when avahi-daemon is running, otherwise nothing.
+mdns_access_host() {
+    local name
+    command -v systemctl >/dev/null 2>&1 || return 0
+    systemctl is-active --quiet avahi-daemon.service 2>/dev/null || return 0
+    name=$(mdns_conf_host_name "$(mdns_conf_path)")
+    [[ -n $name ]] || name=$(hostname -s 2>/dev/null || true)
+    name=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')
+    valid_mdns_hostname "$name" || return 0
+    printf '%s.local\n' "$name"
+}
+
 show_first_run_access() {
     local service_log=
     local setup_token=
@@ -937,6 +1089,11 @@ show_first_run_access() {
     if ((${#access_hosts[@]} == 0)); then
         access_hosts+=(127.0.0.1)
     fi
+    # Passkey needs a domain name, so the mDNS name goes first when available.
+    candidate=$(mdns_access_host)
+    if [[ -n $candidate ]]; then
+        access_hosts=("$candidate" "${access_hosts[@]}")
+    fi
     if [[ ! -s $STATE_DIR/auth.json && -n $setup_token ]]; then
         setup_fragment="#setup=$setup_token"
     fi
@@ -1011,6 +1168,21 @@ while (($# > 0)); do
             INSTALL_DEPS=true
             shift
             ;;
+        --mdns)
+            MDNS_ENABLED=true
+            shift
+            ;;
+        --mdns-hostname)
+            (($# >= 2)) || die "--mdns-hostname requires a name"
+            MDNS_HOSTNAME=$2
+            MDNS_HOSTNAME_EXPLICIT=true
+            shift 2
+            ;;
+        --mdns-hostname=*)
+            MDNS_HOSTNAME=${1#*=}
+            MDNS_HOSTNAME_EXPLICIT=true
+            shift
+            ;;
         -h | --help)
             usage
             exit 0
@@ -1026,6 +1198,13 @@ done
     || die "--binary and --release are mutually exclusive"
 [[ $(id -u) -eq 0 ]] || die "run this installer as root (for example with sudo)"
 DEST_ROOT=/
+MDNS_HOSTNAME=${MDNS_HOSTNAME%.local}
+MDNS_HOSTNAME=$(printf '%s' "$MDNS_HOSTNAME" | tr '[:upper:]' '[:lower:]')
+if $MDNS_HOSTNAME_EXPLICIT && ! $MDNS_ENABLED; then
+    die "--mdns-hostname requires --mdns"
+fi
+valid_mdns_hostname "$MDNS_HOSTNAME" \
+    || die "invalid --mdns-hostname: use 1-63 letters, digits or hyphens, not starting or ending with a hyphen"
 
 ensure_runtime_dependencies
 
@@ -1096,11 +1275,13 @@ systemctl daemon-reload || die "systemd daemon-reload failed after publishing ma
 
 if $NO_START; then
     finish_no_start
+    configure_mdns "$CONFIGURED_PORT"
 else
     if ! start_services; then
         handle_start_failure
     fi
     tx_commit
     log "installation complete; WingmanKVM is running and passed /healthz"
+    configure_mdns "$CONFIGURED_PORT"
     show_first_run_access
 fi
