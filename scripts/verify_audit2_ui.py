@@ -4,7 +4,7 @@
 Reuses the P2b mocked API harness: real DOM, real browser keyboard/pointer
 events and the real UI state machine; no hardware is touched.
 """
-import argparse, inspect, json, os, sys
+import argparse, inspect, json, os, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
