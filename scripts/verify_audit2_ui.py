@@ -1486,6 +1486,66 @@ def quality_overlay_mjpeg(browser, port, checks):
         context.close()
 
 
+def hotplug_recovery(browser, port, checks):
+    """#93: capture-card unplug/replug and USB HID re-enumeration are announced."""
+    from verify_p2b_ui import api_route
+    state = State()
+    hid = {"keyboard_reenumerating": False, "mouse_reenumerating": False}
+    context, page = new_page(browser, state, port)
+    try:
+        class WithHid:
+            def __init__(self, route):
+                self.route, self.request = route, route.request
+            def fulfill(self, **kwargs):
+                body = json.loads(kwargs.get("body") or "{}")
+                body.setdefault("hid", {}).update(hid)
+                return self.route.fulfill(**{**kwargs, "body": json.dumps(body)})
+        page.unroute("**/api/**")
+        page.route("**/api/**", lambda route: api_route(
+            WithHid(route) if route.request.url.endswith("/api/status") else route, state))
+        page.evaluate("""() => {
+          window.__toasts = [];
+          new MutationObserver((records) => records.forEach((r) => r.addedNodes.forEach((n) => {
+            if (n.nodeValue) window.__toasts.push(n.nodeValue);
+          }))).observe(document.querySelector('#toast'), {childList: true});
+        }""")
+        ready = dict(state.video)
+        state.video = {**ready, "state": "offline", "reason": "device_missing",
+                       "message": "采集卡已断开：未找到 /dev/video0"}
+        hid["keyboard_reenumerating"] = True
+        page.wait_for_timeout(3500)
+        message = page.text_content("#video-message") or ""
+        label = page.text_content("#status-label") or ""
+        toasts = page.evaluate("() => window.__toasts")
+        check(checks, "采集卡已断开" in message and label == "已断开", "capture_unplug_message", (message, label))
+        check(checks, "采集卡已断开" in toasts and "USB 键鼠通道重新连接中" in toasts,
+              "unplug_and_hid_toasts", toasts)
+        check(checks, page.is_visible("#hid-link-state"), "hid_reenumerating_badge_shown", None)
+
+        state.video = ready
+        hid["keyboard_reenumerating"] = False
+        page.wait_for_timeout(3500)
+        toasts = page.evaluate("() => window.__toasts")
+        check(checks, "采集卡已恢复" in toasts and "USB 键鼠通道已恢复" in toasts, "recovery_toasts", toasts)
+        check(checks, not page.is_visible("#hid-link-state"), "hid_badge_cleared", None)
+        message_hidden = page.evaluate("() => document.querySelector('#video-message').classList.contains('hidden')")
+        check(checks, (page.text_content("#status-label") or "") != "已断开", "capture_recovered_label",
+              page.text_content("#status-label"))
+
+        page.click("#lang-toggle")
+        page.click('[data-lang="en"]')
+        state.video = {**ready, "state": "offline", "reason": "device_missing",
+                       "message": "采集卡已断开：未找到 /dev/video0"}
+        hid["mouse_reenumerating"] = True
+        page.wait_for_timeout(3500)
+        message = page.text_content("#video-message") or ""
+        badge = page.text_content("#hid-link-state") or ""
+        check(checks, message.startswith("Capture card disconnected") and badge == "HID reconnecting",
+              "hotplug_messages_translate", (message, badge, message_hidden))
+    finally:
+        context.close()
+
+
 # Every function taking (browser, port, checks) is a scenario, run in
 # definition order; new scenarios need no list edit (and no merge conflict).
 SCENARIOS = [

@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     time::Duration,
 };
@@ -159,12 +159,23 @@ impl KeyboardLeds {
     }
 }
 
+/// Per-channel USB link health exposed through `/api/status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct HidLinkStatus {
+    /// The keyboard gadget node vanished (ENODEV/ENOENT/ESHUTDOWN) and no
+    /// write has succeeded since: the USB channel is re-enumerating.
+    pub keyboard_reenumerating: bool,
+    pub mouse_reenumerating: bool,
+}
+
 #[derive(Clone)]
 pub struct HidManager {
     keyboard_tx: mpsc::Sender<KeyboardCommand>,
     mouse_tx: mpsc::Sender<MouseCommand>,
     keyboard_leds: Arc<AtomicU8>,
     keyboard_path_tx: watch::Sender<Option<PathBuf>>,
+    keyboard_link_lost: Arc<AtomicBool>,
+    mouse_link_lost: Arc<AtomicBool>,
 }
 
 impl Default for HidManager {
@@ -221,11 +232,52 @@ enum MouseCommand {
 #[derive(Default)]
 struct HidDeviceCache {
     devices: HashMap<PathBuf, AsyncFd<std::fs::File>>,
+    /// Set while the gadget node is gone; cleared by the next successful write.
+    link_lost: Arc<AtomicBool>,
     #[cfg(test)]
     opens: usize,
 }
 
+/// Errors meaning the gadget node itself disappeared or was unbound (UDC
+/// detach, target reboot re-enumeration, configfs rebind), as opposed to a
+/// slow host or a malformed report.
+fn is_device_gone(error: &HidError) -> bool {
+    let HidError::Io { source, .. } = error else {
+        return false;
+    };
+    matches!(
+        source.raw_os_error(),
+        Some(libc::ENODEV | libc::ENOENT | libc::ENXIO | libc::ESHUTDOWN)
+    )
+}
+
 impl HidDeviceCache {
+    fn with_link(link_lost: Arc<AtomicBool>) -> Self {
+        Self {
+            link_lost,
+            ..Self::default()
+        }
+    }
+
+    fn record(&mut self, path: &Path, result: &Result<(), HidError>) {
+        match result {
+            Ok(()) => {
+                if self.link_lost.swap(false, Ordering::AcqRel) {
+                    tracing::info!(path = %path.display(), "HID gadget channel recovered");
+                }
+            }
+            Err(error) if is_device_gone(error) => {
+                // Never keep a descriptor for a node that no longer exists:
+                // the next write must reopen the re-enumerated device.
+                self.invalidate(path);
+                if !self.link_lost.swap(true, Ordering::AcqRel) {
+                    tracing::warn!(%error, path = %path.display(), "HID gadget node gone; waiting for re-enumeration");
+                }
+            }
+            Err(_) => {}
+        }
+    }
+
     fn get_or_open(&mut self, path: &Path) -> Result<&mut AsyncFd<std::fs::File>, HidError> {
         if !self.devices.contains_key(path) {
             let file = std::fs::OpenOptions::new()
@@ -274,9 +326,17 @@ impl HidManager {
         let (mouse_tx, mouse_rx) = mpsc::channel(QUEUE_CAPACITY);
         let (keyboard_path_tx, keyboard_path_rx) = watch::channel(keyboard_device);
         let keyboard_leds = Arc::new(AtomicU8::new(0));
+        let keyboard_link_lost = Arc::new(AtomicBool::new(false));
+        let mouse_link_lost = Arc::new(AtomicBool::new(false));
 
-        tokio::spawn(keyboard_worker(keyboard_rx));
-        tokio::spawn(mouse_worker(mouse_rx));
+        tokio::spawn(keyboard_worker(
+            keyboard_rx,
+            HidDeviceCache::with_link(Arc::clone(&keyboard_link_lost)),
+        ));
+        tokio::spawn(mouse_worker(
+            mouse_rx,
+            HidDeviceCache::with_link(Arc::clone(&mouse_link_lost)),
+        ));
         tokio::spawn(keyboard_led_reader(
             keyboard_path_rx,
             Arc::clone(&keyboard_leds),
@@ -287,6 +347,15 @@ impl HidManager {
             mouse_tx,
             keyboard_leds,
             keyboard_path_tx,
+            keyboard_link_lost,
+            mouse_link_lost,
+        }
+    }
+
+    pub fn link_status(&self) -> HidLinkStatus {
+        HidLinkStatus {
+            keyboard_reenumerating: self.keyboard_link_lost.load(Ordering::Acquire),
+            mouse_reenumerating: self.mouse_link_lost.load(Ordering::Acquire),
         }
     }
 
@@ -458,8 +527,7 @@ fn map_send_error<T>(error: mpsc::error::TrySendError<T>) -> HidError {
     }
 }
 
-async fn keyboard_worker(mut rx: mpsc::Receiver<KeyboardCommand>) {
-    let mut devices = HidDeviceCache::default();
+async fn keyboard_worker(mut rx: mpsc::Receiver<KeyboardCommand>, mut devices: HidDeviceCache) {
     while let Some(command) = rx.recv().await {
         match command {
             KeyboardCommand::Key {
@@ -574,8 +642,7 @@ async fn keyboard_led_reader(mut path_rx: watch::Receiver<Option<PathBuf>>, leds
     }
 }
 
-async fn mouse_worker(mut rx: mpsc::Receiver<MouseCommand>) {
-    let mut devices = HidDeviceCache::default();
+async fn mouse_worker(mut rx: mpsc::Receiver<MouseCommand>, mut devices: HidDeviceCache) {
     let mut absolute_states = HashMap::<PathBuf, AbsolutePointerState>::new();
     while let Some(command) = rx.recv().await {
         match command {
@@ -808,6 +875,16 @@ fn validate_absolute_position(x: u16, y: u16) -> Result<(), HidError> {
 }
 
 async fn send_report(
+    path: &Path,
+    report: &[u8],
+    devices: &mut HidDeviceCache,
+) -> Result<(), HidError> {
+    let result = send_report_once(path, report, devices).await;
+    devices.record(path, &result);
+    result
+}
+
+async fn send_report_once(
     path: &Path,
     report: &[u8],
     devices: &mut HidDeviceCache,
@@ -1084,6 +1161,8 @@ mod tests {
             mouse_tx,
             keyboard_leds: Arc::new(AtomicU8::new(0)),
             keyboard_path_tx,
+            keyboard_link_lost: Arc::default(),
+            mouse_link_lost: Arc::default(),
         };
         let mouse_releases = tokio::spawn(async move {
             let mut relative = false;
@@ -1126,6 +1205,8 @@ mod tests {
             mouse_tx,
             keyboard_leds: Arc::new(AtomicU8::new(0)),
             keyboard_path_tx,
+            keyboard_link_lost: Arc::default(),
+            mouse_link_lost: Arc::default(),
         };
         let (dummy_reply, _dummy_response) = oneshot::channel();
         manager
@@ -1214,6 +1295,51 @@ mod tests {
         let result = send_report(&path, &[0; 4], &mut devices).await;
         assert!(result.is_err());
         assert!(!devices.devices.contains_key(&path));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn vanished_node_marks_channel_reenumerating_until_a_write_succeeds() {
+        let root = crate::devices::hotplug::tests::temp_root("hidg");
+        let path = root.join("hidg0");
+        let link = Arc::new(AtomicBool::new(false));
+        let mut devices = HidDeviceCache::with_link(Arc::clone(&link));
+
+        // Node absent (gadget unbound / re-enumerating): ENOENT on open.
+        let error = send_report(&path, &[0; 8], &mut devices).await.unwrap_err();
+        assert!(is_device_gone(&error), "{error}");
+        assert!(link.load(Ordering::Acquire));
+        assert!(!devices.devices.contains_key(&path));
+
+        // The node comes back: the next successful write clears the flag.
+        let (mut fresh, _peer) = cached_test_device(path.clone());
+        fresh.link_lost = Arc::clone(&link);
+        send_report(&path, &[0; 8], &mut fresh).await.unwrap();
+        assert!(!link.load(Ordering::Acquire));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn enodev_on_cached_fd_invalidates_and_flags_link() {
+        let link = Arc::new(AtomicBool::new(false));
+        let mut devices = HidDeviceCache::with_link(Arc::clone(&link));
+        let path = PathBuf::from("/virtual/hidg1");
+        for errno in [libc::ENODEV, libc::ESHUTDOWN] {
+            let error = HidError::Io {
+                path: path.clone(),
+                source: io::Error::from_raw_os_error(errno),
+            };
+            devices.record(&path, &Err(error));
+            assert!(link.swap(false, Ordering::AcqRel), "errno {errno}");
+        }
+        // A plain timeout is a slow host, not a vanished node.
+        devices.record(&path, &Err(HidError::Timeout { path: path.clone() }));
+        assert!(!link.load(Ordering::Acquire));
+        let eio = HidError::Io {
+            path: path.clone(),
+            source: io::Error::from_raw_os_error(libc::EIO),
+        };
+        assert!(!is_device_gone(&eio));
     }
 
     #[test]
