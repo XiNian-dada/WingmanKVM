@@ -12,7 +12,8 @@ pub(super) struct BootstrapResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) client_ip: Option<String>,
     pub(super) client: ClientAddress,
-    pub(super) config: Option<Config>,
+    /// Redacted: notification secrets are replaced by `*_configured` flags.
+    pub(super) config: Option<serde_json::Value>,
     pub(super) video: Option<crate::devices::video::VideoStatus>,
     pub(super) webrtc: Option<WebRtcStatus>,
     pub(super) capabilities: Option<Capabilities>,
@@ -60,7 +61,7 @@ pub(super) async fn bootstrap(
         let webrtc = state.webrtc.status();
         let capabilities = capabilities_with_webrtc(&config, webrtc.available);
         (
-            Some(config),
+            Some(config.redacted_json()),
             Some(state.video.status()),
             Some(webrtc),
             Some(capabilities),
