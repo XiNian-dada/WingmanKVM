@@ -79,6 +79,28 @@ enum PasskeyChallengeState {
     },
 }
 
+/// Bound on outstanding WebAuthn challenges; unauthenticated login starts
+/// must not grow server memory without limit.
+const MAX_PASSKEY_CHALLENGES: usize = 256;
+
+fn insert_passkey_challenge(
+    challenges: &Mutex<HashMap<String, PasskeyChallengeState>>,
+    challenge_id: String,
+    challenge: PasskeyChallengeState,
+    now: Instant,
+) -> Result<(), ApiError> {
+    let mut map = challenges.lock().unwrap_or_else(|p| p.into_inner());
+    map.retain(|_, state| match state {
+        PasskeyChallengeState::Registration { expires_at, .. } => *expires_at > now,
+        PasskeyChallengeState::Authentication { expires_at, .. } => *expires_at > now,
+    });
+    if map.len() >= MAX_PASSKEY_CHALLENGES {
+        return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "Passkey 请求过多，请稍后重试"));
+    }
+    map.insert(challenge_id, challenge);
+    Ok(())
+}
+
 fn prune_passkey_challenges(challenges: &Arc<Mutex<HashMap<String, PasskeyChallengeState>>>) {
     let now = Instant::now();
     let mut map = challenges.lock().unwrap_or_else(|p| p.into_inner());
@@ -100,6 +122,7 @@ pub struct AppState {
     password_migration: Arc<AsyncMutex<()>>,
     setup_token: Arc<Mutex<Option<String>>>,
     login_limiter: LoginLimiter,
+    passkey_start_limiter: LoginLimiter,
     passkey_challenges: Arc<Mutex<HashMap<String, PasskeyChallengeState>>>,
     hid: HidManager,
     power: PowerManager,
@@ -161,6 +184,7 @@ impl AppState {
             password_migration: Arc::new(AsyncMutex::new(())),
             setup_token: Arc::new(Mutex::new(setup_token)),
             login_limiter: LoginLimiter::default(),
+            passkey_start_limiter: LoginLimiter::with_budget(MAX_PASSKEY_STARTS_PER_IP),
             passkey_challenges,
             hid,
             power,
@@ -1485,6 +1509,11 @@ async fn passkey_login_start(
     if !state.login_limiter.has_capacity(client_ip) {
         return Err(too_many_login_attempts());
     }
+    // Each start allocates a server-side challenge, so it has its own
+    // recorded budget even though it is not an authentication submission.
+    if !state.passkey_start_limiter.try_reserve(client_ip) {
+        return Err(too_many_login_attempts());
+    }
     let Some(record) = state.auth.load().map_err(map_auth_error)? else {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "系统尚未初始化"));
     };
@@ -1503,22 +1532,17 @@ async fn passkey_login_start(
 
     let now = Instant::now();
     let expires_at = now + PASSKEY_CHALLENGE_TTL;
-    {
-        let mut challenges = state.passkey_challenges.lock().unwrap_or_else(|p| p.into_inner());
-        challenges.retain(|_, s| match s {
-            PasskeyChallengeState::Registration { expires_at, .. } => *expires_at > now,
-            PasskeyChallengeState::Authentication { expires_at, .. } => *expires_at > now,
-        });
-        challenges.insert(
-            challenge_id.clone(),
-            PasskeyChallengeState::Authentication {
-                state: auth_state,
-                rp_id,
-                rp_origin,
-                expires_at,
-            },
-        );
-    }
+    insert_passkey_challenge(
+        &state.passkey_challenges,
+        challenge_id.clone(),
+        PasskeyChallengeState::Authentication {
+            state: auth_state,
+            rp_id,
+            rp_origin,
+            expires_at,
+        },
+        now,
+    )?;
 
     Ok(no_store(Json(json!({
         "challenge_id": challenge_id,
@@ -1648,22 +1672,17 @@ async fn passkey_register_start(
 
     let now = Instant::now();
     let expires_at = now + PASSKEY_CHALLENGE_TTL;
-    {
-        let mut challenges = state.passkey_challenges.lock().unwrap_or_else(|p| p.into_inner());
-        challenges.retain(|_, s| match s {
-            PasskeyChallengeState::Registration { expires_at, .. } => *expires_at > now,
-            PasskeyChallengeState::Authentication { expires_at, .. } => *expires_at > now,
-        });
-        challenges.insert(
-            challenge_id.clone(),
-            PasskeyChallengeState::Registration {
-                state: reg_state,
-                rp_id,
-                rp_origin,
-                expires_at,
-            },
-        );
-    }
+    insert_passkey_challenge(
+        &state.passkey_challenges,
+        challenge_id.clone(),
+        PasskeyChallengeState::Registration {
+            state: reg_state,
+            rp_id,
+            rp_origin,
+            expires_at,
+        },
+        now,
+    )?;
 
     Ok(no_store(Json(json!({
         "challenge_id": challenge_id,
@@ -3370,6 +3389,7 @@ impl IntoResponse for ApiError {
 
 const LOGIN_ATTEMPT_WINDOW: Duration = Duration::from_secs(60);
 const MAX_LOGIN_ATTEMPTS_PER_IP: usize = 5;
+const MAX_PASSKEY_STARTS_PER_IP: usize = 10;
 const MAX_LOGIN_LIMITER_RECORDS: usize = 4096;
 const MAX_CONCURRENT_PASSWORD_VERIFICATIONS: usize = 2;
 
@@ -3377,18 +3397,24 @@ const MAX_CONCURRENT_PASSWORD_VERIFICATIONS: usize = 2;
 struct LoginLimiter {
     attempts: Arc<Mutex<HashMap<IpAddr, VecDeque<Instant>>>>,
     password_slots: Arc<Semaphore>,
+    per_ip: usize,
 }
 
 impl Default for LoginLimiter {
     fn default() -> Self {
-        Self {
-            attempts: Arc::new(Mutex::new(HashMap::new())),
-            password_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_PASSWORD_VERIFICATIONS)),
-        }
+        Self::with_budget(MAX_LOGIN_ATTEMPTS_PER_IP)
     }
 }
 
 impl LoginLimiter {
+    fn with_budget(per_ip: usize) -> Self {
+        Self {
+            attempts: Arc::new(Mutex::new(HashMap::new())),
+            password_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_PASSWORD_VERIFICATIONS)),
+            per_ip,
+        }
+    }
+
     /// Atomically admit one authentication submission for `ip`.
     ///
     /// At most five admissions are recorded per client IP in the rolling
@@ -3405,7 +3431,7 @@ impl LoginLimiter {
         let mut attempts = self.attempts.lock().unwrap_or_else(|p| p.into_inner());
         prune_login_attempts(&mut attempts, now);
         if let Some(timestamps) = attempts.get_mut(&ip) {
-            if timestamps.len() >= MAX_LOGIN_ATTEMPTS_PER_IP {
+            if timestamps.len() >= self.per_ip {
                 return false;
             }
             timestamps.push_back(now);
@@ -3429,7 +3455,7 @@ impl LoginLimiter {
         prune_login_attempts(&mut attempts, now);
         attempts.get(&ip).map_or(
             attempts.len() < MAX_LOGIN_LIMITER_RECORDS,
-            |timestamps| timestamps.len() < MAX_LOGIN_ATTEMPTS_PER_IP,
+            |timestamps| timestamps.len() < self.per_ip,
         )
     }
 
@@ -4762,6 +4788,56 @@ mod tests {
         let res = build_webauthn(&headers);
         assert!(res.is_err());
         assert_eq!(res.err().unwrap().status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn passkey_challenge_table_is_bounded_and_reclaims_expired_entries() {
+        let challenges = Mutex::new(HashMap::new());
+        let rp_origin = Url::parse("http://localhost:8080").unwrap();
+        let webauthn = WebauthnBuilder::new("localhost", &rp_origin)
+            .unwrap()
+            .rp_name("WingmanKVM")
+            .build()
+            .unwrap();
+        let (_ccr, reg_state) = webauthn
+            .start_passkey_registration(Uuid::new_v4(), "admin", "admin", None)
+            .unwrap();
+        let challenge = |expires_at| PasskeyChallengeState::Registration {
+            state: reg_state.clone(),
+            rp_id: "localhost".to_owned(),
+            rp_origin: rp_origin.clone(),
+            expires_at,
+        };
+        let now = Instant::now();
+        for index in 0..MAX_PASSKEY_CHALLENGES {
+            let expires_at = now + Duration::from_secs(60);
+            insert_passkey_challenge(&challenges, index.to_string(), challenge(expires_at), now).unwrap();
+        }
+        let rejected = insert_passkey_challenge(
+            &challenges,
+            "overflow".to_owned(),
+            challenge(now + Duration::from_secs(60)),
+            now,
+        )
+        .unwrap_err();
+        assert_eq!(rejected.status, StatusCode::SERVICE_UNAVAILABLE);
+
+        // Once the outstanding challenges expire, capacity returns.
+        let later = now + Duration::from_secs(61);
+        insert_passkey_challenge(&challenges, "fresh".to_owned(), challenge(later + Duration::from_secs(60)), later)
+            .unwrap();
+        assert_eq!(challenges.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn custom_limiter_budget_applies_per_ip() {
+        let limiter = LoginLimiter::with_budget(MAX_PASSKEY_STARTS_PER_IP);
+        let ip = IpAddr::from([192, 0, 2, 10]);
+        let now = Instant::now();
+        for _ in 0..MAX_PASSKEY_STARTS_PER_IP {
+            assert!(limiter.try_reserve_at(ip, now));
+        }
+        assert!(!limiter.try_reserve_at(ip, now));
     }
 
     #[test]
