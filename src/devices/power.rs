@@ -243,22 +243,22 @@ async fn wait_for_gpio_command(
     let wait_for = Duration::from_millis(pulse_ms)
         .saturating_add(Duration::from_secs(5))
         .min(GPIO_COMMAND_TIMEOUT);
+    let deadline = Instant::now() + wait_for;
     let wait_result = timeout(wait_for, child.wait()).await;
     if wait_result.is_err() {
         // Kill and reap the child so a timed-out gpioset cannot retain the
         // GPIO line or linger as a zombie.
         let _ = child.kill().await;
         let _ = child.wait().await;
-        if let Some(task) = stderr_task {
-            let _ = task.await;
-        }
+        // Descendants can inherit the stderr pipe and keep it open forever.
+        // Never let that hold the busy gate past the command budget.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let _ = collect_stderr(stderr_task, remaining).await;
         return Err(PowerError::Timeout);
     }
 
-    let stderr = match stderr_task {
-        Some(task) => task.await.unwrap_or_default(),
-        None => Vec::new(),
-    };
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let stderr = collect_stderr(stderr_task, remaining).await;
     match wait_result.expect("checked above") {
         Ok(status) if status.success() => Ok(()),
         Ok(status) => {
@@ -270,6 +270,27 @@ async fn wait_for_gpio_command(
             }))
         }
         Err(error) => Err(PowerError::Spawn(error)),
+    }
+}
+
+async fn collect_stderr(
+    stderr_task: Option<tokio::task::JoinHandle<Vec<u8>>>,
+    budget: Duration,
+) -> Vec<u8> {
+    let Some(mut task) = stderr_task else {
+        return Vec::new();
+    };
+    match timeout(budget, &mut task).await {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "GPIO stderr reader task failed");
+            Vec::new()
+        }
+        Err(_) => {
+            tracing::warn!("timed out waiting for GPIO stderr reader; aborting it");
+            task.abort();
+            Vec::new()
+        }
     }
 }
 
@@ -443,7 +464,10 @@ fn is_gpioset_v2(version: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{
+        path::PathBuf,
+        time::{Duration, Instant},
+    };
 
     #[cfg(unix)]
     use std::{
@@ -456,7 +480,7 @@ mod tests {
 
     use super::{
         GpioPulseConfigSnapshot, PowerError, PowerLedConfigSnapshot, PowerManager, PowerStatus,
-        gpioget_args, gpioset_args, is_gpioset_v2, parse_gpio_value,
+        collect_stderr, gpioget_args, gpioset_args, is_gpioset_v2, parse_gpio_value,
     };
 
     #[cfg(unix)]
@@ -529,6 +553,26 @@ mod tests {
         assert_eq!(status["power_led"]["state"], "unknown");
         assert!(status["power_led"]["active"].is_null());
         assert!(status["power_led"]["sense_error"].is_null());
+    }
+
+    #[tokio::test]
+    async fn stderr_collection_returns_available_output_within_budget() {
+        let task = tokio::spawn(async { b"GPIO line is busy".to_vec() });
+        let stderr = collect_stderr(Some(task), Duration::from_secs(1)).await;
+        assert_eq!(stderr, b"GPIO line is busy");
+    }
+
+    #[tokio::test]
+    async fn stderr_collection_is_bounded_when_a_descendant_holds_the_pipe() {
+        let task = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Vec::new()
+        });
+        let started = Instant::now();
+        let stderr = collect_stderr(Some(task), Duration::from_millis(50)).await;
+
+        assert!(stderr.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[cfg(unix)]
