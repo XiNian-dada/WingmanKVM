@@ -1,3 +1,5 @@
+mod input;
+use self::input::*;
 mod power;
 use self::power::*;
 mod media;
@@ -339,96 +341,6 @@ async fn status(
     })))
 }
 
-async fn key(
-    State(state): State<AppState>,
-    Json(request): Json<KeyRequest>,
-) -> Result<impl IntoResponse, ApiError> {
-    let path = state.config.read().await.hid.keyboard_device.clone();
-    state.hid.key(path, request).await.map_err(map_hid_error)?;
-    Ok(no_store(Json(json!({
-        "keyboard_leds": state.hid.leds(),
-    }))))
-}
-
-async fn get_keyboard_leds(State(state): State<AppState>) -> impl IntoResponse {
-    no_store(Json(state.hid.leds()))
-}
-
-async fn mouse_move(
-    State(state): State<AppState>,
-    Json(request): Json<MouseMoveRequest>,
-) -> Result<impl IntoResponse, ApiError> {
-    let config = state.config.read().await.hid.clone();
-    let path = relative_mouse_path(&config)?;
-    state
-        .hid
-        .mouse_move(path, request)
-        .await
-        .map_err(map_hid_error)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn mouse_absolute(
-    State(state): State<AppState>,
-    Json(request): Json<AbsolutePointerRequest>,
-) -> Result<impl IntoResponse, ApiError> {
-    let config = state.config.read().await.hid.clone();
-    if resolved_pointer_mode(&config) != PointerMode::Absolute {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            "当前配置未启用绝对指针模式",
-        ));
-    }
-    state
-        .hid
-        .mouse_absolute(config.absolute_pointer_device, request)
-        .await
-        .map_err(map_hid_error)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn mouse_click(
-    State(state): State<AppState>,
-    Json(request): Json<MouseClickRequest>,
-) -> Result<impl IntoResponse, ApiError> {
-    let config = state.config.read().await.hid.clone();
-    let path = relative_mouse_path(&config)?;
-    state
-        .hid
-        .mouse_click(path, request)
-        .await
-        .map_err(map_hid_error)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn mouse_scroll(
-    State(state): State<AppState>,
-    Json(request): Json<MouseScrollRequest>,
-) -> Result<impl IntoResponse, ApiError> {
-    let config = state.config.read().await.hid.clone();
-    let path = relative_mouse_path(&config)?;
-    state
-        .hid
-        .mouse_scroll(path, request)
-        .await
-        .map_err(map_hid_error)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn release_all(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
-    let config = state.config.read().await.hid.clone();
-    state
-        .hid
-        .release_all(
-            config.keyboard_device,
-            config.mouse_device,
-            config.absolute_pointer_device,
-        )
-        .await
-        .map_err(map_hid_error)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
 async fn video_feed(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Bind the stream to the live session so logout, revocation, or expiry
     // ends it, matching the terminal and WebRTC lifecycles.
@@ -602,24 +514,6 @@ fn capabilities_with_webrtc(config: &Config, video_webrtc_h264: bool) -> Capabil
     }
 }
 
-fn resolved_pointer_mode(config: &HidConfig) -> PointerMode {
-    match config.pointer_mode {
-        PointerMode::Auto if config.absolute_pointer_device.is_some() => PointerMode::Absolute,
-        PointerMode::Auto => PointerMode::Relative,
-        mode => mode,
-    }
-}
-
-fn relative_mouse_path(config: &HidConfig) -> Result<Option<PathBuf>, ApiError> {
-    if resolved_pointer_mode(config) != PointerMode::Relative {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            "当前配置未启用相对鼠标模式",
-        ));
-    }
-    Ok(config.mouse_device.clone())
-}
-
 fn generate_token() -> Result<String, getrandom::Error> {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     let mut bytes = [0_u8; 24];
@@ -732,7 +626,6 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devices::hid::KeyboardLeds;
 
     #[test]
     fn setup_token_comparison_checks_length_and_contents() {
@@ -857,32 +750,6 @@ mod tests {
     }
 
     #[test]
-    fn absolute_pointer_api_payloads_use_an_explicit_action_tag() {
-        let request: AbsolutePointerRequest = serde_json::from_value(serde_json::json!({
-            "action": "click",
-            "x": 32767,
-            "y": 0,
-            "button": 1
-        }))
-        .unwrap();
-        assert_eq!(
-            request,
-            AbsolutePointerRequest::Click {
-                x: 32767,
-                y: 0,
-                button: 1
-            }
-        );
-        assert!(
-            serde_json::from_value::<AbsolutePointerRequest>(serde_json::json!({
-                "x": 1,
-                "y": 2
-            }))
-            .is_err()
-        );
-    }
-
-    #[test]
     fn origin_must_match_host_when_present() {
         let mut headers = HeaderMap::new();
         headers.insert(HOST, HeaderValue::from_static("kvm.local:8080"));
@@ -890,31 +757,6 @@ mod tests {
         assert!(origin_matches_host(&headers));
         headers.insert(ORIGIN, HeaderValue::from_static("http://evil.invalid"));
         assert!(!origin_matches_host(&headers));
-    }
-
-    #[tokio::test]
-    async fn keyboard_leds_serialization_and_endpoint_shape() {
-        let hid = HidManager::new();
-        hid.set_leds_raw(0x02);
-        assert_eq!(hid.leds().caps_lock, true);
-        assert_eq!(hid.leds().num_lock, false);
-        assert_eq!(hid.leds().scroll_lock, false);
-
-        let leds_json = serde_json::to_value(hid.leds()).unwrap();
-        assert_eq!(leds_json["caps_lock"], true);
-        assert_eq!(leds_json["num_lock"], false);
-        assert_eq!(leds_json["scroll_lock"], false);
-        assert_eq!(leds_json["raw"], 2);
-
-        let parsed: KeyboardLeds = serde_json::from_value(leds_json).unwrap();
-        assert_eq!(parsed, hid.leds());
-
-        let status_json = json!({
-            "hid": {
-                "keyboard_leds": hid.leds(),
-            }
-        });
-        assert_eq!(status_json["hid"]["keyboard_leds"]["caps_lock"], true);
     }
 
     #[tokio::test]
