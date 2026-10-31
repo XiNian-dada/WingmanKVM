@@ -421,3 +421,14 @@
 .quick-menu-common {
   display: none;
 }
+
+/* Inline save result beside a form's submit button. */
+.form-status {
+  margin-right: auto;
+  align-self: center;
+  color: var(--muted);
+  font-size: 11px;
+}
+.form-status.error {
+  color: var(--red);
+}

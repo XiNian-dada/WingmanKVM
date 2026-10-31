@@ -190,6 +190,22 @@
       if (button) button.disabled = false;
     }
   }
+  // Inline save feedback next to a form's submit button, so the result stays
+  // visible where the user acted instead of only in a transient toast.
+  function formStatus(form, ok, message = '') {
+    const submit = $('button[type=submit]', form);
+    if (!submit) return;
+    let status = $('.form-status', submit.parentElement);
+    if (!status) {
+      status = document.createElement('span');
+      status.className = 'form-status';
+      status.setAttribute('role', 'status');
+      submit.before(status);
+    }
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    status.classList.toggle('error', !ok);
+    status.textContent = ok ? `已保存 · ${time}` : message || '保存失败';
+  }
   const rawValue = (form, name) => new FormData(form).get(name)?.toString() || '';
   const value = (form, name) => rawValue(form, name).trim();
   function clearAuthSecrets(options = {}) {

@@ -376,9 +376,12 @@
       saveVideoUiPreference('transport', videoPreference);
       bootstrap = await request('/api/bootstrap');
       applyBootstrap();
-      toast('视频设置已应用');
+      formStatus(f, true);
     } catch (e) {
-      if (requestId === videoConfigRequestId) toast(e.message, true);
+      if (requestId === videoConfigRequestId) {
+        formStatus(f, false, e.message);
+        toast(e.message, true);
+      }
     } finally {
       if (requestId === videoConfigRequestId) {
         button.disabled = false;

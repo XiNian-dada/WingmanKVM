@@ -452,8 +452,34 @@ def media_drop_upload(browser, port, checks):
     finally:
         context.close()
 
+
+def inline_save_feedback(browser, port, checks):
+    """#55: saving a settings form shows its result next to the button."""
+    state = State()
+    replies = {"status": 200}
+    context, page = new_page(browser, state, port)
+    try:
+        page.route("**/api/config", lambda route: route.fulfill(
+            status=replies["status"], content_type="application/json",
+            body='{}' if replies["status"] == 200 else '{"error":"LUN 路径不存在"}'))
+        page.locator('[data-panel-target="media"]').click()
+        page.evaluate("() => document.querySelectorAll('#panel-media details').forEach(d => d.open = true)")
+        page.click('#media-config button[type="submit"]')
+        page.wait_for_timeout(300)
+        status = page.text_content("#media-config .form-status") or ""
+        check(checks, "已保存" in status, "save_success_shown_inline", status)
+        replies["status"] = 500
+        page.click('#media-config button[type="submit"]')
+        page.wait_for_timeout(300)
+        status = page.text_content("#media-config .form-status") or ""
+        error = page.evaluate("() => document.querySelector('#media-config .form-status').classList.contains('error')")
+        check(checks, "LUN 路径不存在" in status and error, "save_error_shown_inline", status)
+    finally:
+        context.close()
+
 SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation, low_risk_ui,
-             language_coverage, power_confirmation, media_drop_upload, paste_as_typing, custom_shortcuts]
+             language_coverage, power_confirmation, media_drop_upload, paste_as_typing, custom_shortcuts,
+             inline_save_feedback]
 
 if __name__ == "__main__":
     sys.exit(main())
