@@ -34,6 +34,7 @@ MANAGED = {
     "usr/local/bin/wingmankvm": 0o755,
     "usr/local/sbin/wingmankvm-gadget": 0o755,
     "usr/local/sbin/wingmankvm-set-wingman-password": 0o755,
+    "usr/local/sbin/wingmankvm-setup-url": 0o755,
     "etc/sudoers.d/wingmankvm": 0o440,
     "etc/udev/rules.d/99-wingmankvm.rules": 0o644,
     "etc/systemd/system/wingmankvm-gadget.service": 0o644,

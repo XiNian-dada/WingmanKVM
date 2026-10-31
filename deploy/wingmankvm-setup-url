@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# Print the one-time WingmanKVM first-run URL from the protected state file.
+set -Eeuo pipefail
+
+PROGRAM=${0##*/}
+STATE_DIR=${WINGMANKVM_STATE_DIR:-/var/lib/wingmankvm}
+CONFIG_FILE=$STATE_DIR/config.json
+TOKEN_FILE=$STATE_DIR/setup-token
+PORT=8080
+SETUP_TOKEN=
+ACCESS_HOSTS=()
+ACCESS_HOSTNAMES=()
+
+log() {
+    printf '%s: %s\n' "$PROGRAM" "$*"
+}
+
+die() {
+    printf '%s: error: %s\n' "$PROGRAM" "$*" >&2
+    exit 1
+}
+
+is_ipv4() {
+    local candidate=$1 octet
+    local -a octets=()
+    [[ $candidate =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    IFS=. read -r -a octets <<<"$candidate"
+    ((${#octets[@]} == 4)) || return 1
+    for octet in "${octets[@]}"; do
+        [[ $octet =~ ^[0-9]{1,3}$ ]] || return 1
+        ((10#$octet <= 255)) || return 1
+    done
+    return 0
+}
+
+add_host() {
+    local candidate=$1 existing
+    [[ -n $candidate ]] || return 0
+    for existing in "${ACCESS_HOSTS[@]}"; do
+        [[ $existing == "$candidate" ]] && return 0
+    done
+    ACCESS_HOSTS+=("$candidate")
+}
+
+read_port() {
+    local parsed
+    if [[ ! -e $CONFIG_FILE && ! -L $CONFIG_FILE ]]; then
+        PORT=8080
+        return 0
+    fi
+    [[ -f $CONFIG_FILE && -r $CONFIG_FILE && ! -L $CONFIG_FILE ]] \
+        || die "configuration is not a readable regular file: $CONFIG_FILE"
+    command -v python3 >/dev/null 2>&1 \
+        || die "python3 is required to read the configured port"
+    parsed=$(python3 -I - "$CONFIG_FILE" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+try:
+    with open(path, "rb") as handle:
+        data = json.load(handle)
+except Exception as exc:
+    print(f"cannot parse {path}: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+server = data.get("server", {}) if isinstance(data, dict) else None
+if not isinstance(server, dict):
+    print("config.json server must be an object", file=sys.stderr)
+    raise SystemExit(1)
+port = server.get("port", 8080)
+if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+    print("server.port must be an integer in 1..65535", file=sys.stderr)
+    raise SystemExit(1)
+print(port)
+PY
+    ) || die "cannot read server.port from $CONFIG_FILE"
+    PORT=$parsed
+    if [[ ! $PORT =~ ^[0-9]+$ ]] || ((PORT < 1 || PORT > 65535)); then
+        die "invalid server.port in $CONFIG_FILE"
+    fi
+}
+
+read_token() {
+    local line
+    [[ -e $TOKEN_FILE || -L $TOKEN_FILE ]] || return 0
+    [[ -f $TOKEN_FILE && -r $TOKEN_FILE && ! -L $TOKEN_FILE ]] \
+        || die "setup token is not a readable regular file: $TOKEN_FILE"
+    read -r line <"$TOKEN_FILE" || true
+    line=${line%$'\r'}
+    [[ $line =~ ^[A-Za-z0-9_-]{16,}$ ]] \
+        || die "setup token file has an invalid value: $TOKEN_FILE"
+    SETUP_TOKEN=$line
+}
+
+collect_hosts() {
+    local candidate first_octet
+    while IFS= read -r candidate; do
+        is_ipv4 "$candidate" || continue
+        first_octet=$((10#${candidate%%.*}))
+        ((first_octet > 0 && first_octet < 224 && first_octet != 127)) || continue
+        add_host "$candidate"
+    done < <(
+        if command -v ip >/dev/null 2>&1; then
+            ip -4 route get 1.1.1.1 2>/dev/null \
+                | awk '{ for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1) }' \
+                || true
+        fi
+        if command -v hostname >/dev/null 2>&1; then
+            hostname -I 2>/dev/null \
+                | awk '{ for (i = 1; i <= NF; i++) print $i }' \
+                || true
+        fi
+        if command -v ip >/dev/null 2>&1; then
+            ip -o -4 address show scope global 2>/dev/null \
+                | awk '{ split($4, address, "/"); print address[1] }' \
+                || true
+        fi
+    )
+    ((${#ACCESS_HOSTS[@]} > 0)) || ACCESS_HOSTS+=(127.0.0.1)
+
+    if command -v hostname >/dev/null 2>&1; then
+        candidate=$(hostname 2>/dev/null || true)
+        [[ -n $candidate ]] && ACCESS_HOSTNAMES+=("$candidate")
+        candidate=$(hostname -f 2>/dev/null || true)
+        if [[ -n $candidate ]]; then
+            local existing duplicate=false
+            for existing in "${ACCESS_HOSTNAMES[@]}"; do
+                [[ $existing == "$candidate" ]] && duplicate=true
+            done
+            $duplicate || ACCESS_HOSTNAMES+=("$candidate")
+        fi
+    fi
+}
+
+main() {
+    [[ $(id -u) -eq 0 ]] || die "run this command as root (for example with sudo)"
+    read_port
+
+    if [[ -s $STATE_DIR/auth.json ]]; then
+        log "WingmanKVM 已完成初始化，无需一次性初始化地址"
+        log "打开 http://<KVM 主机 IP 或主机名>:$PORT/ 并使用管理员账号登录"
+        return 0
+    fi
+
+    read_token
+    if [[ -z $SETUP_TOKEN ]]; then
+        log "WingmanKVM 尚未完成初始化，但一次性令牌文件不存在：$TOKEN_FILE"
+        log "请确认 wingmankvm.service 正在运行，然后重新执行本命令：systemctl status wingmankvm.service"
+        log "首次启动成功后，服务会把令牌写入仅 root 与服务账户可读的 0600 文件；日志不会包含令牌"
+        return 1
+    fi
+
+    collect_hosts
+    log "WingmanKVM 尚未完成初始化，请在浏览器中打开以下任一地址："
+    local host
+    for host in "${ACCESS_HOSTS[@]}"; do
+        printf '  http://%s:%s/#setup=%s\n' "$host" "$PORT" "$SETUP_TOKEN"
+    done
+    for host in "${ACCESS_HOSTNAMES[@]}"; do
+        printf '  http://%s:%s/#setup=%s\n' "$host" "$PORT" "$SETUP_TOKEN"
+    done
+    log "该地址包含一次性令牌；创建管理员后令牌立即失效，令牌文件也会被删除"
+}
+
+main "$@"

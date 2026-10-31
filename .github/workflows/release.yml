@@ -193,11 +193,12 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
+          bash -n scripts/get.sh
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS \
+            gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS scripts/get.sh \
               --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS \
+            gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS scripts/get.sh \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --title "WingmanKVM $VERSION" \
