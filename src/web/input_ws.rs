@@ -36,14 +36,20 @@ pub(super) async fn input_ws(
     let public_origin = state.config.read().await.server.public_origin.clone();
     let sessions = state.sessions.clone();
     let release_state = state.clone();
+    let socket_guard = state.metrics.clone();
     upgrade_input_ws(
         &sessions,
         &headers,
         ws,
         public_origin.as_deref(),
-        move |text| {
-            let state = state.clone();
-            async move { input_reply(&state, &text).await }
+        {
+            // Counted as open for as long as the socket loop holds this closure.
+            let _open = socket_guard.input_socket_opened();
+            move |text| {
+                let _ = &_open;
+                let state = state.clone();
+                async move { input_reply(&state, &text).await }
+            }
         },
         // A socket can end mid-chord (tab closed, crash, network drop, logout);
         // never leave keys or buttons held on the target.
