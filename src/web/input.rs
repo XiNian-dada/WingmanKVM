@@ -1,38 +1,24 @@
 use super::*;
 
-pub(super) async fn key(
-    State(state): State<AppState>,
-    ApiJson(request): ApiJson<KeyRequest>,
-) -> Result<impl IntoResponse, ApiError> {
+// HTTP handlers and the input WebSocket share these operations so both
+// transports enforce identical pointer-mode checks and error mapping.
+
+pub(super) async fn send_key(state: &AppState, request: KeyRequest) -> Result<serde_json::Value, ApiError> {
     let path = state.config.read().await.hid.keyboard_device.clone();
     state.hid.key(path, request).await.map_err(map_hid_error)?;
-    Ok(no_store(Json(json!({
-        "keyboard_leds": state.hid.leds(),
-    }))))
+    Ok(json!({ "keyboard_leds": state.hid.leds() }))
 }
 
-pub(super) async fn get_keyboard_leds(State(state): State<AppState>) -> impl IntoResponse {
-    no_store(Json(state.hid.leds()))
-}
-
-pub(super) async fn mouse_move(
-    State(state): State<AppState>,
-    ApiJson(request): ApiJson<MouseMoveRequest>,
-) -> Result<impl IntoResponse, ApiError> {
+pub(super) async fn send_mouse_move(state: &AppState, request: MouseMoveRequest) -> Result<(), ApiError> {
     let config = state.config.read().await.hid.clone();
     let path = relative_mouse_path(&config)?;
-    state
-        .hid
-        .mouse_move(path, request)
-        .await
-        .map_err(map_hid_error)?;
-    Ok(StatusCode::NO_CONTENT)
+    state.hid.mouse_move(path, request).await.map_err(map_hid_error)
 }
 
-pub(super) async fn mouse_absolute(
-    State(state): State<AppState>,
-    ApiJson(request): ApiJson<AbsolutePointerRequest>,
-) -> Result<impl IntoResponse, ApiError> {
+pub(super) async fn send_mouse_absolute(
+    state: &AppState,
+    request: AbsolutePointerRequest,
+) -> Result<(), ApiError> {
     let config = state.config.read().await.hid.clone();
     if resolved_pointer_mode(&config) != PointerMode::Absolute {
         return Err(ApiError::new(
@@ -44,39 +30,22 @@ pub(super) async fn mouse_absolute(
         .hid
         .mouse_absolute(config.absolute_pointer_device, request)
         .await
-        .map_err(map_hid_error)?;
-    Ok(StatusCode::NO_CONTENT)
+        .map_err(map_hid_error)
 }
 
-pub(super) async fn mouse_click(
-    State(state): State<AppState>,
-    ApiJson(request): ApiJson<MouseClickRequest>,
-) -> Result<impl IntoResponse, ApiError> {
+pub(super) async fn send_mouse_click(state: &AppState, request: MouseClickRequest) -> Result<(), ApiError> {
     let config = state.config.read().await.hid.clone();
     let path = relative_mouse_path(&config)?;
-    state
-        .hid
-        .mouse_click(path, request)
-        .await
-        .map_err(map_hid_error)?;
-    Ok(StatusCode::NO_CONTENT)
+    state.hid.mouse_click(path, request).await.map_err(map_hid_error)
 }
 
-pub(super) async fn mouse_scroll(
-    State(state): State<AppState>,
-    ApiJson(request): ApiJson<MouseScrollRequest>,
-) -> Result<impl IntoResponse, ApiError> {
+pub(super) async fn send_mouse_scroll(state: &AppState, request: MouseScrollRequest) -> Result<(), ApiError> {
     let config = state.config.read().await.hid.clone();
     let path = relative_mouse_path(&config)?;
-    state
-        .hid
-        .mouse_scroll(path, request)
-        .await
-        .map_err(map_hid_error)?;
-    Ok(StatusCode::NO_CONTENT)
+    state.hid.mouse_scroll(path, request).await.map_err(map_hid_error)
 }
 
-pub(super) async fn release_all(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
+pub(super) async fn send_release_all(state: &AppState) -> Result<(), ApiError> {
     let config = state.config.read().await.hid.clone();
     state
         .hid
@@ -86,7 +55,54 @@ pub(super) async fn release_all(State(state): State<AppState>) -> Result<impl In
             config.absolute_pointer_device,
         )
         .await
-        .map_err(map_hid_error)?;
+        .map_err(map_hid_error)
+}
+
+pub(super) async fn key(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<KeyRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(no_store(Json(send_key(&state, request).await?)))
+}
+
+pub(super) async fn get_keyboard_leds(State(state): State<AppState>) -> impl IntoResponse {
+    no_store(Json(state.hid.leds()))
+}
+
+pub(super) async fn mouse_move(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<MouseMoveRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    send_mouse_move(&state, request).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(super) async fn mouse_absolute(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<AbsolutePointerRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    send_mouse_absolute(&state, request).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(super) async fn mouse_click(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<MouseClickRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    send_mouse_click(&state, request).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(super) async fn mouse_scroll(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<MouseScrollRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    send_mouse_scroll(&state, request).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(super) async fn release_all(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
+    send_release_all(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
