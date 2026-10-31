@@ -177,12 +177,10 @@ mod tests {
         assert!(INDEX_HTML.contains("id=\"led-num\""));
         assert!(INDEX_HTML.contains("id=\"led-caps\""));
         assert!(INDEX_HTML.contains("id=\"led-scroll\""));
-        assert!(INDEX_HTML.contains("id=\"inspector-led-num\""));
-        assert!(INDEX_HTML.contains("id=\"inspector-led-caps\""));
-        assert!(INDEX_HTML.contains("id=\"inspector-led-scroll\""));
+        // The console header strip is the single LED indicator.
+        assert!(!INDEX_HTML.contains("inspector-led-num"));
         assert!(INDEX_HTML.contains("renderKeyboardLeds"));
-        assert!(INDEX_HTML.contains("keyboard_leds_title"));
-        assert!(INDEX_HTML.contains("led-badge"));
+                assert!(INDEX_HTML.contains("led-badge"));
         assert!(INDEX_HTML.contains("led-dot"));
     }
 
@@ -258,10 +256,11 @@ mod tests {
 
     #[test]
     fn host_performance_monitoring_ui_and_scripts_present() {
-        assert!(INDEX_HTML.contains("host-perf-card"));
-        assert!(INDEX_HTML.contains("perf-cpu-val"));
-        assert!(INDEX_HTML.contains("perf-mem-val"));
-        assert!(INDEX_HTML.contains("perf-disk-val"));
+        // Metrics live in the top-bar popover and diagnostics, not the video panel.
+        assert!(!INDEX_HTML.contains("host-perf-card"));
+        assert!(INDEX_HTML.contains("id=\"pop-cpu-val\""));
+        assert!(INDEX_HTML.contains("id=\"pop-mem-val\""));
+        assert!(INDEX_HTML.contains("id=\"pop-disk-val\""));
         assert!(INDEX_HTML.contains("id=\"diag-cpu\""));
         assert!(INDEX_HTML.contains("id=\"diag-mem\""));
         assert!(INDEX_HTML.contains("id=\"diag-disk\""));

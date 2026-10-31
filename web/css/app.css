@@ -93,9 +93,6 @@
 :root[data-theme="dark"] .diagnostics-card {
   background: var(--soft-2);
 }
-:root[data-theme="dark"] .host-perf-card {
-  background: var(--soft-2);
-}
 :root[data-theme="dark"] .perf-badge {
   background: rgba(50, 145, 255, 0.18);
   border-color: rgba(50, 145, 255, 0.35);
@@ -274,9 +271,6 @@
     border-color: var(--line-strong);
   }
   :root:not([data-theme="light"]) .diagnostics-card {
-    background: var(--soft-2);
-  }
-  :root:not([data-theme="light"]) .host-perf-card {
     background: var(--soft-2);
   }
   :root:not([data-theme="light"]) .perf-badge {
@@ -1618,17 +1612,6 @@ button:active:not(:disabled),
   gap: 4px;
   flex-shrink: 0;
 }
-.inspector-led-strip {
-  display: flex;
-  gap: 8px;
-  margin-top: 10px;
-}
-.inspector-led-strip .led-badge {
-  flex: 1;
-  justify-content: center;
-  min-height: 32px;
-  font-size: 11px;
-}
 .led-badge {
   display: inline-flex;
   align-items: center;
@@ -2873,31 +2856,6 @@ button.topbar-center[aria-expanded="true"] svg {
 .preset-chip:active {
   transform: scale(0.96);
 }
-.host-perf-card {
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--soft);
-  margin: 0 0 14px;
-}
-.host-perf-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-.host-perf-head strong {
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: -0.2px;
-  color: var(--ink);
-}
-.perf-head-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
 .perf-badge {
   display: inline-flex;
   align-items: center;
@@ -2923,36 +2881,6 @@ button.topbar-center[aria-expanded="true"] svg {
     monospace;
   color: var(--muted);
 }
-.perf-metrics-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-.perf-metric {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-.perf-metric-meta {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 4px;
-}
-.perf-metric-meta span {
-  font-size: 11px;
-  color: var(--muted);
-  font-weight: 500;
-  white-space: nowrap;
-}
-.perf-metric-meta strong {
-  font:
-    600 13px/16px "Geist Mono",
-    ui-monospace,
-    monospace;
-  color: var(--ink);
-}
 .perf-bar {
   height: 5px;
   width: 100%;
@@ -2969,17 +2897,6 @@ button.topbar-center[aria-expanded="true"] svg {
   transition:
     width 240ms ease,
     background-color 240ms ease;
-}
-.perf-sub {
-  font:
-    10px/14px "Geist Mono",
-    ui-monospace,
-    monospace;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-top: 1px;
 }
 .topbar-center-wrap {
   display: flex;

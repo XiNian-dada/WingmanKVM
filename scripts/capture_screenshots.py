@@ -366,7 +366,6 @@ def capture_console():
                 inState.classList.add('active');
             }}
             document.querySelector('#led-num')?.classList.add('active');
-            document.querySelector('#inspector-led-num')?.classList.add('active');
             if (typeof renderSystemMetrics === 'function') renderSystemMetrics({json.dumps(mock_system)});
         }}""")
         page.wait_for_timeout(400)

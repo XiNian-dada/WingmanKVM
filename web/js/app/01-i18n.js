@@ -408,9 +408,6 @@
     $('#led-num')?.setAttribute('title', numTitle);
     $('#led-caps')?.setAttribute('title', capsTitle);
     $('#led-scroll')?.setAttribute('title', scrlTitle);
-    $('#inspector-led-num')?.setAttribute('title', numTitle);
-    $('#inspector-led-caps')?.setAttribute('title', capsTitle);
-    $('#inspector-led-scroll')?.setAttribute('title', scrlTitle);
     $('#topbar-perf-btn')?.setAttribute('title', t('perf_hud_title', '主控机性能 (点击查看详情)'));
     const langLabel = $('#lang-current-label');
     if (langLabel) langLabel.textContent = I18N[currentLang]?.lang_name || '简';

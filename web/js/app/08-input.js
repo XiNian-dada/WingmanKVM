@@ -272,9 +272,6 @@
     $('#led-num')?.classList.toggle('active', num);
     $('#led-caps')?.classList.toggle('active', caps);
     $('#led-scroll')?.classList.toggle('active', scrl);
-    $('#inspector-led-num')?.classList.toggle('active', num);
-    $('#inspector-led-caps')?.classList.toggle('active', caps);
-    $('#inspector-led-scroll')?.classList.toggle('active', scrl);
     $('#virtual-keyboard')?.querySelector('[data-key="CapsLock"]')?.classList.toggle('active', caps);
   }
   $$('[data-led]').forEach((button) =>

@@ -179,18 +179,6 @@
             <h3 class="panel-title" data-i18n="remote_control">远程控制</h3>
             <div class="panel-section"><div class="control-card"><div><strong data-i18n="forward_input">转发键鼠</strong><p id="input-shortcut-hint" class="shortcut-hint">本地退出：Ctrl + Alt + `（不会发送到被控机）；相对鼠标模式下聚焦画面按 Enter 捕获鼠标</p></div><label class="switch"><input id="remote-input" type="checkbox" aria-label="转发键盘和鼠标" aria-describedby="input-shortcut-hint local-exit-hint" aria-keyshortcuts="Control+Alt+Backquote"><i></i></label></div></div>
             <div class="panel-section"><div class="key-strip inspector-keys" aria-label="特殊按键"><button type="button" data-key="Escape">Esc</button><button type="button" data-key="Delete">Del</button><button type="button" data-key="F1">F1</button><button type="button" data-key="F2">F2</button><button type="button" data-key="F3">F3</button><button type="button" data-key="F4">F4</button><button type="button" data-key="F5">F5</button><button type="button" data-key="F6">F6</button><button type="button" data-key="F7">F7</button><button type="button" data-key="F8">F8</button><button type="button" data-key="F9">F9</button><button type="button" data-key="F10">F10</button><button type="button" data-key="F11">F11</button><button type="button" data-key="F12">F12</button></div></div>
-            <div class="panel-section">
-              <div class="control-card">
-                <div>
-                  <strong data-i18n="keyboard_leds_title">键盘锁定状态</strong>
-                  <p data-i18n="keyboard_leds_desc">远程主机键盘锁定指示灯（点击快速切换）</p>
-                </div>
-              </div>
-              <div class="keyboard-led-strip inspector-led-strip" aria-label="键盘指示灯">
-                <button id="inspector-led-num" class="led-badge" type="button" data-led="NumLock" title="Num Lock"><span class="led-dot"></span><span class="led-text">1 NUM</span></button>
-                <button id="inspector-led-caps" class="led-badge" type="button" data-led="CapsLock" title="Caps Lock"><span class="led-dot"></span><span class="led-text">A CAPS</span></button>
-                <button id="inspector-led-scroll" class="led-badge" type="button" data-led="ScrollLock" title="Scroll Lock"><span class="led-dot"></span><span class="led-text">⤓ SCRL</span></button>
-              </div>
             </div>
             <div class="panel-section">
               <div class="power-row">
@@ -217,32 +205,6 @@
           </section>
           <section class="inspector-panel" id="panel-video" role="tabpanel" data-panel="video" hidden>
             <h3 class="panel-title" data-i18n="tab_video">视频</h3>
-            <div class="host-perf-card">
-              <div class="host-perf-head">
-                <strong data-i18n="host_performance">主控机性能</strong>
-                <div class="perf-head-meta">
-                  <span id="perf-temp-badge" class="perf-badge hidden"><span id="perf-temp-val">--</span>°C</span>
-                  <span id="perf-uptime" class="perf-uptime">--</span>
-                </div>
-              </div>
-              <div class="perf-metrics-grid">
-                <div class="perf-metric">
-                  <div class="perf-metric-meta"><span data-i18n="cpu_usage">CPU</span><strong id="perf-cpu-val">--%</strong></div>
-                  <div class="perf-bar"><i id="perf-cpu-bar"></i></div>
-                  <div class="perf-sub"><span id="perf-cpu-cores">-- 核</span> · <span id="perf-load">负载: --</span></div>
-                </div>
-                <div class="perf-metric">
-                  <div class="perf-metric-meta"><span data-i18n="memory_usage">内存</span><strong id="perf-mem-val">--%</strong></div>
-                  <div class="perf-bar"><i id="perf-mem-bar"></i></div>
-                  <div class="perf-sub"><span id="perf-mem-detail">-- / --</span></div>
-                </div>
-                <div class="perf-metric">
-                  <div class="perf-metric-meta"><span data-i18n="disk_usage">存储</span><strong id="perf-disk-val">--%</strong></div>
-                  <div class="perf-bar"><i id="perf-disk-bar"></i></div>
-                  <div class="perf-sub"><span id="perf-disk-detail">-- / --</span></div>
-                </div>
-              </div>
-            </div>
             <div class="video-preset-chips" aria-label="视频预设模式">
               <button type="button" class="preset-chip" data-video-preset="desktop" data-i18n="preset_desktop">桌面优化 (1080p 60fps 8M)</button>
               <button type="button" class="preset-chip" data-video-preset="bios" data-i18n="preset_bios">BIOS / UEFI (720p 30fps MJPEG)</button>

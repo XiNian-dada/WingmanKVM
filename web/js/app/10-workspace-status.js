@@ -223,155 +223,70 @@
     $('#diagnostics-toggle')?.click();
   });
 
+  // Host metrics appear in two places: the compact top-bar chip + popover and
+  // the full diagnostics panel. Each value is computed once and written to both.
+  function setText(selector, text) {
+    const el = $(selector);
+    if (el) el.textContent = text;
+  }
+  function setBar(selector, pct) {
+    const bar = $(selector);
+    if (!bar) return;
+    bar.style.width = `${pct}%`;
+    bar.style.backgroundColor = pct > 85 ? 'var(--red)' : pct > 70 ? 'var(--amber)' : 'var(--blue)';
+  }
+  function clampPercent(value) {
+    return Math.min(100, Math.max(0, Number(value) || 0));
+  }
   function renderSystemMetrics(sys) {
     if (!sys) return;
     latestSystemStatus = sys;
-    const cpu = sys.cpu,
-      mem = sys.memory,
-      disk = sys.disk;
+    const { cpu, memory: mem, disk } = sys;
     if (cpu) {
-      const cpuPct = Math.min(100, Math.max(0, Number(cpu.percent) || 0));
-      const cpuStr = `${cpuPct.toFixed(1)}%`,
-        cpuRoundStr = `${Math.round(cpuPct)}%`;
-      const cpuBarColor = cpuPct > 85 ? 'var(--red)' : cpuPct > 70 ? 'var(--amber)' : 'var(--blue)';
-      const coresStr = `${cpu.cores || 1} ${t('cpu_cores', '核')}`;
-      const cpuEl = $('#perf-cpu-val'),
-        bar = $('#perf-cpu-bar');
-      if (cpuEl) cpuEl.textContent = cpuStr;
-      if (bar) {
-        bar.style.width = `${cpuPct}%`;
-        bar.style.backgroundColor = cpuBarColor;
-      }
-      const coresEl = $('#perf-cpu-cores');
-      if (coresEl) coresEl.textContent = coresStr;
-      const diagCpu = $('#diag-cpu');
-      if (diagCpu) diagCpu.textContent = `${cpuStr} (${coresStr})`;
-      const topbarCpu = $('#topbar-cpu-val');
-      if (topbarCpu) topbarCpu.textContent = cpuStr;
-      const topbarCompact = $('#topbar-compact-val');
-      if (topbarCompact) topbarCompact.textContent = cpuRoundStr;
-      const popCpu = $('#pop-cpu-val');
-      if (popCpu) popCpu.textContent = cpuStr;
-      const popBar = $('#pop-cpu-bar');
-      if (popBar) {
-        popBar.style.width = `${cpuPct}%`;
-        popBar.style.backgroundColor = cpuBarColor;
-      }
-      const popCores = $('#pop-cpu-cores');
-      if (popCores) popCores.textContent = coresStr;
+      const pct = clampPercent(cpu.percent),
+        text = `${pct.toFixed(1)}%`,
+        cores = `${cpu.cores || 1} ${t('cpu_cores', '核')}`;
+      setText('#topbar-cpu-val', text);
+      setText('#topbar-compact-val', `${Math.round(pct)}%`);
+      setText('#pop-cpu-val', text);
+      setText('#pop-cpu-cores', cores);
+      setBar('#pop-cpu-bar', pct);
+      setText('#diag-cpu', `${text} (${cores})`);
     }
-    if (sys.load_avg && Array.isArray(sys.load_avg)) {
-      const load1 = sys.load_avg.length > 0 ? Number(sys.load_avg[0]).toFixed(2) : '--';
-      const loadStr = sys.load_avg.map((v) => Number(v).toFixed(2)).join(', ');
-      const loadEl = $('#perf-load');
-      if (loadEl) {
-        loadEl.textContent = `${t('load', '负载')} ${load1}`;
-        loadEl.title = `${t('load_average', '系统负载')}: ${loadStr}`;
-      }
-      const diagLoad = $('#diag-load');
-      if (diagLoad) diagLoad.textContent = loadStr;
-      const popLoad = $('#pop-load-val');
-      if (popLoad) popLoad.textContent = loadStr;
+    if (Array.isArray(sys.load_avg)) {
+      const load = sys.load_avg.map((v) => Number(v).toFixed(2)).join(', ');
+      setText('#pop-load-val', load);
+      setText('#diag-load', load);
     }
-    if (mem) {
-      const memPct = Math.min(100, Math.max(0, Number(mem.percent) || 0));
-      const memStr = `${memPct.toFixed(0)}%`;
-      const memBarColor = memPct > 85 ? 'var(--red)' : memPct > 70 ? 'var(--amber)' : 'var(--blue)';
-      const memDetailStr =
-        mem.total_bytes > 0 ? `${formatBytes(mem.used_bytes)} / ${formatBytes(mem.total_bytes)}` : '--';
-      const memEl = $('#perf-mem-val'),
-        bar = $('#perf-mem-bar');
-      if (memEl) memEl.textContent = memStr;
-      if (bar) {
-        bar.style.width = `${memPct}%`;
-        bar.style.backgroundColor = memBarColor;
-      }
-      const memDetail = $('#perf-mem-detail');
-      if (memDetail) memDetail.textContent = memDetailStr;
-      const diagMem = $('#diag-mem');
-      if (diagMem) diagMem.textContent = mem.total_bytes > 0 ? `${memDetailStr} (${memStr})` : '--';
-      const topbarMem = $('#topbar-mem-val');
-      if (topbarMem) topbarMem.textContent = memStr;
-      const popMem = $('#pop-mem-val');
-      if (popMem) popMem.textContent = memStr;
-      const popBar = $('#pop-mem-bar');
-      if (popBar) {
-        popBar.style.width = `${memPct}%`;
-        popBar.style.backgroundColor = memBarColor;
-      }
-      const popDetail = $('#pop-mem-detail');
-      if (popDetail) popDetail.textContent = memDetailStr;
+    for (const [key, usage] of [
+      ['mem', mem],
+      ['disk', disk],
+    ]) {
+      if (!usage) continue;
+      const pct = clampPercent(usage.percent),
+        text = `${pct.toFixed(0)}%`,
+        detail = usage.total_bytes > 0 ? `${formatBytes(usage.used_bytes)} / ${formatBytes(usage.total_bytes)}` : '--';
+      if (key === 'mem') setText('#topbar-mem-val', text);
+      setText(`#pop-${key}-val`, text);
+      setText(`#pop-${key}-detail`, detail);
+      setBar(`#pop-${key}-bar`, pct);
+      setText(`#diag-${key}`, usage.total_bytes > 0 ? `${detail} (${text})` : '--');
     }
-    if (disk) {
-      const diskPct = Math.min(100, Math.max(0, Number(disk.percent) || 0));
-      const diskStr = `${diskPct.toFixed(0)}%`;
-      const diskBarColor = diskPct > 85 ? 'var(--red)' : diskPct > 70 ? 'var(--amber)' : 'var(--blue)';
-      const diskDetailStr =
-        disk.total_bytes > 0 ? `${formatBytes(disk.used_bytes)} / ${formatBytes(disk.total_bytes)}` : '--';
-      const diskEl = $('#perf-disk-val'),
-        bar = $('#perf-disk-bar');
-      if (diskEl) diskEl.textContent = diskStr;
-      if (bar) {
-        bar.style.width = `${diskPct}%`;
-        bar.style.backgroundColor = diskBarColor;
-      }
-      const diskDetail = $('#perf-disk-detail');
-      if (diskDetail) diskDetail.textContent = diskDetailStr;
-      const diagDisk = $('#diag-disk');
-      if (diagDisk) diagDisk.textContent = disk.total_bytes > 0 ? `${diskDetailStr} (${diskStr})` : '--';
-      const popDisk = $('#pop-disk-val');
-      if (popDisk) popDisk.textContent = diskStr;
-      const popBar = $('#pop-disk-bar');
-      if (popBar) {
-        popBar.style.width = `${diskPct}%`;
-        popBar.style.backgroundColor = diskBarColor;
-      }
-      const popDetail = $('#pop-disk-detail');
-      if (popDetail) popDetail.textContent = diskDetailStr;
-    }
-    if (sys.temperature !== null && sys.temperature !== undefined) {
-      const temp = Number(sys.temperature);
-      const tempStr = temp.toFixed(1);
-      const isWarm = temp >= 75;
-      const tempBadge = $('#perf-temp-badge'),
-        tempVal = $('#perf-temp-val');
-      if (tempBadge && tempVal) {
-        tempBadge.classList.remove('hidden');
-        tempVal.textContent = tempStr;
-        tempBadge.classList.toggle('warning', isWarm);
-      }
-      const diagTempCard = $('#diag-temp-card'),
-        diagTemp = $('#diag-temp');
-      if (diagTempCard && diagTemp) {
-        diagTempCard.classList.remove('hidden');
-        diagTemp.textContent = `${tempStr} °C`;
-      }
-      const topbarTempSeg = $('#topbar-temp-seg'),
-        topbarTempVal = $('#topbar-temp-val');
-      if (topbarTempSeg && topbarTempVal) {
-        topbarTempSeg.classList.remove('hidden');
-        topbarTempVal.textContent = `${tempStr}°C`;
-      }
-      const popTempBadge = $('#pop-temp-badge'),
-        popTempVal = $('#pop-temp-val');
-      if (popTempBadge && popTempVal) {
-        popTempBadge.classList.remove('hidden');
-        popTempVal.textContent = tempStr;
-        popTempBadge.classList.toggle('warning', isWarm);
-      }
-    } else {
-      $('#perf-temp-badge')?.classList.add('hidden');
-      $('#diag-temp-card')?.classList.add('hidden');
-      $('#topbar-temp-seg')?.classList.add('hidden');
-      $('#pop-temp-badge')?.classList.add('hidden');
+    const hasTemp = sys.temperature !== null && sys.temperature !== undefined;
+    $('#diag-temp-card')?.classList.toggle('hidden', !hasTemp);
+    $('#topbar-temp-seg')?.classList.toggle('hidden', !hasTemp);
+    $('#pop-temp-badge')?.classList.toggle('hidden', !hasTemp);
+    if (hasTemp) {
+      const temp = Number(sys.temperature).toFixed(1);
+      setText('#diag-temp', `${temp} °C`);
+      setText('#topbar-temp-val', `${temp}°C`);
+      setText('#pop-temp-val', temp);
+      $('#pop-temp-badge')?.classList.toggle('warning', Number(sys.temperature) >= 75);
     }
     if (sys.uptime_seconds) {
-      const upStr = formatUptime(sys.uptime_seconds);
-      const upEl = $('#perf-uptime'),
-        diagUp = $('#diag-uptime'),
-        popUp = $('#pop-uptime-val');
-      if (upEl) upEl.textContent = upStr;
-      if (diagUp) diagUp.textContent = upStr;
-      if (popUp) popUp.textContent = upStr;
+      const uptime = formatUptime(sys.uptime_seconds);
+      setText('#diag-uptime', uptime);
+      setText('#pop-uptime-val', uptime);
     }
   }
+
