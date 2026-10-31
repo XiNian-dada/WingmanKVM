@@ -4,6 +4,7 @@ mod config_validate;
 mod error;
 mod extract;
 mod input;
+mod input_ws;
 mod login;
 mod media;
 mod passkey;
@@ -21,6 +22,7 @@ use self::config_validate::*;
 use self::error::*;
 use self::extract::*;
 use self::input::*;
+use self::input_ws::*;
 use self::login::*;
 use self::media::*;
 use self::passkey::*;
@@ -214,6 +216,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mouse/click", post(mouse_click))
         .route("/api/mouse/scroll", post(mouse_scroll))
         .route("/api/input/release-all", post(release_all))
+        .route("/api/input/ws", get(input_ws))
         .route("/api/hid/leds", get(get_keyboard_leds))
         .route("/api/gpio/test", post(gpio_test))
         .route("/api/power/test", post(gpio_test))
