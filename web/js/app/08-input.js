@@ -415,6 +415,12 @@
       return;
     }
     if (!inputEnabled()) setRemote(true);
+    if (!inputEnabled()) {
+      const message = tr('当前无法发送：请切换到远程画面并开启键鼠转发');
+      setPasteStatus(message, 'error');
+      toast(message, true);
+      return;
+    }
     resetVirtualModifiers();
     let canceled = false;
     pasteRun = {
