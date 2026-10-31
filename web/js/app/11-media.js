@@ -211,15 +211,19 @@
     items.forEach((item) => box.append(renderMediaItem(item, mountedName)));
     syncMediaBusy();
   }
+  const mediaTicket = latestOnly();
   async function refreshMedia() {
+    const isCurrent = mediaTicket();
     const ownsBusy = !mediaBusy;
     if (ownsBusy) {
       mediaBusy = true;
       syncMediaBusy();
     }
     try {
-      renderMedia(await request('/api/media'));
+      const media = await request('/api/media');
+      if (isCurrent()) renderMedia(media);
     } catch (error) {
+      if (!isCurrent()) return;
       mediaServerBusy = false;
       $('#media-list').textContent = error.message;
       const status = $('#media-status');

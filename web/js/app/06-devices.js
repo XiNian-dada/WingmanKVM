@@ -24,53 +24,59 @@
       debounce_ms: optionalNumber(value(form, 'power_led_debounce_ms')) ?? 50,
     };
   }
-  $('#device-config').addEventListener('submit', async (event) => {
+  $('#device-config').addEventListener('submit', (event) => {
     event.preventDefault();
     const f = event.currentTarget;
-    try {
-      const payload = {
-        hid: {
-          keyboard_device: value(f, 'keyboard_device') || null,
-          mouse_device: value(f, 'mouse_device') || null,
-          absolute_pointer_device: value(f, 'absolute_pointer_device') || null,
-          pointer_mode: value(f, 'pointer_mode'),
-        },
-        power: {
-          enabled: f.elements.power_enabled.checked,
-          gpio_chip: value(f, 'gpio_chip') || null,
-          gpio_line: optionalNumber(value(f, 'gpio_line')),
-          active_high: value(f, 'active_high') !== 'false',
-          reset_switch: gpioPulseFrom(f),
-          power_led: gpioInputFrom(f),
-        },
-      };
-      await request('/api/config', { method: 'POST', body: JSON.stringify(payload) });
-      bootstrap = await request('/api/bootstrap');
-      applyBootstrap();
-      toast('已保存');
-    } catch (e) {
-      toast(e.message, true);
-    }
+    submitOnce(f, async () => {
+      try {
+        const payload = {
+          hid: {
+            keyboard_device: value(f, 'keyboard_device') || null,
+            mouse_device: value(f, 'mouse_device') || null,
+            absolute_pointer_device: value(f, 'absolute_pointer_device') || null,
+            pointer_mode: value(f, 'pointer_mode'),
+          },
+          power: {
+            enabled: f.elements.power_enabled.checked,
+            gpio_chip: value(f, 'gpio_chip') || null,
+            gpio_line: optionalNumber(value(f, 'gpio_line')),
+            active_high: value(f, 'active_high') !== 'false',
+            reset_switch: gpioPulseFrom(f),
+            power_led: gpioInputFrom(f),
+          },
+        };
+        await request('/api/config', { method: 'POST', body: JSON.stringify(payload) });
+        bootstrap = await request('/api/bootstrap');
+        applyBootstrap();
+        toast('已保存');
+      } catch (e) {
+        toast(e.message, true);
+      }
+    });
   });
-  $('#media-config').addEventListener('submit', async (event) => {
+  $('#media-config').addEventListener('submit', (event) => {
     event.preventDefault();
-    const f = event.currentTarget,
-      payload = {
-        media: {
-          enabled: f.elements.enabled.checked,
-          lun_path: value(f, 'lun_path') || null,
-          image_directory: value(f, 'image_directory') || null,
-        },
-      };
-    try {
-      await request('/api/config', { method: 'POST', body: JSON.stringify(payload) });
-      toast('虚拟介质设置已保存');
-      await refreshMedia();
-    } catch (e) {
-      toast(e.message, true);
-    }
+    submitOnce(event.currentTarget, async () => {
+      const f = event.currentTarget,
+        payload = {
+          media: {
+            enabled: f.elements.enabled.checked,
+            lun_path: value(f, 'lun_path') || null,
+            image_directory: value(f, 'image_directory') || null,
+          },
+        };
+      try {
+        await request('/api/config', { method: 'POST', body: JSON.stringify(payload) });
+        toast('虚拟介质设置已保存');
+        await refreshMedia();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    });
   });
+  const scanTicket = latestOnly();
   async function scanDevices(target = $('#device-results')) {
+    const isCurrent = scanTicket();
     const setupTarget = target.id === 'setup-device-results',
       setupVisible = !setupForm.classList.contains('hidden');
     if (setupTarget) renderSetupDetection(null, true);
@@ -79,6 +85,7 @@
       const data = await request(setupVisible ? '/api/setup/devices' : '/api/devices/scan', {
         method: 'POST',
       });
+      if (!isCurrent()) return data;
       fillDetected(data);
       if (setupTarget) renderSetupDetection(data);
       else renderDeviceDetection(data);
@@ -86,6 +93,7 @@
       if (diagnostics) diagnostics.textContent = JSON.stringify(data, null, 2);
       return data;
     } catch (e) {
+      if (!isCurrent()) return;
       if (setupTarget) renderSetupDetection({ error: e.message });
       else renderDeviceDetection({ error: e.message });
       toast(e.message, true);

@@ -221,7 +221,9 @@
     }
   }
 
+  const passkeyTicket = latestOnly();
   async function refreshPasskeys() {
+    const isCurrent = passkeyTicket();
     const container = $('#passkey-items');
     const emptyHint = $('#passkey-empty-hint');
     const inspectorHint = $('#passkey-inspector-hint');
@@ -246,6 +248,7 @@
 
     try {
       const res = await request('/api/passkey/list');
+      if (!isCurrent()) return;
       const list = res.passkeys || [];
       if (!container) return;
       container.replaceChildren();

@@ -166,6 +166,30 @@
     }
     return data;
   }
+  // Returns a ticket factory: each call starts a new request generation and
+  // yields a check that is true only while no newer request has started, so a
+  // slow response cannot overwrite fresher state.
+  function latestOnly() {
+    let generation = 0;
+    return () => {
+      const mine = ++generation;
+      return () => mine === generation;
+    };
+  }
+  // Serializes a form submission: ignores re-entry while one is in flight and
+  // exposes the busy state to assistive technology.
+  async function submitOnce(form, run) {
+    const button = $('button[type=submit]', form);
+    if (form.getAttribute('aria-busy') === 'true') return;
+    form.setAttribute('aria-busy', 'true');
+    if (button) button.disabled = true;
+    try {
+      await run();
+    } finally {
+      form.setAttribute('aria-busy', 'false');
+      if (button) button.disabled = false;
+    }
+  }
   const rawValue = (form, name) => new FormData(form).get(name)?.toString() || '';
   const value = (form, name) => rawValue(form, name).trim();
   function clearAuthSecrets(options = {}) {
