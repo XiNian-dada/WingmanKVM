@@ -1108,11 +1108,16 @@ def overlay_rows(page):
     }""")
 
 
+ADAPTIVE_OFF = "localStorage.setItem('wingman_setting_adaptive_bitrate', 'false');"
+
+
 def quality_overlay_webrtc(browser, port, checks):
     """#81: stats deltas, persistence, and polling only while shown."""
     state = State()
     state.video.update(state="ready", message="", last_frame_age_ms=10)
-    context, page = media_page(browser, state, port, h264=True, stubs=(FAKE_PEER,))
+    # Adaptive bitrate (#82) also samples stats; this scenario covers the
+    # overlay alone, so it starts with adaptation turned off.
+    context, page = media_page(browser, state, port, h264=True, stubs=(FAKE_PEER, ADAPTIVE_OFF))
     try:
         page.wait_for_function("() => /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
         page.wait_for_timeout(1200)
@@ -1131,7 +1136,8 @@ def quality_overlay_webrtc(browser, port, checks):
         page.wait_for_function("() => document.querySelector('#quality-overlay').textContent.includes('Mbps')", timeout=4000)
         rows = overlay_rows(page)
         check(checks, rows == {"往返延迟": "25 ms", "接收码率": "1.00 Mbps", "丢包率": "1.0%", "解码帧率": "30",
-                               "抖动缓冲": "50 ms", "分辨率": "1920×1080"}, "quality_webrtc_stats_rendered", rows)
+                               "抖动缓冲": "50 ms", "自适应码率": "已关闭", "分辨率": "1920×1080"},
+              "quality_webrtc_stats_rendered", rows)
         page.wait_for_function("() => window.__statsCalls >= 3", timeout=4000)
         page.wait_for_timeout(50)
         rows = overlay_rows(page)
