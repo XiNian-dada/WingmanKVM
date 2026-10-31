@@ -432,3 +432,29 @@
 .form-status.error {
   color: var(--red);
 }
+
+/* Keyboard shortcut cheat sheet. */
+.shortcut-list {
+  display: grid;
+  gap: 8px;
+}
+.shortcut-row {
+  display: grid;
+  grid-template-columns: minmax(120px, auto) 1fr;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+.shortcut-row kbd {
+  justify-self: start;
+  padding: 2px 8px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--soft);
+  font:
+    12px/18px "Geist Mono",
+    ui-monospace,
+    monospace;
+  white-space: nowrap;
+}

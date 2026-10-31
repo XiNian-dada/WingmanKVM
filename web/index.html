@@ -349,6 +349,13 @@
             <span class="settings-group-title" data-i18n="settings_group_system">系统与重置</span>
             <div class="settings-item">
               <div class="settings-item-copy">
+                <strong>键盘快捷键</strong>
+                <span>查看本地快捷键；未转发键鼠时也可以直接按 ?</span>
+              </div>
+              <button id="shortcut-open" class="secondary" type="button">查看</button>
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-copy">
                 <strong data-i18n="settings_reset_btn">恢复默认设置</strong>
                 <span data-i18n="settings_reset_desc">清除所有保存在本机的偏好设置并还原为初始默认值</span>
               </div>
@@ -366,6 +373,13 @@
           <button class="secondary" type="submit" value="cancel">取消</button>
           <button id="power-confirm-ok" class="primary" type="button"><span class="hold-fill" aria-hidden="true"></span><span class="hold-label"></span></button>
         </div>
+      </form>
+    </dialog>
+    <dialog id="shortcut-dialog" class="power-confirm" aria-labelledby="shortcut-dialog-title">
+      <form method="dialog" class="power-confirm-body">
+        <h3 id="shortcut-dialog-title">键盘快捷键</h3>
+        <div class="shortcut-list"><div class="shortcut-row"><kbd>Ctrl + Alt + `</kbd><span>本地退出键鼠转发（不会发送到被控机）</span></div><div class="shortcut-row"><kbd>Enter</kbd><span>相对鼠标模式下，聚焦画面时捕获鼠标</span></div><div class="shortcut-row"><kbd>Esc</kbd><span>未转发键鼠时：收起控制面板或关闭弹层</span></div><div class="shortcut-row"><kbd>Alt + 拖拽 / 中键拖拽</kbd><span>1:1 显示时平移画面</span></div><div class="shortcut-row"><kbd>F11</kbd><span>浏览器全屏</span></div><div class="shortcut-row"><kbd>?</kbd><span>未转发键鼠时：打开本速查表</span></div></div>
+        <div class="power-confirm-actions"><button class="primary" type="submit">知道了</button></div>
       </form>
     </dialog>
     <dialog id="keyboard-dialog"><div class="keyboard-sheet"><div class="dialog-head"><h3 data-i18n="virtual_keyboard">虚拟键盘</h3><button id="paste-typing-btn" class="secondary" type="button" title="把文本按 US 键盘布局逐字键入被控机">粘贴为键入</button><button class="secondary" type="button" data-close data-i18n="close">收起</button></div><div id="virtual-keyboard" class="keyboard"></div></div></dialog>

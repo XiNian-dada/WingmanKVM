@@ -477,9 +477,31 @@ def inline_save_feedback(browser, port, checks):
     finally:
         context.close()
 
+
+def shortcut_sheet(browser, port, checks):
+    """#57: "?" opens the shortcut cheat sheet only while input is local."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        page.locator("#video-viewport").focus()
+        page.keyboard.press("Shift+Slash")
+        page.wait_for_timeout(200)
+        opened = page.evaluate("() => document.querySelector('#shortcut-dialog').open")
+        check(checks, opened, "question_mark_opens_sheet", opened)
+        page.keyboard.press("Escape")
+        page.click("#input-state")
+        before = len(state.key_posts)
+        page.keyboard.press("Shift+Slash")
+        page.wait_for_timeout(200)
+        opened = page.evaluate("() => document.querySelector('#shortcut-dialog').open")
+        check(checks, not opened and len(state.key_posts) > before,
+              "question_mark_forwarded_while_controlling", (opened, state.key_posts[before:]))
+    finally:
+        context.close()
+
 SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation, low_risk_ui,
              language_coverage, power_confirmation, media_drop_upload, paste_as_typing, custom_shortcuts,
-             inline_save_feedback]
+             inline_save_feedback, shortcut_sheet]
 
 if __name__ == "__main__":
     sys.exit(main())
