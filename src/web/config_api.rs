@@ -23,7 +23,15 @@ pub(super) struct ConfigExport {
 }
 
 impl ConfigExport {
-    fn new(config: Config) -> Self {
+    fn new(mut config: Config) -> Self {
+        // Backups are often shared or stored loosely; notification
+        // credentials stay on the device. The ntfy topic is included because
+        // anyone who knows it can read the topic.
+        let notifications = &mut config.notifications;
+        notifications.webhook.url = None;
+        notifications.ntfy.token = None;
+        notifications.ntfy.topic = None;
+        notifications.telegram.bot_token = None;
         let (_, exported_at) = utc_date_and_timestamp();
         Self {
             format: CONFIG_EXPORT_FORMAT,
@@ -179,18 +187,27 @@ pub(super) async fn preview_import_config(
 
 pub(super) async fn import_config(
     State(state): State<AppState>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
+    headers: HeaderMap,
     ApiJson(file): ApiJson<ConfigImportFile>,
 ) -> Result<Response, ApiError> {
     let imported = file.into_config()?;
-    import_config_with_state(state, imported).await
+    let (response, previous, current) = import_config_with_state(state.clone(), imported).await?;
+    audit_config_change(&state, connection, &headers, &previous, &current).await;
+    Ok(response)
 }
 
 async fn import_config_with_state(
     state: AppState,
-    imported: Config,
-) -> Result<Response, ApiError> {
+    mut imported: Config,
+) -> Result<(Response, Config, Config), ApiError> {
     let _update_guard = state.config_update.lock().await;
     let previous = state.config.read().await.clone();
+    // Exports omit notification credentials; keep the device's own.
+    imported.notifications.inherit_secrets(&previous.notifications);
+    if imported.notifications.ntfy_topic().is_none() {
+        imported.notifications.ntfy.topic.clone_from(&previous.notifications.ntfy.topic);
+    }
     let changes = config_changes(&previous, &imported);
     let restart_required = listen_address_changed(&previous, &imported);
     commit_config(&state, &imported).await?;
@@ -206,7 +223,7 @@ async fn import_config_with_state(
             HeaderValue::from_static("true"),
         );
     }
-    Ok(response)
+    Ok((response, previous, imported))
 }
 
 pub(super) struct FullConfigUpdate(Config);
@@ -923,6 +940,7 @@ mod tests {
             config: Arc::new(RwLock::new(config)),
             config_path: Arc::new(path.clone()),
             auth: AuthStore::new(path.with_file_name("auth.json")),
+            audit: AuditLog::new(path.parent().unwrap()),
             sessions: SessionStore::default(),
             setup: Arc::new(AsyncMutex::new(())),
             config_update: Arc::new(AsyncMutex::new(())),
@@ -936,10 +954,12 @@ mod tests {
             power: PowerManager::new(),
             media: Arc::new(MediaManager::default()),
             media_upload: Arc::new(AsyncMutex::new(())),
+            media_download: Arc::new(MediaDownloadManager::new().unwrap()),
             video,
             webrtc,
             system: Arc::new(crate::system::SystemMonitor::new()),
             metrics: Arc::new(RuntimeMetrics::new()),
+            notifier: crate::notify::Notifier::new(Default::default()),
         }
     }
 
@@ -1117,6 +1137,40 @@ mod tests {
         task.await.unwrap().expect("import should complete");
         assert_eq!(state.config.read().await.server.port, 9090);
         assert_eq!(Config::load(&path).unwrap().server.port, 9090);
+    }
+
+    fn with_notification_secrets(mut config: Config) -> Config {
+        let notifications = &mut config.notifications;
+        notifications.webhook.url = Some("https://hooks.example/SECRET-WEBHOOK".into());
+        notifications.ntfy.token = Some("SECRET-NTFY-TOKEN".into());
+        notifications.ntfy.topic = Some("SECRET-NTFY-TOPIC".into());
+        notifications.telegram.bot_token = Some("123456:SECRET-BOT-TOKEN".into());
+        notifications.telegram.chat_id = Some("12345".into());
+        config
+    }
+
+    #[test]
+    fn export_omits_notification_secrets() {
+        let config = with_notification_secrets(Config::default());
+        let text = serde_json::to_string(&ConfigExport::new(config)).unwrap();
+        assert!(!text.contains("SECRET-"), "notification secret leaked: {text}");
+        assert!(text.contains("12345"), "non-secret settings stay in the export");
+    }
+
+    #[tokio::test]
+    async fn import_keeps_existing_notification_secrets() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("config.json");
+        let config = with_notification_secrets(Config::default());
+        config.save_atomic(&path).unwrap();
+        let state = test_state(config.clone(), path);
+
+        let document = serde_json::to_value(ConfigExport::new(config.clone())).unwrap();
+        let file: ConfigImportFile = serde_json::from_value(document).unwrap();
+        import_config_with_state(state.clone(), file.into_config().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(state.config.read().await.notifications, config.notifications);
     }
 
     #[test]
