@@ -23,6 +23,7 @@ pub(super) async fn login(
     };
     let auth = state.auth.clone();
     let username = request.username;
+    let username_for_audit = username.clone();
     let password = request.password;
     let password_for_verification = password.clone();
     let verified = run_with_password_slot(password_slot, move || {
@@ -36,6 +37,15 @@ pub(super) async fn login(
     .await?;
 
     let Some(verified) = verified else {
+        state
+            .audit
+            .record(
+                AuditEvent::LoginFailed,
+                Some(client_ip),
+                None,
+                Some(login_failure_detail(&username_for_audit)),
+            )
+            .await;
         return Err(ApiError::new(
             StatusCode::UNAUTHORIZED,
             "用户名或密码不正确",
@@ -63,7 +73,24 @@ pub(super) async fn login(
     }
     let terminal_message = (!terminal_ready).then_some(TERMINAL_DEGRADED_MESSAGE);
 
-    let session = state.sessions.create().map_err(ApiError::internal)?;
+    let session = state
+        .sessions
+        .create_with_metadata(SessionMetadata {
+            client_ip: Some(client_ip),
+            user_agent: client_user_agent(&headers),
+            login_method: Some(LoginMethod::Password),
+        })
+        .map_err(ApiError::internal)?;
+    let session_id = state.sessions.session_id(&session);
+    state
+        .audit
+        .record(
+            AuditEvent::LoginSucceeded,
+            Some(client_ip),
+            session_id,
+            Some("method=password".to_owned()),
+        )
+        .await;
     let session_secure = state.config.read().await.server.session_cookie_secure();
     Ok(with_session_cookie(
         Json(json!({
@@ -104,9 +131,33 @@ where
     .map_err(map_auth_error)
 }
 
-pub(super) async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub(super) fn login_failure_detail(username: &str) -> String {
+    // Only the submitted username may be recorded. Passwords, passkey
+    // material, and every other request field never reach the audit log.
+    let username: String = username
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(64)
+        .collect();
+    format!("method=password username={username}")
+}
+
+pub(super) async fn logout(
+    State(state): State<AppState>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
+    headers: HeaderMap,
+) -> Response {
+    let ip = Some(state.client_address(connection, &headers).await.ip);
+    let mut revoked_session = None;
     if let Some(token) = session_token(&headers) {
+        revoked_session = state.sessions.session_id(token);
         state.sessions.revoke(token);
+    }
+    if let Some(session_id) = revoked_session {
+        state
+            .audit
+            .record(AuditEvent::Logout, ip, Some(session_id), None)
+            .await;
     }
     let session_secure = state.config.read().await.server.session_cookie_secure();
     with_session_cookie(
@@ -209,6 +260,18 @@ pub(super) fn prune_login_attempts(attempts: &mut HashMap<IpAddr, VecDeque<Insta
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_login_audit_contains_only_the_username_and_method() {
+        let detail = login_failure_detail("admin");
+        assert_eq!(detail, "method=password username=admin");
+        assert!(!detail.contains("Correct-Horse7!"));
+        assert!(!detail.contains("password="));
+
+        let noisy = login_failure_detail(&format!("bad\nname{}", "x".repeat(200)));
+        assert!(!noisy.contains('\n'));
+        assert!(noisy.chars().count() <= "method=password username=".len() + 64);
+    }
 
     #[test]
     fn twelve_concurrent_reservations_admit_exactly_five() {

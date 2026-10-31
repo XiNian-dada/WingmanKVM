@@ -107,6 +107,117 @@ pub(super) fn no_store<T: IntoResponse>(value: T) -> Response {
     response
 }
 
+/// Resolve the acting client IP and public session id for an audit entry.
+pub(super) async fn audit_actor(
+    state: &AppState,
+    connection: ClientConnection,
+    headers: &HeaderMap,
+) -> (Option<IpAddr>, Option<String>) {
+    let ip = Some(state.client_address(connection, headers).await.ip);
+    let session = session_token(headers).and_then(|token| state.sessions.session_id(token));
+    (ip, session)
+}
+
+pub(super) fn client_user_agent(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+}
+
+#[derive(Deserialize)]
+pub(super) struct RevokeSessionRequest {
+    pub(super) id: String,
+}
+
+#[derive(Serialize)]
+pub(super) struct SessionListItem {
+    #[serde(flatten)]
+    pub(super) summary: SessionSummary,
+    pub(super) current: bool,
+}
+
+pub(super) async fn list_sessions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    let current = session_token(&headers).and_then(|token| state.sessions.session_id(token));
+    let sessions: Vec<_> = state
+        .sessions
+        .list()
+        .into_iter()
+        .map(|summary| SessionListItem {
+            current: current.as_deref() == Some(summary.id.as_str()),
+            summary,
+        })
+        .collect();
+    no_store(Json(json!({ "sessions": sessions }))).into_response()
+}
+
+pub(super) async fn revoke_session(
+    State(state): State<AppState>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<RevokeSessionRequest>,
+) -> Result<Response, ApiError> {
+    if request.id.is_empty() || request.id.len() > 128 {
+        return Err(ApiError::bad_request("会话标识不正确"));
+    }
+    let (ip, current_id) = audit_actor(&state, connection, &headers).await;
+    let revoking_self = current_id.as_deref() == Some(request.id.as_str());
+    if !state.sessions.revoke_by_id(&request.id) {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "会话不存在或已下线"));
+    }
+    state
+        .audit
+        .record(
+            AuditEvent::SessionRevoked,
+            ip,
+            Some(request.id.clone()),
+            Some(if revoking_self {
+                "self".to_owned()
+            } else {
+                "other".to_owned()
+            }),
+        )
+        .await;
+
+    let response = Json(json!({ "ok": true })).into_response();
+    if revoking_self {
+        // Revoking the acting session is a logout: clear the HttpOnly cookie
+        // in the same response so the browser cannot keep presenting it.
+        let session_secure = state.config.read().await.server.session_cookie_secure();
+        Ok(with_session_cookie(response, None, session_secure))
+    } else {
+        Ok(no_store(response))
+    }
+}
+
+pub(super) async fn revoke_other_sessions(
+    State(state): State<AppState>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let Some(token) = session_token(&headers) else {
+        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "需要登录"));
+    };
+    let Some(current_id) = state.sessions.session_id(token) else {
+        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "需要登录"));
+    };
+    let ip = Some(state.client_address(connection, &headers).await.ip);
+    let revoked = state.sessions.revoke_all_except(token);
+    state
+        .audit
+        .record(
+            AuditEvent::SessionsRevokedOthers,
+            ip,
+            Some(current_id),
+            Some(format!("count={revoked}")),
+        )
+        .await;
+    Ok(no_store(Json(json!({ "ok": true, "revoked": revoked }))).into_response())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

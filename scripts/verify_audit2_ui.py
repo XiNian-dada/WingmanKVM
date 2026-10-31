@@ -4,7 +4,7 @@
 Reuses the P2b mocked API harness: real DOM, real browser keyboard/pointer
 events and the real UI state machine; no hardware is touched.
 """
-import argparse, inspect, json, os, sys
+import argparse, inspect, json, os, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -917,6 +917,103 @@ def terminal_kept_in_background(browser, port, checks):
         page.wait_for_timeout(300)
         live = page.evaluate("() => document.querySelector('[data-workspace=\"terminal\"]').classList.contains('session-live')")
         check(checks, len(sockets) == 1 and not live, "returning_reuses_session_and_clears_mark", (len(sockets), live))
+    finally:
+        context.close()
+
+
+def sessions_and_audit(browser, port, checks):
+    """#68: session list, revocation controls and the audit log render."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    now_ms = int(time.time() * 1000)
+    sessions = [
+        {"id": "pub-current", "created_at_unix_ms": now_ms - 3_600_000,
+         "last_seen_unix_ms": now_ms - 5_000, "client_ip": "203.0.113.5",
+         "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+         "login_method": "password", "current": True},
+        {"id": "pub-other", "created_at_unix_ms": now_ms - 7_200_000,
+         "last_seen_unix_ms": now_ms - 120_000, "client_ip": "198.51.100.7",
+         "user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                       "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile Safari/604.1",
+         "login_method": "passkey", "current": False},
+    ]
+    audit_entries = [
+        {"ts": now_ms - 2_000, "event": "login_succeeded", "ip": "203.0.113.5",
+         "session": "pub-current", "detail": "method=password"},
+        {"ts": now_ms - 60_000, "event": "power_action", "ip": "198.51.100.7",
+         "session": "pub-other", "detail": "press"},
+    ]
+    calls = {"sessions": 0, "audit": 0, "revoke": [], "others": 0}
+
+    def sessions_route(route):
+        calls["sessions"] += 1
+        route.fulfill(status=200, content_type="application/json",
+                      body=json.dumps({"sessions": sessions}))
+
+    def audit_route(route):
+        calls["audit"] += 1
+        route.fulfill(status=200, content_type="application/json",
+                      body=json.dumps({"entries": audit_entries}))
+
+    def revoke_route(route):
+        calls["revoke"].append(json.loads(route.request.post_data or "{}").get("id"))
+        route.fulfill(status=200, content_type="application/json", body='{"ok":true}')
+
+    def others_route(route):
+        calls["others"] += 1
+        route.fulfill(status=200, content_type="application/json",
+                      body='{"ok":true,"revoked":1}')
+
+    page.route("**/api/sessions", sessions_route)
+    page.route("**/api/sessions/revoke", revoke_route)
+    page.route("**/api/sessions/revoke-others", others_route)
+    page.route("**/api/audit*", audit_route)
+    try:
+        page.on("dialog", lambda dialog: dialog.accept())
+        page.click("#settings-toggle")
+        page.wait_for_selector("#session-items [data-session-id]", timeout=5000)
+        rows = page.evaluate("""() => [...document.querySelectorAll(
+          '#session-items [data-session-id]')].map(el => ({
+            id: el.dataset.sessionId,
+            current: el.dataset.sessionCurrent,
+            text: el.textContent || '',
+            button: el.querySelector('button[data-session-revoke]')?.textContent || ''
+          }))""")
+        check(checks, len(rows) == 2, "session_list_renders_both_devices", rows)
+        current = next((row for row in rows if row["id"] == "pub-current"), {})
+        other = next((row for row in rows if row["id"] == "pub-other"), {})
+        check(checks, current.get("current") == "true" and "当前会话" in current.get("text", ""),
+              "current_session_is_marked", current)
+        check(checks, current.get("button") == "退出登录", "current_session_button_is_logout",
+              current.get("button"))
+        check(checks, other.get("current") == "false" and other.get("button") == "下线",
+              "other_session_button_is_revoke", other)
+        check(checks, "203.0.113.5" in current.get("text", "")
+              and "密码登录" in current.get("text", "")
+              and "macOS" in current.get("text", ""),
+              "session_row_shows_ip_method_and_device", current.get("text"))
+
+        before = calls["sessions"]
+        page.click('#session-items [data-session-id="pub-other"] button[data-session-revoke]')
+        page.wait_for_timeout(400)
+        check(checks, calls["revoke"] == ["pub-other"], "revoke_sends_the_selected_id", calls)
+        check(checks, calls["sessions"] > before, "revoke_refreshes_the_session_list", calls)
+
+        page.click("#sessions-revoke-others")
+        page.wait_for_timeout(400)
+        check(checks, calls["others"] == 1, "revoke_others_sends_the_request", calls)
+
+        page.click("#audit-details summary")
+        page.wait_for_selector("#audit-items .audit-item", timeout=5000)
+        entries = page.evaluate("""() => [...document.querySelectorAll(
+          '#audit-items .audit-item')].map(el => el.textContent || '')""")
+        check(checks, len(entries) == 2, "audit_entries_render", entries)
+        check(checks, "登录成功" in entries[0] and "203.0.113.5" in entries[0]
+              and "method=password" in entries[0],
+              "audit_entry_shows_event_ip_and_detail", entries[0])
+        check(checks, "电源操作" in entries[1] and "press" in entries[1],
+              "audit_second_entry_renders", entries[1])
     finally:
         context.close()
 

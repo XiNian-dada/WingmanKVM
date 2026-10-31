@@ -2,6 +2,7 @@ use anyhow::Context;
 use axum::serve::ListenerExt;
 
 mod auth;
+mod audit;
 mod client_ip;
 mod config;
 mod devices;
