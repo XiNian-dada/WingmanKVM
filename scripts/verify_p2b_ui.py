@@ -4,17 +4,17 @@
 All API responses are mocked; the checks exercise the real DOM, real browser
 keyboard events and the real UI state machine. No capture hardware is touched.
 """
-import argparse, json, os, sys, time, urllib.parse
+import json, os, sys, time, urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     from playwright.sync_api import sync_playwright
-    from verify_p2_ui import extract_html, read_assets, serve_static, check
+    import ui_harness
+    from ui_harness import GIF, check, extract_html, mock_video_feed, read_assets, serve_static
 except Exception as exc:  # pragma: no cover - environment guard
     print(json.dumps({"status": "FAIL", "error": f"Playwright/helper import failed: {exc}"}))
     sys.exit(2)
 
-GIF = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
 BASE_VIDEO = {
     "state": "starting", "message": "正在等待首帧…", "frames_per_second": None,
     "width": 1280, "height": 720, "last_frame_unix_ms": None, "last_frame_age_ms": None,
@@ -98,8 +98,7 @@ def new_page(browser, state, port):
     context = browser.new_context(viewport={"width": 1280, "height": 900})
     page = context.new_page()
     page.route("**/api/**", lambda route: api_route(route, state))
-    page.route("**/video_feed*", lambda route: route.fulfill(
-        status=200, content_type="image/gif", body=GIF))
+    mock_video_feed(page)
     page.goto(f"http://127.0.0.1:{port}/", wait_until="load", timeout=15000)
     page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
     page.bring_to_front()
@@ -381,19 +380,18 @@ def fullscreen_exit(browser, port, checks, summary, output_dir):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--repo", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    parser.add_argument("--output-dir", default="")
-    parser.add_argument("--browser-channel", default="chrome")
-    args = parser.parse_args()
-    checks = []
-    summary = {"status": "FAIL", "repo": os.path.abspath(args.repo), "checks": checks,
-               "browser_features": {}}
-    server = None
+    args = ui_harness.parse_args()
+    summary = ui_harness.new_summary(args.repo, browser_features={})
+    checks = summary["checks"]
+
+    def screenshots():
+        if args.output_dir and os.path.isdir(args.output_dir):
+            return [name for name in sorted(os.listdir(args.output_dir))
+                    if name.startswith("p2b_ui_") and name.endswith(".png")]
+        return []
+
     try:
-        html, assets = extract_html(args.repo), read_assets(args.repo)
-        server, port = serve_static(html, assets)
-        with sync_playwright() as p:
+        with ui_harness.static_server(args.repo) as port, sync_playwright() as p:
             browser = p.chromium.launch(headless=True, channel=args.browser_channel)
             try:
                 video_freshness(browser, port, checks, args.output_dir)
@@ -403,31 +401,14 @@ def main():
                 summary["status"] = "PASS"
                 if args.output_dir:
                     os.makedirs(args.output_dir, exist_ok=True)
-                    summary["screenshots"] = [n for n in sorted(os.listdir(args.output_dir))
-                                              if n.startswith("p2b_ui_") and n.endswith(".png")]
+                    summary["screenshots"] = screenshots()
             finally:
                 browser.close()
     except Exception as exc:
         summary["error"] = f"{type(exc).__name__}: {exc}"
-        if args.output_dir and os.path.isdir(args.output_dir):
-            shots = [name for name in sorted(os.listdir(args.output_dir))
-                     if name.startswith("p2b_ui_") and name.endswith(".png")]
-            if shots:
-                summary["screenshots"] = shots
-    finally:
-        if server:
-            server.shutdown()
-            server.server_close()
-        if args.output_dir:
-            try:
-                os.makedirs(args.output_dir, exist_ok=True)
-                with open(os.path.join(args.output_dir, "p2b_ui_report.json"), "w",
-                          encoding="utf-8") as fh:
-                    json.dump(summary, fh, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
-        print(json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
-    return 0 if summary["status"] == "PASS" else 1
+        if screenshots():
+            summary["screenshots"] = screenshots()
+    return ui_harness.finish(summary, args.output_dir, "p2b_ui_report.json")
 
 
 if __name__ == "__main__":
