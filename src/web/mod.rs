@@ -57,9 +57,9 @@ use crate::{
 
 const SESSION_COOKIE: &str = "wingman_session";
 const SESSION_COOKIE_MAX_AGE_SECONDS: u32 = 43_200;
-const XTERM_JS: &str = include_str!("../web/vendor/xterm/xterm.js");
-const XTERM_FIT_JS: &str = include_str!("../web/vendor/xterm/addon-fit.js");
-const XTERM_CSS: &str = include_str!("../web/vendor/xterm/xterm.css");
+const XTERM_JS: &str = include_str!("../../web/vendor/xterm/xterm.js");
+const XTERM_FIT_JS: &str = include_str!("../../web/vendor/xterm/addon-fit.js");
+const XTERM_CSS: &str = include_str!("../../web/vendor/xterm/xterm.css");
 const GPIO_TEST_PULSE_MS: u64 = 150;
 const PASSKEY_CHALLENGE_TTL: Duration = Duration::from_secs(120);
 
