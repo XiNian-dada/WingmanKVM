@@ -661,6 +661,7 @@ impl WebRtcManager {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (state_tx, state_rx) = watch::channel(ConnectionPhase::New);
         let (closed_tx, closed_rx) = watch::channel(false);
+        let (_bitrate_tx, bitrate_rx) = watch::channel(config.bitrate_kbps);
         let publication = {
             let mut sessions = self
                 .inner
@@ -706,7 +707,7 @@ impl WebRtcManager {
             video,
             track,
             encoder,
-            config,
+            bitrate_rx,
             guard,
             shutdown_rx,
             state_rx,
@@ -894,7 +895,7 @@ async fn run_session_supervisor(
     video: VideoManager,
     track: Arc<TrackLocalStaticSample>,
     encoder: EncoderSpec,
-    config: H264Config,
+    bitrate: watch::Receiver<u32>,
     guard: SessionGuard,
     shutdown: watch::Receiver<bool>,
     state: watch::Receiver<ConnectionPhase>,
@@ -910,8 +911,8 @@ async fn run_session_supervisor(
         video,
         track,
         encoder,
-        config,
         cancel_rx,
+        bitrate,
         progress_tx,
     ));
     let end = supervise_lifecycle(
@@ -1453,22 +1454,85 @@ async fn wait_for_cancel(receiver: &mut watch::Receiver<bool>) {
     let _ = receiver.changed().await;
 }
 
+/// How one FFmpeg process run ended.
+enum EncoderRun {
+    /// Cancelled by the supervisor or the encoder finished cleanly.
+    Finished,
+    /// The session asked for a different bitrate; respawn with this value.
+    Restart(u32),
+}
+
+/// Wait until the requested bitrate differs from the running one. A dropped
+/// sender means the bitrate can no longer change, so this pends forever.
+async fn wait_for_bitrate_change(receiver: &mut watch::Receiver<u32>, current: u32) -> u32 {
+    loop {
+        if receiver.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+        let next = *receiver.borrow_and_update();
+        if next != current {
+            return next;
+        }
+    }
+}
+
+/// Run the per-session encoder, restarting only the FFmpeg process when the
+/// adaptive bitrate changes.
+///
+/// FFmpeg's stdin carries the MJPEG input, so its interactive commands cannot
+/// be used, and none of the supported encoders (libx264, h264_rkmpp,
+/// h264_v4l2m2m) accept a runtime `-b:v` change through FFmpeg anyway. The
+/// peer connection and the `TrackLocalStaticSample` stay up, so no WebRTC
+/// renegotiation happens: the new process starts with an IDR frame (with
+/// SPS/PPS in band), the browser decoder resumes from it, and the visible gap
+/// is the FFmpeg start-up time. Callers rate-limit changes.
 async fn run_encoder(
     video: VideoManager,
     track: Arc<TrackLocalStaticSample>,
     encoder: EncoderSpec,
-    config: H264Config,
     mut cancel: watch::Receiver<bool>,
+    mut bitrate: watch::Receiver<u32>,
     progress: mpsc::Sender<()>,
 ) -> Result<(), WebRtcError> {
+    let mut kbps = *bitrate.borrow_and_update();
+    loop {
+        match run_encoder_process(
+            &video,
+            track.clone(),
+            &encoder,
+            kbps,
+            &mut cancel,
+            &mut bitrate,
+            progress.clone(),
+        )
+        .await?
+        {
+            EncoderRun::Finished => return Ok(()),
+            EncoderRun::Restart(next) => {
+                tracing::info!(from = kbps, to = next, "restarting H.264 encoder for new bitrate");
+                kbps = next;
+            }
+        }
+    }
+}
+
+async fn run_encoder_process(
+    video: &VideoManager,
+    track: Arc<TrackLocalStaticSample>,
+    encoder: &EncoderSpec,
+    bitrate_kbps: u32,
+    cancel: &mut watch::Receiver<bool>,
+    bitrate_updates: &mut watch::Receiver<u32>,
+    progress: mpsc::Sender<()>,
+) -> Result<EncoderRun, WebRtcError> {
     let fps = video
         .status()
         .frames_per_second
         .unwrap_or(30.0)
         .round()
         .clamp(1.0, 120.0) as u32;
-    let bitrate = format!("{}k", config.bitrate_kbps);
-    let buffer_size = format!("{}k", config.bitrate_kbps.saturating_mul(2));
+    let bitrate = format!("{bitrate_kbps}k");
+    let buffer_size = format!("{}k", bitrate_kbps.saturating_mul(2));
     let fps_text = fps.to_string();
     let mut command = TokioCommand::new(&encoder.executable);
     command.kill_on_drop(true).args([
@@ -1597,7 +1661,8 @@ async fn run_encoder(
 
     let result = tokio::select! {
         biased;
-        _ = wait_for_cancel(&mut cancel) => Ok(()),
+        _ = wait_for_cancel(cancel) => Ok(EncoderRun::Finished),
+        next = wait_for_bitrate_change(bitrate_updates, bitrate_kbps) => Ok(EncoderRun::Restart(next)),
         result = &mut writer => match result {
             Ok(Ok(())) => Err(WebRtcError::Internal("FFmpeg 输入意外结束".to_owned())),
             Ok(Err(error)) => Err(WebRtcError::Internal(error)),
@@ -1605,7 +1670,7 @@ async fn run_encoder(
         },
         result = &mut reader => match result {
             Ok(Ok(())) => match process.wait_for_exit(ENCODER_EXIT_GRACE).await {
-                Some(status) if status.success() => Ok(()),
+                Some(status) if status.success() => Ok(EncoderRun::Finished),
                 Some(_) => Err(WebRtcError::Unavailable(
                     "H.264 编码器异常退出".to_owned(),
                 )),
@@ -2502,8 +2567,8 @@ mod tests {
             VideoManager::new(VideoConfig::default()),
             test_encoder_track(),
             test_encoder_spec(&script),
-            H264Config::default(),
             cancel_rx,
+            watch::channel(H264Config::default().bitrate_kbps).1,
             progress_tx,
         ));
         let leader = wait_for_fixture_pid(&leader_pidfile).await;
@@ -2520,6 +2585,72 @@ mod tests {
     }
 
     #[cfg(unix)]
+    async fn wait_for_fixture_lines(path: &Path, count: usize) -> Vec<String> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let lines = fs::read_to_string(path)
+                .map(|text| text.lines().map(str::to_owned).collect::<Vec<_>>())
+                .unwrap_or_default();
+            if lines.len() >= count {
+                return lines;
+            }
+            assert!(Instant::now() < deadline, "fixture wrote {} of {count} lines", lines.len());
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    // The std guard only serialises fixture-spawning tests; it is never
+    // contended inside this single-threaded runtime.
+    #[allow(clippy::await_holding_lock)]
+    async fn bitrate_change_restarts_only_the_encoder_process() {
+        let _serial = serial_probe_fixture();
+        let fixture = ProbeFixture::new();
+        let runs = fixture.path("encoder-runs.log");
+        let script = fixture.script(
+            "encoder-bitrate",
+            &format!(
+                "echo \"$$ $*\" >> {}\nexec sleep 30",
+                shell_quote(&runs)
+            ),
+        );
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let (bitrate_tx, bitrate_rx) = watch::channel(4_000_u32);
+        let (progress_tx, _progress_rx) = mpsc::channel(1);
+        let task = tokio::spawn(run_encoder(
+            VideoManager::new(VideoConfig::default()),
+            test_encoder_track(),
+            test_encoder_spec(&script),
+            cancel_rx,
+            bitrate_rx,
+            progress_tx,
+        ));
+        let first = wait_for_fixture_lines(&runs, 1).await;
+        assert!(first[0].contains("-b:v 4000k -maxrate 4000k -bufsize 8000k"), "{}", first[0]);
+        let first_pid: u32 = first[0].split_whitespace().next().unwrap().parse().unwrap();
+
+        // Re-sending the running value must not restart FFmpeg.
+        bitrate_tx.send_replace(4_000);
+        let _ = bitrate_tx.send_replace(1_500);
+        let lines = wait_for_fixture_lines(&runs, 2).await;
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[1].contains("-b:v 1500k -maxrate 1500k -bufsize 3000k"), "{}", lines[1]);
+        wait_for_fixture_exit(first_pid).await;
+        assert!(!task.is_finished(), "the session encoder must keep running");
+
+        let second_pid: u32 = lines[1].split_whitespace().next().unwrap().parse().unwrap();
+        let _ = cancel_tx.send_replace(true);
+        let result = tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .expect("cancelled encoder should stop")
+            .expect("encoder task should not panic");
+        assert!(result.is_ok(), "{result:?}");
+        wait_for_fixture_exit(second_pid).await;
+        assert_eq!(fs::read_to_string(&runs).unwrap().lines().count(), 2);
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn encoder_drop_kills_private_group_and_stops_tasks() {
         let _serial = serial_probe_fixture();
@@ -2533,8 +2664,8 @@ mod tests {
             VideoManager::new(VideoConfig::default()),
             test_encoder_track(),
             test_encoder_spec(&script),
-            H264Config::default(),
             cancel_rx,
+            watch::channel(H264Config::default().bitrate_kbps).1,
             progress_tx,
         ));
         let leader = wait_for_fixture_pid(&leader_pidfile).await;
