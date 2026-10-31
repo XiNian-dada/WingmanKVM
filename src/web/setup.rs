@@ -118,10 +118,10 @@ pub(super) struct SetupRequest {
 
 pub(super) async fn setup(
     State(state): State<AppState>,
-    Json(request): Json<SetupRequest>,
+    ApiJson(request): ApiJson<SetupRequest>,
 ) -> Result<Response, ApiError> {
     let setup_guard = state.setup.clone().lock_owned().await;
-    if state.auth.is_initialized().map_err(ApiError::internal)? {
+    if state.auth.is_initialized_async().await.map_err(ApiError::internal)? {
         return Err(ApiError::new(StatusCode::CONFLICT, "管理员已经初始化"));
     }
     let valid_token = {
@@ -534,7 +534,7 @@ pub(super) async fn scan_devices() -> impl IntoResponse {
 pub(super) const SETUP_SCAN_CACHE_TTL: Duration = Duration::from_secs(3);
 
 pub(super) async fn scan_setup_devices(State(state): State<AppState>) -> Result<Response, ApiError> {
-    if state.auth.is_initialized().map_err(ApiError::internal)? {
+    if state.auth.is_initialized_async().await.map_err(ApiError::internal)? {
         return Err(ApiError::new(StatusCode::UNAUTHORIZED, "需要登录"));
     }
     Ok(no_store(Json(cached_setup_scan(&state.setup_scan, discovery::scan).await)))

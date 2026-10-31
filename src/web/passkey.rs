@@ -113,7 +113,7 @@ pub(super) async fn passkey_login_start(
     if !state.passkey_start_limiter.try_reserve(client_ip) {
         return Err(too_many_login_attempts());
     }
-    let Some(record) = state.auth.load().map_err(map_auth_error)? else {
+    let Some(record) = state.auth.load_async().await.map_err(map_auth_error)? else {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "系统尚未初始化"));
     };
     if record.passkeys.is_empty() {
@@ -159,7 +159,7 @@ pub(super) async fn passkey_login_finish(
     State(state): State<AppState>,
     ConnectInfo(connection): ConnectInfo<ClientConnection>,
     headers: HeaderMap,
-    Json(request): Json<PasskeyLoginFinishRequest>,
+    ApiJson(request): ApiJson<PasskeyLoginFinishRequest>,
 ) -> Result<Response, ApiError> {
     if !origin_matches_host(&headers) {
         return Err(ApiError::new(StatusCode::FORBIDDEN, "Origin 与 Host 不符"));
@@ -208,11 +208,11 @@ pub(super) async fn passkey_login_finish(
     let cred_id = request.credential.raw_id;
     // The challenge snapshots the credential set at start time; re-check that
     // the credential still exists so deleting a Passkey revokes it immediately.
-    let login = state.auth.update(|record| {
+    let login = state.auth.update_async(move |record| {
         Ok(record
             .update_passkey_credential(cred_id.as_slice(), &auth_result)
             .then(|| (record.username.clone(), record.system_password_synced)))
-    }).map_err(map_auth_error)?;
+    }).await.map_err(map_auth_error)?;
     let Some((username, terminal_ready)) = login else {
         tracing::warn!("Passkey login rejected: credential was removed after the challenge started");
         return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Passkey 验证失败"));
@@ -242,9 +242,9 @@ pub(super) struct PasskeyRegisterStartRequest {
 pub(super) async fn passkey_register_start(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(request): Json<PasskeyRegisterStartRequest>,
+    ApiJson(request): ApiJson<PasskeyRegisterStartRequest>,
 ) -> Result<Response, ApiError> {
-    let Some(record) = state.auth.load().map_err(map_auth_error)? else {
+    let Some(record) = state.auth.load_async().await.map_err(map_auth_error)? else {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "系统尚未初始化"));
     };
 
@@ -301,7 +301,7 @@ pub(super) struct PasskeyRegisterFinishRequest {
 pub(super) async fn passkey_register_finish(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(request): Json<PasskeyRegisterFinishRequest>,
+    ApiJson(request): ApiJson<PasskeyRegisterFinishRequest>,
 ) -> Result<Response, ApiError> {
     if !origin_matches_host(&headers) {
         return Err(ApiError::new(StatusCode::FORBIDDEN, "Origin 与 Host 不符"));
@@ -341,10 +341,10 @@ pub(super) async fn passkey_register_finish(
         })?;
 
     let passkey_name = request.name.unwrap_or_default();
-    let (id, name) = state.auth.update(|record| {
+    let (id, name) = state.auth.update_async(move |record| {
         let cred = record.add_passkey(passkey_name, passkey)?;
         Ok((cred.id.clone(), cred.name.clone()))
-    }).map_err(map_auth_error)?;
+    }).await.map_err(map_auth_error)?;
 
     Ok(Json(json!({
         "ok": true,
@@ -361,7 +361,7 @@ pub(super) struct PasskeyInfo {
 }
 
 pub(super) async fn passkey_list(State(state): State<AppState>) -> Result<Response, ApiError> {
-    let record = state.auth.load().map_err(map_auth_error)?.ok_or_else(|| {
+    let record = state.auth.load_async().await.map_err(map_auth_error)?.ok_or_else(|| {
         ApiError::new(StatusCode::BAD_REQUEST, "系统尚未初始化")
     })?;
 
@@ -384,11 +384,11 @@ pub(super) struct PasskeyDeleteRequest {
 
 pub(super) async fn passkey_delete(
     State(state): State<AppState>,
-    Json(request): Json<PasskeyDeleteRequest>,
+    ApiJson(request): ApiJson<PasskeyDeleteRequest>,
 ) -> Result<Response, ApiError> {
-    let removed = state.auth.update(|record| {
+    let removed = state.auth.update_async(move |record| {
         record.remove_passkey(&request.id)
-    }).map_err(map_auth_error)?;
+    }).await.map_err(map_auth_error)?;
 
     if !removed {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "找不到该 Passkey"));
@@ -399,9 +399,9 @@ pub(super) async fn passkey_delete(
 
 pub(super) async fn passkey_delete_path(
     State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Result<Response, ApiError> {
-    passkey_delete(State(state), Json(PasskeyDeleteRequest { id })).await
+    passkey_delete(State(state), ApiJson(PasskeyDeleteRequest { id })).await
 }
 
 #[cfg(test)]

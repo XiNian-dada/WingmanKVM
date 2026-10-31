@@ -21,7 +21,7 @@ impl<'de> Deserialize<'de> for FullConfigUpdate {
 
 pub(super) async fn update_config(
     State(state): State<AppState>,
-    Json(FullConfigUpdate(config)): Json<FullConfigUpdate>,
+    ApiJson(FullConfigUpdate(config)): ApiJson<FullConfigUpdate>,
 ) -> Result<impl IntoResponse, ApiError> {
     let _update_guard = state.config_update.lock().await;
     validate_config(&config)?;
@@ -220,7 +220,7 @@ pub(super) struct MediaPatch {
 
 pub(super) async fn patch_config(
     State(state): State<AppState>,
-    Json(patch): Json<ConfigPatch>,
+    ApiJson(patch): ApiJson<ConfigPatch>,
 ) -> Result<impl IntoResponse, ApiError> {
     let _update_guard = state.config_update.lock().await;
     let mut config = state.config.read().await.clone();

@@ -8,9 +8,9 @@ pub(super) async fn list_media(State(state): State<AppState>) -> Result<impl Int
 
 pub(super) async fn upload_media(
     State(state): State<AppState>,
-    multipart: Multipart,
+    multipart: ApiMultipart,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    upload_media_with_limits(state.media_upload.clone(), state.config.clone(), multipart, UploadLimits::default()).await
+    upload_media_with_limits(state.media_upload.clone(), state.config.clone(), multipart.0, UploadLimits::default()).await
 }
 
 pub(super) const UPLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -200,7 +200,7 @@ pub(super) struct AttachMediaRequest {
 
 pub(super) async fn attach_media(
     State(state): State<AppState>,
-    Json(request): Json<AttachMediaRequest>,
+    ApiJson(request): ApiJson<AttachMediaRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let default_read_only = state.config.read().await.media.read_only_by_default;
     let status = state
@@ -224,7 +224,7 @@ pub(super) struct DetachMediaRequest {
 
 pub(super) async fn detach_media(
     State(state): State<AppState>,
-    Json(request): Json<DetachMediaRequest>,
+    ApiJson(request): ApiJson<DetachMediaRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let status = state
         .media

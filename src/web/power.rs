@@ -9,7 +9,7 @@ pub(super) struct PowerForm {
 
 pub(super) async fn power(
     State(state): State<AppState>,
-    Form(form): Form<PowerForm>,
+    ApiForm(form): ApiForm<PowerForm>,
 ) -> Result<Response, ApiError> {
     let config = state.config.read().await.power.clone();
     let press = if (form.duration - 0.5).abs() < 0.01 {
@@ -59,7 +59,7 @@ pub(super) struct ResetForm {
 
 pub(super) async fn reset(
     State(state): State<AppState>,
-    Form(form): Form<ResetForm>,
+    ApiForm(form): ApiForm<ResetForm>,
 ) -> Result<Response, ApiError> {
     if form
         .duration
@@ -99,7 +99,7 @@ pub(super) struct GpioTestRequest {
 
 pub(super) async fn gpio_test(
     State(state): State<AppState>,
-    Json(request): Json<GpioTestRequest>,
+    ApiJson(request): ApiJson<GpioTestRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let duration_ms = request.duration_ms.unwrap_or(GPIO_TEST_PULSE_MS);
     if !(50..=2_000).contains(&duration_ms) {
