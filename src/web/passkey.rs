@@ -33,8 +33,25 @@ pub(super) fn insert_passkey_challenge(
         PasskeyChallengeState::Registration { expires_at, .. } => *expires_at > now,
         PasskeyChallengeState::Authentication { expires_at, .. } => *expires_at > now,
     });
-    if map.len() >= MAX_PASSKEY_CHALLENGES {
-        return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "Passkey 请求过多，请稍后重试"));
+    // Each kind has its own bound, so an unauthenticated login-start flood
+    // cannot block registration by a signed-in admin. At the bound the oldest
+    // challenge of that kind is evicted rather than rejecting everyone.
+    let is_registration = matches!(challenge, PasskeyChallengeState::Registration { .. });
+    let same_kind = |state: &PasskeyChallengeState| {
+        matches!(state, PasskeyChallengeState::Registration { .. }) == is_registration
+    };
+    if map.values().filter(|state| same_kind(state)).count() >= MAX_PASSKEY_CHALLENGES {
+        let oldest = map
+            .iter()
+            .filter(|(_, state)| same_kind(state))
+            .min_by_key(|(_, state)| match state {
+                PasskeyChallengeState::Registration { expires_at, .. }
+                | PasskeyChallengeState::Authentication { expires_at, .. } => *expires_at,
+            })
+            .map(|(id, _)| id.clone());
+        if let Some(oldest) = oldest {
+            map.remove(&oldest);
+        }
     }
     map.insert(challenge_id, challenge);
     Ok(())
@@ -466,20 +483,26 @@ mod tests {
         };
         let now = Instant::now();
         for index in 0..MAX_PASSKEY_CHALLENGES {
-            let expires_at = now + Duration::from_secs(60);
+            // Index 0 expires first, so it is the eviction candidate.
+            let expires_at = now + Duration::from_secs(60 + index as u64);
             insert_passkey_challenge(&challenges, index.to_string(), challenge(expires_at), now).unwrap();
         }
-        let rejected = insert_passkey_challenge(
+        insert_passkey_challenge(
             &challenges,
             "overflow".to_owned(),
-            challenge(now + Duration::from_secs(60)),
+            challenge(now + Duration::from_secs(600)),
             now,
         )
-        .unwrap_err();
-        assert_eq!(rejected.status, StatusCode::SERVICE_UNAVAILABLE);
+        .expect("a full table evicts instead of rejecting");
+        {
+            let map = challenges.lock().unwrap();
+            assert_eq!(map.len(), MAX_PASSKEY_CHALLENGES);
+            assert!(!map.contains_key("0"), "oldest challenge is evicted");
+            assert!(map.contains_key("overflow"));
+        }
 
-        // Once the outstanding challenges expire, capacity returns.
-        let later = now + Duration::from_secs(61);
+        // Once the outstanding challenges expire, they are reclaimed.
+        let later = now + Duration::from_secs(601);
         insert_passkey_challenge(&challenges, "fresh".to_owned(), challenge(later + Duration::from_secs(60)), later)
             .unwrap();
         assert_eq!(challenges.lock().unwrap().len(), 1);
