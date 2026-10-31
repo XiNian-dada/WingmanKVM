@@ -111,6 +111,8 @@ button.topbar-center[aria-expanded="true"] svg {
   transform: translate3d(-50%, 0, 0);
   z-index: 90;
   width: min(440px, calc(100vw - 32px));
+  max-height: calc(100dvh - 80px);
+  overflow-y: auto;
   padding: 18px;
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -514,4 +516,42 @@ button.topbar-center[aria-expanded="true"] svg {
 .perf-pop-more:hover {
   background: var(--soft-2);
   text-decoration: underline;
+}
+.latency-tool {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.latency-tool h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.latency-note,
+.latency-status {
+  margin: 0 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--muted);
+}
+.latency-actions {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+}
+.latency-result {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  margin: 0;
+  font-size: 12px;
+}
+.latency-result dt {
+  color: var(--muted);
+}
+.latency-result dd {
+  margin: 0;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
 }

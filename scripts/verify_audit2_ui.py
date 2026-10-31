@@ -2179,6 +2179,168 @@ def adaptive_bitrate_webrtc(browser, port, checks):
         context.close()
 
 
+def latency_rows(page):
+    return page.evaluate("""() => {
+      const rows = {};
+      document.querySelectorAll('#latency-result dt').forEach((dt) => {
+        rows[dt.textContent] = dt.nextElementSibling.textContent;
+      });
+      return rows;
+    }""")
+
+
+def latency_tool(browser, port, checks):
+    """#94: HID round trip via Caps Lock, explicit start, Caps Lock restored."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10, frames_per_second=24.0)
+    context, page = media_page(browser, state, port, stubs=())
+    target = {"caps": True, "drop": set(), "keys": 0}
+
+    def leds():
+        caps = target["caps"]
+        return {"num_lock": False, "caps_lock": caps, "scroll_lock": False, "raw": 2 if caps else 0}
+
+    def key_route(route):
+        body = json.loads(route.request.post_data or "{}")
+        reported = leds()
+        if body.get("key") == "CapsLock":
+            target["keys"] += 1
+            if target["keys"] not in target["drop"]:
+                target["caps"] = not target["caps"]
+        # Report the old state, as a target that has not answered yet would.
+        route.fulfill(status=200, content_type="application/json",
+                      body=json.dumps({"keyboard_leds": reported}))
+
+    page.route("**/api/key", key_route)
+    page.route("**/api/hid/leds", lambda route: route.fulfill(
+        status=200, content_type="application/json", body=json.dumps(leds())))
+    dialogs = []
+    answer = {"accept": False}
+
+    def on_dialog(dialog):
+        dialogs.append(dialog.message)
+        dialog.accept() if answer["accept"] else dialog.dismiss()
+
+    page.on("dialog", on_dialog)
+    try:
+        page.click("#diagnostics-toggle")
+        page.wait_for_selector("#latency-start", state="visible", timeout=3000)
+        note = page.text_content("#latency-tool")
+        check(checks, "不是画面延迟" in note and "无法测量" in note, "latency_labels_hid_not_video", note)
+
+        page.click("#latency-start")
+        page.wait_for_timeout(300)
+        check(checks, len(dialogs) == 1 and "Caps Lock" in dialogs[0] and target["keys"] == 0,
+              "latency_requires_confirmation_before_input", {"dialogs": dialogs, "keys": target["keys"]})
+
+        answer["accept"] = True
+        page.click("#latency-start")
+        page.wait_for_selector("#latency-result:not(.hidden)", timeout=15000)
+        rows = latency_rows(page)
+        check(checks, rows.get("有效样本") == "10 / 10" and rows.get("视频传输") == "MJPEG"
+              and rows.get("码率") == "不可用" and rows.get("画面延迟") == "未测量"
+              and all(rows.get(k, "—").endswith(" ms") for k in ("最小值", "中位数", "P95")),
+              "latency_reports_stats_and_transport", rows)
+        check(checks, target["caps"] is True and target["keys"] == 10 and rows.get("Caps Lock") == "LED 已回到原状态",
+              "latency_even_run_restores_caps", {"caps": target["caps"], "keys": target["keys"]})
+
+        # One toggle the target never applies: that sample times out and the
+        # final state is off by one, so the tool sends one corrective press.
+        target.update(keys=0, drop={3})
+        page.click("#latency-start")
+        page.wait_for_selector("#latency-result.hidden", state="attached", timeout=3000)
+        page.wait_for_selector("#latency-result:not(.hidden)", timeout=20000)
+        rows = latency_rows(page)
+        check(checks, rows.get("有效样本") == "9 / 10" and target["caps"] is True
+              and rows.get("Caps Lock") == "LED 已回到原状态",
+              "latency_lost_toggle_counted_and_caps_restored", {"rows": rows, "caps": target["caps"]})
+
+        # Stopping after an odd number of presses needs a corrective press.
+        target.update(keys=0, drop=set())
+        page.click("#latency-start")
+        for _ in range(100):
+            if target["keys"] >= 1:
+                break
+            page.wait_for_timeout(10)
+        page.click("#latency-stop")
+        page.wait_for_selector("#latency-result:not(.hidden)", timeout=10000)
+        rows = latency_rows(page)
+        attempts = int(rows["有效样本"].split(" / ")[1])
+        check(checks, target["caps"] is True and rows["有效样本"].split(" / ")[0] == str(attempts)
+              and attempts < 10 and page.text_content("#latency-status") == "测量已停止",
+              "latency_stop_restores_without_false_miss", {"rows": rows, "keys": target["keys"]})
+
+        # A target that never reports LEDs: stop after two presses (an even
+        # count, so a toggle we cannot see is still undone) and say so.
+        target.update(keys=0, drop=set(range(1, 100)))
+        page.click("#latency-start")
+        page.wait_for_function("() => /没有回报/.test(document.querySelector('#latency-status').textContent)"
+                               " && !document.querySelector('#latency-result').classList.contains('hidden')",
+                               timeout=15000)
+        rows = latency_rows(page)
+        check(checks, target["keys"] == 2 and rows["有效样本"] == "0 / 2" and rows["中位数"] == "—",
+              "latency_silent_target_aborts_without_numbers", {"rows": rows, "keys": target["keys"]})
+
+        # /api/key answers only after the key is released; a slow answer must
+        # not end up in the sample, the LED poll has already seen the flip.
+        target.update(keys=0, drop=set())
+        page.evaluate("""() => {
+          const original = window.fetch;
+          window.fetch = async (url, options) => {
+            const response = await original(url, options);
+            if (String(url).includes('/api/key')) await new Promise((r) => setTimeout(r, 250));
+            return response;
+          };
+        }""")
+        page.click("#latency-start")
+        page.wait_for_selector("#latency-result.hidden", state="attached", timeout=3000)
+        page.wait_for_selector("#latency-result:not(.hidden)", timeout=20000)
+        rows = latency_rows(page)
+        check(checks, float(rows["中位数"].split()[0]) < 200 and rows["有效样本"] == "10 / 10",
+              "latency_excludes_key_response_wait", rows)
+
+        page.click("#lang-toggle")
+        page.click('[data-lang="en"]')
+        page.wait_for_timeout(800)
+        title = page.text_content("#latency-title")
+        check(checks, title == "Latency measurement", "latency_translates", title)
+    finally:
+        context.close()
+
+
+def latency_tool_h264(browser, port, checks):
+    """#94: H.264 runs report the transport with measured and target bitrate."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    context, page = media_page(browser, state, port, h264=True, stubs=(FAKE_PEER,))
+    caps = {"on": False}
+
+    def key_route(route):
+        caps["on"] = not caps["on"]
+        route.fulfill(status=200, content_type="application/json", body="{}")
+
+    page.route("**/api/key", key_route)
+    page.route("**/api/hid/leds", lambda route: route.fulfill(
+        status=200, content_type="application/json",
+        body=json.dumps({"num_lock": False, "caps_lock": caps["on"], "scroll_lock": False, "raw": 0})))
+    page.on("dialog", lambda dialog: dialog.accept())
+    try:
+        page.wait_for_function("() => /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
+        page.evaluate("(reports) => { window.__statsSeq = reports; }",
+                      [stats_report(10000, 1), stats_report(11000, 2), stats_report(12000, 3), stats_report(13000, 4),
+                       stats_report(14000, 5), stats_report(15000, 6), stats_report(16000, 7)])
+        page.click("#quality-toggle")
+        page.wait_for_timeout(1300)
+        page.click("#diagnostics-toggle")
+        page.click("#latency-start")
+        page.wait_for_selector("#latency-result:not(.hidden)", timeout=15000)
+        rows = latency_rows(page)
+        check(checks, rows.get("视频传输") == "H.264 (WebRTC)" and "实测" in rows.get("码率", "") and rows.get("有效样本") == "10 / 10",
+              "latency_h264_reports_transport_and_bitrate", rows)
+    finally:
+        context.close()
+
+
 # Every function taking (browser, port, checks) is a scenario, run in
 # definition order; new scenarios need no list edit (and no merge conflict).
 SCENARIOS = [

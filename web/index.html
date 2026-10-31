@@ -161,6 +161,14 @@
         <button id="diagnostics-reconnect" class="secondary" type="button" data-i18n="diag_reconnect">重连视频</button>
         <button id="diagnostics-scan" class="secondary" type="button" data-i18n="diag_scan">扫描设备</button>
       </div>
+      <section id="latency-tool" class="latency-tool" aria-labelledby="latency-title">
+        <h4 id="latency-title">延迟测量</h4>
+        <p class="latency-note">键鼠回环：切换被控机 Caps Lock，计时到浏览器读到 LED 变化。只反映键鼠链路往返，不是画面延迟。</p>
+        <p class="latency-note">画面端到端延迟：不在被控机安装软件就无法测量，这里不提供估算值。</p>
+        <div class="latency-actions"><button id="latency-start" class="secondary" type="button">开始键鼠回环测量</button><button id="latency-stop" class="secondary hidden" type="button">停止</button></div>
+        <p id="latency-status" class="latency-status" role="status" aria-live="polite"></p>
+        <dl id="latency-result" class="latency-result hidden"></dl>
+      </section>
     </div>
     <div class="shell">
       <section id="workspace" class="workspace">
