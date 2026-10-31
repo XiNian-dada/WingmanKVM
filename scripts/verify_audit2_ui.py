@@ -746,10 +746,46 @@ def touch_gestures(browser, port, checks):
     finally:
         context.close()
 
+
+def runtime_metrics(browser, port, checks):
+    """#67: diagnostics show version, connections and keyboard/mouse write health."""
+    from verify_p2b_ui import api_route
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        class WithRuntime:
+            def __init__(self, route):
+                self.route, self.request = route, route.request
+            def fulfill(self, **kwargs):
+                body = json.loads(kwargs.get("body") or "{}")
+                body["runtime"] = {"version": "0.1.0", "uptime_seconds": 3700, "input_sockets": 1,
+                                   "hid": {"ok": 42, "failed": 3, "last_error": "键盘写入超时",
+                                           "last_error_age_seconds": 65}}
+                body["webrtc"] = {"sessions": 0}
+                return self.route.fulfill(**{**kwargs, "body": json.dumps(body)})
+        page.unroute("**/api/**")
+        page.route("**/api/**", lambda route: api_route(
+            WithRuntime(route) if route.request.url.endswith("/api/status") else route, state))
+        page.wait_for_timeout(3500)
+        page.click("#diagnostics-toggle")
+        hid = page.text_content("#diag-hid") or ""
+        version = page.text_content("#diag-version") or ""
+        check(checks, "42" in hid and "3" in hid and "键盘写入超时" in hid and "v0.1.0" in version,
+              "diagnostics_show_runtime_metrics", (hid, version))
+        page.click("#diagnostics-toggle")
+        page.click("#lang-toggle")
+        page.click('[data-lang="en"]')
+        page.wait_for_timeout(300)
+        page.click("#diagnostics-toggle")
+        hid = page.text_content("#diag-hid") or ""
+        check(checks, hid.startswith("OK 42 · failed 3 · last error:"), "runtime_metrics_translate", hid)
+    finally:
+        context.close()
+
 SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation, low_risk_ui,
              language_coverage, power_confirmation, media_drop_upload, paste_as_typing, custom_shortcuts,
              inline_save_feedback, shortcut_sheet,
-             touch_fullscreen_toolbar, input_websocket, touch_gestures]
+             touch_fullscreen_toolbar, input_websocket, touch_gestures, runtime_metrics]
 
 if __name__ == "__main__":
     sys.exit(main())
