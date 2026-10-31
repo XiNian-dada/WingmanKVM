@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """P2 UI regression: media read-only defaults (ISSUE-06) and auth secret clearing (ISSUE-09)."""
+from ui_bundle import load_index_html
 import argparse, json, os, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 try:
@@ -77,11 +78,7 @@ def bootstrap_payload(state):
 
 
 def extract_html(repo):
-    with open(os.path.join(repo, "src", "web_ui.rs"), encoding="utf-8") as fh:
-        source = fh.read()
-    start = 'pub static INDEX_HTML: &str = r##"'
-    at = source.index(start) + len(start)
-    return source[at:source.index('"##;', at)]
+    return load_index_html(repo)
 
 
 def read_assets(repo):

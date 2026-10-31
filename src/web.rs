@@ -52,7 +52,7 @@ use crate::{
         video::VideoManager,
         webrtc::{WebRtcError, WebRtcManager, WebRtcOfferRequest, WebRtcStatus},
     },
-    web_ui::{ICON_SVG, INDEX_HTML},
+    web_ui::{APP_CSS, APP_JS, ICON_SVG, INDEX_HTML},
 };
 
 const SESSION_COOKIE: &str = "wingman_session";
@@ -268,6 +268,8 @@ pub fn router(state: AppState) -> Router {
         .route("/assets/xterm.js", get(xterm_js))
         .route("/assets/xterm-fit.js", get(xterm_fit_js))
         .route("/assets/xterm.css", get(xterm_css))
+        .route("/assets/app.css", get(app_css))
+        .route("/assets/app.js", get(app_js))
         .route("/api/bootstrap", get(bootstrap))
         .route(
             "/api/setup/devices",
@@ -290,6 +292,16 @@ async fn xterm_fit_js() -> impl IntoResponse {
         [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
         XTERM_FIT_JS,
     )
+}
+
+// App assets change with every release; never let a browser pair a fresh
+// index with a stale script or stylesheet.
+async fn app_css() -> impl IntoResponse {
+    no_store(([(CONTENT_TYPE, "text/css; charset=utf-8")], APP_CSS))
+}
+
+async fn app_js() -> impl IntoResponse {
+    no_store(([(CONTENT_TYPE, "text/javascript; charset=utf-8")], APP_JS))
 }
 
 async fn xterm_css() -> impl IntoResponse {
