@@ -19,6 +19,8 @@
       const config = unwrapConfig(bootstrap);
       proxySelect.value = config.server?.proxy_protocol || 'disabled';
     }
+    const layoutSelect = $('#setting-target-layout');
+    if (layoutSelect) layoutSelect.value = targetLayout();
   }
   function openSettingsDialog() {
     if (!settingsDialog) return;
@@ -68,6 +70,11 @@
   });
   $('#setting-auto-inspector')?.addEventListener('change', (e) => {
     setSetting('auto_expand_inspector', e.target.checked);
+    toast(t('settings_saved', '设置已保存'));
+  });
+  $('#setting-target-layout')?.addEventListener('change', (e) => {
+    setSetting('target_layout', e.target.value);
+    updatePasteLayoutLabel();
     toast(t('settings_saved', '设置已保存'));
   });
   $('#setting-proxy-protocol')?.addEventListener('change', async (e) => {
@@ -129,6 +136,7 @@
     });
     syncSettingsDialogUi();
     applyRenderPixelated(SETTING_DEFAULTS.render_pixelated);
+    updatePasteLayoutLabel();
     toast(t('settings_reset_done', '已恢复默认设置'));
   });
 

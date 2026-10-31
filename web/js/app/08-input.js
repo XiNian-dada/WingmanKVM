@@ -4,6 +4,7 @@
     release_key_toast: true,
     render_pixelated: true,
     auto_expand_inspector: true,
+    target_layout: 'us',
   };
   function getSetting(key, fallback = null) {
     try {
@@ -271,76 +272,325 @@
     button.addEventListener('click', () => sendQuickKey(button.dataset.quickKey)),
   );
 
-  // Paste-as-typing: turn arbitrary text into US-layout keystrokes. Kept pure
-  // so the mapping can be exercised without touching the network or DOM.
-  const US_UNSHIFTED_SYMBOLS = {
-    '`': 'Backquote',
-    '-': 'Minus',
-    '=': 'Equal',
-    '[': 'BracketLeft',
-    ']': 'BracketRight',
-    '\\': 'Backslash',
-    ';': 'Semicolon',
-    "'": 'Quote',
-    ',': 'Comma',
-    '.': 'Period',
-    '/': 'Slash',
+  // Paste-as-typing: turn arbitrary text into physical HID keystrokes for the
+  // target machine's keyboard layout. The target OS decides which character a
+  // physical key produces, so each layout needs its own character -> key map.
+  // Kept pure so the mapping can be exercised without touching the network or
+  // DOM (and exposed to the UI verification harness at the end of this block).
+  const TARGET_LAYOUTS = ['us', 'uk', 'de', 'fr', 'jp'];
+  const TARGET_LAYOUT_LABELS = {
+    us: '美式（US QWERTY）',
+    uk: '英式（UK）',
+    de: '德语（DE QWERTZ）',
+    fr: '法语（FR AZERTY）',
+    jp: '日语（JP JIS）',
   };
-  const US_SHIFTED_SYMBOLS = {
-    '~': 'Backquote',
-    '!': 'Digit1',
-    '@': 'Digit2',
-    '#': 'Digit3',
-    $: 'Digit4',
-    '%': 'Digit5',
-    '^': 'Digit6',
-    '&': 'Digit7',
-    '*': 'Digit8',
-    '(': 'Digit9',
-    ')': 'Digit0',
-    _: 'Minus',
-    '+': 'Equal',
-    '{': 'BracketLeft',
-    '}': 'BracketRight',
-    '|': 'Backslash',
-    ':': 'Semicolon',
-    '"': 'Quote',
-    '<': 'Comma',
-    '>': 'Period',
-    '?': 'Slash',
+  const QWERTY_LETTERS = {
+    a: 'KeyA',
+    b: 'KeyB',
+    c: 'KeyC',
+    d: 'KeyD',
+    e: 'KeyE',
+    f: 'KeyF',
+    g: 'KeyG',
+    h: 'KeyH',
+    i: 'KeyI',
+    j: 'KeyJ',
+    k: 'KeyK',
+    l: 'KeyL',
+    m: 'KeyM',
+    n: 'KeyN',
+    o: 'KeyO',
+    p: 'KeyP',
+    q: 'KeyQ',
+    r: 'KeyR',
+    s: 'KeyS',
+    t: 'KeyT',
+    u: 'KeyU',
+    v: 'KeyV',
+    w: 'KeyW',
+    x: 'KeyX',
+    y: 'KeyY',
+    z: 'KeyZ',
   };
-  function textToKeystrokes(text) {
-    const strokes = [],
+  // QWERTZ swaps the physical Y/Z keys; AZERTY moves the letter rows around.
+  const DE_LETTERS = { ...QWERTY_LETTERS, y: 'KeyZ', z: 'KeyY' };
+  const FR_LETTERS = {
+    ...QWERTY_LETTERS,
+    a: 'KeyQ',
+    q: 'KeyA',
+    w: 'KeyZ',
+    z: 'KeyW',
+    m: 'Semicolon',
+  };
+  const plainKey = (key) => ({ key });
+  const shiftedKey = (key) => ({ key, shift: true });
+  // AltGr is sent as Ctrl+Alt. Windows treats that as AltGr for layout input,
+  // and Linux does too; a macOS target uses Option, so AltGr-only symbols (for
+  // example @ on a German layout) may not come out right there.
+  const altGrKey = (key) => ({ key, altgr: true });
+  const US_SYMBOLS = {
+    '`': plainKey('Backquote'),
+    '-': plainKey('Minus'),
+    '=': plainKey('Equal'),
+    '[': plainKey('BracketLeft'),
+    ']': plainKey('BracketRight'),
+    '\\': plainKey('Backslash'),
+    ';': plainKey('Semicolon'),
+    "'": plainKey('Quote'),
+    ',': plainKey('Comma'),
+    '.': plainKey('Period'),
+    '/': plainKey('Slash'),
+    '~': shiftedKey('Backquote'),
+    '!': shiftedKey('Digit1'),
+    '@': shiftedKey('Digit2'),
+    '#': shiftedKey('Digit3'),
+    $: shiftedKey('Digit4'),
+    '%': shiftedKey('Digit5'),
+    '^': shiftedKey('Digit6'),
+    '&': shiftedKey('Digit7'),
+    '*': shiftedKey('Digit8'),
+    '(': shiftedKey('Digit9'),
+    ')': shiftedKey('Digit0'),
+    _: shiftedKey('Minus'),
+    '+': shiftedKey('Equal'),
+    '{': shiftedKey('BracketLeft'),
+    '}': shiftedKey('BracketRight'),
+    '|': shiftedKey('Backslash'),
+    ':': shiftedKey('Semicolon'),
+    '"': shiftedKey('Quote'),
+    '<': shiftedKey('Comma'),
+    '>': shiftedKey('Period'),
+    '?': shiftedKey('Slash'),
+  };
+  const UK_SYMBOLS = {
+    '`': plainKey('Backquote'),
+    '-': plainKey('Minus'),
+    '=': plainKey('Equal'),
+    '[': plainKey('BracketLeft'),
+    ']': plainKey('BracketRight'),
+    '#': plainKey('Backslash'),
+    ';': plainKey('Semicolon'),
+    "'": plainKey('Quote'),
+    ',': plainKey('Comma'),
+    '.': plainKey('Period'),
+    '/': plainKey('Slash'),
+    '\\': plainKey('IntlBackslash'),
+    '!': shiftedKey('Digit1'),
+    '"': shiftedKey('Digit2'),
+    '£': shiftedKey('Digit3'),
+    $: shiftedKey('Digit4'),
+    '%': shiftedKey('Digit5'),
+    '^': shiftedKey('Digit6'),
+    '&': shiftedKey('Digit7'),
+    '*': shiftedKey('Digit8'),
+    '(': shiftedKey('Digit9'),
+    ')': shiftedKey('Digit0'),
+    _: shiftedKey('Minus'),
+    '+': shiftedKey('Equal'),
+    '{': shiftedKey('BracketLeft'),
+    '}': shiftedKey('BracketRight'),
+    '~': shiftedKey('Backslash'),
+    ':': shiftedKey('Semicolon'),
+    '@': shiftedKey('Quote'),
+    '<': shiftedKey('Comma'),
+    '>': shiftedKey('Period'),
+    '?': shiftedKey('Slash'),
+    '|': shiftedKey('IntlBackslash'),
+  };
+  const DE_SYMBOLS = {
+    'ß': plainKey('Minus'),
+    ü: plainKey('BracketLeft'),
+    '+': plainKey('BracketRight'),
+    ö: plainKey('Semicolon'),
+    ä: plainKey('Quote'),
+    '#': plainKey('Backslash'),
+    '<': plainKey('IntlBackslash'),
+    ',': plainKey('Comma'),
+    '.': plainKey('Period'),
+    '-': plainKey('Slash'),
+    '°': shiftedKey('Backquote'),
+    '?': shiftedKey('Minus'),
+    '!': shiftedKey('Digit1'),
+    '"': shiftedKey('Digit2'),
+    '§': shiftedKey('Digit3'),
+    $: shiftedKey('Digit4'),
+    '%': shiftedKey('Digit5'),
+    '&': shiftedKey('Digit6'),
+    '/': shiftedKey('Digit7'),
+    '(': shiftedKey('Digit8'),
+    ')': shiftedKey('Digit9'),
+    '=': shiftedKey('Digit0'),
+    'Ü': shiftedKey('BracketLeft'),
+    '*': shiftedKey('BracketRight'),
+    'Ö': shiftedKey('Semicolon'),
+    'Ä': shiftedKey('Quote'),
+    "'": shiftedKey('Backslash'),
+    '>': shiftedKey('IntlBackslash'),
+    ';': shiftedKey('Comma'),
+    ':': shiftedKey('Period'),
+    _: shiftedKey('Slash'),
+    '@': altGrKey('KeyQ'),
+    '€': altGrKey('KeyE'),
+    '²': altGrKey('Digit2'),
+    '³': altGrKey('Digit3'),
+    '{': altGrKey('Digit7'),
+    '[': altGrKey('Digit8'),
+    ']': altGrKey('Digit9'),
+    '}': altGrKey('Digit0'),
+    '~': altGrKey('BracketRight'),
+    '\\': altGrKey('Minus'),
+    '|': altGrKey('IntlBackslash'),
+    µ: altGrKey('KeyM'),
+  };
+  const FR_SYMBOLS = {
+    '²': plainKey('Backquote'),
+    '&': plainKey('Digit1'),
+    é: plainKey('Digit2'),
+    '"': plainKey('Digit3'),
+    "'": plainKey('Digit4'),
+    '(': plainKey('Digit5'),
+    '-': plainKey('Digit6'),
+    è: plainKey('Digit7'),
+    _: plainKey('Digit8'),
+    ç: plainKey('Digit9'),
+    à: plainKey('Digit0'),
+    ')': plainKey('Minus'),
+    '=': plainKey('Equal'),
+    $: plainKey('BracketRight'),
+    '*': plainKey('Backslash'),
+    'ù': plainKey('Quote'),
+    '<': plainKey('IntlBackslash'),
+    ',': plainKey('KeyM'),
+    ';': plainKey('Comma'),
+    ':': plainKey('Period'),
+    '!': plainKey('Slash'),
+    '£': shiftedKey('BracketRight'),
+    'µ': shiftedKey('Backslash'),
+    '%': shiftedKey('Quote'),
+    '>': shiftedKey('IntlBackslash'),
+    '?': shiftedKey('KeyM'),
+    '.': shiftedKey('Comma'),
+    '/': shiftedKey('Period'),
+    '§': shiftedKey('Slash'),
+    '+': shiftedKey('Equal'),
+    '@': altGrKey('Digit0'),
+    '€': altGrKey('KeyE'),
+    '~': altGrKey('Digit2'),
+    '#': altGrKey('Digit3'),
+    '{': altGrKey('Digit4'),
+    '[': altGrKey('Digit5'),
+    '|': altGrKey('Digit6'),
+    '`': altGrKey('Digit7'),
+    '\\': altGrKey('Digit8'),
+    '^': altGrKey('Digit9'),
+    ']': altGrKey('Minus'),
+    '}': altGrKey('Equal'),
+    '¤': altGrKey('BracketRight'),
+  };
+  const JP_SYMBOLS = {
+    '@': plainKey('BracketLeft'),
+    '[': plainKey('BracketRight'),
+    ';': plainKey('Semicolon'),
+    ':': plainKey('Quote'),
+    ']': plainKey('Backslash'),
+    '\\': plainKey('IntlRo'),
+    '¥': plainKey('IntlYen'),
+    '-': plainKey('Minus'),
+    '^': plainKey('Equal'),
+    ',': plainKey('Comma'),
+    '.': plainKey('Period'),
+    '/': plainKey('Slash'),
+    '`': shiftedKey('BracketLeft'),
+    '{': shiftedKey('BracketRight'),
+    '+': shiftedKey('Semicolon'),
+    '*': shiftedKey('Quote'),
+    '}': shiftedKey('Backslash'),
+    _: shiftedKey('IntlRo'),
+    '|': shiftedKey('IntlYen'),
+    '=': shiftedKey('Minus'),
+    '~': shiftedKey('Equal'),
+    '!': shiftedKey('Digit1'),
+    '"': shiftedKey('Digit2'),
+    '#': shiftedKey('Digit3'),
+    $: shiftedKey('Digit4'),
+    '%': shiftedKey('Digit5'),
+    '&': shiftedKey('Digit6'),
+    "'": shiftedKey('Digit7'),
+    '(': shiftedKey('Digit8'),
+    ')': shiftedKey('Digit9'),
+    '<': shiftedKey('Comma'),
+    '>': shiftedKey('Period'),
+    '?': shiftedKey('Slash'),
+  };
+  function buildLayout({ letters, symbols, digitsShifted = false }) {
+    const map = Object.create(null);
+    const put = (ch, key, extra = {}) => {
+      map[ch] = { key, shift: false, altgr: false, letter: false, ...extra };
+    };
+    for (const [ch, key] of Object.entries(letters)) {
+      put(ch, key, { letter: true });
+      put(ch.toUpperCase(), key, { shift: true, letter: true });
+    }
+    for (let digit = 0; digit <= 9; digit += 1)
+      put(String(digit), `Digit${digit}`, { shift: digitsShifted });
+    put(' ', 'Space');
+    put('\n', 'Enter');
+    put('\t', 'Tab');
+    for (const [ch, spec] of Object.entries(symbols)) put(ch, spec.key, spec);
+    return map;
+  }
+  const LAYOUT_MAPS = {
+    us: buildLayout({ letters: QWERTY_LETTERS, symbols: US_SYMBOLS }),
+    uk: buildLayout({ letters: QWERTY_LETTERS, symbols: UK_SYMBOLS }),
+    de: buildLayout({ letters: DE_LETTERS, symbols: DE_SYMBOLS }),
+    fr: buildLayout({ letters: FR_LETTERS, symbols: FR_SYMBOLS, digitsShifted: true }),
+    jp: buildLayout({ letters: QWERTY_LETTERS, symbols: JP_SYMBOLS }),
+  };
+  function targetLayout() {
+    const value = getSetting('target_layout', 'us');
+    return TARGET_LAYOUTS.includes(value) ? value : 'us';
+  }
+  function targetLayoutLabel(layout = targetLayout()) {
+    return tr(TARGET_LAYOUT_LABELS[layout] || TARGET_LAYOUT_LABELS.us);
+  }
+  function textToKeystrokes(text, layout = targetLayout()) {
+    const map = LAYOUT_MAPS[TARGET_LAYOUTS.includes(layout) ? layout : 'us'],
+      strokes = [],
       unsupported = [],
       seenUnsupported = new Set(),
       normalized = String(text ?? '').replace(/\r\n?/g, '\n');
     for (const ch of Array.from(normalized)) {
-      let key = null,
-        shift = false;
-      if (/^[a-z]$/.test(ch)) key = `Key${ch.toUpperCase()}`;
-      else if (/^[A-Z]$/.test(ch)) {
-        key = `Key${ch}`;
-        shift = true;
-      } else if (/^[0-9]$/.test(ch)) key = `Digit${ch}`;
-      else if (ch === ' ') key = 'Space';
-      else if (ch === '\n') key = 'Enter';
-      else if (ch === '\t') key = 'Tab';
-      else if (US_UNSHIFTED_SYMBOLS[ch]) key = US_UNSHIFTED_SYMBOLS[ch];
-      else if (US_SHIFTED_SYMBOLS[ch]) {
-        key = US_SHIFTED_SYMBOLS[ch];
-        shift = true;
-      }
-      if (!key) {
+      const entry = map[ch];
+      if (!entry) {
         if (!seenUnsupported.has(ch)) {
           seenUnsupported.add(ch);
           unsupported.push(ch);
         }
         continue;
       }
-      strokes.push({ key, shift, ctrl: false, alt: false, meta: false });
+      strokes.push({
+        key: entry.key,
+        shift: !!entry.shift,
+        ctrl: !!entry.altgr,
+        alt: !!entry.altgr,
+        meta: false,
+        letter: !!entry.letter,
+      });
     }
     return { strokes, unsupported };
   }
+  function updatePasteLayoutLabel() {
+    const el = $('#paste-key-layout');
+    if (el) el.textContent = targetLayoutLabel();
+  }
+  // The verification harness calls the pure mapper directly to assert every
+  // layout table without a network round-trip.
+  window.__wingmanTest = Object.assign(window.__wingmanTest || {}, {
+    textToKeystrokes,
+    targetLayout,
+    targetLayouts: TARGET_LAYOUTS.slice(),
+  });
   function displayUnsupportedChar(ch) {
     return /[\u0000-\u001f\u007f]/.test(ch)
       ? `U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`
@@ -376,6 +626,7 @@
     }
     updatePasteProgress(0, 0);
     setPasteStatus('');
+    updatePasteLayoutLabel();
     if (sendButton) sendButton.disabled = false;
     if (cancelButton) cancelButton.textContent = tr('取消');
     try {
@@ -399,7 +650,7 @@
       unsupportedEl = $('#paste-key-unsupported'),
       sendButton = $('#paste-key-send'),
       cancelButton = $('#paste-key-cancel');
-    const { strokes, unsupported } = textToKeystrokes(input ? input.value : '');
+    const { strokes, unsupported } = textToKeystrokes(input ? input.value : '', targetLayout());
     if (unsupported.length) {
       if (unsupportedEl) {
         unsupportedEl.hidden = false;
@@ -454,7 +705,7 @@
         const stroke = strokes[sent];
         await sendKey(stroke.key, {
           ctrlKey: stroke.ctrl,
-          shiftKey: stroke.shift !== (capsLock && stroke.key.startsWith('Key')),
+          shiftKey: stroke.shift !== (capsLock && stroke.letter),
           altKey: stroke.alt,
           metaKey: stroke.meta,
         });
@@ -882,6 +1133,9 @@
         'BracketLeft',
         'BracketRight',
         'Backslash',
+        'IntlBackslash',
+        'IntlRo',
+        'IntlYen',
         'Semicolon',
         'Quote',
         'Backquote',
