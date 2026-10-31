@@ -587,10 +587,55 @@ def touch_fullscreen_toolbar(browser, port, checks):
     finally:
         context.close()
 
+
+
+def input_websocket(browser, port, checks):
+    """#61: HID events use the input WebSocket and fall back to HTTP."""
+    from verify_p2b_ui import api_route, GIF
+    state = State()
+    frames, sockets = [], []
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    try:
+        page = context.new_page()
+
+        def on_socket(ws):
+            sockets.append(ws)
+            def reply(message):
+                body = json.loads(message)
+                frames.append(body)
+                ws.send(json.dumps({"id": body["id"], "ok": True}))
+            ws.on_message(reply)
+        page.route_web_socket("**/api/input/ws", on_socket)
+        page.route("**/api/**", lambda route: api_route(route, state))
+        page.route("**/video_feed*", lambda route: route.fulfill(status=200, content_type="image/gif", body=GIF))
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        page.wait_for_timeout(300)
+        page.click("#input-state")
+        page.keyboard.press("a")
+        page.wait_for_timeout(300)
+        over_socket = [f for f in frames if f.get("type") == "key"]
+        check(checks, over_socket and over_socket[-1].get("key") == "KeyA" and not state.key_posts,
+              "keys_travel_over_input_websocket", (frames[-3:], state.key_posts))
+        page.click("#diagnostics-toggle")
+        mode = page.text_content("#diag-input-mode") or ""
+        check(checks, "WebSocket" in mode, "diagnostics_shows_websocket_transport", mode)
+        page.click("#diagnostics-toggle")
+
+        sockets[-1].close()
+        page.wait_for_timeout(200)
+        page.locator("#video-viewport").focus()
+        page.keyboard.press("b")
+        page.wait_for_timeout(300)
+        check(checks, any(p.get("key") == "KeyB" for p in state.key_posts),
+              "keys_fall_back_to_http_when_socket_closes", state.key_posts)
+    finally:
+        context.close()
+
 SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation, low_risk_ui,
              language_coverage, power_confirmation, media_drop_upload, paste_as_typing, custom_shortcuts,
              inline_save_feedback, shortcut_sheet,
-             touch_fullscreen_toolbar]
+             touch_fullscreen_toolbar, input_websocket]
 
 if __name__ == "__main__":
     sys.exit(main())

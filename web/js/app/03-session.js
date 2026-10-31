@@ -144,6 +144,9 @@
     toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
   }
   async function request(url, options = {}) {
+    // HID endpoints prefer the input WebSocket when it is connected.
+    const socketRoute = (options.method || 'GET') === 'POST' && HID_SOCKET_ROUTES[url];
+    if (socketRoute && inputSocketReady()) return sendOverInputSocket(socketRoute, options.body);
     const headers = new Headers(options.headers || {});
     if (options.body && !(options.body instanceof FormData) && !headers.has('content-type'))
       headers.set('content-type', 'application/json');
@@ -250,8 +253,10 @@
     authView.classList.toggle('hidden', state === 'main');
     app.classList.toggle('hidden', state !== 'main');
     if (state !== 'setup') closeSetupGuide(false);
+    if (state !== 'main') disconnectInputSocket();
     if (state === 'main') {
       pageActive = !document.hidden;
+      connectInputSocket();
       applyBootstrap();
       startVideo();
       refreshStatus();

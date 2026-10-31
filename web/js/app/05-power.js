@@ -105,13 +105,15 @@
       fps = latestVideoStatus?.frames_per_second;
     $('#diag-resolution').textContent =
       w && h ? `${w} × ${h}${fps ? ` @ ${Math.round(fps)} FPS` : ''}` : '--';
-    $('#diag-input-mode').textContent = !inputEnabled()
+    const inputMode = !inputEnabled()
       ? '已暂停'
       : absoluteMode()
         ? '绝对指针 (USB Tablet)'
         : relativeCaptured()
           ? '相对鼠标 (已捕获)'
           : '相对鼠标 (未捕获)';
+    // The transport is listed separately so its words translate on their own.
+    $('#diag-input-mode').textContent = `${tr(inputMode)} · ${inputSocketReady() ? 'WebSocket' : 'HTTP'}`;
     const led = latestPowerStatus?.power_led;
     const ledOn = led?.state === 'on' || led?.active === true;
     const ledOff = led?.state === 'off' || led?.active === false;
