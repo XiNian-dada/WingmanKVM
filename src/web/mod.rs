@@ -229,6 +229,7 @@ pub fn router(state: AppState) -> Router {
             post(webrtc_offer).layer(DefaultBodyLimit::max(64 * 1024)),
         )
         .route("/api/webrtc/close", post(webrtc_close))
+        .route("/api/webrtc/bitrate", post(webrtc_bitrate))
         .route("/api/terminal/ws", get(terminal_ws))
         .route("/power", post(power))
         .route("/reset", post(reset))
