@@ -356,7 +356,7 @@ def power_confirmation(browser, port, checks):
     posts = []
     context, page = new_page(browser, state, port)
     try:
-        from verify_p2b_ui import bootstrap_payload
+        from verify_p2b_ui import bootstrap_payload, api_route
         payload = bootstrap_payload(state)
         payload["capabilities"].update(gpio_power=True, gpio_reset=True)
         page.route("**/api/bootstrap", lambda route: route.fulfill(
@@ -1603,6 +1603,199 @@ def hotplug_recovery(browser, port, checks):
         badge = page.text_content("#hid-link-state") or ""
         check(checks, message.startswith("Capture card disconnected") and badge == "HID reconnecting",
               "hotplug_messages_translate", (message, badge, message_hidden))
+    finally:
+        context.close()
+
+
+def keyboard_macros(browser, port, checks):
+    """#80: record forwarded keys, replay with timing, and manage JSON files."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        page.click("#input-state")
+        page.click("#quick-more-toggle")
+        page.click("#quick-macro-record")
+        check(checks, page.locator("#macro-recording").is_visible(),
+              "macro_recording_indicator_visible", page.locator("#macro-recording").is_visible())
+
+        page.keyboard.press("Control+a")
+        page.wait_for_timeout(30)
+        page.keyboard.press("Shift+b")
+        page.wait_for_timeout(600)
+        page.keyboard.press("c")
+
+        # Keys typed into local controls, especially password fields, must not
+        # be recorded (or forwarded) even while a recording is running.
+        page.evaluate("""() => {
+          const input = document.createElement('input');
+          input.type = 'password';
+          input.id = 'macro-test-password';
+          document.body.append(input);
+          input.focus();
+        }""")
+        page.keyboard.press("d")
+        page.wait_for_timeout(50)
+        page.evaluate("""() => {
+          document.querySelector('#macro-test-password')?.remove();
+          document.querySelector('#video-viewport').focus();
+        }""")
+
+        # The local exit shortcut is handled before the forwarding path.
+        page.keyboard.press("Control+Alt+`")
+        page.wait_for_timeout(100)
+        check(checks, not page.is_checked("#remote-input"),
+              "macro_local_shortcut_exits_forwarding", page.is_checked("#remote-input"))
+
+        page.click("#macro-record-stop")
+        page.wait_for_selector("#macro-save-dialog[open]", timeout=3000)
+        summary = page.text_content("#macro-save-summary") or ""
+        check(checks, "3" in summary, "macro_save_dialog_reports_three_steps", summary)
+        page.fill("#macro-save-name", "测试宏")
+        page.click("#macro-save-confirm")
+        page.wait_for_timeout(200)
+
+        saved = json.loads(
+            page.evaluate("() => localStorage.getItem('wingman_keyboard_macros') || '[]'"))
+        steps = saved[0].get("steps", []) if saved else []
+        keys = [step.get("key") for step in steps]
+        mods = [(bool(step.get("ctrl")), bool(step.get("shift")),
+                 bool(step.get("alt")), bool(step.get("meta"))) for step in steps]
+        check(checks, keys == ["KeyA", "KeyB", "KeyC"],
+              "macro_recording_captures_forwarded_keys_only", keys)
+        check(checks, mods == [(True, False, False, False),
+                              (False, True, False, False),
+                              (False, False, False, False)],
+              "macro_recording_captures_modifiers", mods)
+        check(checks, steps and steps[-1].get("delay_ms", 0) >= 500,
+              "macro_recording_captures_delay", steps[-1:] if steps else steps)
+
+        def play_and_time(speed):
+            state.key_posts.clear()
+            page.click("#quick-more-toggle")
+            page.click(f'[data-macro-speed="{speed}"]')
+            started = time.monotonic()
+            page.click("#quick-more-menu [data-macro-play]")
+            page.wait_for_function(
+                """() => (document.querySelector('#macro-play-status')?.textContent || '')
+                  .includes('已回放完成')""", timeout=6000)
+            return time.monotonic() - started
+
+        fast = play_and_time("2")
+        fast_sequence = [(post.get("key"), bool(post.get("ctrl")), bool(post.get("shift")),
+                          bool(post.get("alt")), bool(post.get("meta")))
+                         for post in state.key_posts]
+        check(checks, fast_sequence == [("KeyA", True, False, False, False),
+                                       ("KeyB", False, True, False, False),
+                                       ("KeyC", False, False, False, False)],
+              "macro_replay_sends_order_and_modifiers", fast_sequence)
+        page.click('#macro-play-dialog .dialog-head [data-macro-play-close]')
+        page.wait_for_timeout(100)
+
+        slow = play_and_time("0.5")
+        check(checks, slow > fast + 0.5, "macro_replay_speed_changes_interval", (fast, slow))
+        page.click('#macro-play-dialog .dialog-head [data-macro-play-close]')
+        page.wait_for_timeout(100)
+
+        # Cancel during the long recorded pause before the last key.
+        state.key_posts.clear()
+        page.click("#quick-more-toggle")
+        page.click('[data-macro-speed="0.5"]')
+        page.click("#quick-more-menu [data-macro-play]")
+        page.wait_for_timeout(180)
+        page.click("#macro-play-cancel")
+        page.wait_for_timeout(500)
+        canceled = len(state.key_posts)
+        status = page.text_content("#macro-play-status") or ""
+        check(checks, 0 < canceled < 3 and "已取消" in status,
+              "macro_replay_can_be_canceled", (canceled, status))
+        page.click('#macro-play-dialog .dialog-head [data-macro-play-close]')
+        page.wait_for_timeout(100)
+
+        # Turning forwarding off mid-replay stops the run and reports it.
+        state.key_posts.clear()
+        page.click("#quick-more-toggle")
+        page.click('[data-macro-speed="0.5"]')
+        page.click("#quick-more-menu [data-macro-play]")
+        page.wait_for_timeout(180)
+        page.locator("#input-state").evaluate("b => b.click()")
+        page.wait_for_timeout(500)
+        interrupted = len(state.key_posts)
+        status = page.text_content("#macro-play-status") or ""
+        check(checks, 0 < interrupted < 3 and "已中断" in status,
+              "macro_replay_stops_when_forwarding_off", (interrupted, status))
+        page.click('#macro-play-dialog .dialog-head [data-macro-play-close]')
+        page.wait_for_timeout(100)
+
+        page.click("#quick-more-toggle")
+        page.click("#quick-macro-manage")
+        page.wait_for_selector("#macro-manager-dialog[open]", timeout=3000)
+        check(checks, page.locator("#macro-manager-list [data-macro-row]").count() == 1,
+              "macro_manager_lists_saved_macro",
+              page.locator("#macro-manager-list [data-macro-row]").count())
+
+        page.fill("#macro-manager-list .macro-name-input", "重命名宏")
+        page.click("#macro-manager-list [data-macro-rename]")
+        page.wait_for_timeout(200)
+        renamed = json.loads(
+            page.evaluate("() => localStorage.getItem('wingman_keyboard_macros') || '[]'"))
+        check(checks, renamed and renamed[0].get("name") == "重命名宏",
+              "macro_can_be_renamed", renamed[0].get("name") if renamed else None)
+
+        # The export file carries only names, key names, modifiers and delays.
+        with page.expect_download(timeout=5000) as download:
+            page.click("#macro-export-all")
+        exported = json.load(open(download.value.path(), encoding="utf-8"))
+        exported_step = exported["macros"][0]["steps"][0]
+        check(checks, set(exported) == {"version", "macros"}
+              and set(exported["macros"][0]) == {"name", "steps"}
+              and set(exported_step) == {"key", "ctrl", "shift", "alt", "meta", "delay_ms"},
+              "macro_export_contains_only_key_data", exported_step)
+
+        before = page.evaluate("() => localStorage.getItem('wingman_keyboard_macros')")
+        page.set_input_files("#macro-import-file", files=[{
+            "name": "bad.json", "mimeType": "application/json", "buffer": b"not json"}])
+        page.wait_for_timeout(300)
+        toast = page.text_content("#toast") or ""
+        check(checks, page.evaluate("() => localStorage.getItem('wingman_keyboard_macros')") == before
+              and "导入失败" in toast, "macro_import_rejects_invalid_json", toast)
+
+        bad_key = json.dumps({"version": 1, "macros": [{"name": "bad", "steps": [{
+            "key": "NotAKey", "ctrl": False, "shift": False, "alt": False,
+            "meta": False, "delay_ms": 0}]}]}).encode()
+        page.set_input_files("#macro-import-file", files=[{
+            "name": "bad-key.json", "mimeType": "application/json", "buffer": bad_key}])
+        page.wait_for_timeout(300)
+        toast = page.text_content("#toast") or ""
+        check(checks, page.evaluate("() => localStorage.getItem('wingman_keyboard_macros')") == before
+              and "导入失败" in toast, "macro_import_rejects_unknown_keys", toast)
+
+        valid = json.dumps({"version": 1, "macros": [{"name": "导入宏", "steps": [{
+            "key": "KeyX", "ctrl": False, "shift": False, "alt": False,
+            "meta": False, "delay_ms": 0}]}]}).encode()
+        page.set_input_files("#macro-import-file", files=[{
+            "name": "valid.json", "mimeType": "application/json", "buffer": valid}])
+        page.wait_for_timeout(300)
+        imported = json.loads(
+            page.evaluate("() => localStorage.getItem('wingman_keyboard_macros') || '[]'"))
+        check(checks, len(imported) == 2
+              and imported[-1].get("name") == "导入宏"
+              and imported[-1]["steps"][0].get("key") == "KeyX",
+              "macro_import_accepts_valid_file", imported)
+
+        page.click("#macro-manager-list [data-macro-row]:last-child [data-macro-delete]")
+        page.wait_for_timeout(200)
+        remaining = json.loads(
+            page.evaluate("() => localStorage.getItem('wingman_keyboard_macros') || '[]'"))
+        check(checks, len(remaining) == 1 and remaining[0].get("name") == "重命名宏",
+              "macro_can_be_deleted", remaining)
+
+        page.click("#macro-manager-dialog .dialog-head [data-macro-manager-close]")
+        page.reload(wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        page.click("#quick-more-toggle")
+        names = page.eval_on_selector_all(
+            "#quick-more-menu [data-macro-play]", "els => els.map(e => e.textContent)")
+        check(checks, names == ["重命名宏"], "macro_survives_reload", names)
     finally:
         context.close()
 
