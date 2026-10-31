@@ -385,6 +385,21 @@
             <span class="settings-group-title" data-i18n="settings_group_system">系统与重置</span>
             <div class="settings-item">
               <div class="settings-item-copy">
+                <strong>导出配置</strong>
+                <span>将设备、视频、HID、电源与虚拟介质设置保存为 JSON 文件，不包含账户或 Passkey。</span>
+              </div>
+              <button id="config-export-btn" class="secondary" type="button">导出</button>
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-copy">
+                <strong>导入配置…</strong>
+                <span>从 WingmanKVM 配置文件恢复设置，导入前会先显示差异（不包含账户或 Passkey）。</span>
+              </div>
+              <input id="config-import-file" type="file" accept=".json,application/json" hidden>
+              <button id="config-import-btn" class="secondary" type="button">选择文件…</button>
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-copy">
                 <strong>键盘快捷键</strong>
                 <span>查看本地快捷键；未转发键鼠时也可以直接按 ?</span>
               </div>
@@ -398,6 +413,26 @@
               <button id="setting-reset-btn" class="secondary" type="button" data-i18n="settings_reset_action">还原</button>
             </div>
           </div>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="config-import-dialog" aria-labelledby="config-import-title">
+      <div class="config-import-modal" role="dialog" aria-modal="true" aria-labelledby="config-import-title">
+        <div class="dialog-head">
+          <div class="dialog-title-row">
+            <h3 id="config-import-title">导入配置</h3>
+          </div>
+          <button id="config-import-dialog-close" class="secondary" type="button">取消</button>
+        </div>
+        <div class="config-import-body">
+          <p class="config-import-copy">确认以下更改后才会写入配置。导入不包含账户、Passkey 或会话。</p>
+          <p id="config-import-summary" class="config-import-summary" role="status"></p>
+          <div id="config-import-diff" class="config-diff-list" aria-label="配置差异" data-no-i18n></div>
+          <p id="config-import-status" class="config-import-status" role="status"></p>
+        </div>
+        <div class="config-import-actions">
+          <button id="config-import-cancel" class="secondary" type="button">取消</button>
+          <button id="config-import-confirm" class="primary" type="button" disabled>应用导入</button>
         </div>
       </div>
     </dialog>

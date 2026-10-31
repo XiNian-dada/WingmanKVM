@@ -278,7 +278,7 @@ def low_risk_ui(browser, port, checks):
         context.add_init_script(
             "localStorage.setItem('wingman_setting_auto_expand_inspector','false')")
         page = context.new_page()
-        from verify_p2b_ui import api_route, GIF
+        from verify_p2b_ui import api_route, GIF, bootstrap_payload
         page.route("**/api/**", lambda route: api_route(route, state))
         page.route("**/video_feed*", lambda route: route.fulfill(
             status=200, content_type="image/gif", body=GIF))
@@ -425,7 +425,7 @@ def paste_as_typing(browser, port, checks):
 
         # With Caps Lock on at the target, letter case must still come out right.
         state.key_posts.clear()
-        from verify_p2b_ui import api_route
+        from verify_p2b_ui import api_route, bootstrap_payload
         class CapsOnRoute:
             """Wraps a route so the mocked status reports Caps Lock on."""
             def __init__(self, route):
@@ -679,7 +679,7 @@ def shortcut_sheet(browser, port, checks):
 
 def touch_fullscreen_toolbar(browser, port, checks):
     """#58: touch devices get a floating toolbar in fullscreen."""
-    from verify_p2b_ui import api_route, GIF
+    from verify_p2b_ui import api_route, GIF, bootstrap_payload
     state = State()
     context = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
     try:
@@ -723,7 +723,7 @@ def touch_fullscreen_toolbar(browser, port, checks):
 
 def input_websocket(browser, port, checks):
     """#61: HID events use the input WebSocket and fall back to HTTP."""
-    from verify_p2b_ui import api_route, GIF
+    from verify_p2b_ui import api_route, GIF, bootstrap_payload
     state = State()
     frames, sockets = [], []
     context = browser.new_context(viewport={"width": 1280, "height": 900})
@@ -777,7 +777,7 @@ def input_websocket(browser, port, checks):
 
 def touch_gestures(browser, port, checks):
     """#62: tap, long press, one-finger drag and two-finger scroll."""
-    from verify_p2b_ui import api_route, GIF
+    from verify_p2b_ui import api_route, GIF, bootstrap_payload
     state = State()
     # A visible, playing feed is needed to map touch points to the target.
     state.video.update(state="ready", message="", last_frame_age_ms=10)
@@ -881,7 +881,7 @@ def touch_gestures(browser, port, checks):
 
 def runtime_metrics(browser, port, checks):
     """#67: diagnostics show version, connections and keyboard/mouse write health."""
-    from verify_p2b_ui import api_route
+    from verify_p2b_ui import api_route, bootstrap_payload
     state = State()
     context, page = new_page(browser, state, port)
     try:
@@ -1549,7 +1549,7 @@ def quality_overlay_mjpeg(browser, port, checks):
 
 def hotplug_recovery(browser, port, checks):
     """#93: capture-card unplug/replug and USB HID re-enumeration are announced."""
-    from verify_p2b_ui import api_route
+    from verify_p2b_ui import api_route, bootstrap_payload
     state = State()
     hid = {"keyboard_reenumerating": False, "mouse_reenumerating": False}
     context, page = new_page(browser, state, port)
@@ -1796,6 +1796,113 @@ def keyboard_macros(browser, port, checks):
         names = page.eval_on_selector_all(
             "#quick-more-menu [data-macro-play]", "els => els.map(e => e.textContent)")
         check(checks, names == ["重命名宏"], "macro_survives_reload", names)
+    finally:
+        context.close()
+
+
+def config_backup_restore(browser, port, checks):
+    """#83: export downloads config; import previews, cancels and applies."""
+    from verify_p2b_ui import bootstrap_payload
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        config = dict(bootstrap_payload(state)["config"])
+        exported = {"format": "wingmankvm-config", "version": 1,
+                    "exported_at": "2026-11-01T00:00:00Z", "config": config}
+        export_body = json.dumps(exported)
+        export_requests = []
+
+        def export_route(route):
+            export_requests.append(route.request.url)
+            route.fulfill(status=200, headers={
+                "content-type": "application/json",
+                "content-disposition":
+                    'attachment; filename="wingmankvm-config-2026-11-01.json"',
+            }, body=export_body)
+
+        changes = [
+            {"path": "server.port", "old": 8080, "new": 9090},
+            {"path": "video.width", "old": 1280, "new": 1920},
+        ]
+        preview_posts, import_posts = [], []
+        preview_error = {"status": None}
+
+        def preview_route(route):
+            if preview_error["status"]:
+                return route.fulfill(
+                    status=preview_error["status"], content_type="application/json",
+                    body='{"error":"配置版本 2 不受支持"}')
+            preview_posts.append(json.loads(route.request.post_data or "{}"))
+            return route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps({"changes": changes, "restart_required": True}))
+
+        def import_route(route):
+            import_posts.append(json.loads(route.request.post_data or "{}"))
+            return route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps({"ok": True, "restart_required": True,
+                                 "changes": changes}))
+
+        page.route("**/api/config/export", export_route)
+        page.route("**/api/config/import/preview", preview_route)
+        page.route("**/api/config/import", import_route)
+        page.click("#settings-toggle")
+        page.wait_for_selector("#settings-dialog[open]", timeout=3000)
+
+        with page.expect_download(timeout=5000) as download:
+            page.click("#config-export-btn")
+        filename = download.value.suggested_filename
+        check(checks, filename == "wingmankvm-config-2026-11-01.json",
+              "config_export_downloads_dated_json", filename)
+        check(checks, export_requests, "config_export_requests_api", export_requests)
+
+        def choose_file():
+            with page.expect_file_chooser(timeout=3000) as chooser:
+                page.click("#config-import-btn")
+            chooser.value.set_files({
+                "name": "wingmankvm-config-2026-11-01.json",
+                "mimeType": "application/json",
+                "buffer": export_body.encode(),
+            })
+            page.wait_for_selector("#config-import-dialog[open]", timeout=3000)
+
+        choose_file()
+        page.wait_for_timeout(200)
+        diff = page.text_content("#config-import-diff") or ""
+        check(checks, "server.port" in diff and "8080" in diff and "9090" in diff,
+              "config_import_preview_lists_diff", diff[:160])
+        check(checks, preview_posts and preview_posts[-1].get("format") == "wingmankvm-config",
+              "config_import_preview_uploads_export", preview_posts[-1:])
+        summary = page.text_content("#config-import-summary") or ""
+        check(checks, "2" in summary, "config_import_preview_counts_changes", summary)
+
+        page.click("#config-import-cancel")
+        page.wait_for_timeout(200)
+        opened = page.evaluate("() => document.querySelector('#config-import-dialog').open")
+        check(checks, not import_posts and not opened,
+              "config_import_cancel_does_not_apply", (import_posts, opened))
+
+        choose_file()
+        page.wait_for_timeout(200)
+        page.click("#config-import-confirm")
+        page.wait_for_timeout(300)
+        check(checks, import_posts and import_posts[-1] == exported,
+              "config_import_confirms_same_document", import_posts[-1:])
+        status = page.text_content("#config-import-status") or ""
+        check(checks, "导入成功" in status and "重启" in status,
+              "config_import_reports_success_and_restart", status)
+
+        page.click("#config-import-cancel")
+        preview_error["status"] = 400
+        before = len(import_posts)
+        choose_file()
+        page.wait_for_timeout(200)
+        status = page.text_content("#config-import-status") or ""
+        check(checks, "配置版本 2 不受支持" in status and "导入失败" in status,
+              "config_import_preview_error_is_shown", status)
+        check(checks, len(import_posts) == before,
+              "config_import_error_does_not_apply", import_posts)
     finally:
         context.close()
 

@@ -1,7 +1,212 @@
 use super::*;
 
+use axum::http::header::CONTENT_DISPOSITION;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+pub(super) const CONFIG_EXPORT_FORMAT: &str = "wingmankvm-config";
+pub(super) const CONFIG_IMPORT_BODY_LIMIT: usize = 256 * 1024;
+
 pub(super) async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
     no_store(Json(state.config.read().await.clone()))
+}
+
+/// Download document for `GET /api/config/export`.
+///
+/// Only [`Config`] is included. Accounts, password hashes, Passkeys, sessions
+/// and audit logs live in `auth.json` and in memory, never in this structure.
+#[derive(Debug, Serialize)]
+pub(super) struct ConfigExport {
+    pub(super) format: &'static str,
+    pub(super) version: u32,
+    pub(super) exported_at: String,
+    pub(super) config: Config,
+}
+
+impl ConfigExport {
+    fn new(config: Config) -> Self {
+        let (_, exported_at) = utc_date_and_timestamp();
+        Self {
+            format: CONFIG_EXPORT_FORMAT,
+            version: CONFIG_VERSION,
+            exported_at,
+            config,
+        }
+    }
+}
+
+/// Upload document accepted by the preview and import endpoints.
+///
+/// Fields are optional here so every rejection can be reported as a clear,
+/// localized JSON error instead of a generic deserialization failure.
+#[derive(Debug, Deserialize)]
+pub(super) struct ConfigImportFile {
+    format: Option<String>,
+    version: Option<u32>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    exported_at: Option<String>,
+    config: Option<serde_json::Value>,
+}
+
+impl ConfigImportFile {
+    fn into_config(self) -> Result<Config, ApiError> {
+        let format = self
+            .format
+            .ok_or_else(|| ApiError::bad_request("不是 WingmanKVM 配置导出文件：缺少 format"))?;
+        if format != CONFIG_EXPORT_FORMAT {
+            return Err(ApiError::bad_request(format!(
+                "不是 WingmanKVM 配置导出文件：format 必须为 {CONFIG_EXPORT_FORMAT}"
+            )));
+        }
+        let version = self
+            .version
+            .ok_or_else(|| ApiError::bad_request("配置导出文件缺少 version"))?;
+        if version != CONFIG_VERSION {
+            return Err(ApiError::bad_request(format!(
+                "配置版本 {version} 不受支持，本机仅支持版本 {CONFIG_VERSION}"
+            )));
+        }
+        let value = self
+            .config
+            .ok_or_else(|| ApiError::bad_request("配置导出文件缺少 config 内容"))?;
+        if let Some(content_version) = value.get("version").and_then(serde_json::Value::as_u64) {
+            if content_version != u64::from(CONFIG_VERSION) {
+                return Err(ApiError::bad_request(format!(
+                    "配置内容版本 {content_version} 不受支持，本机仅支持版本 {CONFIG_VERSION}"
+                )));
+            }
+        }
+        reject_retired_hid_timing_fields(&value).map_err(ApiError::bad_request)?;
+        let config: Config = serde_json::from_value(value)
+            .map_err(|error| ApiError::bad_request(format!("配置内容无效：{error}")))?;
+        validate_config(&config)?;
+        Ok(config)
+    }
+}
+
+#[derive(Debug, PartialEq, Serialize)]
+pub(super) struct ConfigChange {
+    pub(super) path: String,
+    pub(super) old: serde_json::Value,
+    pub(super) new: serde_json::Value,
+}
+
+pub(super) fn collect_config_changes(
+    old: &serde_json::Value,
+    new: &serde_json::Value,
+    path: &str,
+    changes: &mut Vec<ConfigChange>,
+) {
+    match (old, new) {
+        (serde_json::Value::Object(old), serde_json::Value::Object(new)) => {
+            let mut keys: Vec<&String> = old.keys().chain(new.keys()).collect();
+            keys.sort_unstable();
+            keys.dedup();
+            for key in keys {
+                let child = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                collect_config_changes(
+                    old.get(key).unwrap_or(&serde_json::Value::Null),
+                    new.get(key).unwrap_or(&serde_json::Value::Null),
+                    &child,
+                    changes,
+                );
+            }
+        }
+        _ if old != new => changes.push(ConfigChange {
+            path: path.to_owned(),
+            old: old.clone(),
+            new: new.clone(),
+        }),
+        _ => {}
+    }
+}
+
+pub(super) fn config_changes(old: &Config, new: &Config) -> Vec<ConfigChange> {
+    let old = serde_json::to_value(old).unwrap_or(serde_json::Value::Null);
+    let new = serde_json::to_value(new).unwrap_or(serde_json::Value::Null);
+    let mut changes = Vec::new();
+    collect_config_changes(&old, &new, "", &mut changes);
+    changes
+}
+
+pub(super) fn listen_address_changed(previous: &Config, next: &Config) -> bool {
+    previous.server.listen_address != next.server.listen_address
+        || previous.server.port != next.server.port
+}
+
+/// Exports the live configuration as a downloadable JSON document.
+///
+/// The response body is deliberately built from [`Config`] alone; `auth.json`,
+/// Passkey credentials, sessions and audit logs are never serialized here.
+pub(super) async fn export_config(
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    let config = state.config.read().await.clone();
+    let (date, _) = utc_date_and_timestamp();
+    let document = ConfigExport::new(config);
+    let mut body = serde_json::to_vec_pretty(&document).map_err(ApiError::internal)?;
+    body.push(b'\n');
+    let disposition = format!("attachment; filename=\"wingmankvm-config-{date}.json\"");
+    let disposition = HeaderValue::from_str(&disposition).map_err(ApiError::internal)?;
+    let mut response = (
+        [
+            (CONTENT_TYPE, "application/json; charset=utf-8"),
+            (CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response();
+    response.headers_mut().insert(CONTENT_DISPOSITION, disposition);
+    Ok(response)
+}
+
+pub(super) async fn preview_import_config(
+    State(state): State<AppState>,
+    ApiJson(file): ApiJson<ConfigImportFile>,
+) -> Result<impl IntoResponse, ApiError> {
+    let imported = file.into_config()?;
+    let current = state.config.read().await.clone();
+    let changes = config_changes(&current, &imported);
+    Ok(no_store(Json(json!({
+        "changes": changes,
+        "restart_required": listen_address_changed(&current, &imported),
+    }))))
+}
+
+pub(super) async fn import_config(
+    State(state): State<AppState>,
+    ApiJson(file): ApiJson<ConfigImportFile>,
+) -> Result<Response, ApiError> {
+    let imported = file.into_config()?;
+    import_config_with_state(state, imported).await
+}
+
+async fn import_config_with_state(
+    state: AppState,
+    imported: Config,
+) -> Result<Response, ApiError> {
+    let _update_guard = state.config_update.lock().await;
+    let previous = state.config.read().await.clone();
+    let changes = config_changes(&previous, &imported);
+    let restart_required = listen_address_changed(&previous, &imported);
+    commit_config(&state, &imported).await?;
+    let mut response = no_store(Json(json!({
+        "ok": true,
+        "restart_required": restart_required,
+        "changes": changes,
+    })))
+    .into_response();
+    if restart_required {
+        response.headers_mut().insert(
+            "x-wingmankvm-restart-required",
+            HeaderValue::from_static("true"),
+        );
+    }
+    Ok(response)
 }
 
 pub(super) struct FullConfigUpdate(Config);
@@ -499,9 +704,276 @@ pub(super) fn optional_path(value: Option<String>) -> Option<PathBuf> {
     optional_string(value).map(PathBuf::from)
 }
 
+/// Current UTC date and RFC 3339 timestamp without pulling in a date crate.
+fn utc_date_and_timestamp() -> (String, String) {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let days = (seconds / 86_400) as i64;
+    let within_day = seconds % 86_400;
+    let (year, month, day) = civil_date_from_days(days);
+    let hour = within_day / 3_600;
+    let minute = within_day % 3_600 / 60;
+    let second = within_day % 60;
+    (
+        format!("{year:04}-{month:02}-{day:02}"),
+        format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z"),
+    )
+}
+
+/// Converts days since 1970-01-01 to a proleptic Gregorian date.
+fn civil_date_from_days(days: i64) -> (i64, u32, u32) {
+    let days = days + 719_468;
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let day_of_era = days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096)
+            / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * month_prime + 2) / 5 + 1) as u32;
+    let month = if month_prime < 10 {
+        month_prime + 3
+    } else {
+        month_prime - 9
+    } as u32;
+    if month <= 2 {
+        year += 1;
+    }
+    (year, month, day)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let mut random = [0_u8; 8];
+            getrandom::fill(&mut random).unwrap();
+            let path = std::env::temp_dir().join(format!(
+                "wingmankvm-config-backup-test-{}-{:016x}",
+                std::process::id(),
+                u64::from_ne_bytes(random)
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_state(config: Config, path: PathBuf) -> AppState {
+        let (video, _) = VideoManager::test_source(config.video.clone());
+        let webrtc = WebRtcManager::test_stub(video.clone(), config.video.h264.clone());
+        AppState {
+            proxy_protocol_updates: watch::channel(config.server.proxy_protocol).0,
+            config: Arc::new(RwLock::new(config)),
+            config_path: Arc::new(path.clone()),
+            auth: AuthStore::new(path.with_file_name("auth.json")),
+            sessions: SessionStore::default(),
+            setup: Arc::new(AsyncMutex::new(())),
+            config_update: Arc::new(AsyncMutex::new(())),
+            password_migration: Arc::new(AsyncMutex::new(())),
+            setup_token: Arc::new(Mutex::new(None)),
+            setup_scan: Arc::new(AsyncMutex::new(None)),
+            login_limiter: LoginLimiter::default(),
+            passkey_start_limiter: LoginLimiter::with_budget(MAX_PASSKEY_STARTS_PER_IP),
+            passkey_challenges: Arc::new(Mutex::new(HashMap::new())),
+            hid: HidManager::new(),
+            power: PowerManager::new(),
+            media: Arc::new(MediaManager::default()),
+            media_upload: Arc::new(AsyncMutex::new(())),
+            video,
+            webrtc,
+            system: Arc::new(crate::system::SystemMonitor::new()),
+            metrics: Arc::new(RuntimeMetrics::new()),
+        }
+    }
+
+    #[test]
+    fn export_document_only_contains_configuration() {
+        let mut config = Config::default();
+        config.server.port = 9090;
+        config.video.width = Some(1920);
+        let document = ConfigExport::new(config.clone());
+        let value = serde_json::to_value(&document).unwrap();
+        let keys: std::collections::BTreeSet<&str> =
+            value.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            ["config", "exported_at", "format", "version"]
+                .into_iter()
+                .collect()
+        );
+        assert_eq!(value["format"], CONFIG_EXPORT_FORMAT);
+        assert_eq!(value["version"], CONFIG_VERSION);
+        assert_eq!(value["config"], serde_json::to_value(&config).unwrap());
+        assert!(value["exported_at"].as_str().unwrap().ends_with('Z'));
+
+        let text = serde_json::to_string(&document).unwrap().to_ascii_lowercase();
+        for forbidden in [
+            "password",
+            "passkey",
+            "session_id",
+            "auth.json",
+            "setup_token",
+            "audit",
+        ] {
+            assert!(!text.contains(forbidden), "{forbidden} leaked into export");
+        }
+    }
+
+    #[test]
+    fn export_import_roundtrip_is_lossless() {
+        let mut config = Config::default();
+        config.server.port = 9090;
+        config.server.public_origin = Some("https://kvm.example.com".to_owned());
+        config.video.width = Some(1920);
+        config.video.h264.bitrate_kbps = 8_000;
+        config.hid.pointer_mode = PointerMode::Relative;
+        config.power.short_press_ms = 750;
+        config.media.max_upload_bytes = 1_024;
+
+        let document = serde_json::to_value(ConfigExport::new(config.clone())).unwrap();
+        let file: ConfigImportFile = serde_json::from_value(document).unwrap();
+        let imported = file.into_config().expect("valid export must import");
+        assert_eq!(imported, config);
+        assert!(config_changes(&config, &imported).is_empty());
+    }
+
+    #[test]
+    fn import_rejects_wrong_format_version_and_invalid_configuration() {
+        let exported = serde_json::to_value(ConfigExport::new(Config::default())).unwrap();
+
+        let mut wrong_format = exported.clone();
+        wrong_format["format"] = json!("other-tool");
+        let error = serde_json::from_value::<ConfigImportFile>(wrong_format)
+            .unwrap()
+            .into_config()
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("format"), "{}", error.message);
+
+        let mut wrong_version = exported.clone();
+        wrong_version["version"] = json!(CONFIG_VERSION + 1);
+        let error = serde_json::from_value::<ConfigImportFile>(wrong_version)
+            .unwrap()
+            .into_config()
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(
+            error.message.contains("不受支持") && error.message.contains("2"),
+            "{}",
+            error.message
+        );
+
+        let mut missing_version = exported.clone();
+        missing_version.as_object_mut().unwrap().remove("version");
+        let error = serde_json::from_value::<ConfigImportFile>(missing_version)
+            .unwrap()
+            .into_config()
+            .unwrap_err();
+        assert!(error.message.contains("version"), "{}", error.message);
+
+        let mut content_version = exported.clone();
+        content_version["config"]["version"] = json!(99);
+        let error = serde_json::from_value::<ConfigImportFile>(content_version)
+            .unwrap()
+            .into_config()
+            .unwrap_err();
+        assert!(
+            error.message.contains("配置内容版本 99"),
+            "{}",
+            error.message
+        );
+
+        let mut invalid = exported;
+        invalid["config"]["server"]["port"] = json!(0);
+        let error = serde_json::from_value::<ConfigImportFile>(invalid)
+            .unwrap()
+            .into_config()
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(error.message.contains("server.port"), "{}", error.message);
+    }
+
+    #[test]
+    fn diff_lists_changed_field_paths_with_old_and_new_values() {
+        let old = Config::default();
+        let mut new = old.clone();
+        new.server.port = 9090;
+        new.server.public_origin = Some("https://kvm.example.com".to_owned());
+        new.video.width = Some(1920);
+        new.hid.mouse_device = Some(PathBuf::from("/dev/hidg1"));
+
+        let changes = config_changes(&old, &new);
+        let by_path: std::collections::HashMap<&str, &ConfigChange> =
+            changes.iter().map(|change| (change.path.as_str(), change)).collect();
+        assert_eq!(changes.len(), 4, "{changes:?}");
+        assert_eq!(by_path["server.port"].old, json!(8080));
+        assert_eq!(by_path["server.port"].new, json!(9090));
+        assert_eq!(by_path["server.public_origin"].old, serde_json::Value::Null);
+        assert_eq!(
+            by_path["server.public_origin"].new,
+            json!("https://kvm.example.com")
+        );
+        assert_eq!(by_path["video.width"].old, serde_json::Value::Null);
+        assert_eq!(by_path["video.width"].new, json!(1920));
+        assert_eq!(by_path["hid.mouse_device"].new, json!("/dev/hidg1"));
+    }
+
+    #[tokio::test]
+    async fn failed_import_validation_leaves_live_and_persisted_config_unchanged() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("config.json");
+        let config = Config::default();
+        config.save_atomic(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let state = test_state(config, path.clone());
+
+        let mut document = serde_json::to_value(ConfigExport::new(Config::default())).unwrap();
+        document["config"]["server"]["port"] = json!(0);
+        let file: ConfigImportFile = serde_json::from_value(document).unwrap();
+        assert!(file.into_config().is_err());
+
+        assert_eq!(state.config.read().await.server.port, 8080);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn import_waits_for_an_in_flight_config_update() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("config.json");
+        let config = Config::default();
+        config.save_atomic(&path).unwrap();
+        let state = test_state(config, path.clone());
+
+        let guard = state.config_update.lock().await;
+        let mut imported = state.config.read().await.clone();
+        imported.server.port = 9090;
+        let task = tokio::spawn({
+            let state = state.clone();
+            async move { import_config_with_state(state, imported).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!task.is_finished(), "import must wait for the save lock");
+        assert_eq!(state.config.read().await.server.port, 8080);
+        assert_eq!(Config::load(&path).unwrap().server.port, 8080);
+
+        drop(guard);
+        task.await.unwrap().expect("import should complete");
+        assert_eq!(state.config.read().await.server.port, 9090);
+        assert_eq!(Config::load(&path).unwrap().server.port, 9090);
+    }
 
     #[test]
     fn changed_sections_reports_only_top_level_names() {
