@@ -368,6 +368,16 @@
   $$('#fullscreen,[data-viewer-fullscreen]').forEach((button) =>
     button.addEventListener('click', toggleFullscreen),
   );
+  // Touch fullscreen hides the console header; this toolbar (CSS shows it only
+  // for coarse pointers in fullscreen) keeps keyboard, control and exit at hand.
+  $$('[data-touch-action]').forEach((button) =>
+    button.addEventListener('click', () => {
+      const action = button.dataset.touchAction;
+      if (action === 'keyboard') $('#keyboard-toggle')?.click();
+      else if (action === 'input') $('#input-state')?.click();
+      else if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    }),
+  );
   document.addEventListener('fullscreenchange', () => {
     const isFs = !!document.fullscreenElement;
     $$('[data-viewer-fullscreen]').forEach(

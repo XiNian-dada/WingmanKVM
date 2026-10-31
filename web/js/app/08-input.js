@@ -143,6 +143,11 @@
     if (stateEl) {
       stateEl.classList.toggle('active', enabled);
       stateEl.setAttribute('aria-pressed', String(enabled));
+      const touchInput = $('[data-touch-action="input"]');
+      if (touchInput) {
+        touchInput.textContent = enabled ? '释放' : '接管';
+        touchInput.classList.toggle('active', enabled);
+      }
       // Short, always-visible label: whether typing goes to the target must be
       // obvious at a glance. The long explanation stays in the tooltip.
       const label = !enabled ? '点击接管' : relative ? (captured ? '已捕获' : '点击捕获') : '正在控制';

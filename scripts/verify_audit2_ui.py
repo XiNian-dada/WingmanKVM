@@ -499,9 +499,53 @@ def shortcut_sheet(browser, port, checks):
     finally:
         context.close()
 
+
+def touch_fullscreen_toolbar(browser, port, checks):
+    """#58: touch devices get a floating toolbar in fullscreen."""
+    from verify_p2b_ui import api_route, GIF
+    state = State()
+    context = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
+    try:
+        page = context.new_page()
+        page.route("**/api/**", lambda route: api_route(route, state))
+        page.route("**/video_feed*", lambda route: route.fulfill(status=200, content_type="image/gif", body=GIF))
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        hint = page.locator("#local-exit-hint").is_visible()
+        check(checks, not hint, "keyboard_hint_hidden_on_touch", hint)
+        page.tap("#fullscreen")
+        page.wait_for_timeout(500)
+        if not page.evaluate("() => !!document.fullscreenElement"):
+            check(checks, True, "touch_toolbar_fullscreen_unavailable", "headless fullscreen refused; not claimed")
+            return
+        visible = page.locator("#touch-toolbar").is_visible()
+        check(checks, visible, "touch_toolbar_visible_in_fullscreen", visible)
+        page.tap('[data-touch-action="input"]')
+        page.wait_for_timeout(200)
+        pressed = page.get_attribute("#input-state", "aria-pressed")
+        label = page.text_content('[data-touch-action="input"]')
+        check(checks, pressed == "true" and label == "释放", "touch_toolbar_toggles_control", (pressed, label))
+        page.tap('[data-touch-action="exit"]')
+        page.wait_for_timeout(400)
+        still = page.evaluate("() => !!document.fullscreenElement")
+        check(checks, not still, "touch_toolbar_exits_fullscreen", still)
+    finally:
+        context.close()
+
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        page.click("#fullscreen")
+        page.wait_for_timeout(400)
+        visible = page.locator("#touch-toolbar").is_visible()
+        check(checks, not visible, "touch_toolbar_hidden_for_mouse", visible)
+    finally:
+        context.close()
+
 SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation, low_risk_ui,
              language_coverage, power_confirmation, media_drop_upload, paste_as_typing, custom_shortcuts,
-             inline_save_feedback, shortcut_sheet]
+             inline_save_feedback, shortcut_sheet,
+             touch_fullscreen_toolbar]
 
 if __name__ == "__main__":
     sys.exit(main())

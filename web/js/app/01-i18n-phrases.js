@@ -452,6 +452,9 @@
       "未转发键鼠时：打开本速查表": "未轉發鍵鼠時：開啟本速查表",
       "查看本地快捷键；未转发键鼠时也可以直接按 ?": "檢視本機快速鍵；未轉發鍵鼠時也可以直接按 ?",
       "查看": "檢視",
+      "触屏工具": "觸控工具",
+      "释放": "釋放",
+      "退出全屏": "退出全螢幕",
     },
     en: {
       "Wingman 简介": "About Wingman",
@@ -940,5 +943,9 @@
       "知道了": "Got it",
       "查看本地快捷键；未转发键鼠时也可以直接按 ?": "View local shortcuts; press ? anytime input is not forwarded",
       "查看": "View",
+      "触屏工具": "Touch tools",
+      "接管": "Take control",
+      "释放": "Release",
+      "退出全屏": "Exit fullscreen",
     },
   };

@@ -459,3 +459,39 @@
     monospace;
   white-space: nowrap;
 }
+
+/* Touch fullscreen toolbar; keyboard-only hints are hidden on touch devices. */
+.touch-toolbar {
+  display: none;
+}
+@media (pointer: coarse) {
+  #console:fullscreen .touch-toolbar {
+    position: absolute;
+    z-index: 6;
+    left: 50%;
+    bottom: max(12px, env(safe-area-inset-bottom));
+    display: flex;
+    gap: 6px;
+    padding: 6px;
+    border-radius: 999px;
+    background: #000000b3;
+    backdrop-filter: blur(8px);
+    transform: translateX(-50%);
+  }
+  .touch-toolbar button {
+    min-height: 40px;
+    padding: 0 16px;
+    border: 1px solid #ffffff40;
+    border-radius: 999px;
+    background: transparent;
+    color: #fff;
+    font-size: 14px;
+  }
+  .touch-toolbar button.active {
+    border-color: var(--blue);
+    background: var(--blue);
+  }
+  .local-exit-hint {
+    display: none;
+  }
+}
