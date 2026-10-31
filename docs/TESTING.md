@@ -26,6 +26,18 @@ cargo test --locked -p dtls
 cargo build --locked
 ```
 
+## One-line installer gate (no network, no root)
+
+`scripts/verify_get_script.py` builds a fake release, serves it from a loopback
+HTTP server, and also exercises a `file://` base. It checks latest-version
+discovery, explicit `--version`, SHA256 verification, `--download-only`,
+unsupported-architecture handling, and temporary-directory cleanup. It never
+contacts GitHub and never runs the real installer.
+
+```bash
+python3 scripts/verify_get_script.py
+```
+
 ## HTTP/API gates (real binary, black-box)
 
 ```bash

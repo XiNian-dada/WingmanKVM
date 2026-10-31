@@ -48,6 +48,37 @@ WingmanKVM 是一个运行在 ARM 开发板上的网页 KVM。把被控机的 HD
 
 ## 快速开始
 
+在目标 KVM 主机上运行一条命令：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts/get.sh | sudo bash
+```
+
+脚本会自动识别 `aarch64` / `armv7l`、下载最新 Release、用 `SHA256SUMS` 校验后调用安装器。首次安装缺少运行依赖时加上 `--install-deps`：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts/get.sh | sudo bash -s -- --install-deps
+```
+
+指定版本或暂时只安装文件：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts/get.sh \
+  | sudo bash -s -- --version v1.2.3 --no-start
+```
+
+想先审阅脚本再执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts/get.sh -o get.sh
+less get.sh
+sudo bash get.sh
+```
+
+安装结束会打印一次性初始化链接 `http://<IP 或主机名>:8080/#setup=...`；终端输出丢失时，可在创建管理员前运行 `sudo wingmankvm-setup-url` 重新打印。之后在同一局域网的浏览器中打开链接，设置管理员账号并确认自动检测到的设备。
+
+手动下载发布包（备选）：
+
 1. 从 [Releases](https://github.com/XiNian-dada/WingmanKVM/releases) 下载对应架构的发布包和 `SHA256SUMS`，放在同一目录：
    - ARM64：`wingmankvm-<版本>-aarch64-unknown-linux-gnu.tar.gz`
    - 32 位 ARM：`wingmankvm-<版本>-armv7-unknown-linux-gnueabihf.tar.gz`
@@ -58,8 +89,6 @@ WingmanKVM 是一个运行在 ARM 开发板上的网页 KVM。把被控机的 HD
    mkdir wingmankvm && tar -xzf wingmankvm-<版本>-<架构>.tar.gz -C wingmankvm
    cd wingmankvm && sudo ./deploy/install.sh --release ../wingmankvm-<版本>-<架构>.tar.gz
    ```
-
-3. 安装结束时终端会打印一次性初始化链接 `http://<IP>:8080/#setup=...`。在同一局域网的浏览器中打开，设置管理员账号并确认自动检测到的设备，即可进入控制台。
 
 安装器会配置 systemd 服务、USB Gadget（键盘、鼠标、绝对指针、虚拟介质）和权限规则；升级时保留回滚快照，失败自动回滚。运行依赖、从源码构建和排障见 [部署说明](docs/DEPLOYMENT.md)。
 
