@@ -1,0 +1,21 @@
+# Content-Security-Policy template: the single source of truth shared by
+# src/web/security_headers.rs (production) and scripts/verify_audit2_ui.py
+# (browser regression). One directive per line; '#' lines are comments.
+# {inline_script_hash}: sha256 of the theme bootstrap <script> in index.html.
+# {websocket_sources}: ws:// and wss:// for the request Host ('self' only
+#   covers ws(s) in CSP Level 3 browsers; older Safari needs them explicit).
+# style-src 'unsafe-inline': xterm.js injects <style> elements at runtime
+#   (DOM renderer / theme). Scripts stay hash-only.
+default-src 'self'
+script-src 'self' {inline_script_hash}
+style-src 'self' 'unsafe-inline'
+img-src 'self' data: blob:
+media-src 'self' blob:
+font-src 'self' data:
+connect-src 'self' {websocket_sources}
+worker-src 'none'
+frame-src 'none'
+frame-ancestors 'none'
+base-uri 'none'
+form-action 'self'
+object-src 'none'

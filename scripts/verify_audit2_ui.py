@@ -1113,6 +1113,110 @@ def media_url_download(browser, port, checks):
         context.close()
 
 
+def csp_policy(repo, host):
+    """The production CSP, built from web/csp-policy.txt exactly like
+    src/web/security_headers.rs does (hash of the inline theme script)."""
+    import base64, hashlib
+    html = open(os.path.join(repo, "web", "index.html"), encoding="utf-8").read()
+    start = html.index("<script>") + len("<script>")
+    script = html[start:html.index("</script>", start)]
+    digest = base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode()
+    lines = open(os.path.join(repo, "web", "csp-policy.txt"), encoding="utf-8").read().splitlines()
+    policy = "; ".join(l.strip() for l in lines if l.strip() and not l.strip().startswith("#"))
+    return (policy.replace("{inline_script_hash}", f"'sha256-{digest}'")
+            .replace("{websocket_sources}", f"ws://{host} wss://{host}"))
+
+
+def serve_with_csp(repo):
+    """Serve the unbundled UI (index.html + /assets/app.{js,css}) with the real CSP."""
+    import threading, urllib.parse
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    web = os.path.join(repo, "web")
+    def concat(sub, ext):
+        d = os.path.join(web, sub)
+        return b"".join(open(os.path.join(d, n), "rb").read() for n in sorted(os.listdir(d)) if n.endswith(ext))
+    xterm = read_assets(repo)
+    files = {
+        "/": (open(os.path.join(web, "index.html"), "rb").read(), "text/html; charset=utf-8"),
+        "/assets/app.js": (concat("js/app", ".js"), "text/javascript"),
+        "/assets/app.css": (concat("css/app", ".css"), "text/css"),
+        "/assets/xterm.js": (xterm["xterm.js"], "text/javascript"),
+        "/assets/xterm-fit.js": (xterm["addon-fit.js"], "text/javascript"),
+        "/assets/xterm.css": (xterm["xterm.css"], "text/css"),
+        "/assets/icon.svg": (open(os.path.join(web, "icon.svg"), "rb").read(), "image/svg+xml"),
+    }
+    files["/favicon.ico"] = files["/assets/icon.svg"]
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            body, ctype = files.get(urllib.parse.urlsplit(self.path).path, (b"not found", "text/plain"))
+            self.send_response(200 if body != b"not found" else 404)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Security-Policy", csp_policy(repo, self.headers.get("Host", "")))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, server.server_address[1]
+
+
+def csp_no_violations(browser, port, checks):
+    """#92: the real CSP allows login -> console, video, terminal and settings."""
+    import verify_p2_ui as p2
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    server, csp_port = serve_with_csp(repo)
+    state = p2.State(authenticated=False, mass_storage=False)
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_init_script("""
+      window.__csp = [];
+      localStorage.setItem('wingman_theme', 'dark');
+      document.addEventListener('securitypolicyviolation', e =>
+        window.__csp.push(e.violatedDirective + ' ' + (e.blockedURI || 'inline')));
+    """)
+    page = context.new_page()
+    console = []
+    page.on("console", lambda m: m.type == "error" and console.append(m.text))
+    page.on("pageerror", lambda e: console.append(str(e)))
+    try:
+        page.route("**/api/**", lambda route: p2.api_route(route, state))
+        page.route("**/video_feed*", lambda route: route.fulfill(
+            status=200, content_type="image/gif", body=p2.GIF))
+        response = page.goto(f"http://localhost:{csp_port}/", wait_until="load", timeout=15000)
+        header = response.headers.get("content-security-policy", "")
+        check(checks, "script-src 'self' 'sha256-" in header, "csp_header_served", header)
+        p2.wait_login(page)
+        theme = page.evaluate("() => document.documentElement.getAttribute('data-theme')")
+        check(checks, theme == "dark", "csp_allows_hashed_theme_script", theme)
+        page.fill('#login-form input[name="username"]', p2.USER)
+        page.fill('#login-form input[name="password"]', p2.PASSWORD)
+        page.click('#login-form button[type="submit"]')
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        page.wait_for_timeout(500)
+        page.click('[data-workspace="terminal"]')
+        page.wait_for_selector("#terminal-host .xterm", timeout=5000)
+        page.wait_for_timeout(300)
+        page.click('[data-workspace="video"]')
+        page.click("#settings-toggle")
+        page.wait_for_timeout(300)
+        page.click("[data-settings-close]")
+        page.wait_for_timeout(300)
+        violations = page.evaluate("() => window.__csp")
+        check(checks, not violations, "csp_no_violation_events", violations)
+        csp_console = [t for t in console if "Content Security Policy" in t or "Refused to" in t]
+        check(checks, not csp_console, "csp_no_console_errors", csp_console)
+    finally:
+        context.close()
+        server.shutdown()
+        server.server_close()
+
+
 # Every function taking (browser, port, checks) is a scenario, run in
 # definition order; new scenarios need no list edit (and no merge conflict).
 SCENARIOS = [
