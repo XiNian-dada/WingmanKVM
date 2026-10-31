@@ -159,7 +159,7 @@ pub(super) async fn passkey_login_finish(
     State(state): State<AppState>,
     ConnectInfo(connection): ConnectInfo<ClientConnection>,
     headers: HeaderMap,
-    Json(request): Json<PasskeyLoginFinishRequest>,
+    ApiJson(request): ApiJson<PasskeyLoginFinishRequest>,
 ) -> Result<Response, ApiError> {
     if !origin_matches_host(&headers) {
         return Err(ApiError::new(StatusCode::FORBIDDEN, "Origin 与 Host 不符"));
@@ -242,7 +242,7 @@ pub(super) struct PasskeyRegisterStartRequest {
 pub(super) async fn passkey_register_start(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(request): Json<PasskeyRegisterStartRequest>,
+    ApiJson(request): ApiJson<PasskeyRegisterStartRequest>,
 ) -> Result<Response, ApiError> {
     let Some(record) = state.auth.load_async().await.map_err(map_auth_error)? else {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "系统尚未初始化"));
@@ -301,7 +301,7 @@ pub(super) struct PasskeyRegisterFinishRequest {
 pub(super) async fn passkey_register_finish(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(request): Json<PasskeyRegisterFinishRequest>,
+    ApiJson(request): ApiJson<PasskeyRegisterFinishRequest>,
 ) -> Result<Response, ApiError> {
     if !origin_matches_host(&headers) {
         return Err(ApiError::new(StatusCode::FORBIDDEN, "Origin 与 Host 不符"));
@@ -384,7 +384,7 @@ pub(super) struct PasskeyDeleteRequest {
 
 pub(super) async fn passkey_delete(
     State(state): State<AppState>,
-    Json(request): Json<PasskeyDeleteRequest>,
+    ApiJson(request): ApiJson<PasskeyDeleteRequest>,
 ) -> Result<Response, ApiError> {
     let removed = state.auth.update_async(move |record| {
         record.remove_passkey(&request.id)
@@ -399,9 +399,9 @@ pub(super) async fn passkey_delete(
 
 pub(super) async fn passkey_delete_path(
     State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Result<Response, ApiError> {
-    passkey_delete(State(state), Json(PasskeyDeleteRequest { id })).await
+    passkey_delete(State(state), ApiJson(PasskeyDeleteRequest { id })).await
 }
 
 #[cfg(test)]

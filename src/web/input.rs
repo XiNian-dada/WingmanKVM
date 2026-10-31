@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) async fn key(
     State(state): State<AppState>,
-    Json(request): Json<KeyRequest>,
+    ApiJson(request): ApiJson<KeyRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let path = state.config.read().await.hid.keyboard_device.clone();
     state.hid.key(path, request).await.map_err(map_hid_error)?;
@@ -17,7 +17,7 @@ pub(super) async fn get_keyboard_leds(State(state): State<AppState>) -> impl Int
 
 pub(super) async fn mouse_move(
     State(state): State<AppState>,
-    Json(request): Json<MouseMoveRequest>,
+    ApiJson(request): ApiJson<MouseMoveRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let config = state.config.read().await.hid.clone();
     let path = relative_mouse_path(&config)?;
@@ -31,7 +31,7 @@ pub(super) async fn mouse_move(
 
 pub(super) async fn mouse_absolute(
     State(state): State<AppState>,
-    Json(request): Json<AbsolutePointerRequest>,
+    ApiJson(request): ApiJson<AbsolutePointerRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let config = state.config.read().await.hid.clone();
     if resolved_pointer_mode(&config) != PointerMode::Absolute {
@@ -50,7 +50,7 @@ pub(super) async fn mouse_absolute(
 
 pub(super) async fn mouse_click(
     State(state): State<AppState>,
-    Json(request): Json<MouseClickRequest>,
+    ApiJson(request): ApiJson<MouseClickRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let config = state.config.read().await.hid.clone();
     let path = relative_mouse_path(&config)?;
@@ -64,7 +64,7 @@ pub(super) async fn mouse_click(
 
 pub(super) async fn mouse_scroll(
     State(state): State<AppState>,
-    Json(request): Json<MouseScrollRequest>,
+    ApiJson(request): ApiJson<MouseScrollRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let config = state.config.read().await.hid.clone();
     let path = relative_mouse_path(&config)?;

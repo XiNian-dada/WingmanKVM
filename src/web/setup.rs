@@ -118,7 +118,7 @@ pub(super) struct SetupRequest {
 
 pub(super) async fn setup(
     State(state): State<AppState>,
-    Json(request): Json<SetupRequest>,
+    ApiJson(request): ApiJson<SetupRequest>,
 ) -> Result<Response, ApiError> {
     let setup_guard = state.setup.clone().lock_owned().await;
     if state.auth.is_initialized_async().await.map_err(ApiError::internal)? {

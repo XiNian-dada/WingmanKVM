@@ -10,7 +10,7 @@ pub(super) async fn login(
     State(state): State<AppState>,
     ConnectInfo(connection): ConnectInfo<ClientConnection>,
     headers: HeaderMap,
-    Json(request): Json<LoginRequest>,
+    ApiJson(request): ApiJson<LoginRequest>,
 ) -> Result<Response, ApiError> {
     let client_ip = state.client_address(connection, &headers).await.ip;
     // Reserve at admission so a burst cannot retry around the per-IP budget

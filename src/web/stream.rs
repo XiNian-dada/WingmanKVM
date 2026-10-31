@@ -48,7 +48,7 @@ pub(super) fn mjpeg_body(
 pub(super) async fn webrtc_offer(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(request): Json<WebRtcOfferRequest>,
+    ApiJson(request): ApiJson<WebRtcOfferRequest>,
 ) -> Result<Response, ApiError> {
     // Acquire the live guard atomically with validation. A logout that races
     // this request cannot leave an authorized peer behind, because the guard
@@ -73,7 +73,7 @@ pub(super) struct WebRtcCloseRequest {
 
 pub(super) async fn webrtc_close(
     State(state): State<AppState>,
-    Json(request): Json<WebRtcCloseRequest>,
+    ApiJson(request): ApiJson<WebRtcCloseRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     if request.session_id.len() > 128 || request.session_id.is_empty() {
         return Err(ApiError::bad_request("WebRTC 会话标识不正确"));
