@@ -26,12 +26,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_BUILD_JOBS: "2"
-  # Same toolchain as regression.yml so release and CI binaries agree.
-  RUST_VERSION: "1.93.1"
-  # Pinned cross release. The matching container image provides the armv7
-  # glibc sysroot and cross toolchain, which is more reproducible than
-  # assembling Debian/Ubuntu multiarch packages on the runner.
-  CROSS_VERSION: "0.2.5"
 
 jobs:
   version:
@@ -80,51 +74,63 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # GitHub-hosted native ARM64 runner avoids emulation for aarch64.
+          # Native ARM64 runner; the container pins glibc to Debian bookworm.
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
-            builder: native
-          # cross runs the ARMv7 build in a pinned container with the armhf
-          # sysroot, linker and target C compiler already configured.
+            objdump: objdump
+          # Debian's armhf cross toolchain inside the same bookworm image.
           - target: armv7-unknown-linux-gnueabihf
             runner: ubuntu-24.04
-            builder: cross
+            objdump: arm-linux-gnueabihf-objdump
     runs-on: ${{ matrix.runner }}
+    # Build inside Debian bookworm so the binaries need at most glibc 2.36 and
+    # run on the documented targets (Debian / Armbian bookworm). Building on
+    # the Ubuntu 24.04 host would require glibc 2.39. Image pinned by digest.
+    container: rust:1.93.1-bookworm@sha256:7c4ae649a84014c467d79319bbf17ce2632ae8b8be123ac2fb2ea5be46823f31
     timeout-minutes: 60
+    defaults:
+      run:
+        # Container jobs default to sh; the steps rely on bash (pipefail).
+        shell: bash
+    env:
+      TARGET: ${{ matrix.target }}
+      # bindgen (v4l2-sys-mit) must parse the target's kernel/libc headers.
+      CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+      CC_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-gcc
+      AR_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-ar
+      BINDGEN_EXTRA_CLANG_ARGS_armv7_unknown_linux_gnueabihf: --sysroot=/usr/arm-linux-gnueabihf -I/usr/arm-linux-gnueabihf/include
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # same pin as regression.yml
         with:
           persist-credentials: false
 
-      - name: Install system build dependencies
+      - name: Install build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config clang libclang-dev linux-libc-dev
-
-      - name: Install Rust toolchain
-        run: |
-          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
-          rustup default "$RUST_VERSION"
-          rustup show active-toolchain
-
-      - name: Install pinned cross for ARMv7
-        if: matrix.builder == 'cross'
-        run: cargo install cross --locked --version "$CROSS_VERSION"
+          set -eu
+          apt-get update
+          apt-get install -y --no-install-recommends clang libclang-dev pkg-config binutils
+          if [ "$TARGET" = armv7-unknown-linux-gnueabihf ]; then
+            apt-get install -y --no-install-recommends \
+              gcc-arm-linux-gnueabihf libc6-dev-armhf-cross linux-libc-dev-armhf-cross \
+              binutils-arm-linux-gnueabihf
+          fi
+          rustup target add "$TARGET"
 
       - name: Build release binary
+        run: cargo build --locked --release --target "$TARGET"
+
+      - name: Check glibc compatibility
         env:
-          TARGET: ${{ matrix.target }}
-          BUILDER: ${{ matrix.builder }}
+          OBJDUMP: ${{ matrix.objdump }}
         run: |
-          set -euo pipefail
-          if [ "$BUILDER" = "native" ]; then
-            rustup target add "$TARGET"
-            cargo build --locked --release --target "$TARGET"
-          else
-            cross build --locked --release --target "$TARGET"
-          fi
+          set -eu
+          # Fail if the binary needs a newer glibc than Debian bookworm ships.
+          max=$("$OBJDUMP" -T "target/$TARGET/release/wingmankvm" \
+            | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -1)
+          echo "highest required glibc: $max"
+          [ "$(printf '%s\n2.36\n' "$max" | sort -V | tail -1)" = 2.36 ] \
+            || { echo "binary requires glibc $max, newer than bookworm's 2.36" >&2; exit 1; }
 
       - name: Package release archive
         env:
