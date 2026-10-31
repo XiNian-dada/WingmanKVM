@@ -21,14 +21,17 @@ impl<'de> Deserialize<'de> for FullConfigUpdate {
 
 pub(super) async fn update_config(
     State(state): State<AppState>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
+    headers: HeaderMap,
     ApiJson(FullConfigUpdate(config)): ApiJson<FullConfigUpdate>,
 ) -> Result<impl IntoResponse, ApiError> {
     let _update_guard = state.config_update.lock().await;
     validate_config(&config)?;
-    let previous = state.config.read().await.server.clone();
-    let listener_changed = previous.listen_address != config.server.listen_address
-        || previous.port != config.server.port;
+    let previous = state.config.read().await.clone();
+    let listener_changed = previous.server.listen_address != config.server.listen_address
+        || previous.server.port != config.server.port;
     commit_config(&state, &config).await?;
+    audit_config_change(&state, connection, &headers, &previous, &config).await;
     let mut response = no_store(Json(config)).into_response();
     if listener_changed {
         response.headers_mut().insert(
@@ -220,10 +223,13 @@ pub(super) struct MediaPatch {
 
 pub(super) async fn patch_config(
     State(state): State<AppState>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
+    headers: HeaderMap,
     ApiJson(patch): ApiJson<ConfigPatch>,
 ) -> Result<impl IntoResponse, ApiError> {
     let _update_guard = state.config_update.lock().await;
-    let mut config = state.config.read().await.clone();
+    let previous = state.config.read().await.clone();
+    let mut config = previous.clone();
     if let Some(server) = patch.server {
         apply_server_patch(&mut config.server, server);
     }
@@ -241,7 +247,45 @@ pub(super) async fn patch_config(
     }
     validate_config(&config)?;
     commit_config(&state, &config).await?;
+    audit_config_change(&state, connection, &headers, &previous, &config).await;
     Ok(no_store(Json(config)))
+}
+
+/// Audit only the names of changed top-level sections; never their values.
+pub(super) fn changed_sections(previous: &Config, current: &Config) -> Vec<&'static str> {
+    [
+        ("server", previous.server != current.server),
+        ("video", previous.video != current.video),
+        ("hid", previous.hid != current.hid),
+        ("power", previous.power != current.power),
+        ("media", previous.media != current.media),
+    ]
+    .into_iter()
+    .filter_map(|(name, changed)| changed.then_some(name))
+    .collect()
+}
+
+pub(super) async fn audit_config_change(
+    state: &AppState,
+    connection: ClientConnection,
+    headers: &HeaderMap,
+    previous: &Config,
+    current: &Config,
+) {
+    let changed = changed_sections(previous, current);
+    if changed.is_empty() {
+        return;
+    }
+    let (ip, session) = audit_actor(state, connection, headers).await;
+    state
+        .audit
+        .record(
+            AuditEvent::ConfigChanged,
+            ip,
+            session,
+            Some(changed.join(",")),
+        )
+        .await;
 }
 
 pub(super) fn apply_server_patch(config: &mut config::ServerConfig, patch: ServerPatch) {
@@ -458,6 +502,19 @@ pub(super) fn optional_path(value: Option<String>) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changed_sections_reports_only_top_level_names() {
+        let previous = Config::default();
+        let mut current = previous.clone();
+        assert!(changed_sections(&previous, &current).is_empty());
+        current.video.jpeg_quality = current.video.jpeg_quality.saturating_add(1);
+        current.power.active_high = !current.power.active_high;
+        assert_eq!(changed_sections(&previous, &current), vec!["video", "power"]);
+        let detail = changed_sections(&previous, &current).join(",");
+        assert_eq!(detail, "video,power");
+        assert!(!detail.contains(&current.video.jpeg_quality.to_string()));
+    }
 
     #[test]
     fn video_form_updates_preserve_udp_mapping_and_null_clears_it() {

@@ -1,4 +1,5 @@
 mod assets;
+mod audit_api;
 mod config_api;
 mod config_validate;
 mod error;
@@ -18,6 +19,7 @@ mod stream;
 mod terminal;
 
 use self::assets::*;
+use self::audit_api::*;
 use self::config_api::*;
 use self::config_validate::*;
 use self::error::*;
@@ -50,10 +52,12 @@ use axum::{
     Json, Router,
     body::Body,
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
-    extract::{ConnectInfo, DefaultBodyLimit, Form, Multipart, Path as AxumPath, Request, State},
+    extract::{
+        ConnectInfo, DefaultBodyLimit, Form, Multipart, Path as AxumPath, Query, Request, State,
+    },
     http::{
         HeaderMap, HeaderValue, Method, StatusCode,
-        header::{CACHE_CONTROL, CONTENT_TYPE, COOKIE, HOST, LOCATION, ORIGIN, SET_COOKIE},
+        header::{CACHE_CONTROL, CONTENT_TYPE, COOKIE, HOST, LOCATION, ORIGIN, SET_COOKIE, USER_AGENT},
     },
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
@@ -71,7 +75,11 @@ use crate::proxy_protocol::ProxyProtocolMode;
 use crate::client_ip::{self, ClientAddress, ClientConnection};
 
 use crate::{
-    auth::{AuthError, AuthRecord, AuthStore, PasswordPolicyError, SessionGuard, SessionStore},
+    audit::{AuditEvent, AuditLog},
+    auth::{
+        AuthError, AuthRecord, AuthStore, LoginMethod, PasswordPolicyError, SessionGuard,
+        SessionMetadata, SessionStore, SessionSummary,
+    },
     config::{
         self, CONFIG_VERSION, Config, GpioBias, GpioInputConfig, GpioPulseConfig, H264Encoder,
         HidConfig, PointerMode, VideoEncoding,
@@ -99,6 +107,7 @@ pub struct AppState {
     proxy_protocol_updates: watch::Sender<ProxyProtocolMode>,
     config_path: Arc<PathBuf>,
     auth: AuthStore,
+    audit: AuditLog,
     sessions: SessionStore,
     setup: Arc<AsyncMutex<()>>,
     config_update: Arc<AsyncMutex<()>>,
@@ -124,6 +133,7 @@ impl AppState {
         let config = Config::load_or_default(&config_path)?;
         let state_dir = config::state_dir();
         let auth = AuthStore::new(state_dir.join("auth.json"));
+        let audit = AuditLog::new(state_dir);
         let setup_token = if auth.is_initialized()? {
             None
         } else {
@@ -163,6 +173,7 @@ impl AppState {
             config: Arc::new(RwLock::new(config)),
             config_path: Arc::new(config_path),
             auth,
+            audit,
             sessions,
             setup: Arc::new(AsyncMutex::new(())),
             config_update: Arc::new(AsyncMutex::new(())),
@@ -214,6 +225,10 @@ pub fn router(state: AppState) -> Router {
             get(get_config).put(update_config).post(patch_config),
         )
         .route("/api/logout", post(logout))
+        .route("/api/sessions", get(list_sessions))
+        .route("/api/sessions/revoke", post(revoke_session))
+        .route("/api/sessions/revoke-others", post(revoke_other_sessions))
+        .route("/api/audit", get(audit_log))
         .route("/api/key", post(key))
         .route("/api/mouse/move", post(mouse_move))
         .route("/api/mouse/absolute", post(mouse_absolute))

@@ -118,6 +118,8 @@ pub(super) struct SetupRequest {
 
 pub(super) async fn setup(
     State(state): State<AppState>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
+    headers: HeaderMap,
     ApiJson(request): ApiJson<SetupRequest>,
 ) -> Result<Response, ApiError> {
     let setup_guard = state.setup.clone().lock_owned().await;
@@ -193,6 +195,11 @@ pub(super) async fn setup(
     validate_config(&new_config)?;
     let username = request.username;
     let password = request.password;
+    let session_metadata = SessionMetadata {
+        client_ip: Some(state.client_address(connection, &headers).await.ip),
+        user_agent: client_user_agent(&headers),
+        login_method: Some(LoginMethod::Setup),
+    };
 
     // Validate the username, enforce the complete password policy and finish
     // the expensive hash before changing the local maintenance account.
@@ -208,7 +215,7 @@ pub(super) async fn setup(
     // HTTP client disconnects after privileged password synchronization starts.
     tokio::spawn(async move {
         let _setup_guard = setup_guard;
-        finish_setup(state, new_config, auth_record, password).await
+        finish_setup(state, new_config, auth_record, password, session_metadata).await
     })
     .await
     .map_err(ApiError::internal)?
@@ -219,6 +226,7 @@ pub(super) async fn finish_setup(
     new_config: Config,
     auth_record: AuthRecord,
     password: String,
+    session_metadata: SessionMetadata,
 ) -> Result<Response, ApiError> {
     persist_config(state.config_path.as_ref(), &new_config).await?;
 
@@ -257,7 +265,21 @@ pub(super) async fn finish_setup(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .take();
-    let session = state.sessions.create().map_err(ApiError::internal)?;
+    let audit_ip = session_metadata.client_ip;
+    let session = state
+        .sessions
+        .create_with_metadata(session_metadata)
+        .map_err(ApiError::internal)?;
+    let session_id = state.sessions.session_id(&session);
+    state
+        .audit
+        .record(
+            AuditEvent::SetupCompleted,
+            audit_ip,
+            session_id,
+            Some("method=setup".to_owned()),
+        )
+        .await;
     let session_secure = new_config.server.session_cookie_secure();
     Ok(with_session_cookie(
         Json(json!({
