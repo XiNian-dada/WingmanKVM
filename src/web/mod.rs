@@ -1,3 +1,5 @@
+mod assets;
+use self::assets::*;
 mod stream;
 use self::stream::*;
 mod input;
@@ -82,9 +84,6 @@ use crate::{
 
 const SESSION_COOKIE: &str = "wingman_session";
 const SESSION_COOKIE_MAX_AGE_SECONDS: u32 = 43_200;
-const XTERM_JS: &str = include_str!("../../web/vendor/xterm/xterm.js");
-const XTERM_FIT_JS: &str = include_str!("../../web/vendor/xterm/addon-fit.js");
-const XTERM_CSS: &str = include_str!("../../web/vendor/xterm/xterm.css");
 #[derive(Clone)]
 pub struct AppState {
     config: Arc<RwLock<Config>>,
@@ -256,43 +255,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/passkey/login/finish", post(passkey_login_finish))
         .merge(protected)
         .with_state(state)
-}
-
-async fn xterm_js() -> impl IntoResponse {
-    ([(CONTENT_TYPE, "text/javascript; charset=utf-8")], XTERM_JS)
-}
-
-async fn xterm_fit_js() -> impl IntoResponse {
-    (
-        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        XTERM_FIT_JS,
-    )
-}
-
-// App assets change with every release; never let a browser pair a fresh
-// index with a stale script or stylesheet.
-async fn app_css() -> impl IntoResponse {
-    no_store(([(CONTENT_TYPE, "text/css; charset=utf-8")], APP_CSS))
-}
-
-async fn app_js() -> impl IntoResponse {
-    no_store(([(CONTENT_TYPE, "text/javascript; charset=utf-8")], APP_JS.as_str()))
-}
-
-async fn xterm_css() -> impl IntoResponse {
-    ([(CONTENT_TYPE, "text/css; charset=utf-8")], XTERM_CSS)
-}
-
-async fn index() -> impl IntoResponse {
-    no_store(Html(INDEX_HTML))
-}
-
-async fn favicon() -> impl IntoResponse {
-    ([(CONTENT_TYPE, "image/svg+xml")], ICON_SVG)
-}
-
-async fn health() -> impl IntoResponse {
-    Json(json!({"status": "ok", "service": "wingmankvm"}))
 }
 
 #[derive(Serialize)]
@@ -676,15 +638,5 @@ mod tests {
         assert!(origin_matches_host(&headers));
         headers.insert(ORIGIN, HeaderValue::from_static("http://evil.invalid"));
         assert!(!origin_matches_host(&headers));
-    }
-
-    #[tokio::test]
-    async fn favicon_and_icon_endpoints_return_svg() {
-        let resp = favicon().await.into_response();
-        assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(
-            resp.headers().get("content-type").unwrap(),
-            "image/svg+xml"
-        );
     }
 }
