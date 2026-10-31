@@ -929,12 +929,18 @@ pub fn keycode(code: &str) -> Option<u8> {
         "BracketLeft" | "[" => 0x2f,
         "BracketRight" | "]" => 0x30,
         "Backslash" | "\\" => 0x31,
+        // ISO/JIS extra keys used by non-US target layouts. HID usages come
+        // from the Keyboard/Keypad page: 0x64 Non-US \ and | (the key left of
+        // Z), 0x87 International1 (Ro), 0x89 International3 (Yen).
+        "IntlBackslash" => 0x64,
         "Semicolon" | ";" => 0x33,
         "Quote" | "'" => 0x34,
         "Backquote" | "`" => 0x35,
         "Comma" | "," => 0x36,
         "Period" | "." => 0x37,
         "Slash" | "/" => 0x38,
+        "IntlRo" => 0x87,
+        "IntlYen" => 0x89,
         "CapsLock" => 0x39,
         "F1" => 0x3a,
         "F2" => 0x3b,
@@ -977,6 +983,15 @@ mod tests {
         assert_eq!(keycode("Delete"), Some(0x4c));
         assert_eq!(keycode("Spacebar"), Some(0x2c));
         assert_eq!(keycode(";"), Some(0x33));
+        assert_eq!(keycode("Unknown"), None);
+    }
+
+    #[test]
+    fn maps_iso_and_jis_extra_keys() {
+        // ISO/JIS layouts need the extra physical keys beyond the US table.
+        assert_eq!(keycode("IntlBackslash"), Some(0x64));
+        assert_eq!(keycode("IntlRo"), Some(0x87));
+        assert_eq!(keycode("IntlYen"), Some(0x89));
         assert_eq!(keycode("Unknown"), None);
     }
 
