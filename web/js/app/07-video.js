@@ -64,6 +64,13 @@
       meta.textContent = '暂停';
       return;
     }
+    if (serverUnavailable && latestVideoStatus?.reason === 'device_missing') {
+      showVideoSurface('none');
+      setVideoMessage('采集卡已断开，重新插入后将自动恢复');
+      setStatusLabel('已断开', '采集卡已断开');
+      meta.textContent = mode;
+      return;
+    }
     if (serverUnavailable) {
       showVideoSurface('none');
       const reason = latestVideoStatus?.message || (serverStalled ? '视频已停止更新' : '设备离线');
