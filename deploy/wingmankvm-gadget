@@ -103,6 +103,15 @@ find_free_udc() {
     return 1
 }
 
+require_requested_udc() {
+    [ -n "$UDC_NAME" ] || return 0
+    [ -e "$UDC_CLASS_ROOT/$UDC_NAME" ] \
+        || die "configured UDC does not exist: $UDC_NAME"
+    if other_gadget_using_udc "$UDC_NAME"; then
+        die "UDC $UDC_NAME is already bound to another Gadget"
+    fi
+}
+
 select_udc() {
     current=$(read_text "$GADGET/UDC")
     if [ -n "$UDC_NAME" ]; then
@@ -369,6 +378,7 @@ start_gadget() {
     group_exists "$HW_GROUP" || die "hardware group $HW_GROUP does not exist"
     mount_configfs
     configure_usb_role
+    require_requested_udc
 
     if gadget_is_complete; then
         log "Gadget configuration is already current"

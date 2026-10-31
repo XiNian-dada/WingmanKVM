@@ -331,7 +331,7 @@ resolve_health_url() {
     if [[ -e $config || -L $config ]]; then
         [[ -f $config && -r $config && ! -L $config ]] \
             || die "config.json is not a readable regular file: $config"
-        parsed=$(python3 - "$config" <<'PY'
+        parsed=$(python3 -I - "$config" <<'PY'
 import ipaddress, json, sys
 path = sys.argv[1]
 try:
@@ -377,7 +377,7 @@ PY
         port=8080
     fi
     if [[ -n $HEALTH_URL ]]; then
-        python3 - "$HEALTH_URL" <<'PY' || die "invalid --health-url"
+        python3 -I - "$HEALTH_URL" <<'PY' || die "invalid --health-url"
 import ipaddress, sys, urllib.parse
 value = sys.argv[1]
 try:
@@ -415,7 +415,7 @@ PY
 
 probe_health() {
     local url=$1
-    timeout --kill-after=1s 16s python3 - "$url" <<'PY'
+    timeout --kill-after=1s 16s python3 -I - "$url" <<'PY'
 import http.client
 import json
 import sys
