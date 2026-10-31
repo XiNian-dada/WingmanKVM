@@ -66,7 +66,16 @@ WS_INIT = r"""
       {get() { return this._handlers[kind]; }, set(fn) { this._set(kind, fn); }});
   StubWebSocket.CONNECTING = 0; StubWebSocket.OPEN = 1;
   StubWebSocket.CLOSING = 2; StubWebSocket.CLOSED = 3;
-  window.WebSocket = StubWebSocket;
+  // Only the terminal socket is stubbed; other sockets (the keyboard/mouse
+  // channel) use the real implementation and fall back to HTTP when the
+  // static test server refuses them.
+  const RealWebSocket = window.WebSocket;
+  function RoutedWebSocket(url, protocols) {
+    return String(url).includes("/api/terminal/ws")
+      ? new StubWebSocket(url) : new RealWebSocket(url, protocols);
+  }
+  Object.assign(RoutedWebSocket, {CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3});
+  window.WebSocket = RoutedWebSocket;
   const emit = (id, kind, data) => {
     const s = P1.sockets[id]; if (!s) throw new Error("socket " + id + " missing");
     const h = s._handlers[kind]; if (!h) return false;
