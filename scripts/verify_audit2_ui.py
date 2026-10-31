@@ -4,12 +4,13 @@
 Reuses the P2b mocked API harness: real DOM, real browser keyboard/pointer
 events and the real UI state machine; no hardware is touched.
 """
-import argparse, inspect, json, os, sys, time, urllib.parse
+import inspect, json, os, sys, time, urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     from playwright.sync_api import sync_playwright
-    from verify_p2_ui import extract_html, read_assets, serve_static, check
+    import ui_harness
+    from ui_harness import check, read_assets
     from verify_p2b_ui import GIF, State, api_route, bootstrap_payload, new_page
 except Exception as exc:  # pragma: no cover - environment guard
     print(json.dumps({"status": "FAIL", "error": f"Playwright/helper import failed: {exc}"}))
@@ -117,16 +118,11 @@ def keyboard_focus(browser, port, checks):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--repo", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    parser.add_argument("--browser-channel", default="chrome")
-    args = parser.parse_args()
-    checks = []
-    summary = {"status": "FAIL", "repo": os.path.abspath(args.repo), "checks": checks}
-    server = None
+    args = ui_harness.parse_args()
+    summary = ui_harness.new_summary(args.repo)
+    checks = summary["checks"]
     try:
-        server, port = serve_static(extract_html(args.repo), read_assets(args.repo))
-        with sync_playwright() as p:
+        with ui_harness.static_server(args.repo) as port, sync_playwright() as p:
             browser = p.chromium.launch(headless=True, channel=args.browser_channel)
             try:
                 for scenario in SCENARIOS:
@@ -136,12 +132,7 @@ def main():
                 browser.close()
     except Exception as exc:
         summary["error"] = f"{type(exc).__name__}: {exc}"
-    finally:
-        if server:
-            server.shutdown()
-            server.server_close()
-        print(json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
-    return 0 if summary["status"] == "PASS" else 1
+    return ui_harness.finish(summary, args.output_dir, "audit2_ui_report.json")
 
 
 def video_settings(browser, port, checks):
