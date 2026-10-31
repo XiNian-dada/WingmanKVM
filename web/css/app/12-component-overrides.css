@@ -161,3 +161,27 @@
 #power-confirm-ok .hold-label {
   position: relative;
 }
+
+/* Upload throughput, cancel and drag-and-drop target. */
+.upload-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 20px;
+}
+.upload-stats {
+  color: var(--muted);
+  font:
+    11px/16px "Geist Mono",
+    ui-monospace,
+    monospace;
+}
+.upload-drop-hint {
+  margin: 0;
+}
+#panel-media.drop-target {
+  outline: 2px dashed var(--blue);
+  outline-offset: -8px;
+  background: color-mix(in srgb, var(--blue) 6%, transparent);
+}

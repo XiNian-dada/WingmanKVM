@@ -335,8 +335,50 @@ def power_confirmation(browser, port, checks):
     finally:
         context.close()
 
+
+def media_drop_upload(browser, port, checks):
+    """#54: dropping an image onto the media panel uploads it; others rejected."""
+    state = State()
+    uploads = []
+    context, page = new_page(browser, state, port)
+    try:
+        page.route("**/api/media/upload", lambda route: (
+            uploads.append(route.request.post_data_buffer or b""),
+            route.fulfill(status=200, content_type="application/json", body='{"name":"x.iso","size":4}'))[-1])
+        page.locator('[data-panel-target="media"]').click()
+        # Playwright drops file parts from captured multipart bodies, so record
+        # what the page actually hands to XHR.
+        page.evaluate("""() => {
+          const send = XMLHttpRequest.prototype.send;
+          window.__sentFiles = [];
+          XMLHttpRequest.prototype.send = function (body) {
+            if (body instanceof FormData)
+              for (const [, value] of body) if (value instanceof File) window.__sentFiles.push(value.name);
+            return send.call(this, body);
+          };
+        }""")
+        drop = """(name) => {
+          const transfer = new DataTransfer();
+          transfer.items.add(new File(['data'], name));
+          const panel = document.querySelector('#panel-media');
+          panel.dispatchEvent(new DragEvent('dragover', {dataTransfer: transfer, bubbles: true, cancelable: true}));
+          panel.dispatchEvent(new DragEvent('drop', {dataTransfer: transfer, bubbles: true, cancelable: true}));
+        }"""
+        page.evaluate(drop, "notes.txt")
+        page.wait_for_timeout(300)
+        toast = page.text_content("#toast") or ""
+        check(checks, not uploads and "ISO" in toast, "drop_rejects_non_image", (uploads, toast))
+        page.evaluate(drop, "installer.iso")
+        page.wait_for_timeout(800)
+        sent = page.evaluate("() => window.__sentFiles")
+        check(checks, uploads and sent == ["installer.iso"], "drop_uploads_image", sent)
+        hidden = page.evaluate("() => document.querySelector('#upload-cancel').classList.contains('hidden')")
+        check(checks, hidden, "cancel_button_hidden_after_upload", hidden)
+    finally:
+        context.close()
+
 SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation, low_risk_ui,
-             language_coverage, power_confirmation]
+             language_coverage, power_confirmation, media_drop_upload]
 
 if __name__ == "__main__":
     sys.exit(main())

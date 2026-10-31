@@ -13,7 +13,9 @@
     $$('.media-operation').forEach(
       (control) => (control.disabled = locked || control.dataset.mediaLocked === 'true'),
     );
-    $$('#media-upload input,#media-upload button').forEach((control) => (control.disabled = mediaBusy));
+    $$('#media-upload input,#media-upload button:not(#upload-cancel)').forEach(
+      (control) => (control.disabled = mediaBusy),
+    );
     $('#media-refresh').disabled = mediaBusy;
     $('#media-list').setAttribute('aria-busy', String(locked));
   }
@@ -252,15 +254,39 @@
     mediaBusy = true;
     syncMediaBusy();
     xhr.open('POST', '/api/media/upload');
+    // Smoothed throughput so the speed and remaining time do not jitter.
+    const stats = $('#upload-stats'),
+      cancel = $('#upload-cancel');
+    let lastAt = performance.now(),
+      lastLoaded = 0,
+      rate = 0;
+    cancel.classList.remove('hidden');
+    cancel.onclick = () => xhr.abort();
     xhr.upload.onprogress = (e) => {
       if (!e.lengthComputable) return;
       const value = Math.round((e.loaded / e.total) * 100);
       bar.style.width = `${value}%`;
       progress.setAttribute('aria-valuenow', String(value));
+      const now = performance.now(),
+        elapsed = (now - lastAt) / 1000;
+      if (elapsed >= 0.5) {
+        const instant = (e.loaded - lastLoaded) / elapsed;
+        rate = rate ? rate * 0.7 + instant * 0.3 : instant;
+        lastAt = now;
+        lastLoaded = e.loaded;
+      }
+      if (rate > 0) {
+        const left = Math.max(0, Math.round((e.total - e.loaded) / rate)),
+          clock = `${String(Math.floor(left / 60)).padStart(2, '0')}:${String(left % 60).padStart(2, '0')}`;
+        stats.textContent = `${value}% · ${formatBytes(rate)}/s · 剩余 ${clock}`;
+      } else stats.textContent = `${value}%`;
     };
     const finish = async (success, message) => {
       bar.style.width = '0';
       progress.setAttribute('aria-valuenow', '0');
+      stats.textContent = '';
+      cancel.classList.add('hidden');
+      cancel.onclick = null;
       if (success) {
         toast('镜像上传完成');
         form.reset();
@@ -282,3 +308,32 @@
     xhr.send(body);
   });
 
+  // Drag an image anywhere onto the media panel to upload it.
+  {
+    const panel = $('#panel-media'),
+      form = $('#media-upload');
+    const isFileDrag = (event) => [...(event.dataTransfer?.types || [])].includes('Files');
+    panel?.addEventListener('dragover', (event) => {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+      panel.classList.add('drop-target');
+    });
+    panel?.addEventListener('dragleave', (event) => {
+      if (!panel.contains(event.relatedTarget)) panel.classList.remove('drop-target');
+    });
+    panel?.addEventListener('drop', (event) => {
+      if (!isFileDrag(event)) return;
+      event.preventDefault();
+      panel.classList.remove('drop-target');
+      const file = event.dataTransfer.files[0];
+      if (!file) return;
+      if (!/\.(iso|img)$/i.test(file.name)) {
+        toast('只支持 ISO 或 IMG 镜像', true);
+        return;
+      }
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      form.elements.file.files = transfer.files;
+      form.requestSubmit();
+    });
+  }

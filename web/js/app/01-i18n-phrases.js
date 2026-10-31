@@ -400,6 +400,10 @@
       "确认复位": "確認重設",
       "长按电源 5 秒强制断电，可能导致数据丢失或文件系统损坏。": "長按電源 5 秒強制斷電，可能導致資料遺失或檔案系統損壞。",
       "按住 1 秒强制关机": "按住 1 秒強制關機",
+      "取消上传": "取消上傳",
+      "也可以把 ISO / IMG 文件拖到此面板上传": "也可以把 ISO / IMG 檔案拖到此面板上傳",
+      "只支持 ISO 或 IMG 镜像": "只支援 ISO 或 IMG 映像",
+      "${}% · ${}/s · 剩余 ${}": "${}% · ${}/s · 剩餘 ${}",
     },
     en: {
       "Wingman 简介": "About Wingman",
@@ -835,5 +839,9 @@
       "长按电源 5 秒强制断电，可能导致数据丢失或文件系统损坏。": "Holds power for 5 seconds to cut power; this can lose data or corrupt file systems.",
       "按住 1 秒强制关机": "Hold 1 s to force off",
       "取消": "Cancel",
+      "取消上传": "Cancel upload",
+      "也可以把 ISO / IMG 文件拖到此面板上传": "You can also drop an ISO / IMG file onto this panel",
+      "只支持 ISO 或 IMG 镜像": "Only ISO or IMG images are supported",
+      "${}% · ${}/s · 剩余 ${}": "${}% · ${}/s · ${} left",
     },
   };
