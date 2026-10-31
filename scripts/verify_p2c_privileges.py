@@ -8,6 +8,13 @@ D = Path("/etc/sudoers.d")
 MANAGED, PRIV = D / "wingmankvm", D / "wingmankvm-maintenance-root"
 FOREIGN = D / "zz-wingmankvm-verify-foreign"
 HELPER = Path("/usr/local/sbin/wingmankvm-set-wingman-password")
+UPGRADE = Path("/usr/local/sbin/wingmankvm-online-upgrade")
+UPGRADE_MARK = Path("/run/wingmankvm-verify-upgrade-ran")
+UPGRADE_STUB = """#!/bin/sh
+# synthetic verifier stub: records its arguments, never upgrades anything
+printf '%s\\n' "$*" > /run/wingmankvm-verify-upgrade-ran
+exit 0
+"""
 MARK = Path("/run/wingmankvm-verify-helper-ran")
 ENV = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
        "LC_ALL": "C", "LANG": "C", "TERM": "dumb"}
@@ -183,7 +190,7 @@ def main():
         check(report, "source_syntax", source_syntax)
 
         def snapshot_state():
-            for path in (MANAGED, PRIV, FOREIGN, HELPER):
+            for path in (MANAGED, PRIV, FOREIGN, HELPER, UPGRADE):
                 backups[path] = snapshot(path, tempdir)
             return "container sudoers/helper state snapshotted"
         check(report, "snapshot_container_state", snapshot_state)
@@ -253,6 +260,23 @@ def main():
             return "helper rejected extra arguments"
         check(report, "helper_rejects_arguments", helper_args)
 
+        def upgrade_trigger():
+            UPGRADE.parent.mkdir(parents=True, exist_ok=True)
+            UPGRADE.write_text(UPGRADE_STUB); os.chmod(UPGRADE, 0o755); os.chown(UPGRADE, 0, 0)
+            rm(UPGRADE_MARK)
+            p = run(["sudo", "-n", str(UPGRADE), "--start"], user="wingmankvm")
+            expect(p.returncode == 0 and UPGRADE_MARK.read_text().strip() == "--start",
+                   f"fixed upgrade trigger failed: {red(p.stderr)}")
+            for argv in (["--run"], ["--start", "x"], [], ["--start", "--run"]):
+                rm(UPGRADE_MARK)
+                p = run(["sudo", "-n", str(UPGRADE), *argv], user="wingmankvm")
+                expect(p.returncode != 0 and not UPGRADE_MARK.exists(),
+                       f"upgrade helper accepted arguments {argv}")
+            p = run(["sudo", "-n", str(UPGRADE), "--start"], user="wingman")
+            expect(p.returncode != 0, "wingman can trigger the upgrade helper")
+            return "only the exact --start argument list is allowed, only for wingmankvm"
+        check(report, "upgrade_trigger_fixed_arguments", upgrade_trigger)
+
         def wingman_no_root():
             p = run(["sudo", "-n", "-u", "root", "id", "-u"], user="wingman")
             expect(p.returncode != 0, "wingman unexpectedly obtained root in restricted mode")
@@ -290,7 +314,7 @@ def main():
     except Exception as exc:
         status = "FAIL"; report["reason"] = red(f"{type(exc).__name__}: {exc}")
     finally:
-        rm(MARK)
+        rm(MARK); rm(UPGRADE_MARK)
         for path, backup in backups.items():
             try: restore(path, backup)
             except Exception: pass
