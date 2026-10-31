@@ -642,10 +642,92 @@ def input_websocket(browser, port, checks):
     finally:
         context.close()
 
+
+def touch_gestures(browser, port, checks):
+    """#62: tap, long press, one-finger drag and two-finger scroll."""
+    from verify_p2b_ui import api_route, GIF
+    state = State()
+    # A visible, playing feed is needed to map touch points to the target.
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    posts = []
+    context = browser.new_context(viewport={"width": 1280, "height": 900}, has_touch=True)
+    try:
+        page = context.new_page()
+        def record(route):
+            path = route.request.url.split("/api/", 1)[1]
+            if path.startswith("mouse/"):
+                posts.append((path, json.loads(route.request.post_data or "{}")))
+                return route.fulfill(status=204)
+            return api_route(route, state)
+        page.route("**/api/**", record)
+        page.route("**/video_feed*", lambda route: route.fulfill(status=200, content_type="image/gif", body=GIF))
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        # Give the mocked 1x1 feed a real size so absolute mapping succeeds.
+        page.evaluate("""() => {
+          const feed = document.querySelector('#video-feed');
+          Object.defineProperty(feed, 'naturalWidth', {value: 1280});
+          Object.defineProperty(feed, 'naturalHeight', {value: 720});
+          // The stub GIF is 1x1; give the element a realistic rendered size.
+          feed.style.width = '640px';
+          feed.style.height = '360px';
+          feed.dispatchEvent(new Event('load'));
+        }""")
+        page.wait_for_timeout(300)
+        touch = """([type, id, x, y]) => {
+          const v = document.querySelector('#video-viewport');
+          // Coordinates are relative to the rendered video, where touches map.
+          const r = document.querySelector('#video-feed').getBoundingClientRect();
+          v.dispatchEvent(new PointerEvent(type, {pointerId: id, pointerType: 'touch', isPrimary: id === 1,
+            clientX: r.left + x, clientY: r.top + y, bubbles: true, cancelable: true, button: 0}));
+        }"""
+        page.click("#input-state")
+        posts.clear()
+        page.evaluate(touch, ["pointerdown", 1, 100, 100])
+        page.evaluate(touch, ["pointerup", 1, 100, 100])
+        page.wait_for_timeout(200)
+        clicks = [b for p, b in posts if b.get("action") == "click" or p == "mouse/click"]
+        check(checks, clicks and clicks[-1].get("button") == 1, "touch_tap_is_left_click", posts)
+
+        posts.clear()
+        page.evaluate(touch, ["pointerdown", 1, 120, 120])
+        page.wait_for_timeout(700)
+        page.evaluate(touch, ["pointerup", 1, 120, 120])
+        page.wait_for_timeout(200)
+        clicks = [b for p, b in posts if b.get("action") == "click" or p == "mouse/click"]
+        check(checks, len(clicks) == 1 and clicks[0].get("button") == 2, "touch_long_press_is_right_click", posts)
+
+        posts.clear()
+        page.evaluate(touch, ["pointerdown", 1, 100, 100])
+        for step in range(1, 6):
+            page.evaluate(touch, ["pointermove", 1, 100 + step * 20, 100])
+            page.wait_for_timeout(30)
+        page.evaluate(touch, ["pointerup", 1, 200, 100])
+        page.wait_for_timeout(200)
+        moves = [b for p, b in posts if b.get("action") == "move"]
+        clicks = [b for p, b in posts if b.get("action") == "click"]
+        check(checks, moves and not clicks, "touch_drag_moves_without_clicking", posts[-4:])
+
+        posts.clear()
+        page.evaluate(touch, ["pointerdown", 1, 100, 300])
+        page.evaluate(touch, ["pointerdown", 2, 160, 300])
+        for step in range(1, 5):
+            page.evaluate(touch, ["pointermove", 1, 100, 300 - step * 20])
+            page.evaluate(touch, ["pointermove", 2, 160, 300 - step * 20])
+        page.evaluate(touch, ["pointerup", 1, 100, 220])
+        page.evaluate(touch, ["pointerup", 2, 160, 220])
+        page.wait_for_timeout(200)
+        scrolls = [b for p, b in posts if b.get("action") == "scroll"]
+        clicks = [b for p, b in posts if b.get("action") == "click"]
+        check(checks, scrolls and all(b["delta"] < 0 for b in scrolls) and not clicks,
+              "two_finger_drag_scrolls", posts)
+    finally:
+        context.close()
+
 SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation, low_risk_ui,
              language_coverage, power_confirmation, media_drop_upload, paste_as_typing, custom_shortcuts,
              inline_save_feedback, shortcut_sheet,
-             touch_fullscreen_toolbar, input_websocket]
+             touch_fullscreen_toolbar, input_websocket, touch_gestures]
 
 if __name__ == "__main__":
     sys.exit(main())
