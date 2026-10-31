@@ -83,7 +83,50 @@ def main():
     return 0 if summary["status"] == "PASS" else 1
 
 
-SCENARIOS = [keyboard_focus]
+def video_settings(browser, port, checks):
+    """#35: every video settings control is wired and persisted."""
+    state = State()
+    posts = []
+    context, page = new_page(browser, state, port)
+    try:
+        page.route("**/api/config", lambda route: (
+            posts.append(json.loads(route.request.post_data or "{}")),
+            route.fulfill(status=200, content_type="application/json", body="{}"))[-1])
+        page.locator('[data-panel-target="video"]').click()
+        form = page.locator("#video-config")
+        form.locator('select[name="h264_bitrate_preset"]').select_option("12000")
+        hidden = form.locator('input[name="h264_bitrate_kbps"]').input_value()
+        check(checks, hidden == "12000", "bitrate_preset_updates_value", hidden)
+        form.locator('select[name="h264_bitrate_preset"]').select_option("custom")
+        visible = form.locator(".h264-bitrate-custom").is_visible()
+        check(checks, visible, "custom_bitrate_field_shown", visible)
+        form.locator('input[name="h264_bitrate_kbps"]').fill("3000")
+
+        form.locator('select[name="display_scale"]').select_option("native")
+        form.locator('select[name="rendering"]').select_option("smooth")
+        classes = page.evaluate("() => document.querySelector('#console').className")
+        check(checks, "mode-native" in classes and "render-pixelated" not in classes,
+              "display_controls_apply_immediately", classes)
+
+        form.locator('input[name="jpeg_quality"]').fill("55")
+        shown = page.text_content("#quality-value")
+        check(checks, shown == "55", "jpeg_quality_output_tracks_slider", shown)
+
+        form.locator('button[type="submit"]').click()
+        page.wait_for_timeout(300)
+        bitrate = posts and posts[-1].get("video", {}).get("h264", {}).get("bitrate_kbps")
+        check(checks, bitrate == 3000, "submitted_bitrate_matches_selection", posts[-1:] if posts else posts)
+
+        page.reload(wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        classes = page.evaluate("() => document.querySelector('#console').className")
+        check(checks, "mode-native" in classes and "render-pixelated" not in classes,
+              "display_preferences_survive_reload", classes)
+    finally:
+        context.close()
+
+
+SCENARIOS = [keyboard_focus, video_settings]
 
 if __name__ == "__main__":
     sys.exit(main())

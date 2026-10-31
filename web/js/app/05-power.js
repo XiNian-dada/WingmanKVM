@@ -265,6 +265,7 @@
       button = $('button[type=submit]', f);
     if (button.disabled) return;
     syncVideoPresets();
+    syncH264Preset();
     const selectedTransport = value(f, 'transport'),
       requestId = ++videoConfigRequestId,
       label = button.textContent,

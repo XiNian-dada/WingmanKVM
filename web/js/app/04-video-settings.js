@@ -90,11 +90,13 @@
     centerNativeViewport();
     toast(t('pan_mode', '平移') + ': 已居中');
   });
+  // Single source of truth for interpolation: the video panel select and the
+  // settings dialog toggle both read and write the `render_pixelated` setting.
   function setVideoRendering(rendering, remember = false) {
     const next = rendering === 'smooth' ? 'smooth' : 'pixelated';
     consoleBox.classList.toggle('render-pixelated', next === 'pixelated');
     $('#video-config').elements.rendering.value = next;
-    if (remember) saveVideoUiPreference('rendering', next);
+    if (remember) setSetting('render_pixelated', next === 'pixelated');
   }
   function syncVideoPresets() {
     const form = $('#video-config'),
@@ -122,6 +124,15 @@
       preset = value(form, 'h264_bitrate_preset');
     $('.h264-bitrate-custom', form).classList.toggle('hidden', preset !== 'custom');
     if (h264BitratePresets.has(preset)) form.elements.h264_bitrate_kbps.value = preset;
+  }
+  {
+    const form = $('#video-config');
+    form.elements.h264_bitrate_preset.addEventListener('change', syncH264Preset);
+    form.elements.display_scale.addEventListener('change', (e) => setDisplayScale(e.target.value, true));
+    form.elements.rendering.addEventListener('change', (e) => setVideoRendering(e.target.value, true));
+    form.elements.jpeg_quality.addEventListener('input', (e) => {
+      $('#quality-value').textContent = e.target.value;
+    });
   }
   function selectH264Preset(h264) {
     const form = $('#video-config'),

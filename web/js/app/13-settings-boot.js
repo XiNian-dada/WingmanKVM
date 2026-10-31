@@ -1,7 +1,6 @@
   const settingsDialog = $('#settings-dialog');
   function applyRenderPixelated(enabled) {
-    $('#console')?.classList.toggle('render-pixelated', enabled);
-    setSetting('render_pixelated', enabled);
+    setVideoRendering(enabled ? 'pixelated' : 'smooth', true);
   }
   function syncSettingsDialogUi() {
     if (!settingsDialog) return;
@@ -106,6 +105,7 @@
 
   applyTheme(getPreferredTheme());
   applyRenderPixelated(getSetting('render_pixelated', true));
+  setDisplayScale(readVideoUiPreference('scale', 'fit'));
   try {
     const savedLang = localStorage.getItem('wingman_lang');
     if (savedLang && ['zh-CN', 'zh-TW', 'en'].includes(savedLang)) setLanguage(savedLang);
