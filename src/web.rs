@@ -3045,8 +3045,10 @@ fn validate_config(config: &Config) -> Result<(), ApiError> {
     {
         return Err(ApiError::bad_request("可信 HTTP 代理最多配置 64 个明确的单播 IP 地址"));
     }
-    if let (Some(width), Some(height)) = (config.video.width, config.video.height)
-        && (!(160..=7680).contains(&width) || !(120..=4320).contains(&height))
+    // Width and height are optional independently; validate each on its own
+    // so a partial override cannot persist an out-of-range capture size.
+    if config.video.width.is_some_and(|width| !(160..=7680).contains(&width))
+        || config.video.height.is_some_and(|height| !(120..=4320).contains(&height))
     {
         return Err(ApiError::bad_request("视频分辨率超出允许范围"));
     }
@@ -4158,6 +4160,16 @@ mod tests {
         let mut config = Config::default();
         config.video.frames_per_second = Some(121);
         assert!(validate_config(&config).is_err());
+
+        for (width, height) in [(Some(0), None), (Some(99_999), None), (None, Some(0)), (None, Some(9_999))] {
+            let mut config = Config::default();
+            config.video.width = width;
+            config.video.height = height;
+            assert!(validate_config(&config).is_err(), "{width:?}x{height:?} must be rejected");
+        }
+        let mut config = Config::default();
+        config.video.width = Some(1920);
+        assert!(validate_config(&config).is_ok());
 
         let mut config = Config::default();
         config.hid.keyboard_device = Some(PathBuf::from("dev/hidg0"));
