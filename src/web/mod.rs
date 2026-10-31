@@ -1,31 +1,34 @@
-mod session;
-use self::session::*;
 mod assets;
-use self::assets::*;
-mod stream;
-use self::stream::*;
-mod input;
-use self::input::*;
-mod power;
-use self::power::*;
-mod media;
-use self::media::*;
 mod config_api;
-use self::config_api::*;
 mod config_validate;
-use self::config_validate::*;
-mod setup;
-use self::setup::*;
-mod terminal;
-use self::terminal::*;
-mod passkey;
-use self::passkey::*;
-mod password_sync;
-use self::password_sync::*;
-mod login;
-use self::login::*;
 mod error;
+mod input;
+mod login;
+mod media;
+mod passkey;
+mod password_sync;
+mod power;
+mod session;
+mod setup;
+mod status;
+mod stream;
+mod terminal;
+
+use self::assets::*;
+use self::config_api::*;
+use self::config_validate::*;
 use self::error::*;
+use self::input::*;
+use self::login::*;
+use self::media::*;
+use self::passkey::*;
+use self::password_sync::*;
+use self::power::*;
+use self::session::*;
+use self::setup::*;
+use self::status::*;
+use self::stream::*;
+use self::terminal::*;
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -257,95 +260,6 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-#[derive(Serialize)]
-struct Capabilities {
-    video: bool,
-    keyboard: bool,
-    mouse: bool,
-    mouse_relative: bool,
-    mouse_absolute: bool,
-    pointer_mode: PointerMode,
-    gpio_power: bool,
-    gpio_reset: bool,
-    gpio_power_led: bool,
-    mass_storage: bool,
-    video_passthrough: bool,
-    video_transcode: bool,
-    video_webrtc_h264: bool,
-}
-
-async fn system_status(State(state): State<AppState>) -> impl IntoResponse {
-    no_store(Json(state.system.snapshot()))
-}
-
-async fn status(
-    State(state): State<AppState>,
-    ConnectInfo(connection): ConnectInfo<ClientConnection>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    let client = state.client_address(connection, &headers).await;
-    let config = state.config.read().await.clone();
-    let webrtc = state.webrtc.status();
-    let system = state.system.snapshot();
-    no_store(Json(json!({
-        "video": state.video.status(),
-        "power": state.power.status().await,
-        "webrtc": webrtc,
-        "capabilities": capabilities_with_webrtc(&config, webrtc.available),
-        "hid": {
-            "keyboard_leds": state.hid.leds(),
-        },
-        "system": system,
-        "client": {
-            "ip": client.ip.to_string(),
-            "port": client.port,
-            "source": client.source,
-            "proxy_protocol": config.server.proxy_protocol,
-        },
-    })))
-}
-
-#[allow(dead_code)]
-fn capabilities(config: &Config) -> Capabilities {
-    capabilities_with_webrtc(config, false)
-}
-
-fn capabilities_with_webrtc(config: &Config, video_webrtc_h264: bool) -> Capabilities {
-    let pointer_mode = resolved_pointer_mode(&config.hid);
-    let mouse_relative = config.hid.mouse_device.is_some();
-    let mouse_absolute = config.hid.absolute_pointer_device.is_some();
-    Capabilities {
-        video: config.video.device.is_some(),
-        keyboard: config.hid.keyboard_device.is_some(),
-        mouse: match pointer_mode {
-            PointerMode::Absolute => mouse_absolute,
-            PointerMode::Auto | PointerMode::Relative => mouse_relative,
-        },
-        mouse_relative,
-        mouse_absolute,
-        pointer_mode,
-        gpio_power: config.power.enabled
-            && config.power.gpio_chip.is_some()
-            && config.power.gpio_line.is_some(),
-        gpio_reset: config
-            .power
-            .reset_switch
-            .as_ref()
-            .is_some_and(gpio_pulse_is_configured),
-        gpio_power_led: config
-            .power
-            .power_led
-            .as_ref()
-            .is_some_and(gpio_input_is_configured),
-        mass_storage: config.media.enabled
-            && config.media.lun_path.is_some()
-            && config.media.image_directory.is_some(),
-        video_passthrough: true,
-        video_transcode: true,
-        video_webrtc_h264,
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
@@ -398,52 +312,5 @@ pub(crate) mod test_support {
             mass_storage_luns: Vec::new(),
             warnings: Vec::new(),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn capabilities_resolve_automatic_pointer_mode() {
-        let mut config = Config::default();
-        config.hid.mouse_device = Some(PathBuf::from("/dev/hidg1"));
-        let relative = capabilities(&config);
-        assert!(relative.mouse);
-        assert!(relative.mouse_relative);
-        assert!(!relative.mouse_absolute);
-        assert_eq!(relative.pointer_mode, PointerMode::Relative);
-
-        config.hid.absolute_pointer_device = Some(PathBuf::from("/dev/hidg2"));
-        let absolute = capabilities(&config);
-        assert!(absolute.mouse);
-        assert!(absolute.mouse_relative);
-        assert!(absolute.mouse_absolute);
-        assert_eq!(absolute.pointer_mode, PointerMode::Absolute);
-
-        config.media.enabled = true;
-        config.media.lun_path = Some(PathBuf::from(
-            "/sys/kernel/config/usb_gadget/wingman/functions/mass_storage.0/lun.0",
-        ));
-        assert!(!capabilities(&config).mass_storage);
-        config.media.image_directory = Some(PathBuf::from("/var/lib/wingmankvm/images"));
-        assert!(capabilities(&config).mass_storage);
-
-        assert!(!capabilities(&config).gpio_reset);
-        assert!(!capabilities(&config).gpio_power_led);
-        config.power.reset_switch = Some(GpioPulseConfig {
-            gpio_chip: Some("gpiochip1".to_owned()),
-            gpio_line: Some(10),
-            ..GpioPulseConfig::default()
-        });
-        config.power.power_led = Some(GpioInputConfig {
-            gpio_chip: Some("gpiochip1".to_owned()),
-            gpio_line: Some(12),
-            ..GpioInputConfig::default()
-        });
-        let gpio = capabilities(&config);
-        assert!(gpio.gpio_reset);
-        assert!(gpio.gpio_power_led);
     }
 }
