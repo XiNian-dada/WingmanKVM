@@ -1114,4 +1114,20 @@ mod tests {
 
         assert!(!record.remove_passkey("nonexistent").unwrap());
     }
+
+    #[test]
+    fn updating_a_removed_passkey_credential_reports_absence() {
+        let mut record = AuthRecord::new("admin", "Correct-Horse7!").unwrap();
+        let result: AuthenticationResult = serde_json::from_value(serde_json::json!({
+            "cred_id": "AAEC",
+            "needs_update": false,
+            "user_verified": true,
+            "backup_state": false,
+            "backup_eligible": false,
+            "counter": 1,
+            "extensions": {}
+        }))
+        .expect("authentication result fixture");
+        assert!(!record.update_passkey_credential(&[0, 1, 2], &result));
+    }
 }

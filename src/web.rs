@@ -1583,10 +1583,17 @@ async fn passkey_login_finish(
     };
 
     let cred_id = request.credential.raw_id;
-    let (username, terminal_ready) = state.auth.update(|record| {
-        record.update_passkey_credential(cred_id.as_slice(), &auth_result);
-        Ok((record.username.clone(), record.system_password_synced))
+    // The challenge snapshots the credential set at start time; re-check that
+    // the credential still exists so deleting a Passkey revokes it immediately.
+    let login = state.auth.update(|record| {
+        Ok(record
+            .update_passkey_credential(cred_id.as_slice(), &auth_result)
+            .then(|| (record.username.clone(), record.system_password_synced)))
     }).map_err(map_auth_error)?;
+    let Some((username, terminal_ready)) = login else {
+        tracing::warn!("Passkey login rejected: credential was removed after the challenge started");
+        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Passkey 验证失败"));
+    };
 
     let session = state.sessions.create().map_err(ApiError::internal)?;
     let session_secure = state.config.read().await.server.session_cookie_secure();
