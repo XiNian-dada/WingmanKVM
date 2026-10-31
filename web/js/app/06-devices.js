@@ -208,6 +208,7 @@
       const option = document.createElement('option');
       option.value = firstPath(candidate);
       option.textContent = firstLabel(candidate);
+      option.dataset.noI18n = '';
       select.append(option);
     }
     select.value = value(setupForm, field);

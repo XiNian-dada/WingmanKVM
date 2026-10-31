@@ -269,6 +269,16 @@ def language_coverage(browser, port, checks):
             "() => document.querySelector('#video-config .field-help').dataset.help")
         check(checks, help_text and not any("\u4e00" <= c <= "\u9fff" for c in help_text),
               "help_text_translated", help_text)
+        # User data that happens to equal a known phrase must stay verbatim.
+        page.evaluate("""() => {
+          const name = document.createElement('strong');
+          name.className = 'media-item-name';
+          name.textContent = '自动';
+          document.querySelector('#media-list').append(name);
+        }""")
+        page.wait_for_timeout(100)
+        kept = page.evaluate("() => document.querySelector('#media-list .media-item-name').textContent")
+        check(checks, kept == "自动", "user_data_not_translated", kept)
         page.click("#lang-toggle")
         page.click('[data-lang="zh-CN"]')
         page.wait_for_timeout(200)

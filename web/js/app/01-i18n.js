@@ -430,8 +430,12 @@
     }
     return source;
   }
+  // User data (file names, device paths, account/host names, diagnostics) is
+  // never translated even when it happens to equal a known phrase.
+  const NO_TRANSLATE =
+    'script,style,pre,code,#terminal-host,[data-no-i18n],.media-item-name,#session-user,#session-ip,#diag-client-ip';
   function untranslatable(el) {
-    return !el || !!el.closest('script,style,#terminal-host,[data-i18n]');
+    return !el || !!el.closest(`${NO_TRANSLATE},[data-i18n]`);
   }
   function translatePhrase(holder, key, current, write) {
     const records = phraseSources.get(holder) || new Map();
@@ -453,7 +457,8 @@
   function translateAttributes(el) {
     // data-i18n keys only own an element's text; its attributes still go
     // through phrase translation.
-    if (!el || el.closest('script,style') || el.parentElement?.closest('#terminal-host')) return;
+    if (!el || el.closest('script,style,[data-no-i18n],.media-item-name') || el.parentElement?.closest('#terminal-host'))
+      return;
     for (const attr of TRANSLATED_ATTRS) {
       const value = el.getAttribute(attr);
       if (value === null) continue;

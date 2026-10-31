@@ -47,6 +47,7 @@
     copy.className = 'media-status-copy';
     const title = document.createElement('strong');
     title.textContent = name || mediaStateLabel(state) || '未挂载';
+    if (name) title.dataset.noI18n = '';
     const detail = document.createElement('span');
     if (mounted) {
       const parts = [mediaTypeLabel(status?.media_type), status?.read_only === false ? '读写' : '只读'];
