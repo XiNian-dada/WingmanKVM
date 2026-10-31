@@ -17,14 +17,58 @@ Debian、Ubuntu、Armbian 的常用运行与诊断工具：
 
 ```bash
 sudo apt update
-sudo apt install -y sudo udev python3 coreutils util-linux libgpiod-tools v4l-utils
+sudo apt install -y sudo udev python3 coreutils util-linux diffutils mawk \
+  passwd v4l-utils libgpiod-tools
 ```
+
+安装器默认不会改动系统软件包。缺少运行依赖会直接报错并列出缺失命令；在 Debian、Ubuntu 或 Armbian 上追加 `--install-deps` 即可用 `apt-get install -y --no-install-recommends` 自动补齐（`python3`、`v4l-utils`、`util-linux`、`coreutils`、`passwd`、`udev`、`systemd`、`sudo` 等，以安装器实际检查的命令为准）。其他发行版请按提示手动安装。
+
+GPIO 电源控制需要 libgpiod 2.x 的 `gpioset`。Debian bookworm 自带 1.x，安装器只检测并提示，不会强制替换系统库；需要时请从 `bookworm-backports` 安装 `libgpiod-tools`，或按发行版文档自行构建 2.x。
 
 官方安装器要求 systemd 和 Linux UDC，并部署完整的 HID 与 Mass Storage 复合 Gadget；当前不提供无 UDC 的 video-only 安装模式。手工启动二进制只适合源码开发和诊断，不代表受支持的生产部署，也不会替代 Gadget、权限和持久化服务。
 
 ## 2. 获取 Linux 二进制
 
-### 使用发布包安装（推荐）
+### 一条命令安装（推荐）
+
+在目标 KVM 主机上运行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts/get.sh | sudo bash
+```
+
+`get.sh` 用 `uname -m` 识别 `aarch64` 或 `armv7l`（其他架构会明确报错），通过 GitHub API 解析最新 Release，也可以指定 `--version vX.Y.Z`。随后把对应 `.tar.gz` 和 `SHA256SUMS` 下载到临时目录，校验 SHA 后解包并执行 `deploy/install.sh --release`。临时目录在成功、失败和中断时都会清理。
+
+常用选项通过 `sudo bash -s --` 传给脚本：
+
+```bash
+# 自动安装缺失的 Debian/Ubuntu/Armbian 运行依赖
+curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts/get.sh \
+  | sudo bash -s -- --install-deps
+
+# 指定版本，只安装文件，稍后再启动
+curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts/get.sh \
+  | sudo bash -s -- --version v1.2.3 --no-start
+```
+
+支持的透传参数包括 `--install-deps`、`--no-start`、`--maintenance-mode MODE` 和 `--health-url URL`。先下载审阅再执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts/get.sh -o get.sh
+less get.sh
+sudo bash get.sh
+```
+
+也可以只下载、校验并解包某个 Release 供审阅，不安装：
+
+```bash
+bash get.sh --version v1.2.3 --download-only /tmp/wingmankvm-release
+less /tmp/wingmankvm-release/wingmankvm-review.*/deploy/install.sh
+```
+
+`get.sh` 本身也会作为 Release 资产上传，可从任一 Release 页面取得。
+
+### 手动下载发布包（备选）
 
 发布包由 GitHub Actions 在推送 `v*` tag 时构建，命名格式为 `wingmankvm-<版本>-<target>.tar.gz`，包含二进制、完整的 `deploy/` 目录、`LICENSE`、`README.md` 和 `CHANGELOG.md`。ARM64 主机选择 `aarch64-unknown-linux-gnu`，32 位 ARM 主机选择 `armv7-unknown-linux-gnueabihf`。
 
@@ -108,11 +152,19 @@ sudo ./deploy/install.sh --release /path/to/wingmankvm-<版本>-<target>.tar.gz
 
 安装器会在发布包同目录存在 `SHA256SUMS` 时校验其内容；`--binary` 与 `--release` 只能选择一个。
 
+Debian、Ubuntu、Armbian 上可以追加 `--install-deps`，让安装器用 `apt-get install -y --no-install-recommends` 补齐缺失的运行包：
+
+```bash
+sudo ./deploy/install.sh --install-deps --release /path/to/wingmankvm-<版本>-<target>.tar.gz
+```
+
+该选项默认关闭，安装器不会静默修改系统包；非 Debian 系发行版请按缺失命令提示手工安装。
+
 安装器会验证二进制格式与 CPU 架构，并幂等地完成：
 
 - 创建 `wingmankvm` 服务用户、`wingman` 网页终端用户和 `wingmankvm-hw` 硬件组；
 - 创建 `/var/lib/wingmankvm` 和 `/var/lib/wingmankvm/images`；
-- 安装 udev 规则、终端 profile、最小密码同步 helper 与 sudoers 规则；
+- 安装 udev 规则、终端 profile、最小密码同步 helper、`wingmankvm-doctor` 自检工具与 sudoers 规则；
 - 安装并启动 `wingmankvm-gadget.service`；
 - 创建 Boot Keyboard、Boot Relative Mouse、Absolute Pointer 和 Mass Storage LUN；
 - 在内核提供 HID function 设备号映射时创建 `/dev/wingmankvm-keyboard`、`/dev/wingmankvm-mouse`、`/dev/wingmankvm-absolute` 稳定链接；
@@ -181,13 +233,15 @@ systemctl --no-pager --full status wingmankvm-gadget.service
 
 ## 5. 首次网页设置
 
-正常安装完成后，直接打开安装器最后显示的一次性设置地址。若终端输出已经丢失，再从日志取得仅在创建管理员前有效的地址或 token：
+正常安装完成后，直接打开安装器最后显示的一次性设置地址。若终端输出已经丢失，只要还没有创建管理员，就可以重新打印 IP 和主机名两种形式的初始化地址：
 
 ```bash
-sudo journalctl -u wingmankvm -b --no-pager
+sudo wingmankvm-setup-url
 ```
 
-打开 `http://KVM主机地址:8080/`，然后按两步向导完成设置：
+该命令只能以 root 运行。首次启动时服务会把一次性令牌写入 `/var/lib/wingmankvm/setup-token`（权限 `0600`，服务账户所有）；创建管理员成功后令牌立即失效，文件也会删除。令牌不会写入服务日志。已经初始化时，命令只提示初始化已完成。
+
+打开 `http://KVM主机地址或主机名:8080/`，然后按两步向导完成设置：
 
 1. 创建管理员账号；一次性地址会自动填入 setup token，密码至少 12 位，并包含大写字母、小写字母、数字和符号；
 2. 在“检查连接”中确认自动检测结果，选择是否启用虚拟介质；GPIO 电源控制可以跳过并在之后配置。
@@ -257,7 +311,31 @@ find /sys/kernel/config/usb_gadget \
 
 如果修改过 `WINGMANKVM_GADGET_NAME`，相应替换第一条命令中的目录名。页面状态应显示实际协商的视频分辨率和帧率。视频设备被拔出或被其他进程占用时，采集 supervisor 会显示错误并按 1 秒退避重试，HID、GPIO、终端和虚拟介质不会因此一起退出。
 
+### 安装前/后自检：wingmankvm-doctor
+
+安装器会把自检工具安装到 `/usr/local/sbin/wingmankvm-doctor`；在源码或发布包目录中也可以直接运行 `deploy/wingmankvm-doctor`。它逐项输出 `[通过]`、`[警告]`、`[失败]`，并为警告和失败项给出中文修复建议（括号内附英文关键字便于搜索）：
+
+```bash
+sudo wingmankvm-doctor
+wingmankvm-doctor --json | python3 -m json.tool
+```
+
+普通用户可以直接运行，不需要 root；但读取其他用户的 systemd 状态、端口对应进程和部分 sysfs 属性时建议使用 `sudo`，否则相关项目可能只显示 `[警告]`。检查内容包括：
+
+- 内核 `configfs`、`libcomposite` 与 USB Gadget 目录；
+- `/sys/class/udc` 是否存在 UDC，以及 UDC 是否被其他 gadget 占用；
+- OTG/USB role 当前是否为 device，并提示常见 `role-switch` 路径；
+- `/dev/video*` 中是否存在同时支持 `Video Capture` 与 `MJPG` 的节点；缺少 `v4l2-ctl` 时降级为提示；
+- `python3`、`v4l2-ctl` 和 `gpioset`（要求 libgpiod 2.x）；
+- `8080` 端口占用、`wingmankvm.service` 与 `wingmankvm-gadget.service` 状态、`/healthz` 响应。
+
+`install.sh` 在安装前会以 `--preflight` 调用同一工具，只打印内核、UDC 和 USB role 的关键提示。该预检是建议性的，不会改变安装阻断条件：是否终止安装仍由安装器原有的平台检查决定。
+
+自动化测试或非常规目录布局可以通过环境变量替换所有 sysfs/dev 路径，例如 `WINGMANKVM_CONFIGFS_ROOT`、`WINGMANKVM_GADGETS_ROOT`、`WINGMANKVM_UDC_CLASS_ROOT`、`WINGMANKVM_MODULE_ROOT`、`WINGMANKVM_PROC_FILESYSTEMS`、`WINGMANKVM_DEV_ROOT`、`WINGMANKVM_USB_ROLE_ROOT`、`WINGMANKVM_USB_ROLE_PATH`、`WINGMANKVM_PORT`、`WINGMANKVM_HEALTH_URL`、`WINGMANKVM_SYSTEMCTL`、`WINGMANKVM_V4L2CTL`、`WINGMANKVM_GPIOSET` 和 `WINGMANKVM_MODPROBE`；完整列表见 `wingmankvm-doctor --help`。
+
 ## 8. 常见故障排查
+
+先运行 `sudo wingmankvm-doctor` 获取逐项结论；下面的命令用于进一步定位具体服务或设备。
 
 ### 找不到 UDC
 

@@ -10,10 +10,71 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     from playwright.sync_api import sync_playwright
     from verify_p2_ui import extract_html, read_assets, serve_static, check
-    from verify_p2b_ui import State, new_page
+    from verify_p2b_ui import GIF, State, api_route, bootstrap_payload, new_page
 except Exception as exc:  # pragma: no cover - environment guard
     print(json.dumps({"status": "FAIL", "error": f"Playwright/helper import failed: {exc}"}))
     sys.exit(2)
+
+
+
+PIP_STUB = """
+(() => {
+  let current = null;
+  window.__pipCalls = [];
+  window.__pipReject = false;
+  Object.defineProperty(Document.prototype, 'pictureInPictureEnabled', {configurable: true, get: () => true});
+  Object.defineProperty(Document.prototype, 'pictureInPictureElement', {configurable: true, get: () => current});
+  HTMLVideoElement.prototype.requestPictureInPicture = async function () {
+    if (window.__pipReject) throw new DOMException('denied', 'NotAllowedError');
+    window.__pipCalls.push(this.id || this.className);
+    current = this;
+    this.dispatchEvent(new Event('enterpictureinpicture'));
+    return {};
+  };
+  Document.prototype.exitPictureInPicture = async function () {
+    const element = current;
+    current = null;
+    element?.dispatchEvent(new Event('leavepictureinpicture'));
+  };
+})();
+"""
+
+FAKE_PEER = """
+(() => {
+  window.__statsCalls = 0;
+  window.__statsSeq = [];
+  window.__peers = [];
+  window.RTCPeerConnection = class {
+    constructor() {
+      this.iceGatheringState = 'complete';
+      this.connectionState = 'connected';
+      this.iceConnectionState = 'connected';
+      this.localDescription = {sdp: 'v=0'};
+      window.__peers.push(this);
+    }
+    addTransceiver() { return {}; }
+    async createOffer() { return {type: 'offer', sdp: 'v=0'}; }
+    async setLocalDescription() {}
+    async setRemoteDescription() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 64; canvas.height = 36;
+      const paint = canvas.getContext('2d');
+      setInterval(() => { paint.fillStyle = `hsl(${Date.now() % 360},50%,50%)`; paint.fillRect(0, 0, 64, 36); }, 50);
+      const stream = canvas.captureStream(20), track = stream.getVideoTracks()[0];
+      setTimeout(() => this.ontrack?.({track, streams: [stream]}), 0);
+    }
+    getReceivers() { return []; }
+    addEventListener() {}
+    removeEventListener() {}
+    close() { this.connectionState = 'closed'; }
+    async getStats() {
+      window.__statsCalls++;
+      const seq = window.__statsSeq;
+      return new Map((seq.length > 1 ? seq.shift() : seq[0] || []).map((entry) => [entry.id, entry]));
+    }
+  };
+})();
+"""
 
 
 def active_id(page):
@@ -1109,6 +1170,439 @@ def media_url_download(browser, port, checks):
         hidden = page.evaluate(
             "() => document.querySelector('#media-download-cancel').classList.contains('hidden')")
         check(checks, hidden, "url_download_cancel_finishes_ui", hidden)
+    finally:
+        context.close()
+
+
+def csp_policy(repo, host):
+    """The production CSP, built from web/csp-policy.txt exactly like
+    src/web/security_headers.rs does (hash of the inline theme script)."""
+    import base64, hashlib
+    html = open(os.path.join(repo, "web", "index.html"), encoding="utf-8").read()
+    start = html.index("<script>") + len("<script>")
+    script = html[start:html.index("</script>", start)]
+    digest = base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode()
+    lines = open(os.path.join(repo, "web", "csp-policy.txt"), encoding="utf-8").read().splitlines()
+    policy = "; ".join(l.strip() for l in lines if l.strip() and not l.strip().startswith("#"))
+    return (policy.replace("{inline_script_hash}", f"'sha256-{digest}'")
+            .replace("{websocket_sources}", f"ws://{host} wss://{host}"))
+
+
+def serve_with_csp(repo):
+    """Serve the unbundled UI (index.html + /assets/app.{js,css}) with the real CSP."""
+    import threading, urllib.parse
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    web = os.path.join(repo, "web")
+    def concat(sub, ext):
+        d = os.path.join(web, sub)
+        return b"".join(open(os.path.join(d, n), "rb").read() for n in sorted(os.listdir(d)) if n.endswith(ext))
+    xterm = read_assets(repo)
+    files = {
+        "/": (open(os.path.join(web, "index.html"), "rb").read(), "text/html; charset=utf-8"),
+        "/assets/app.js": (concat("js/app", ".js"), "text/javascript"),
+        "/assets/app.css": (concat("css/app", ".css"), "text/css"),
+        "/assets/xterm.js": (xterm["xterm.js"], "text/javascript"),
+        "/assets/xterm-fit.js": (xterm["addon-fit.js"], "text/javascript"),
+        "/assets/xterm.css": (xterm["xterm.css"], "text/css"),
+        "/assets/icon.svg": (open(os.path.join(web, "icon.svg"), "rb").read(), "image/svg+xml"),
+    }
+    files["/favicon.ico"] = files["/assets/icon.svg"]
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            body, ctype = files.get(urllib.parse.urlsplit(self.path).path, (b"not found", "text/plain"))
+            self.send_response(200 if body != b"not found" else 404)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Security-Policy", csp_policy(repo, self.headers.get("Host", "")))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, server.server_address[1]
+
+
+def csp_no_violations(browser, port, checks):
+    """#92: the real CSP allows login -> console, video, terminal and settings."""
+    import verify_p2_ui as p2
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    server, csp_port = serve_with_csp(repo)
+    state = p2.State(authenticated=False, mass_storage=False)
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_init_script("""
+      window.__csp = [];
+      localStorage.setItem('wingman_theme', 'dark');
+      document.addEventListener('securitypolicyviolation', e =>
+        window.__csp.push(e.violatedDirective + ' ' + (e.blockedURI || 'inline')));
+    """)
+    page = context.new_page()
+    console = []
+    page.on("console", lambda m: m.type == "error" and console.append(m.text))
+    page.on("pageerror", lambda e: console.append(str(e)))
+    try:
+        page.route("**/api/**", lambda route: p2.api_route(route, state))
+        page.route("**/video_feed*", lambda route: route.fulfill(
+            status=200, content_type="image/gif", body=p2.GIF))
+        response = page.goto(f"http://localhost:{csp_port}/", wait_until="load", timeout=15000)
+        header = response.headers.get("content-security-policy", "")
+        check(checks, "script-src 'self' 'sha256-" in header, "csp_header_served", header)
+        p2.wait_login(page)
+        theme = page.evaluate("() => document.documentElement.getAttribute('data-theme')")
+        check(checks, theme == "dark", "csp_allows_hashed_theme_script", theme)
+        page.fill('#login-form input[name="username"]', p2.USER)
+        page.fill('#login-form input[name="password"]', p2.PASSWORD)
+        page.click('#login-form button[type="submit"]')
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        page.wait_for_timeout(500)
+        page.click('[data-workspace="terminal"]')
+        page.wait_for_selector("#terminal-host .xterm", timeout=5000)
+        page.wait_for_timeout(300)
+        page.click('[data-workspace="video"]')
+        page.click("#settings-toggle")
+        page.wait_for_timeout(300)
+        page.click("[data-settings-close]")
+        page.wait_for_timeout(300)
+        violations = page.evaluate("() => window.__csp")
+        check(checks, not violations, "csp_no_violation_events", violations)
+        csp_console = [t for t in console if "Content Security Policy" in t or "Refused to" in t]
+        check(checks, not csp_console, "csp_no_console_errors", csp_console)
+    finally:
+        context.close()
+        server.shutdown()
+        server.server_close()
+
+
+def media_page(browser, state, port, h264=False, stubs=(PIP_STUB,)):
+    """new_page with init scripts, plus an optional negotiable H.264 backend."""
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    for stub in stubs:
+        page.add_init_script(stub)
+    page.route("**/api/**", lambda route: api_route(route, state))
+    page.route("**/video_feed*", lambda route: route.fulfill(
+        status=200, content_type="image/gif", body=GIF))
+    if h264:
+        def bootstrap(route):
+            body = bootstrap_payload(state)
+            body["capabilities"]["video_webrtc_h264"] = True
+            body["webrtc"] = {"available": True}
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+        page.route("**/api/bootstrap", bootstrap)
+        page.route("**/api/webrtc/offer", lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({"type": "answer", "session_id": "s1", "sdp": "a=rtpmap:96 H264/90000"})))
+        page.route("**/api/webrtc/close", lambda route: route.fulfill(
+            status=200, content_type="application/json", body="{}"))
+    page.goto(f"http://127.0.0.1:{port}/", wait_until="load", timeout=15000)
+    page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+    page.bring_to_front()
+    return context, page
+
+
+def wait_mjpeg_playing(page):
+    page.wait_for_function("() => document.querySelector('#video-feed').naturalWidth > 0", timeout=5000)
+    page.wait_for_function("""() => {
+      document.querySelector('#video-feed').dispatchEvent(new Event('load'));
+      return /LIVE/.test(document.querySelector('#video-transport-label').textContent);
+    }""", timeout=5000)
+
+
+def pip_unsupported_hides_button(browser, port, checks):
+    """#79: no PiP support, no button."""
+    state = State()
+    stub = """Object.defineProperty(Document.prototype, 'pictureInPictureEnabled',
+      {configurable: true, get: () => false});"""
+    context, page = media_page(browser, state, port, stubs=(stub,))
+    try:
+        check(checks, not page.locator("#pip").is_visible(), "pip_hidden_when_unsupported", "")
+    finally:
+        context.close()
+
+
+def pip_mjpeg(browser, port, checks):
+    """#79: MJPEG PiP plays a hidden canvas-fed video and cleans up."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10, frames_per_second=30)
+    context, page = media_page(browser, state, port)
+    source = "() => { const v = document.querySelector('video.pip-source'); return v ? !!v.srcObject : null; }"
+    try:
+        check(checks, page.locator("#pip").is_visible(), "pip_button_visible", "")
+        page.click('[data-workspace="terminal"]')
+        page.wait_for_timeout(200)
+        page.evaluate("() => document.querySelector('#pip').click()")
+        page.wait_for_timeout(100)
+        toast = page.text_content("#toast") or ""
+        check(checks, "没有可显示" in toast and not page.evaluate("() => window.__pipCalls.length"),
+              "pip_requires_live_picture", toast)
+        page.click('[data-workspace="video"]')
+        wait_mjpeg_playing(page)
+
+        page.click("#pip")
+        page.wait_for_function("() => window.__pipCalls.length === 1", timeout=5000)
+        check(checks, page.evaluate("() => window.__pipCalls[0]") == "pip-source" and page.evaluate(source) is True,
+              "pip_mjpeg_uses_canvas_video", page.evaluate("() => window.__pipCalls"))
+        check(checks, page.get_attribute("#pip", "aria-pressed") == "true", "pip_button_pressed", "")
+
+        # Backgrounding the tab must keep the stream alive while in PiP...
+        hide = """(hidden) => {
+          Object.defineProperty(document, 'hidden', {configurable: true, get: () => hidden});
+          document.dispatchEvent(new Event('visibilitychange'));
+        }"""
+        page.evaluate(hide, True)
+        page.wait_for_timeout(100)
+        check(checks, bool(page.get_attribute("#video-feed", "src")) and page.evaluate(source) is True,
+              "pip_keeps_video_when_tab_hidden", "")
+        # ...and closing the PiP window from the background stops it.
+        page.evaluate("() => document.exitPictureInPicture()")
+        page.wait_for_timeout(100)
+        check(checks, not page.get_attribute("#video-feed", "src") and page.evaluate(source) is None
+              and page.get_attribute("#pip", "aria-pressed") == "false",
+              "pip_leave_in_background_stops_video", "")
+        page.evaluate(hide, False)
+        page.wait_for_timeout(200)
+        wait_mjpeg_playing(page)
+
+        # A workspace switch stops video, which must end PiP and its resources.
+        page.click("#pip")
+        page.wait_for_function("() => window.__pipCalls.length === 2", timeout=5000)
+        page.click('[data-workspace="terminal"]')
+        page.wait_for_timeout(200)
+        check(checks, page.evaluate("() => document.pictureInPictureElement") is None and page.evaluate(source) is None
+              and page.get_attribute("#pip", "aria-pressed") == "false", "pip_cleans_up_on_stop", "")
+        page.click('[data-workspace="video"]')
+        wait_mjpeg_playing(page)
+
+        page.evaluate("() => { window.__pipReject = true; }")
+        page.click("#pip")
+        page.wait_for_timeout(300)
+        check(checks, "无法进入" in (page.text_content("#toast") or "") and page.evaluate(source) is None
+              and page.get_attribute("#pip", "aria-pressed") == "false", "pip_rejection_reports_and_cleans_up", "")
+    finally:
+        context.close()
+
+
+def pip_webrtc(browser, port, checks):
+    """#79: WebRTC PiP uses the live <video>; fallback to MJPEG ends it."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    context, page = media_page(browser, state, port, h264=True, stubs=(PIP_STUB, FAKE_PEER))
+    try:
+        page.wait_for_function("() => document.querySelector('#webrtc-feed').videoWidth > 0", timeout=8000)
+        page.wait_for_function("() => /H.264/.test(document.querySelector('#video-transport-label').textContent)"
+                               " && /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
+        page.click("#pip")
+        page.wait_for_function("() => window.__pipCalls.length === 1", timeout=5000)
+        check(checks, page.evaluate("() => window.__pipCalls[0]") == "webrtc-feed"
+              and page.get_attribute("#pip", "aria-pressed") == "true", "pip_webrtc_uses_video_element",
+              page.evaluate("() => window.__pipCalls"))
+        page.evaluate("""() => {
+          const peer = window.__peers.at(-1);
+          peer.connectionState = 'failed';
+          peer.onconnectionstatechange();
+        }""")
+        page.wait_for_timeout(200)
+        check(checks, page.evaluate("() => document.pictureInPictureElement") is None
+              and page.get_attribute("#pip", "aria-pressed") == "false", "pip_ends_on_transport_fallback", "")
+    finally:
+        context.close()
+
+
+def stats_report(at, scale=1, frames=None):
+    """One getStats() result; counters grow linearly with `scale`."""
+    return [
+        {"id": "T", "type": "transport", "selectedCandidatePairId": "P"},
+        {"id": "P", "type": "candidate-pair", "currentRoundTripTime": 0.025},
+        {"id": "AUDIO", "type": "inbound-rtp", "kind": "audio", "timestamp": at, "bytesReceived": 9e9},
+        {"id": "V", "type": "inbound-rtp", "kind": "video", "timestamp": at,
+         "bytesReceived": 125000 * scale, "packetsReceived": 990 * scale, "packetsLost": 10 * scale,
+         "framesDecoded": 30 * scale, "jitterBufferDelay": 1.5 * scale,
+         "jitterBufferEmittedCount": 30 * scale, "frameWidth": 1920, "frameHeight": 1080},
+    ]
+
+
+def overlay_rows(page):
+    return page.evaluate("""() => {
+      const out = {};
+      document.querySelectorAll('#quality-overlay dt:not(.hidden)').forEach((dt) => {
+        out[dt.textContent] = dt.nextElementSibling.textContent;
+      });
+      return out;
+    }""")
+
+
+def quality_overlay_webrtc(browser, port, checks):
+    """#81: stats deltas, persistence, and polling only while shown."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    context, page = media_page(browser, state, port, h264=True, stubs=(FAKE_PEER,))
+    try:
+        page.wait_for_function("() => /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
+        page.wait_for_timeout(1200)
+        check(checks, not page.locator("#quality-overlay").is_visible()
+              and page.evaluate("() => window.__statsCalls") == 0, "quality_off_by_default_without_polling", "")
+
+        # Two seconds apart: rates must divide by the real interval.
+        reports = [stats_report(10000, 1), stats_report(12000, 3), stats_report(12000, 3), stats_report(13000, 1),
+                   stats_report(14000, 2)]
+        page.evaluate("(reports) => { window.__statsSeq = reports; }", reports)
+        page.click("#quality-toggle")
+        check(checks, page.locator("#quality-overlay").is_visible()
+              and page.get_attribute("#quality-toggle", "aria-pressed") == "true", "quality_toggle_shows_overlay", "")
+        rows = overlay_rows(page)
+        check(checks, rows.get("接收码率") == "—", "quality_first_sample_has_no_rates", rows)
+        page.wait_for_function("() => document.querySelector('#quality-overlay').textContent.includes('Mbps')", timeout=4000)
+        rows = overlay_rows(page)
+        check(checks, rows == {"往返延迟": "25 ms", "接收码率": "1.00 Mbps", "丢包率": "1.0%", "解码帧率": "30",
+                               "抖动缓冲": "50 ms", "分辨率": "1920×1080"}, "quality_webrtc_stats_rendered", rows)
+        page.wait_for_function("() => window.__statsCalls >= 3", timeout=4000)
+        page.wait_for_timeout(50)
+        rows = overlay_rows(page)
+        check(checks, rows.get("接收码率") == "1.00 Mbps", "quality_cached_report_keeps_rates", rows)
+        page.wait_for_function("() => window.__statsCalls >= 4", timeout=4000)
+        page.wait_for_timeout(50)
+        rows = overlay_rows(page)
+        check(checks, rows.get("接收码率") == "—" and rows.get("解码帧率") == "—", "quality_counter_reset_not_negative", rows)
+        page.wait_for_function("() => window.__statsCalls >= 5", timeout=4000)
+        page.wait_for_timeout(50)
+        rows = overlay_rows(page)
+        check(checks, rows.get("接收码率") == "1.00 Mbps", "quality_recovers_after_reset", rows)
+
+        page.evaluate("""() => {
+          Object.defineProperty(document, 'hidden', {configurable: true, get: () => true});
+          document.dispatchEvent(new Event('visibilitychange'));
+        }""")
+        before = page.evaluate("() => window.__statsCalls")
+        page.wait_for_timeout(1300)
+        after = page.evaluate("() => window.__statsCalls")
+        check(checks, after == before, "quality_polling_stops_when_page_hidden", (before, after))
+        page.evaluate("""() => {
+          delete document.hidden;
+          document.dispatchEvent(new Event('visibilitychange'));
+        }""")
+        page.wait_for_function("() => /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
+
+        page.reload(wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        page.wait_for_function("() => /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
+        check(checks, page.locator("#quality-overlay").is_visible()
+              and page.get_attribute("#quality-toggle", "aria-pressed") == "true", "quality_setting_persists", "")
+        page.click("#quality-toggle")
+        before = page.evaluate("() => window.__statsCalls")
+        page.wait_for_timeout(1300)
+        check(checks, not page.locator("#quality-overlay").is_visible()
+              and page.evaluate("() => window.__statsCalls") == before, "quality_toggle_off_stops_polling", "")
+    finally:
+        context.close()
+
+
+def quality_overlay_mjpeg(browser, port, checks):
+    """#81: MJPEG is honest about where FPS comes from and about the bitrate."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10, frames_per_second=24.0)
+    context, page = media_page(browser, state, port, stubs=())
+    try:
+        wait_mjpeg_playing_once = """() => {
+          const feed = document.querySelector('#video-feed');
+          return feed.naturalWidth > 0 && /LIVE/.test(document.querySelector('#video-transport-label').textContent);
+        }"""
+        page.wait_for_function(wait_mjpeg_playing_once, timeout=5000)
+        page.click("#quality-toggle")
+        page.wait_for_timeout(100)
+        rows = overlay_rows(page)
+        check(checks, rows.get("帧率（服务端采集）") == "24" and rows.get("码率") == "不可用" and "丢包率" not in rows,
+              "quality_mjpeg_single_load_uses_server_fps", rows)
+
+        page.evaluate("""() => {
+          window.__loads = setInterval(
+            () => document.querySelector('#video-feed').dispatchEvent(new Event('load')), 100);
+        }""")
+        page.wait_for_function("""() => {
+          const dt = [...document.querySelectorAll('#quality-overlay dt')].find((e) => e.textContent.includes('浏览器实测'));
+          return dt && Number(dt.nextElementSibling.textContent) >= 6;
+        }""", timeout=5000)
+        rows = overlay_rows(page)
+        fps = float(rows.get("帧率（浏览器实测）", "0"))
+        check(checks, 6 <= fps <= 14 and "帧率（服务端采集）" not in rows, "quality_mjpeg_counts_load_events", rows)
+        page.evaluate("() => clearInterval(window.__loads)")
+
+        page.click("#lang-toggle")
+        page.click('[data-lang="en"]')
+        page.wait_for_timeout(1300)
+        rows = overlay_rows(page)
+        check(checks, rows.get("Bitrate") == "Unavailable" and "FPS (browser measured)" in rows,
+              "quality_overlay_translates", rows)
+
+        hit = page.evaluate("""() => {
+          const box = document.querySelector('#quality-overlay').getBoundingClientRect();
+          return document.elementFromPoint(box.left + 5, box.top + 5).closest('#quality-overlay') === null;
+        }""")
+        check(checks, hit, "quality_overlay_does_not_block_input", hit)
+    finally:
+        context.close()
+
+
+def hotplug_recovery(browser, port, checks):
+    """#93: capture-card unplug/replug and USB HID re-enumeration are announced."""
+    from verify_p2b_ui import api_route
+    state = State()
+    hid = {"keyboard_reenumerating": False, "mouse_reenumerating": False}
+    context, page = new_page(browser, state, port)
+    try:
+        class WithHid:
+            def __init__(self, route):
+                self.route, self.request = route, route.request
+            def fulfill(self, **kwargs):
+                body = json.loads(kwargs.get("body") or "{}")
+                body.setdefault("hid", {}).update(hid)
+                return self.route.fulfill(**{**kwargs, "body": json.dumps(body)})
+        page.unroute("**/api/**")
+        page.route("**/api/**", lambda route: api_route(
+            WithHid(route) if route.request.url.endswith("/api/status") else route, state))
+        page.evaluate("""() => {
+          window.__toasts = [];
+          new MutationObserver((records) => records.forEach((r) => r.addedNodes.forEach((n) => {
+            if (n.nodeValue) window.__toasts.push(n.nodeValue);
+          }))).observe(document.querySelector('#toast'), {childList: true});
+        }""")
+        ready = dict(state.video)
+        state.video = {**ready, "state": "offline", "reason": "device_missing",
+                       "message": "采集卡已断开：未找到 /dev/video0"}
+        hid["keyboard_reenumerating"] = True
+        page.wait_for_timeout(3500)
+        message = page.text_content("#video-message") or ""
+        label = page.text_content("#status-label") or ""
+        toasts = page.evaluate("() => window.__toasts")
+        check(checks, "采集卡已断开" in message and label == "已断开", "capture_unplug_message", (message, label))
+        check(checks, "采集卡已断开" in toasts and "USB 键鼠通道重新连接中" in toasts,
+              "unplug_and_hid_toasts", toasts)
+        check(checks, page.is_visible("#hid-link-state"), "hid_reenumerating_badge_shown", None)
+
+        state.video = ready
+        hid["keyboard_reenumerating"] = False
+        page.wait_for_timeout(3500)
+        toasts = page.evaluate("() => window.__toasts")
+        check(checks, "采集卡已恢复" in toasts and "USB 键鼠通道已恢复" in toasts, "recovery_toasts", toasts)
+        check(checks, not page.is_visible("#hid-link-state"), "hid_badge_cleared", None)
+        message_hidden = page.evaluate("() => document.querySelector('#video-message').classList.contains('hidden')")
+        check(checks, (page.text_content("#status-label") or "") != "已断开", "capture_recovered_label",
+              page.text_content("#status-label"))
+
+        page.click("#lang-toggle")
+        page.click('[data-lang="en"]')
+        state.video = {**ready, "state": "offline", "reason": "device_missing",
+                       "message": "采集卡已断开：未找到 /dev/video0"}
+        hid["mouse_reenumerating"] = True
+        page.wait_for_timeout(3500)
+        message = page.text_content("#video-message") or ""
+        badge = page.text_content("#hid-link-state") or ""
+        check(checks, message.startswith("Capture card disconnected") and badge == "HID reconnecting",
+              "hotplug_messages_translate", (message, badge, message_hidden))
     finally:
         context.close()
 

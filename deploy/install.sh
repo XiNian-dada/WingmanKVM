@@ -9,6 +9,7 @@ BINARY=
 RELEASE_ARCHIVE=
 RELEASE_TMPDIR=
 NO_START=false
+INSTALL_DEPS=false
 MAINTENANCE_MODE=
 WINGMAN_CREATED=false
 DEST_ROOT=/
@@ -24,12 +25,13 @@ SERVICES_START_ATTEMPTED=false
 
 usage() {
     cat <<EOF
-Usage: sudo ./deploy/$PROGRAM (--binary /path/to/wingmankvm | --release /path/to/wingmankvm-VERSION-TARGET.tar.gz) [--no-start] [--health-url URL] [--maintenance-mode MODE]
+Usage: sudo ./deploy/$PROGRAM (--binary /path/to/wingmankvm | --release /path/to/wingmankvm-VERSION-TARGET.tar.gz) [--no-start] [--install-deps] [--health-url URL] [--maintenance-mode MODE]
 
 Options:
   --binary PATH  Linux WingmanKVM executable to install
   --release FILE Release tar.gz to verify and install; the binary is read from it
   --no-start     Install files only; do not enable or start services
+  --install-deps Install missing runtime packages with apt-get on Debian, Ubuntu or Armbian
   --health-url U Local loopback http /healthz override (IP literal only)
   --maintenance-mode MODE  restricted (default) or explicit privileged root maintenance
   -h, --help     Show this help
@@ -51,6 +53,123 @@ die() {
 
 require_command() {
     command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+MISSING_ITEMS=()
+MISSING_PACKAGES=()
+
+add_missing_package() {
+    local package=$1 existing
+    for existing in "${MISSING_PACKAGES[@]}"; do
+        [[ $existing == "$package" ]] && return 0
+    done
+    MISSING_PACKAGES+=("$package")
+}
+
+check_dependency() {
+    local command=$1 package=$2
+    if [[ $command == /* ]]; then
+        if [[ ! -x $command ]]; then
+            MISSING_ITEMS+=("$command")
+            add_missing_package "$package"
+        fi
+    elif ! command -v "$command" >/dev/null 2>&1; then
+        MISSING_ITEMS+=("$command")
+        add_missing_package "$package"
+    fi
+}
+
+collect_missing_dependencies() {
+    local entry command package
+    local -a dependencies=(
+        "awk:mawk" "cmp:diffutils" "flock:util-linux" "getent:libc-bin"
+        "groupadd:passwd" "install:coreutils" "mktemp:coreutils" "od:coreutils"
+        "python3:python3" "systemctl:systemd" "timeout:coreutils"
+        "udevadm:udev" "useradd:passwd" "usermod:passwd" "visudo:sudo"
+    )
+
+    MISSING_ITEMS=()
+    MISSING_PACKAGES=()
+    for entry in "${dependencies[@]}"; do
+        IFS=: read -r command package <<<"$entry"
+        check_dependency "$command" "$package"
+    done
+    if [[ -n $RELEASE_ARCHIVE ]]; then
+        check_dependency tar tar
+        check_dependency sha256sum coreutils
+    fi
+    check_dependency /bin/bash bash
+    check_dependency /usr/bin/sudo sudo
+    check_dependency /usr/sbin/chpasswd passwd
+
+    # v4l-utils is used for post-install diagnostics; it is recommended but not
+    # required by the installer itself.
+    if ! command -v v4l2-ctl >/dev/null 2>&1; then
+        add_missing_package v4l-utils
+    fi
+}
+
+debian_family_supported() {
+    local family
+    [[ -r /etc/os-release ]] || return 1
+    family=$( (
+        # shellcheck source=/dev/null
+        . /etc/os-release
+        printf '%s %s' "${ID:-}" "${ID_LIKE:-}"
+    ) 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    case " $family " in
+        *" debian "* | *" ubuntu "* | *" armbian "*) return 0 ;;
+    esac
+    return 1
+}
+
+install_missing_dependencies() {
+    collect_missing_dependencies
+    if ((${#MISSING_PACKAGES[@]} == 0)); then
+        log "all runtime packages are already installed"
+        return 0
+    fi
+    if ! debian_family_supported; then
+        die "--install-deps supports Debian, Ubuntu and Armbian only; missing commands: ${MISSING_ITEMS[*]}; install them manually before running the installer"
+    fi
+    require_command apt-get
+    log "installing runtime packages: ${MISSING_PACKAGES[*]}"
+    DEBIAN_FRONTEND=noninteractive apt-get update \
+        || die "apt-get update failed; check network and package sources, then retry with --install-deps"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${MISSING_PACKAGES[@]}" \
+        || die "apt-get install failed; install these packages manually: ${MISSING_PACKAGES[*]}"
+    collect_missing_dependencies
+    if ((${#MISSING_ITEMS[@]} > 0)); then
+        die "dependencies are still missing after apt-get: ${MISSING_ITEMS[*]}"
+    fi
+    log "runtime packages installed"
+}
+
+check_libgpiod() {
+    local version=
+    if ! command -v gpioset >/dev/null 2>&1; then
+        log "optional GPIO power control: gpioset is not installed; the installer never installs libgpiod automatically"
+        log "on Debian bookworm use libgpiod-tools 2.x from bookworm-backports when GPIO power control is needed"
+        return 0
+    fi
+    version=$(gpioset --version 2>/dev/null | head -n 1 || true)
+    case $version in
+        *"v2."*) log "detected libgpiod 2.x: $version" ;;
+        *)
+            warn "gpioset is not libgpiod 2.x ($version); timed power pulses need libgpiod 2.x from bookworm-backports; the installer will not replace it automatically"
+            ;;
+    esac
+}
+
+ensure_runtime_dependencies() {
+    if $INSTALL_DEPS; then
+        install_missing_dependencies
+    fi
+    collect_missing_dependencies
+    if ((${#MISSING_ITEMS[@]} > 0)); then
+        die "missing required commands: ${MISSING_ITEMS[*]}; rerun with --install-deps on Debian/Ubuntu/Armbian, or install them manually"
+    fi
+    check_libgpiod
 }
 
 source_file() {
@@ -317,6 +436,23 @@ has_configured_role_switch() {
     return 1
 }
 
+# Advisory only: print the doctor's key findings before the installer's own
+# platform gates run. Failures here never block installation; check_platform
+# below remains the single authority for what is fatal.
+run_doctor_preflight() {
+    local doctor=$1 environment_file=$2 output status
+    log "running advisory preflight: wingmankvm-doctor --preflight"
+    set +e
+    output=$(bash "$doctor" --preflight --env-file "$environment_file" 2>&1)
+    status=$?
+    set -e
+    [[ -z $output ]] || printf '%s\n' "$output"
+    if ((status != 0)); then
+        warn "wingmankvm-doctor preflight exited with status $status; installer checks remain authoritative"
+    fi
+    return 0
+}
+
 check_platform() {
     local environment_file=$1
     local udcs=()
@@ -362,9 +498,11 @@ load_deployment_sources() {
     UDEV_RULES=$(source_file 99-wingmankvm.rules)
     WINGMAN_PROFILE=$(source_file wingman.bash_profile)
     PASSWORD_HELPER=$(source_file wingmankvm-set-wingman-password)
+    SETUP_URL_HELPER=$(source_file wingmankvm-setup-url)
     SUDOERS_RULE=$(source_file wingmankvm-sudoers)
     MAINTENANCE_ROOT_SUDOERS=$(source_file wingmankvm-maintenance-root-sudoers)
     GADGET_SCRIPT=$(source_file wingmankvm-gadget)
+    DOCTOR_SCRIPT=$(source_file wingmankvm-doctor)
     GADGET_ENV_EXAMPLE=$(source_file gadget.env.example)
     GADGET_SERVICE=$(source_file wingmankvm-gadget.service)
     APPLICATION_SERVICE=$(source_file wingmankvm.service)
@@ -372,7 +510,9 @@ load_deployment_sources() {
     bash -n "$SCRIPT_DIR/install.sh" || die "installer failed shell syntax validation"
     bash -n "$WINGMAN_PROFILE" || die "login profile failed shell syntax validation"
     sh -n "$GADGET_SCRIPT" || die "Gadget helper failed shell syntax validation"
+    bash -n "$DOCTOR_SCRIPT" || die "doctor helper failed shell syntax validation"
     sh -n "$PASSWORD_HELPER" || die "password helper failed shell syntax validation"
+    bash -n "$SETUP_URL_HELPER" || die "setup URL helper failed shell syntax validation"
     visudo -cf "$SUDOERS_RULE" >/dev/null || die "sudoers source failed validation"
     visudo -cf "$MAINTENANCE_ROOT_SUDOERS" >/dev/null || die "optional root sudoers source failed validation"
 }
@@ -383,8 +523,12 @@ install_managed_files() {
         "$(dest_path /usr/local/bin/wingmankvm)" 0755 root root
     tx_add_managed "$GADGET_SCRIPT" \
         "$(dest_path /usr/local/sbin/wingmankvm-gadget)" 0755 root root
+    tx_add_managed "$DOCTOR_SCRIPT" \
+        "$(dest_path /usr/local/sbin/wingmankvm-doctor)" 0755 root root
     tx_add_managed "$PASSWORD_HELPER" \
         "$(dest_path /usr/local/sbin/wingmankvm-set-wingman-password)" 0755 root root
+    tx_add_managed "$SETUP_URL_HELPER" \
+        "$(dest_path /usr/local/sbin/wingmankvm-setup-url)" 0755 root root
     tx_add_managed "$SUDOERS_RULE" \
         "$(dest_path /etc/sudoers.d/wingmankvm)" 0440 root root
     tx_add_managed "$UDEV_RULES" \
@@ -694,11 +838,14 @@ finish_no_start() {
     log "file publication succeeded but was NOT runtime verified (--no-start)"
     log "any services that were already running were left unchanged"
     log "review /etc/wingmankvm/gadget.env, then run: systemctl enable --now wingmankvm-gadget.service wingmankvm.service"
+    log "after the first start, print the one-time setup link with: sudo wingmankvm-setup-url"
 }
 
 show_first_run_access() {
     local service_log=
     local setup_token=
+    local token_file=$STATE_DIR/setup-token
+    local token_value=
     local listen_address=
     local port=8080
     local -a access_hosts=()
@@ -729,6 +876,16 @@ show_first_run_access() {
 
     if [[ $listen_address =~ :([0-9]+)$ ]]; then
         port=${BASH_REMATCH[1]}
+    fi
+
+    # The service publishes the token in its 0600 state file. Keep the journal
+    # fallback for upgrades from releases that logged the token instead.
+    if [[ -f $token_file && -r $token_file && ! -L $token_file ]]; then
+        read -r token_value <"$token_file" || true
+        token_value=${token_value%$'\r'}
+        if [[ $token_value =~ ^[A-Za-z0-9_-]{16,}$ ]]; then
+            setup_token=$token_value
+        fi
     fi
 
     # The route lookup yields the source address the host would normally use
@@ -798,8 +955,9 @@ show_first_run_access() {
     if [[ -n $setup_token ]]; then
         log "the first-run link contains the one-time setup token"
     else
-        log "get the first-run token with: journalctl -u wingmankvm.service -b | grep setup_token"
+        log "start WingmanKVM once, then print the link with: sudo wingmankvm-setup-url"
     fi
+    log "reprint the one-time link at any time before setup with: sudo wingmankvm-setup-url"
 }
 
 # Source guard: the verification harness sources only the definitions above.
@@ -849,6 +1007,10 @@ while (($# > 0)); do
             NO_START=true
             shift
             ;;
+        --install-deps)
+            INSTALL_DEPS=true
+            shift
+            ;;
         -h | --help)
             usage
             exit 0
@@ -865,25 +1027,7 @@ done
 [[ $(id -u) -eq 0 ]] || die "run this installer as root (for example with sudo)"
 DEST_ROOT=/
 
-require_command awk
-require_command cmp
-require_command flock
-require_command getent
-require_command groupadd
-require_command install
-require_command mktemp
-require_command od
-require_command python3
-require_command systemctl
-require_command timeout
-require_command udevadm
-require_command useradd
-require_command usermod
-require_command visudo
-
-[[ -x /bin/bash ]] || die "/bin/bash is required for the web terminal"
-[[ -x /usr/bin/sudo ]] || die "sudo is required; install it before running this installer"
-[[ -x /usr/sbin/chpasswd ]] || die "/usr/sbin/chpasswd is required for terminal password setup"
+ensure_runtime_dependencies
 
 if [[ -n $RELEASE_ARCHIVE ]]; then
     prepare_release_archive
@@ -923,6 +1067,7 @@ ENVIRONMENT_CHECK=$GADGET_ENV_EXAMPLE
 if [[ -e $(dest_path /etc/wingmankvm/gadget.env) || -L $(dest_path /etc/wingmankvm/gadget.env) ]]; then
     ENVIRONMENT_CHECK=$(dest_path /etc/wingmankvm/gadget.env)
 fi
+run_doctor_preflight "$DOCTOR_SCRIPT" "$ENVIRONMENT_CHECK"
 check_platform "$ENVIRONMENT_CHECK"
 resolve_health_url
 

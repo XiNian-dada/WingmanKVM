@@ -13,6 +13,7 @@ mod media_download;
 mod passkey;
 mod password_sync;
 mod power;
+mod security_headers;
 mod session;
 mod setup;
 mod status;
@@ -136,15 +137,29 @@ impl AppState {
         let config = Config::load_or_default(&config_path)?;
         let state_dir = config::state_dir();
         let auth = AuthStore::new(state_dir.join("auth.json"));
+        let token_file = setup_token_file(&state_dir);
         let audit = AuditLog::new(state_dir);
         let setup_token = if auth.is_initialized()? {
+            if let Err(error) = remove_setup_token_file(&token_file) {
+                tracing::warn!(
+                    path = %token_file.display(),
+                    %error,
+                    "无法删除已初始化系统中的旧一次性令牌文件；该令牌不再有效"
+                );
+            }
             None
         } else {
             let token = generate_token()
                 .map_err(|error| anyhow::anyhow!("secure random generation failed: {error}"))?;
+            write_setup_token_file(&token_file, &token).map_err(|error| {
+                anyhow::anyhow!(
+                    "cannot write the setup token for the first-run command to {}: {error}",
+                    token_file.display()
+                )
+            })?;
             tracing::warn!(
-                setup_token = %token,
-                "首次初始化需要此令牌；创建管理员后令牌立即失效"
+                path = %token_file.display(),
+                "首次初始化令牌已写入 0600 状态文件；创建管理员后立即删除，可用 sudo wingmankvm-setup-url 重新打印地址"
             );
             Some(token)
         };
@@ -297,6 +312,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/passkey/login/finish", post(passkey_login_finish))
         .merge(protected)
         .with_state(state)
+        .layer(middleware::from_fn(security_headers::security_headers))
 }
 
 #[cfg(test)]

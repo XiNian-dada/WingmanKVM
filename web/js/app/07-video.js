@@ -1,5 +1,7 @@
   function shouldVideoRun() {
-    return !app.classList.contains('hidden') && !document.hidden && videoWorkspace === 'video';
+    // An active Picture-in-Picture window keeps the picture visible while the
+    // tab is in the background, so only then may video outlive a hidden page.
+    return !app.classList.contains('hidden') && (!document.hidden || isPipActive()) && videoWorkspace === 'video';
   }
   function showVideoSurface(kind) {
     feed.classList.toggle('hidden', kind !== 'mjpeg');
@@ -38,6 +40,7 @@
     $('#diagnostics-toggle').title = full;
   }
   function renderVideoUi() {
+    syncQualityOverlay();
     const dot = $('#status-dot'),
       label = $('#status-label'),
       meta = $('#video-transport-label'),
@@ -62,6 +65,13 @@
     if (!shouldVideoRun()) {
       setStatusLabel('已暂停', '视频已暂停');
       meta.textContent = '暂停';
+      return;
+    }
+    if (serverUnavailable && latestVideoStatus?.reason === 'device_missing') {
+      showVideoSurface('none');
+      setVideoMessage('采集卡已断开，重新插入后将自动恢复');
+      setStatusLabel('已断开', '采集卡已断开');
+      meta.textContent = mode;
       return;
     }
     if (serverUnavailable) {
@@ -144,6 +154,7 @@
     videoGeneration++;
     clearVideoTimers();
     reconnectDelay = 500;
+    closePip();
     cleanupWebrtc();
     feed.onload = null;
     feed.onerror = null;
@@ -153,6 +164,7 @@
     videoFallback = false;
     videoFallbackReason = '';
     videoUiState = 'paused';
+    syncQualityOverlay();
     if (showPaused) renderVideoUi();
     updateDiagnosticsCard();
   }
@@ -176,10 +188,12 @@
     feed.onload = null;
     feed.onerror = null;
     feed.removeAttribute('src');
+    mjpegLoadEvents = 0;
     const url = `/video_feed?t=${Date.now()}`;
     const onLoad = () => {
       if (generation !== videoGeneration || !shouldVideoRun() || feed.getAttribute('src') !== url) return;
       reconnectDelay = 500;
+      mjpegLoadEvents++;
       markVideoPlaying(generation, 'mjpeg');
       fitConsoleToVideo();
     };
@@ -226,6 +240,7 @@
     if (generation !== videoGeneration || !shouldVideoRun() || activeVideoTransport !== 'webrtc_h264') return;
     videoFallbackReason = String(reason);
     console.warn('H.264 回退到 MJPEG:', videoFallbackReason);
+    closePip();
     cleanupWebrtc();
     startMjpeg(generation, true);
   }

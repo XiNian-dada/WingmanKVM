@@ -542,3 +542,53 @@
   background: #16a34a;
   vertical-align: 1px;
 }
+#pip[aria-pressed="true"] {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+/* Must stay rendered: some browsers will not play or PiP a display:none video. */
+.pip-source {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+#quality-toggle[aria-pressed="true"] {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+/* Sits on the (always dark) picture, so one scheme serves both themes. It is
+   a sibling of the viewport because the viewport scrolls in native-size mode. */
+.quality-overlay {
+  position: absolute;
+  top: 54px;
+  left: 8px;
+  z-index: 6;
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 2px 10px;
+  margin: 0;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  contain: layout paint;
+}
+.quality-overlay.hidden {
+  display: none;
+}
+.quality-overlay dt {
+  color: #c8c8c8;
+}
+.quality-overlay dd {
+  margin: 0;
+  text-align: right;
+}
+:fullscreen .quality-overlay {
+  top: 8px;
+}

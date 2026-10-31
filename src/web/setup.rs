@@ -1,4 +1,56 @@
 use super::*;
+use std::io::Write;
+
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+pub(super) const SETUP_TOKEN_FILE_NAME: &str = "setup-token";
+
+/// The setup token is kept in the service state directory instead of the log.
+/// The installer and `wingmankvm-setup-url` read this file as root.
+pub(super) fn setup_token_file(state_dir: &Path) -> PathBuf {
+    state_dir.join(SETUP_TOKEN_FILE_NAME)
+}
+
+pub(super) fn write_setup_token_file(path: &Path, token: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.is_file() || metadata.file_type().is_symlink() {
+                std::fs::remove_file(path)?;
+            } else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("setup token path is not a regular file: {}", path.display()),
+                ));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(path)?;
+    file.write_all(token.as_bytes())?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    #[cfg(unix)]
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+pub(super) fn remove_setup_token_file(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
 
 #[derive(Serialize)]
 pub(super) struct BootstrapResponse {
@@ -249,6 +301,14 @@ pub(super) async fn finish_setup(
         .await
         .map_err(ApiError::internal)?
         .map_err(map_auth_error)?;
+    let token_file = setup_token_file(&config::state_dir());
+    if let Err(error) = remove_setup_token_file(&token_file) {
+        tracing::warn!(
+            path = %token_file.display(),
+            %error,
+            "初始化完成后无法删除一次性令牌文件；该令牌已经失效"
+        );
+    }
 
     *state.config.write().await = new_config.clone();
     state
@@ -590,7 +650,7 @@ mod tests {
     #[cfg(unix)]
     use std::{
         fs,
-        os::unix::fs::symlink,
+        os::unix::fs::{PermissionsExt, symlink},
         sync::atomic::Ordering,
     };
 
@@ -781,6 +841,41 @@ mod tests {
         assert_eq!(request.gpio_chip.as_deref(), Some("gpiochip1"));
         assert_eq!(request.gpio_line, Some(7));
         assert_eq!(request.active_high, Some(false));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn setup_token_file_is_private_replaced_and_removed() {
+        let root =
+            std::env::temp_dir().join(format!("wingman-token-{}", generate_token().unwrap()));
+        fs::create_dir_all(&root).unwrap();
+        let path = setup_token_file(&root);
+
+        write_setup_token_file(&path, "first-token").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "first-token\n");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        write_setup_token_file(&path, "second-token").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second-token\n");
+
+        // A symlink planted in the state directory must be replaced, never
+        // followed, so the token cannot overwrite another file.
+        let target = root.join("target");
+        fs::write(&target, b"keep me\n").unwrap();
+        let link = root.join("token-link");
+        symlink(&target, &link).unwrap();
+        write_setup_token_file(&link, "linked-token").unwrap();
+        assert!(!fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(&link).unwrap(), "linked-token\n");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "keep me\n");
+
+        remove_setup_token_file(&path).unwrap();
+        assert!(!path.exists());
+        remove_setup_token_file(&path).unwrap();
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[tokio::test]

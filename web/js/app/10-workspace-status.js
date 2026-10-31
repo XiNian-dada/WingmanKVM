@@ -95,6 +95,21 @@
     }
   });
 
+  // Hot-plug recovery (#93): announce capture-card unplug/replug and keep a
+  // persistent badge while the USB keyboard/mouse gadget re-enumerates.
+  let hidLinkLost = false;
+  function renderHotplugTransitions(previousReason, video, hid) {
+    const reason = video?.reason || '';
+    if (reason === 'device_missing' && previousReason !== 'device_missing') toast('采集卡已断开', true);
+    else if (previousReason === 'device_missing' && reason !== 'device_missing') toast('采集卡已恢复');
+    const lost = !!(hid?.keyboard_reenumerating || hid?.mouse_reenumerating);
+    const badge = $('#hid-link-state');
+    if (badge) badge.classList.toggle('hidden', !lost);
+    if (lost && !hidLinkLost) toast('USB 键鼠通道重新连接中', true);
+    else if (!lost && hidLinkLost) toast('USB 键鼠通道已恢复');
+    hidLinkLost = lost;
+  }
+
   async function refreshStatus() {
     if (statusTimer === -1) return;
     if (statusTimer > 0) clearTimeout(statusTimer);
@@ -106,7 +121,9 @@
     statusTimer = -1;
     try {
       const status = await request('/api/status');
+      const previousVideoReason = latestVideoStatus?.reason || '';
       latestVideoStatus = status.video || null;
+      renderHotplugTransitions(previousVideoReason, latestVideoStatus, status.hid);
       latestPowerStatus = status.power || null;
       latestSystemStatus = status.system || null;
       renderPowerLed(latestPowerStatus);

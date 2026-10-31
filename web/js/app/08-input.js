@@ -1190,7 +1190,7 @@
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       suspendInput();
-      stopVideo();
+      if (!isPipActive()) stopVideo();
     } else {
       resumeInput();
       handleVideoVisibility();
