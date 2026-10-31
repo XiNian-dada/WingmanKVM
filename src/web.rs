@@ -3829,6 +3829,7 @@ mod tests {
             absolute_pointer: Vec::new(),
             gpio: Vec::new(),
             mass_storage_luns: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
