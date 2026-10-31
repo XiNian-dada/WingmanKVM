@@ -20,7 +20,7 @@ pub(super) async fn xterm_fit_js() -> impl IntoResponse {
 // App assets change with every release; never let a browser pair a fresh
 // index with a stale script or stylesheet.
 pub(super) async fn app_css() -> impl IntoResponse {
-    no_store(([(CONTENT_TYPE, "text/css; charset=utf-8")], APP_CSS))
+    no_store(([(CONTENT_TYPE, "text/css; charset=utf-8")], APP_CSS.as_str()))
 }
 
 pub(super) async fn app_js() -> impl IntoResponse {

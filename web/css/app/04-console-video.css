@@ -1,0 +1,480 @@
+.console {
+  position: absolute;
+  z-index: 5;
+  left: 24px;
+  top: 24px;
+  width: calc(100% - 48px);
+  height: calc(100% - 48px);
+  min-width: 360px;
+  min-height: 240px;
+  resize: both;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: #050505;
+  box-shadow:
+    0 2px 2px #0000000a,
+    0 12px 24px -8px #0000001a,
+    0 32px 52px -20px #00000024;
+  transition:
+    border-radius 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color 160ms,
+    box-shadow 160ms,
+    background-color 160ms,
+    width 140ms ease,
+    height 140ms ease,
+    left 140ms ease,
+    top 140ms ease;
+  container-type: inline-size;
+}
+.console:hover {
+  border-color: #bdbdbd;
+}
+.console.dragging {
+  transition: none !important;
+}
+:fullscreen .console,
+#console:fullscreen {
+  position: fixed !important;
+  inset: 0 !important;
+  left: 0 !important;
+  top: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: none !important;
+  max-height: none !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  z-index: 9999 !important;
+}
+:fullscreen #video-viewport,
+#console:fullscreen #video-viewport {
+  inset: 0 !important;
+}
+:fullscreen #console-head,
+#console:fullscreen #console-head {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%) translateY(-100%);
+  width: min(880px, 94vw);
+  border-radius: 0 0 10px 10px;
+  border: 1px solid var(--line);
+  border-top: 0;
+  box-shadow: var(--shadow-5);
+  background: var(--canvas);
+  z-index: 100;
+  opacity: 0;
+  transition:
+    transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 200ms ease;
+  pointer-events: none;
+}
+:fullscreen #console-head:hover,
+:fullscreen #console-head:focus-within,
+:fullscreen #console-head.revealed,
+#console:fullscreen #console-head:hover,
+#console:fullscreen #console-head:focus-within,
+#console:fullscreen #console-head.revealed {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+.console-head {
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--canvas);
+  cursor: move;
+  user-select: none;
+}
+.console-title {
+  font-size: 13px;
+  font-weight: 500;
+}
+.console-meta {
+  color: var(--muted);
+  font:
+    11px/16px "Geist Mono",
+    ui-monospace,
+    monospace;
+}
+.console-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.console-actions button,
+.console-actions .input-badge,
+.console-actions .led-badge {
+  white-space: nowrap !important;
+  word-break: keep-all !important;
+  flex-shrink: 0 !important;
+}
+.console-actions button {
+  min-height: 28px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+.console-actions .icon-button-sm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 28px;
+  height: 28px;
+  padding: 0 8px;
+  box-sizing: border-box;
+}
+#fullscreen {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+#mode-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  height: 28px;
+  padding: 0 8px;
+}
+.input-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  height: 28px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 11px;
+  user-select: none;
+  transition:
+    background-color 140ms,
+    color 140ms,
+    border-color 140ms;
+}
+.input-badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #a1a1a1;
+  flex-shrink: 0;
+}
+.input-badge.active {
+  color: #0761d1;
+  background: #edf6ff;
+}
+.input-badge.active::before {
+  background: var(--blue);
+}
+.input-mouse-icon {
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+@container (max-width:1080px) {
+  .console-actions #mode-button .mode-text,
+  .console-actions #input-state .input-text,
+  #video-transport-label,
+  .keyboard-led-strip .led-name,
+  .console-actions #pan-toggle .pan-text {
+    display: none !important;
+  }
+  .console-actions #mode-button,
+  .console-actions #pan-toggle {
+    width: 28px;
+    min-width: 28px;
+    padding: 0;
+    justify-content: center;
+  }
+  .console-actions #input-state {
+    padding: 0 7px;
+    gap: 4px;
+  }
+  .keyboard-led-strip .led-badge {
+    padding: 0 6px;
+  }
+}
+@container (max-width:880px) {
+  .quick-keys {
+    display: none !important;
+  }
+}
+@container (max-width:580px) {
+  .console-actions #mode-button .mode-text,
+  .console-actions #input-state .input-text,
+  #video-transport-label,
+  .keyboard-led-strip .led-name,
+  .console-actions #pan-toggle .pan-text {
+    display: none !important;
+  }
+  .console-actions #mode-button,
+  .console-actions #pan-toggle {
+    width: 28px;
+    min-width: 28px;
+    padding: 0;
+    justify-content: center;
+  }
+  .console-actions #input-state {
+    padding: 0 7px;
+    gap: 4px;
+  }
+  .keyboard-led-strip .led-badge {
+    padding: 0 6px;
+  }
+}
+@container (max-width:680px) {
+  .keyboard-led-strip {
+    display: none !important;
+  }
+}
+#app.keyboard-open .quick-keys,
+#app:has(#keyboard-dialog[open]) .quick-keys {
+  display: none !important;
+}
+#app.keyboard-open .perf-chip-full,
+#app:has(#keyboard-dialog[open]) .perf-chip-full {
+  display: none !important;
+}
+#app.keyboard-open .perf-chip-compact,
+#app:has(#keyboard-dialog[open]) .perf-chip-compact {
+  display: inline-flex !important;
+}
+#app.keyboard-open .topbar-perf-btn,
+#app:has(#keyboard-dialog[open]) .topbar-perf-btn {
+  padding: 0 9px !important;
+  gap: 5px !important;
+}
+#app.keyboard-open .console-actions #mode-button .mode-text,
+#app:has(#keyboard-dialog[open]) .console-actions #mode-button .mode-text {
+  display: none !important;
+}
+#app.keyboard-open .console-actions #mode-button,
+#app:has(#keyboard-dialog[open]) .console-actions #mode-button {
+  width: 28px;
+  min-width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+#app.keyboard-open .console-actions #pan-toggle .pan-text,
+#app:has(#keyboard-dialog[open]) .console-actions #pan-toggle .pan-text {
+  display: none !important;
+}
+#app.keyboard-open .console-actions #pan-toggle,
+#app:has(#keyboard-dialog[open]) .console-actions #pan-toggle {
+  width: 28px;
+  min-width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+#app.keyboard-open .console-actions #input-state .input-text,
+#app:has(#keyboard-dialog[open]) .console-actions #input-state .input-text {
+  display: none !important;
+}
+#app.keyboard-open .console-actions #input-state,
+#app:has(#keyboard-dialog[open]) .console-actions #input-state {
+  padding: 0 7px;
+  gap: 4px;
+}
+#app.keyboard-open #video-transport-label,
+#app:has(#keyboard-dialog[open]) #video-transport-label {
+  display: none !important;
+}
+#app.keyboard-open .keyboard-led-strip .led-name,
+#app:has(#keyboard-dialog[open]) .keyboard-led-strip .led-name {
+  display: none !important;
+}
+#app.keyboard-open .keyboard-led-strip .led-badge,
+#app:has(#keyboard-dialog[open]) .keyboard-led-strip .led-badge {
+  padding: 0 6px;
+}
+.keyboard-led-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.led-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--soft);
+  color: var(--muted);
+  font:
+    500 11px/16px "Geist Mono",
+    ui-monospace,
+    monospace;
+  cursor: pointer;
+  transition: all 140ms ease;
+  user-select: none;
+}
+.led-badge:hover {
+  border-color: var(--line-strong);
+  background: var(--soft-2);
+  color: var(--ink);
+}
+.led-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #888;
+  transition:
+    background-color 160ms,
+    box-shadow 160ms;
+}
+.led-badge.active {
+  color: #065f46;
+  background: #ecfdf5;
+  border-color: rgba(16, 185, 129, 0.5);
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.25);
+}
+.led-badge.active .led-dot {
+  background: #10b981;
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.85);
+}
+#video-viewport {
+  position: absolute;
+  inset: 46px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  outline: none;
+  touch-action: auto;
+  cursor: default;
+  background: #050505;
+  contain: strict;
+  isolation: isolate;
+  transform: translateZ(0);
+  will-change: transform;
+}
+#video-viewport.remote {
+  cursor: crosshair;
+  touch-action: none;
+  box-shadow: inset 0 0 0 2px var(--blue);
+}
+#video-viewport.remote.just-captured {
+  animation: capture-pulse 400ms ease-out;
+}
+@keyframes capture-pulse {
+  0% {
+    box-shadow: inset 0 0 0 4px var(--blue);
+  }
+  50% {
+    box-shadow: inset 0 0 0 7px rgba(0, 112, 243, 0.6);
+  }
+  100% {
+    box-shadow: inset 0 0 0 2px var(--blue);
+  }
+}
+#video-viewport.panning {
+  cursor: grab !important;
+  touch-action: none;
+}
+#video-viewport.panning-active {
+  cursor: grabbing !important;
+  touch-action: none;
+}
+.mode-native #video-viewport {
+  display: flex;
+  align-items: normal;
+  justify-content: normal;
+  overflow: auto !important;
+  cursor: default;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+.mode-native #video-viewport::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.mode-native #video-viewport::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.25);
+}
+.mode-native #video-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+}
+.mode-native #video-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.45);
+}
+#video-feed {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+.mode-native #video-feed {
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  object-fit: none;
+  margin: auto;
+  flex-shrink: 0;
+}
+.mode-fill #video-feed {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: fill;
+}
+.render-pixelated #video-feed {
+  image-rendering: pixelated;
+}
+#pan-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  height: 28px;
+  padding: 0 8px;
+}
+#pan-toggle.active {
+  color: #0761d1;
+  background: #edf6ff;
+  border-color: var(--blue);
+}
+:root:not([data-theme="light"]) #pan-toggle.active {
+  color: #fff;
+  background: rgba(0, 112, 243, 0.3);
+  border-color: var(--blue);
+}
+.video-message {
+  position: absolute;
+  max-width: calc(100% - 32px);
+  padding: 10px 13px;
+  border: 1px solid #ffffff24;
+  border-radius: 8px;
+  background: #ffffffef;
+  color: var(--body);
+  box-shadow: var(--shadow-4);
+  font-size: 12px;
+  pointer-events: none;
+}

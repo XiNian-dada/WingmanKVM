@@ -2,7 +2,24 @@
 //! time so the service still ships as a single binary.
 
 pub static INDEX_HTML: &str = include_str!("../web/index.html");
-pub static APP_CSS: &str = include_str!("../web/css/app.css");
+/// Stylesheet fragments in cascade order; concatenated so later rules keep
+/// overriding earlier ones exactly as in a single file.
+pub static APP_CSS_PARTS: &[&str] = &[
+    include_str!("../web/css/app/00-tokens-theme.css"),
+    include_str!("../web/css/app/01-base-controls.css"),
+    include_str!("../web/css/app/02-auth.css"),
+    include_str!("../web/css/app/03-topbar-shell.css"),
+    include_str!("../web/css/app/04-console-video.css"),
+    include_str!("../web/css/app/05-inspector-panels.css"),
+    include_str!("../web/css/app/06-dialogs-keyboard.css"),
+    include_str!("../web/css/app/07-terminal-power.css"),
+    include_str!("../web/css/app/08-popovers-diagnostics.css"),
+    include_str!("../web/css/app/09-settings.css"),
+    include_str!("../web/css/app/10-responsive.css"),
+    include_str!("../web/css/app/11-late-overrides.css"),
+];
+
+pub static APP_CSS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| APP_CSS_PARTS.concat());
 /// The app script is one IIFE split into ordered feature fragments. They share
 /// closure state, so they are concatenated rather than loaded as modules.
 pub static APP_JS_PARTS: &[&str] = &[
@@ -33,7 +50,7 @@ mod tests {
     /// The full UI source as the browser assembles it, with all whitespace
     /// removed so assertions check content rather than source formatting.
     static INDEX_HTML: std::sync::LazyLock<UiSource> = std::sync::LazyLock::new(|| {
-        UiSource(compact(&[super::INDEX_HTML, APP_CSS, APP_JS.as_str()].concat()))
+        UiSource(compact(&[super::INDEX_HTML, APP_CSS.as_str(), APP_JS.as_str()].concat()))
     });
 
     fn compact(text: &str) -> String {

@@ -1,0 +1,143 @@
+#settings-dialog {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  outline: none;
+  z-index: 90;
+  contain: strict;
+  isolation: isolate;
+}
+#settings-dialog:not([open]) {
+  display: none;
+}
+#settings-dialog::backdrop {
+  background: #00000055;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  animation: settings-backdrop-fade 160ms ease forwards;
+  will-change: opacity;
+}
+@keyframes settings-backdrop-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes settings-modal-pop {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+.settings-modal {
+  position: relative;
+  width: min(540px, calc(100vw - 32px));
+  max-height: min(86dvh, 700px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--canvas);
+  color: var(--ink);
+  box-shadow:
+    0 16px 36px -10px rgba(0, 0, 0, 0.3),
+    0 0 0 1px var(--line);
+  animation: settings-modal-pop 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity;
+  transform: translate3d(0, 0, 0);
+  contain: layout;
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-modal {
+    animation: none;
+    will-change: auto;
+  }
+  #settings-dialog::backdrop {
+    animation: none;
+  }
+}
+.settings-dialog-body {
+  padding: 16px 20px 22px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.settings-group-title {
+  font:
+    600 11px/16px "Geist Mono",
+    ui-monospace,
+    monospace;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.settings-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--soft);
+}
+.settings-item-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-item-copy strong {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.settings-item-copy span {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 15px;
+}
+.power-menu-icon {
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+.inspector-backdrop {
+  display: none;
+}
+@media (max-width: 1280px) {
+  .perf-chip-full {
+    display: none !important;
+  }
+  .perf-chip-compact {
+    display: inline-flex !important;
+  }
+  .topbar-perf-btn {
+    padding: 0 9px !important;
+    gap: 5px !important;
+  }
+}
