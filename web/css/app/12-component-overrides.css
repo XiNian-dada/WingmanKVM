@@ -184,6 +184,7 @@
   outline: 2px dashed var(--blue);
   outline-offset: -8px;
   background: color-mix(in srgb, var(--blue) 6%, transparent);
+}
 /* More shortcuts dropdown. */
 .quick-more {
   position: relative;
