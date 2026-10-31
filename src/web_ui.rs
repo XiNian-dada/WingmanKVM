@@ -73,6 +73,15 @@ mod tests {
     }
 
     #[test]
+    fn stylesheet_fragments_have_balanced_braces() {
+        // A missing `}` silently nests every later rule under the previous
+        // selector (native CSS nesting), so the rules stop applying.
+        for (index, part) in super::APP_CSS_PARTS.iter().enumerate() {
+            assert_eq!(part.matches('{').count(), part.matches('}').count(), "CSS fragment #{index} has unbalanced braces");
+        }
+    }
+
+    #[test]
     fn index_markup_container_tags_are_balanced() {
         // An unbalanced container silently re-parents later sections (an
         // orphan `</div>` once pushed the power controls out of their panel).

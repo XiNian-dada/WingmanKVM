@@ -288,8 +288,309 @@ def language_coverage(browser, port, checks):
         context.close()
 
 
+
+def power_confirmation(browser, port, checks):
+    """#52: power actions use in-app confirmation; force-off needs a hold."""
+    state = State()
+    posts = []
+    context, page = new_page(browser, state, port)
+    try:
+        from verify_p2b_ui import bootstrap_payload
+        payload = bootstrap_payload(state)
+        payload["capabilities"].update(gpio_power=True, gpio_reset=True)
+        page.route("**/api/bootstrap", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(payload)))
+        for path in ("/power", "/reset"):
+            page.route(f"**{path}", lambda route, *_, endpoint=path: (
+                posts.append((endpoint, route.request.post_data)),
+                route.fulfill(status=200, content_type="application/json", body='{"ok":true}'))[-1])
+        page.reload(wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        dialogs = []
+        page.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
+
+        page.locator('#panel-control [data-power-action="force-off"]').click()
+        page.wait_for_selector("#power-confirm[open]", timeout=3000)
+        focused = page.evaluate("() => document.activeElement.value")
+        check(checks, focused == "cancel", "power_confirm_focuses_cancel", focused)
+        page.click("#power-confirm-ok")
+        page.wait_for_timeout(300)
+        check(checks, not posts, "force_off_click_without_hold_does_nothing", posts)
+        box = page.locator("#power-confirm-ok").bounding_box()
+        page.mouse.move(box["x"] + 10, box["y"] + 10)
+        page.mouse.down()
+        page.wait_for_timeout(1200)
+        page.mouse.up()
+        page.wait_for_timeout(300)
+        check(checks, posts and posts[-1][0] == "/power" and "duration=5" in (posts[-1][1] or ""),
+              "force_off_hold_sends_long_press", posts)
+        check(checks, not dialogs, "no_native_confirm_dialogs", dialogs)
+
+        posts.clear()
+        page.locator('#panel-control [data-power-action="reset"]').click()
+        page.wait_for_selector("#power-confirm[open]", timeout=3000)
+        page.click("#power-confirm-ok")
+        page.wait_for_timeout(300)
+        check(checks, posts and posts[-1][0] == "/reset", "reset_confirm_click_sends_reset", posts)
+    finally:
+        context.close()
+
+
+def paste_as_typing(browser, port, checks):
+    """#51 / UX-03: pasted text is typed as US-layout keystrokes."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        page.click("#input-state")
+        page.click("#keyboard-toggle")
+        page.click("#paste-typing-btn")
+        page.fill("#paste-key-text", "Ab1!\n")
+        page.click("#paste-key-send")
+        page.wait_for_timeout(700)
+        sequence = [(post.get("key"), bool(post.get("shift"))) for post in state.key_posts]
+        expected = [("KeyA", True), ("KeyB", False), ("Digit1", False),
+                    ("Digit1", True), ("Enter", False)]
+        check(checks, sequence == expected, "paste_typing_sends_us_sequence", sequence)
+
+        state.key_posts.clear()
+        page.fill("#paste-key-text", "中文")
+        page.click("#paste-key-send")
+        page.wait_for_timeout(300)
+        check(checks, not state.key_posts, "paste_typing_blocks_unsupported_chars",
+              state.key_posts)
+        hint = page.text_content("#paste-key-unsupported") or ""
+        check(checks, "中" in hint and "文" in hint,
+              "paste_typing_lists_unsupported_chars", hint)
+
+        # With Caps Lock on at the target, letter case must still come out right.
+        state.key_posts.clear()
+        from verify_p2b_ui import api_route
+        class CapsOnRoute:
+            """Wraps a route so the mocked status reports Caps Lock on."""
+            def __init__(self, route):
+                self.route, self.request = route, route.request
+            def fulfill(self, **kwargs):
+                body = kwargs.get("body", "").replace('"caps_lock": false', '"caps_lock": true')
+                return self.route.fulfill(**{**kwargs, "body": body})
+        def caps_on(route):
+            return api_route(CapsOnRoute(route), state)
+        page.unroute("**/api/**")
+        page.route("**/api/**", caps_on)
+        page.wait_for_timeout(3500)
+        page.fill("#paste-key-text", "Ab")
+        page.click("#paste-key-send")
+        page.wait_for_timeout(500)
+        sequence = [(post.get("key"), bool(post.get("shift"))) for post in state.key_posts]
+        check(checks, sequence == [("KeyA", False), ("KeyB", True)], "paste_typing_respects_caps_lock", sequence)
+        page.unroute("**/api/**")
+        page.route("**/api/**", lambda route: api_route(route, state))
+        page.wait_for_timeout(3500)
+
+        # Turning forwarding off mid-paste stops the run and reports it.
+        state.key_posts.clear()
+        page.fill("#paste-key-text", "a" * 200)
+        page.click("#paste-key-send")
+        page.wait_for_timeout(300)
+        page.locator("#input-state").evaluate("b => b.click()")
+        page.wait_for_timeout(600)
+        sent = len(state.key_posts)
+        status = page.text_content("#paste-key-status") or ""
+        check(checks, 0 < sent < 200 and "已中断" in status, "paste_typing_stops_when_forwarding_off",
+              (sent, status))
+    finally:
+        context.close()
+
+
+def custom_shortcuts(browser, port, checks):
+    """#50 / UX-02: custom combinations persist and send the right payload."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        # The combos menu stays reachable even when the console is narrow.
+        page.click("#quick-more-toggle")
+        common = page.locator(".quick-menu-common").is_visible()
+        check(checks, common, "narrow_console_menu_lists_common_keys", common)
+        page.set_viewport_size({"width": 900, "height": 900})
+        page.wait_for_timeout(200)
+        hidden = page.evaluate("""() => [...document.querySelectorAll('#quick-more-menu button')]
+          .filter(b => getComputedStyle(b).display === 'none').map(b => b.textContent)""")
+        check(checks, not hidden, "narrow_viewport_menu_items_all_visible", hidden)
+        page.set_viewport_size({"width": 1280, "height": 900})
+        page.click("#quick-combo-add")
+        page.check('#combo-form input[name="ctrl"]')
+        page.check('#combo-form input[name="alt"]')
+        page.select_option("#combo-key", "KeyM")
+        page.click('#combo-form button[type="submit"]')
+        page.wait_for_timeout(200)
+        stored = json.loads(
+            page.evaluate("() => localStorage.getItem('wingman_custom_combos') || '[]'"))
+        saved = stored[0] if stored else {}
+        check(checks, saved.get("key") == "KeyM" and saved.get("ctrl") and saved.get("alt"),
+              "custom_shortcut_saved_to_local_storage", stored)
+
+        page.reload(wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        page.click("#quick-more-toggle")
+        item = page.locator("#quick-more-menu [data-custom-combo]").first
+        check(checks, item.count() == 1, "custom_shortcut_survives_reload", item.count())
+
+        state.key_posts.clear()
+        item.click()
+        page.wait_for_timeout(400)
+        payload = state.key_posts[-1] if state.key_posts else {}
+        check(checks, payload.get("key") == "KeyM" and payload.get("ctrl") is True
+              and payload.get("alt") is True and payload.get("shift") is False
+              and payload.get("meta") is False,
+              "custom_shortcut_sends_correct_payload", payload)
+
+        page.click("#quick-more-toggle")
+        page.click("#quick-more-menu [data-remove-combo]")
+        page.wait_for_timeout(200)
+        remaining = json.loads(
+            page.evaluate("() => localStorage.getItem('wingman_custom_combos') || '[]'"))
+        check(checks, remaining == [], "custom_shortcut_can_be_deleted", remaining)
+    finally:
+        context.close()
+
+
+def media_drop_upload(browser, port, checks):
+    """#54: dropping an image onto the media panel uploads it; others rejected."""
+    state = State()
+    uploads = []
+    context, page = new_page(browser, state, port)
+    try:
+        page.route("**/api/media/upload", lambda route: (
+            uploads.append(route.request.post_data_buffer or b""),
+            route.fulfill(status=200, content_type="application/json", body='{"name":"x.iso","size":4}'))[-1])
+        page.locator('[data-panel-target="media"]').click()
+        # Playwright drops file parts from captured multipart bodies, so record
+        # what the page actually hands to XHR.
+        page.evaluate("""() => {
+          const send = XMLHttpRequest.prototype.send;
+          window.__sentFiles = [];
+          XMLHttpRequest.prototype.send = function (body) {
+            if (body instanceof FormData)
+              for (const [, value] of body) if (value instanceof File) window.__sentFiles.push(value.name);
+            return send.call(this, body);
+          };
+        }""")
+        drop = """(name) => {
+          const transfer = new DataTransfer();
+          transfer.items.add(new File(['data'], name));
+          const panel = document.querySelector('#panel-media');
+          panel.dispatchEvent(new DragEvent('dragover', {dataTransfer: transfer, bubbles: true, cancelable: true}));
+          panel.dispatchEvent(new DragEvent('drop', {dataTransfer: transfer, bubbles: true, cancelable: true}));
+        }"""
+        page.evaluate(drop, "notes.txt")
+        page.wait_for_timeout(300)
+        toast = page.text_content("#toast") or ""
+        check(checks, not uploads and "ISO" in toast, "drop_rejects_non_image", (uploads, toast))
+        page.evaluate(drop, "installer.iso")
+        page.wait_for_timeout(800)
+        sent = page.evaluate("() => window.__sentFiles")
+        check(checks, uploads and sent == ["installer.iso"], "drop_uploads_image", sent)
+        hidden = page.evaluate("() => document.querySelector('#upload-cancel').classList.contains('hidden')")
+        check(checks, hidden, "cancel_button_hidden_after_upload", hidden)
+    finally:
+        context.close()
+
+
+def inline_save_feedback(browser, port, checks):
+    """#55: saving a settings form shows its result next to the button."""
+    state = State()
+    replies = {"status": 200}
+    context, page = new_page(browser, state, port)
+    try:
+        page.route("**/api/config", lambda route: route.fulfill(
+            status=replies["status"], content_type="application/json",
+            body='{}' if replies["status"] == 200 else '{"error":"LUN 路径不存在"}'))
+        page.locator('[data-panel-target="media"]').click()
+        page.evaluate("() => document.querySelectorAll('#panel-media details').forEach(d => d.open = true)")
+        page.click('#media-config button[type="submit"]')
+        page.wait_for_timeout(300)
+        status = page.text_content("#media-config .form-status") or ""
+        check(checks, "已保存" in status, "save_success_shown_inline", status)
+        replies["status"] = 500
+        page.click('#media-config button[type="submit"]')
+        page.wait_for_timeout(300)
+        status = page.text_content("#media-config .form-status") or ""
+        error = page.evaluate("() => document.querySelector('#media-config .form-status').classList.contains('error')")
+        check(checks, "LUN 路径不存在" in status and error, "save_error_shown_inline", status)
+    finally:
+        context.close()
+
+
+def shortcut_sheet(browser, port, checks):
+    """#57: "?" opens the shortcut cheat sheet only while input is local."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        page.locator("#video-viewport").focus()
+        page.keyboard.press("Shift+Slash")
+        page.wait_for_timeout(200)
+        opened = page.evaluate("() => document.querySelector('#shortcut-dialog').open")
+        check(checks, opened, "question_mark_opens_sheet", opened)
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(200)
+        inspector = page.evaluate("() => document.querySelector('#app').classList.contains('inspector-open')")
+        check(checks, inspector, "esc_closing_dialog_keeps_inspector_open", inspector)
+        page.click("#input-state")
+        before = len(state.key_posts)
+        page.keyboard.press("Shift+Slash")
+        page.wait_for_timeout(200)
+        opened = page.evaluate("() => document.querySelector('#shortcut-dialog').open")
+        check(checks, not opened and len(state.key_posts) > before,
+              "question_mark_forwarded_while_controlling", (opened, state.key_posts[before:]))
+    finally:
+        context.close()
+
+
+def touch_fullscreen_toolbar(browser, port, checks):
+    """#58: touch devices get a floating toolbar in fullscreen."""
+    from verify_p2b_ui import api_route, GIF
+    state = State()
+    context = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
+    try:
+        page = context.new_page()
+        page.route("**/api/**", lambda route: api_route(route, state))
+        page.route("**/video_feed*", lambda route: route.fulfill(status=200, content_type="image/gif", body=GIF))
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        hint = page.locator("#local-exit-hint").is_visible()
+        check(checks, not hint, "keyboard_hint_hidden_on_touch", hint)
+        page.tap("#fullscreen")
+        page.wait_for_timeout(500)
+        if not page.evaluate("() => !!document.fullscreenElement"):
+            check(checks, True, "touch_toolbar_fullscreen_unavailable", "headless fullscreen refused; not claimed")
+            return
+        visible = page.locator("#touch-toolbar").is_visible()
+        check(checks, visible, "touch_toolbar_visible_in_fullscreen", visible)
+        page.tap('[data-touch-action="input"]')
+        page.wait_for_timeout(200)
+        pressed = page.get_attribute("#input-state", "aria-pressed")
+        label = page.text_content('[data-touch-action="input"]')
+        check(checks, pressed == "true" and label == "释放", "touch_toolbar_toggles_control", (pressed, label))
+        page.tap('[data-touch-action="exit"]')
+        page.wait_for_timeout(400)
+        still = page.evaluate("() => !!document.fullscreenElement")
+        check(checks, not still, "touch_toolbar_exits_fullscreen", still)
+    finally:
+        context.close()
+
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        page.click("#fullscreen")
+        page.wait_for_timeout(400)
+        visible = page.locator("#touch-toolbar").is_visible()
+        check(checks, not visible, "touch_toolbar_hidden_for_mouse", visible)
+    finally:
+        context.close()
+
 SCENARIOS = [keyboard_focus, video_settings, logout_and_errors, ppv2_confirmation, low_risk_ui,
-             language_coverage]
+             language_coverage, power_confirmation, media_drop_upload, paste_as_typing, custom_shortcuts,
+             inline_save_feedback, shortcut_sheet,
+             touch_fullscreen_toolbar]
 
 if __name__ == "__main__":
     sys.exit(main())

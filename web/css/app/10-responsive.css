@@ -37,9 +37,6 @@
     padding: 0;
     justify-content: center;
   }
-  .console-actions #input-state .input-text {
-    display: none !important;
-  }
   .console-actions #input-state {
     padding: 0 7px;
     gap: 4px;
@@ -55,7 +52,7 @@
   }
 }
 @media (max-width: 960px) {
-  .quick-keys button:nth-child(n + 3) {
+  .quick-keys > [data-quick-key]:nth-child(n + 3) {
     display: none !important;
   }
   .keyboard-led-strip .led-text {
@@ -376,8 +373,11 @@
   .window-dots {
     display: none !important;
   }
-  .quick-keys {
+  .quick-keys > [data-quick-key] {
     display: none !important;
+  }
+  .quick-menu-common {
+    display: grid !important;
   }
   #video-transport-label {
     display: none !important;
@@ -406,9 +406,6 @@
     display: inline-flex !important;
     align-items: center !important;
     justify-content: center !important;
-  }
-  #input-state .input-text {
-    display: none !important;
   }
   #input-state {
     white-space: nowrap !important;

@@ -31,6 +31,12 @@
     if (age < 60000) return `最近有效帧：${Math.round(age / 1000)} 秒前`;
     return `最近有效帧：${Math.round(age / 60000)} 分钟前`;
   }
+  // The top bar shows a short state; the full description lives in the
+  // tooltip and the diagnostics panel, so long translations never truncate.
+  function setStatusLabel(short, full) {
+    $('#status-label').textContent = short;
+    $('#diagnostics-toggle').title = full;
+  }
   function renderVideoUi() {
     const dot = $('#status-dot'),
       label = $('#status-label'),
@@ -54,7 +60,7 @@
     );
     viewport.classList.toggle('video-unhealthy', !!serverState && !serverReady);
     if (!shouldVideoRun()) {
-      label.textContent = '视频已暂停';
+      setStatusLabel('已暂停', '视频已暂停');
       meta.textContent = '暂停';
       return;
     }
@@ -62,33 +68,32 @@
       showVideoSurface('none');
       const reason = latestVideoStatus?.message || (serverStalled ? '视频已停止更新' : '设备离线');
       setVideoMessage(ageText ? `${reason} · ${ageText}` : reason);
-      label.textContent = serverStalled ? '视频已停止更新' : reason;
+      setStatusLabel(serverStalled ? '已停止' : '离线', serverStalled ? '视频已停止更新' : reason);
       meta.textContent = serverStalled ? '已停止更新' : mode;
       return;
     }
     if (serverStarting) {
       showVideoSurface('none');
       setVideoMessage(ageText ? `正在等待首帧… · ${ageText}` : '正在等待首帧…');
-      label.textContent = `正在等待 ${mode} 首帧…`;
+      setStatusLabel('等待首帧', `正在等待 ${mode} 首帧…`);
       meta.textContent = mode;
       return;
     }
     if (videoUiState === 'playing' && serverReady) {
       const fps = latestVideoStatus?.frames_per_second;
       showVideoSurface(activeVideoTransport === 'webrtc_h264' ? 'webrtc_h264' : 'mjpeg');
-      label.textContent = videoFallback
-        ? 'MJPEG · H.264 回退'
-        : `${mode}${fps ? ` · ${Math.round(fps)} FPS` : ''}`;
+      const live = `${fps ? `${Math.round(fps)} fps` : mode}`;
+      setStatusLabel(videoFallback ? `回退 · ${live}` : `实时 · ${live}`, videoFallback ? 'MJPEG · H.264 回退' : `${mode} · LIVE`);
       meta.textContent = `LIVE / ${mode}`;
       setVideoMessage('', false);
       return;
     }
     if (videoUiState === 'fallback') {
-      label.textContent = 'MJPEG · H.264 回退';
+      setStatusLabel('回退 MJPEG', 'MJPEG · H.264 回退');
       meta.textContent = 'MJPEG';
       return;
     }
-    label.textContent = videoUiState === 'connecting' ? `正在连接 ${mode}…` : '视频连接中';
+    setStatusLabel('连接中', videoUiState === 'connecting' ? `正在连接 ${mode}…` : '视频连接中');
     meta.textContent = mode;
     updateDiagnosticsCard();
   }
@@ -362,6 +367,16 @@
   }
   $$('#fullscreen,[data-viewer-fullscreen]').forEach((button) =>
     button.addEventListener('click', toggleFullscreen),
+  );
+  // Touch fullscreen hides the console header; this toolbar (CSS shows it only
+  // for coarse pointers in fullscreen) keeps keyboard, control and exit at hand.
+  $$('[data-touch-action]').forEach((button) =>
+    button.addEventListener('click', () => {
+      const action = button.dataset.touchAction;
+      if (action === 'keyboard') $('#keyboard-toggle')?.click();
+      else if (action === 'input') $('#input-state')?.click();
+      else if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    }),
   );
   document.addEventListener('fullscreenchange', () => {
     const isFs = !!document.fullscreenElement;

@@ -48,8 +48,9 @@
         await request('/api/config', { method: 'POST', body: JSON.stringify(payload) });
         bootstrap = await request('/api/bootstrap');
         applyBootstrap();
-        toast('已保存');
+        formStatus(f, true);
       } catch (e) {
+        formStatus(f, false, e.message);
         toast(e.message, true);
       }
     });
@@ -67,9 +68,10 @@
         };
       try {
         await request('/api/config', { method: 'POST', body: JSON.stringify(payload) });
-        toast('虚拟介质设置已保存');
+        formStatus(f, true);
         await refreshMedia();
       } catch (e) {
+        formStatus(f, false, e.message);
         toast(e.message, true);
       }
     });

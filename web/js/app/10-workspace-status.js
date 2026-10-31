@@ -60,13 +60,35 @@
   $('#inspector-close')?.addEventListener('click', () => setInspectorOpen(false));
   $('#inspector-backdrop')?.addEventListener('click', () => setInspectorOpen(false));
   $('#inspector-float-open')?.addEventListener('click', () => setInspectorOpen(true));
+  function openShortcutSheet() {
+    const dialog = $('#shortcut-dialog');
+    if (dialog && !dialog.open) dialog.showModal?.();
+  }
+  $('#shortcut-open')?.addEventListener('click', openShortcutSheet);
   window.addEventListener('keydown', (event) => {
+    // "?" opens the cheat sheet only while input stays local, so it never
+    // competes with typing on the target or in a form field.
+    if (
+      event.key === '?' &&
+      !inputEnabled() &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      !interactiveTarget(event.target) &&
+      !app.classList.contains('hidden')
+    ) {
+      event.preventDefault();
+      openShortcutSheet();
+      return;
+    }
     if (event.key === 'Escape' && !inputEnabled()) {
       if (topbarPerfPopover && !topbarPerfPopover.hasAttribute('hidden')) {
         closeTopbarPerf();
         return;
       }
-      if (app.classList.contains('inspector-open') && !keyboardDialog?.open && !settingsDialog?.open) {
+      // Esc belongs to an open dialog first; only collapse the inspector when
+      // no modal (power confirm, cheat sheet, paste, ...) is consuming it.
+      if (app.classList.contains('inspector-open') && !document.querySelector('dialog[open]')) {
         setInspectorOpen(false);
       }
     }

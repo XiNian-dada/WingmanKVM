@@ -143,6 +143,14 @@
     if (stateEl) {
       stateEl.classList.toggle('active', enabled);
       stateEl.setAttribute('aria-pressed', String(enabled));
+      const touchInput = $('[data-touch-action="input"]');
+      if (touchInput) {
+        touchInput.textContent = enabled ? '释放' : '接管';
+        touchInput.classList.toggle('active', enabled);
+      }
+      // Short, always-visible label: whether typing goes to the target must be
+      // obvious at a glance. The long explanation stays in the tooltip.
+      const label = !enabled ? '点击接管' : relative ? (captured ? '已捕获' : '点击捕获') : '正在控制';
       const text = !enabled
         ? t('input_paused', '输入已暂停')
         : relative
@@ -151,8 +159,8 @@
             : t('input_click_to_capture', '点击画面或按 Enter 捕获鼠标')
           : t('input_forwarding', '键鼠正在转发');
       const textSpan = stateEl.querySelector('.input-text');
-      if (textSpan) textSpan.textContent = text;
-      else stateEl.textContent = text;
+      if (textSpan) textSpan.textContent = label;
+      else stateEl.textContent = label;
       stateEl.title = `${text} ${tr('(点击切换键鼠转发)')}`;
     }
     $('#input-release')?.classList.toggle('hidden', !enabled);
@@ -262,6 +270,540 @@
   $$('[data-quick-key]').forEach((button) =>
     button.addEventListener('click', () => sendQuickKey(button.dataset.quickKey)),
   );
+
+  // Paste-as-typing: turn arbitrary text into US-layout keystrokes. Kept pure
+  // so the mapping can be exercised without touching the network or DOM.
+  const US_UNSHIFTED_SYMBOLS = {
+    '`': 'Backquote',
+    '-': 'Minus',
+    '=': 'Equal',
+    '[': 'BracketLeft',
+    ']': 'BracketRight',
+    '\\': 'Backslash',
+    ';': 'Semicolon',
+    "'": 'Quote',
+    ',': 'Comma',
+    '.': 'Period',
+    '/': 'Slash',
+  };
+  const US_SHIFTED_SYMBOLS = {
+    '~': 'Backquote',
+    '!': 'Digit1',
+    '@': 'Digit2',
+    '#': 'Digit3',
+    $: 'Digit4',
+    '%': 'Digit5',
+    '^': 'Digit6',
+    '&': 'Digit7',
+    '*': 'Digit8',
+    '(': 'Digit9',
+    ')': 'Digit0',
+    _: 'Minus',
+    '+': 'Equal',
+    '{': 'BracketLeft',
+    '}': 'BracketRight',
+    '|': 'Backslash',
+    ':': 'Semicolon',
+    '"': 'Quote',
+    '<': 'Comma',
+    '>': 'Period',
+    '?': 'Slash',
+  };
+  function textToKeystrokes(text) {
+    const strokes = [],
+      unsupported = [],
+      seenUnsupported = new Set(),
+      normalized = String(text ?? '').replace(/\r\n?/g, '\n');
+    for (const ch of Array.from(normalized)) {
+      let key = null,
+        shift = false;
+      if (/^[a-z]$/.test(ch)) key = `Key${ch.toUpperCase()}`;
+      else if (/^[A-Z]$/.test(ch)) {
+        key = `Key${ch}`;
+        shift = true;
+      } else if (/^[0-9]$/.test(ch)) key = `Digit${ch}`;
+      else if (ch === ' ') key = 'Space';
+      else if (ch === '\n') key = 'Enter';
+      else if (ch === '\t') key = 'Tab';
+      else if (US_UNSHIFTED_SYMBOLS[ch]) key = US_UNSHIFTED_SYMBOLS[ch];
+      else if (US_SHIFTED_SYMBOLS[ch]) {
+        key = US_SHIFTED_SYMBOLS[ch];
+        shift = true;
+      }
+      if (!key) {
+        if (!seenUnsupported.has(ch)) {
+          seenUnsupported.add(ch);
+          unsupported.push(ch);
+        }
+        continue;
+      }
+      strokes.push({ key, shift, ctrl: false, alt: false, meta: false });
+    }
+    return { strokes, unsupported };
+  }
+  function displayUnsupportedChar(ch) {
+    return /[\u0000-\u001f\u007f]/.test(ch)
+      ? `U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`
+      : ch;
+  }
+  let pasteRun = null;
+  function setPasteStatus(text, tone = '') {
+    const el = $('#paste-key-status');
+    if (!el) return;
+    el.textContent = text;
+    el.classList.toggle('error', tone === 'error');
+  }
+  function updatePasteProgress(done, total) {
+    const bar = $('#paste-key-bar'),
+      progress = $('#paste-key-progress');
+    if (bar) bar.style.width = total ? `${Math.round((done / total) * 100)}%` : '0%';
+    if (progress) {
+      progress.setAttribute('aria-valuemax', String(total));
+      progress.setAttribute('aria-valuenow', String(done));
+    }
+  }
+  function openPasteDialog() {
+    const dialog = $('#paste-key-dialog'),
+      input = $('#paste-key-text'),
+      unsupportedEl = $('#paste-key-unsupported'),
+      sendButton = $('#paste-key-send'),
+      cancelButton = $('#paste-key-cancel');
+    if (!dialog) return;
+    if (input) input.value = '';
+    if (unsupportedEl) {
+      unsupportedEl.hidden = true;
+      unsupportedEl.textContent = '';
+    }
+    updatePasteProgress(0, 0);
+    setPasteStatus('');
+    if (sendButton) sendButton.disabled = false;
+    if (cancelButton) cancelButton.textContent = tr('取消');
+    try {
+      if (typeof dialog.showModal === 'function') dialog.showModal();
+      else dialog.show?.();
+    } catch (_) {
+      try {
+        dialog.show?.();
+      } catch (__) {}
+    }
+    setTimeout(() => input?.focus(), 0);
+  }
+  function closePasteDialog() {
+    const dialog = $('#paste-key-dialog');
+    try {
+      dialog?.close?.();
+    } catch (_) {}
+  }
+  async function startPasteTyping() {
+    const input = $('#paste-key-text'),
+      unsupportedEl = $('#paste-key-unsupported'),
+      sendButton = $('#paste-key-send'),
+      cancelButton = $('#paste-key-cancel');
+    const { strokes, unsupported } = textToKeystrokes(input ? input.value : '');
+    if (unsupported.length) {
+      if (unsupportedEl) {
+        unsupportedEl.hidden = false;
+        unsupportedEl.textContent = `${tr('无法表示的字符：')}${unsupported
+          .map(displayUnsupportedChar)
+          .join(' ')}`;
+      }
+      setPasteStatus(tr('已阻止发送，请先移除无法表示的字符'), 'error');
+      toast(tr('文本包含无法表示的字符，已阻止发送'), true);
+      return;
+    }
+    if (unsupportedEl) {
+      unsupportedEl.hidden = true;
+      unsupportedEl.textContent = '';
+    }
+    if (!strokes.length) {
+      setPasteStatus(tr('没有可发送的字符'));
+      return;
+    }
+    if (!inputEnabled()) setRemote(true);
+    if (!inputEnabled()) {
+      const message = tr('当前无法发送：请切换到远程画面并开启键鼠转发');
+      setPasteStatus(message, 'error');
+      toast(message, true);
+      return;
+    }
+    resetVirtualModifiers();
+    let canceled = false;
+    pasteRun = {
+      cancel: () => {
+        canceled = true;
+      },
+    };
+    if (sendButton) sendButton.disabled = true;
+    if (cancelButton) cancelButton.textContent = tr('取消发送');
+    updatePasteProgress(0, strokes.length);
+    setPasteStatus(tr(`正在键入 0 / ${strokes.length}`));
+    let sent = 0,
+      interrupted = false;
+    // Letters are typed for the target's current Caps Lock state, otherwise
+    // a pasted password would arrive with every letter's case inverted.
+    const capsLock = !!latestKeyboardLeds.caps_lock;
+    try {
+      while (sent < strokes.length) {
+        if (canceled) break;
+        // sendKey() only toasts when forwarding is off; stop instead of
+        // reporting a partial paste as complete.
+        if (!inputEnabled()) {
+          interrupted = true;
+          break;
+        }
+        const stroke = strokes[sent];
+        await sendKey(stroke.key, {
+          ctrlKey: stroke.ctrl,
+          shiftKey: stroke.shift !== (capsLock && stroke.key.startsWith('Key')),
+          altKey: stroke.alt,
+          metaKey: stroke.meta,
+        });
+        sent += 1;
+        updatePasteProgress(sent, strokes.length);
+        setPasteStatus(tr(`正在键入 ${sent} / ${strokes.length}`));
+        if (sent < strokes.length) await new Promise((resolve) => setTimeout(resolve, 15));
+      }
+      if (interrupted) {
+        const message = tr(`已中断：键鼠转发已关闭，已发送 ${sent} / ${strokes.length}`);
+        setPasteStatus(message, 'error');
+        toast(message, true);
+      } else if (canceled) {
+        setPasteStatus(tr(`已取消，已发送 ${sent} / ${strokes.length}`));
+      } else {
+        setPasteStatus(tr(`已发送完成（${strokes.length} 个按键）`));
+        toast(tr(`已发送 ${strokes.length} 个按键`));
+      }
+    } catch (error) {
+      setPasteStatus(`${tr('发送失败：')}${error.message}`, 'error');
+      toast(error.message, true);
+    } finally {
+      pasteRun = null;
+      if (sendButton) sendButton.disabled = false;
+      if (cancelButton) cancelButton.textContent = tr('取消');
+    }
+  }
+  $('#paste-typing-btn')?.addEventListener('click', openPasteDialog);
+  $$('[data-paste-close]').forEach((button) => button.addEventListener('click', closePasteDialog));
+  $('#paste-key-send')?.addEventListener('click', startPasteTyping);
+  $('#paste-key-cancel')?.addEventListener('click', () => {
+    if (pasteRun) {
+      pasteRun.cancel();
+      setPasteStatus(tr('正在取消…'));
+      return;
+    }
+    closePasteDialog();
+  });
+  $('#paste-key-dialog')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) closePasteDialog();
+  });
+  $('#paste-key-dialog')?.addEventListener('close', () => {
+    pasteRun?.cancel();
+    pasteRun = null;
+  });
+
+  // More shortcuts: less-used built-ins plus user-defined combinations.
+  const CUSTOM_COMBOS_KEY = 'wingman_custom_combos';
+  const BUILTIN_MENU_COMBOS = [
+    { id: 'caf1', key: 'F1', ctrl: true, alt: true, hold_ms: 100 },
+    { id: 'caf2', key: 'F2', ctrl: true, alt: true, hold_ms: 100 },
+    { id: 'caf3', key: 'F3', ctrl: true, alt: true, hold_ms: 100 },
+    { id: 'caf4', key: 'F4', ctrl: true, alt: true, hold_ms: 100 },
+    { id: 'caf5', key: 'F5', ctrl: true, alt: true, hold_ms: 100 },
+    { id: 'caf6', key: 'F6', ctrl: true, alt: true, hold_ms: 100 },
+    { id: 'caf7', key: 'F7', ctrl: true, alt: true, hold_ms: 100 },
+    { id: 'prtsc', key: 'PrintScreen', hold_ms: 60 },
+  ];
+  function comboKeyLabel(key) {
+    if (/^Key[A-Z]$/.test(key)) return key.slice(3);
+    if (/^Digit[0-9]$/.test(key)) return key.slice(5);
+    return (
+      {
+        Escape: 'Esc',
+        Space: 'Space',
+        PrintScreen: 'PrtSc',
+        ArrowUp: '↑',
+        ArrowDown: '↓',
+        ArrowLeft: '←',
+        ArrowRight: '→',
+      }[key] || key
+    );
+  }
+  function comboLabel(combo) {
+    const parts = [];
+    if (combo.ctrl) parts.push('Ctrl');
+    if (combo.alt) parts.push('Alt');
+    if (combo.shift) parts.push('Shift');
+    if (combo.meta) parts.push('Meta');
+    parts.push(comboKeyLabel(combo.key));
+    return parts.join('+');
+  }
+  function readCustomCombos() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(CUSTOM_COMBOS_KEY) || '[]');
+      if (!Array.isArray(raw)) return [];
+      return raw
+        .filter((combo) => combo && typeof combo.key === 'string' && combo.key)
+        .map((combo, index) => ({
+          id: String(combo.id || `custom_restored_${index}`),
+          key: combo.key,
+          ctrl: !!combo.ctrl,
+          alt: !!combo.alt,
+          shift: !!combo.shift,
+          meta: !!combo.meta,
+          hold_ms: Number(combo.hold_ms) || undefined,
+        }));
+    } catch (_) {
+      return [];
+    }
+  }
+  function writeCustomCombos(combos) {
+    try {
+      localStorage.setItem(CUSTOM_COMBOS_KEY, JSON.stringify(combos));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+  async function sendCombo(combo) {
+    if (!combo) return;
+    if (!inputEnabled()) setRemote(true);
+    try {
+      const res = await request('/api/key', {
+        method: 'POST',
+        body: JSON.stringify({
+          key: combo.key,
+          ctrl: !!combo.ctrl,
+          shift: !!combo.shift,
+          alt: !!combo.alt,
+          meta: !!combo.meta,
+          hold_ms: combo.hold_ms || (combo.key.startsWith('F') ? 100 : 40),
+        }),
+      });
+      if (res && res.keyboard_leds) renderKeyboardLeds(res.keyboard_leds);
+      toast(tr(`已发送组合键 ${comboLabel(combo)}`));
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+  function createComboItem(combo, custom) {
+    const row = document.createElement('div');
+    row.className = 'quick-more-row';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'quick-combo-item';
+    button.setAttribute('role', 'menuitem');
+    button.dataset.comboId = combo.id;
+    button.dataset.key = combo.key;
+    button.dataset.ctrl = String(!!combo.ctrl);
+    button.dataset.alt = String(!!combo.alt);
+    button.dataset.shift = String(!!combo.shift);
+    button.dataset.meta = String(!!combo.meta);
+    if (custom) button.dataset.customCombo = '1';
+    button.textContent = comboLabel(combo);
+    button.addEventListener('click', () => {
+      closeQuickMore();
+      sendCombo(combo);
+    });
+    row.append(button);
+    if (custom) {
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'quick-combo-delete';
+      remove.dataset.removeCombo = combo.id;
+      remove.title = tr('删除此组合键');
+      remove.setAttribute('aria-label', tr('删除此组合键'));
+      remove.textContent = '×';
+      remove.addEventListener('click', (event) => {
+        event.stopPropagation();
+        writeCustomCombos(readCustomCombos().filter((item) => item.id !== combo.id));
+        renderQuickCombos();
+        toast(tr('已删除自定义组合键'));
+      });
+      row.append(remove);
+    }
+    return row;
+  }
+  function renderQuickCombos() {
+    const menu = $('#quick-more-menu');
+    if (!menu) return;
+    menu.textContent = '';
+    // The inline quick keys hide when the console is narrow; repeat them here
+    // (CSS shows this group only in that case) so they are always reachable.
+    const common = document.createElement('div');
+    common.className = 'quick-menu-common';
+    for (const [action, label] of [
+      ['cad', 'Ctrl+Alt+Del'],
+      ['win', 'Win'],
+      ['alttab', 'Alt+Tab'],
+      ['esc', 'Esc'],
+    ]) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'quick-combo-item';
+      button.setAttribute('role', 'menuitem');
+      button.textContent = label;
+      button.addEventListener('click', () => {
+        closeQuickMore();
+        sendQuickKey(action);
+      });
+      common.append(button);
+    }
+    const commonSep = document.createElement('div');
+    commonSep.className = 'quick-more-sep';
+    common.append(commonSep);
+    menu.append(common);
+    BUILTIN_MENU_COMBOS.forEach((combo) => menu.append(createComboItem(combo, false)));
+    const custom = readCustomCombos();
+    if (custom.length) {
+      const separator = document.createElement('div');
+      separator.className = 'quick-more-sep';
+      menu.append(separator);
+      custom.forEach((combo) => menu.append(createComboItem(combo, true)));
+    }
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.id = 'quick-combo-add';
+    add.className = 'quick-more-action';
+    add.setAttribute('role', 'menuitem');
+    add.textContent = tr('+ 添加自定义组合');
+    add.addEventListener('click', () => {
+      closeQuickMore();
+      openComboDialog();
+    });
+    menu.append(add);
+  }
+  function closeQuickMore() {
+    $('#quick-more-menu')?.setAttribute('hidden', '');
+    $('#quick-more-toggle')?.setAttribute('aria-expanded', 'false');
+  }
+  function fillComboKeyOptions() {
+    const select = $('#combo-key');
+    if (!select || select.options.length) return;
+    const options = [];
+    for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') options.push([`Key${letter}`, letter]);
+    for (let digit = 0; digit <= 9; digit += 1) options.push([`Digit${digit}`, String(digit)]);
+    for (let fn = 1; fn <= 12; fn += 1) options.push([`F${fn}`, `F${fn}`]);
+    options.push(
+      ['Escape', 'Esc'],
+      ['Tab', 'Tab'],
+      ['Enter', 'Enter'],
+      ['Space', 'Space'],
+      ['Backspace', 'Backspace'],
+      ['Delete', 'Delete'],
+      ['Insert', 'Insert'],
+      ['Home', 'Home'],
+      ['End', 'End'],
+      ['PageUp', 'PageUp'],
+      ['PageDown', 'PageDown'],
+      ['ArrowUp', '↑'],
+      ['ArrowDown', '↓'],
+      ['ArrowLeft', '←'],
+      ['ArrowRight', '→'],
+      ['PrintScreen', 'PrtSc'],
+      ['Minus', '-'],
+      ['Equal', '='],
+      ['BracketLeft', '['],
+      ['BracketRight', ']'],
+      ['Backslash', '\\'],
+      ['Semicolon', ';'],
+      ['Quote', "'"],
+      ['Comma', ','],
+      ['Period', '.'],
+      ['Slash', '/'],
+    );
+    options.forEach(([value, label]) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      select.append(option);
+    });
+  }
+  function openComboDialog() {
+    const dialog = $('#combo-dialog');
+    if (!dialog) return;
+    fillComboKeyOptions();
+    $('#combo-form')?.reset();
+    try {
+      if (typeof dialog.showModal === 'function') dialog.showModal();
+      else dialog.show?.();
+    } catch (_) {
+      try {
+        dialog.show?.();
+      } catch (__) {}
+    }
+  }
+  function closeComboDialog() {
+    const dialog = $('#combo-dialog');
+    try {
+      dialog?.close?.();
+    } catch (_) {}
+  }
+  function addCustomCombo() {
+    const form = $('#combo-form'),
+      key = form?.querySelector('[name="key"]')?.value;
+    if (!form || !key) return;
+    const combo = {
+      ctrl: !!form.querySelector('[name="ctrl"]')?.checked,
+      alt: !!form.querySelector('[name="alt"]')?.checked,
+      shift: !!form.querySelector('[name="shift"]')?.checked,
+      meta: !!form.querySelector('[name="meta"]')?.checked,
+    };
+    if (!combo.ctrl && !combo.alt && !combo.shift && !combo.meta) {
+      toast(tr('请至少选择一个修饰键'), true);
+      return;
+    }
+    const custom = readCustomCombos();
+    if (custom.length >= 24) {
+      toast(tr('自定义组合键最多 24 个'), true);
+      return;
+    }
+    custom.push({
+      id: `custom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      key,
+      ...combo,
+    });
+    if (!writeCustomCombos(custom)) {
+      toast(tr('无法保存自定义组合键'), true);
+      return;
+    }
+    renderQuickCombos();
+    closeComboDialog();
+    toast(tr('已添加自定义组合键'));
+  }
+  const quickMoreToggle = $('#quick-more-toggle'),
+    quickMoreMenu = $('#quick-more-menu');
+  quickMoreToggle?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!quickMoreMenu) return;
+    const open = !quickMoreMenu.hasAttribute('hidden');
+    if (open) {
+      closeQuickMore();
+      return;
+    }
+    renderQuickCombos();
+    quickMoreMenu.removeAttribute('hidden');
+    quickMoreToggle.setAttribute('aria-expanded', 'true');
+    $('#power-menu')?.setAttribute('hidden', '');
+    $('#power-menu-toggle')?.setAttribute('aria-expanded', 'false');
+    $('#lang-menu')?.setAttribute('hidden', '');
+    $('#lang-toggle')?.setAttribute('aria-expanded', 'false');
+    $('#diagnostics-popover')?.setAttribute('hidden', '');
+    $('#diagnostics-toggle')?.setAttribute('aria-expanded', 'false');
+  });
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest('.quick-more')) closeQuickMore();
+  });
+  $$('[data-combo-close]').forEach((button) => button.addEventListener('click', closeComboDialog));
+  $('#combo-dialog')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) closeComboDialog();
+  });
+  $('#combo-form')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    addCustomCombo();
+  });
+  fillComboKeyOptions();
+  renderQuickCombos();
+
   let latestKeyboardLeds = { num_lock: false, caps_lock: false, scroll_lock: false, raw: 0 };
   function renderKeyboardLeds(leds) {
     if (!leds) return;

@@ -88,3 +88,418 @@
 .svg-sprite {
   display: none;
 }
+
+/* Forwarding toggle: outlined call to action when idle, solid when the
+   keyboard and mouse are going to the target. */
+.console-actions #input-state {
+  border: 1px solid var(--line-strong);
+  background: var(--canvas);
+  color: var(--ink);
+  font-weight: 600;
+}
+.console-actions #input-state.active {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: #fff;
+}
+.console-actions #input-state.active::before {
+  background: #fff;
+}
+#video-viewport.remote {
+  box-shadow: inset 0 0 0 3px var(--blue);
+}
+
+/* Power confirmation dialog with hold-to-confirm for force-off. */
+.power-confirm {
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--canvas);
+  color: var(--ink);
+  box-shadow: var(--shadow-5);
+}
+.power-confirm::backdrop {
+  background: #0006;
+}
+.power-confirm-body {
+  display: grid;
+  gap: 10px;
+  padding: 20px;
+}
+.power-confirm-body h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.power-confirm-body p {
+  margin: 0;
+  color: var(--body);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.power-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+#power-confirm-ok {
+  position: relative;
+  overflow: hidden;
+}
+#power-confirm-ok .hold-fill {
+  position: absolute;
+  inset: 0;
+  width: 0;
+  background: var(--red);
+  opacity: 0.18;
+}
+#power-confirm-ok.holding .hold-fill {
+  width: 100%;
+  transition: width 1000ms linear;
+}
+#power-confirm-ok .hold-label {
+  position: relative;
+}
+
+/* Upload throughput, cancel and drag-and-drop target. */
+.upload-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 20px;
+}
+.upload-stats {
+  color: var(--muted);
+  font:
+    11px/16px "Geist Mono",
+    ui-monospace,
+    monospace;
+}
+.upload-drop-hint {
+  margin: 0;
+}
+#panel-media.drop-target {
+  outline: 2px dashed var(--blue);
+  outline-offset: -8px;
+  background: color-mix(in srgb, var(--blue) 6%, transparent);
+}
+/* More shortcuts dropdown. */
+.quick-more {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+#quick-more-toggle {
+  white-space: nowrap;
+}
+.quick-more-menu {
+  min-width: 196px;
+  max-height: min(60vh, 360px);
+  overflow-y: auto;
+}
+.quick-more-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.quick-combo-item {
+  flex: 1;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--body);
+  font:
+    11px/1 "Geist Mono",
+    ui-monospace,
+    monospace;
+  text-align: left;
+  cursor: pointer;
+}
+.quick-combo-item:hover,
+.quick-combo-item:focus-visible {
+  background: var(--soft-2);
+  color: var(--ink);
+}
+.quick-combo-delete {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.quick-combo-delete:hover {
+  color: var(--red);
+  background: var(--red-soft);
+}
+.quick-more-sep {
+  height: 1px;
+  margin: 3px 4px;
+  background: var(--line);
+}
+.quick-more-action {
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--blue);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.quick-more-action:hover {
+  background: var(--soft-2);
+}
+
+/* Paste-as-typing and custom-combination dialogs. */
+#paste-key-dialog,
+#combo-dialog {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  outline: none;
+  z-index: 95;
+}
+#paste-key-dialog:not([open]),
+#combo-dialog:not([open]) {
+  display: none;
+}
+#paste-key-dialog::backdrop,
+#combo-dialog::backdrop {
+  background: #00000055;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.paste-key-modal,
+.combo-modal {
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(86dvh, 680px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--canvas);
+  color: var(--ink);
+  box-shadow:
+    0 16px 36px -10px rgba(0, 0, 0, 0.3),
+    0 0 0 1px var(--line);
+}
+.paste-key-modal .dialog-head,
+.combo-modal .dialog-head {
+  gap: 8px;
+}
+.paste-key-modal .dialog-head button,
+.combo-modal .dialog-head button {
+  margin-left: 0;
+}
+.paste-key-modal .dialog-head button,
+.combo-modal .dialog-head button {
+  margin-left: auto;
+}
+.paste-key-body,
+.combo-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px 20px;
+  overflow-y: auto;
+}
+#paste-key-text {
+  min-height: 150px;
+  padding: 10px 12px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--ink);
+  font:
+    12px/18px "Geist Mono",
+    ui-monospace,
+    monospace;
+}
+#paste-key-text:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+.paste-key-unsupported {
+  display: none;
+  padding: 9px 11px;
+  border: 1px solid #f2c7c7;
+  border-radius: 8px;
+  background: var(--red-soft);
+  color: var(--red);
+  font-size: 11px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+.paste-key-unsupported:not([hidden]) {
+  display: block;
+}
+.paste-key-progress {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--soft-2);
+}
+#paste-key-bar {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--blue);
+  transition: width 80ms linear;
+}
+.paste-key-status {
+  min-height: 16px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.paste-key-status.error {
+  color: var(--red);
+}
+.combo-modifiers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.combo-modifiers .check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  font-size: 12px;
+}
+#combo-key {
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--ink);
+}
+#keyboard-dialog .dialog-head {
+  gap: 8px;
+}
+#keyboard-dialog .dialog-head #paste-typing-btn {
+  margin-left: auto;
+}
+#keyboard-dialog .dialog-head [data-close] {
+  margin-left: 0;
+}
+:root[data-theme="dark"] .paste-key-modal,
+:root[data-theme="dark"] .combo-modal {
+  background: var(--canvas);
+  color: var(--ink);
+}
+
+/* Common quick keys inside the combos menu, shown only when the inline
+   buttons are hidden by the narrow-console rules. */
+.quick-menu-common {
+  display: none;
+}
+
+/* Inline save result beside a form's submit button. */
+.form-status {
+  margin-right: auto;
+  align-self: center;
+  color: var(--muted);
+  font-size: 11px;
+}
+.form-status.error {
+  color: var(--red);
+}
+
+/* Keyboard shortcut cheat sheet. */
+.shortcut-list {
+  display: grid;
+  gap: 8px;
+}
+.shortcut-row {
+  display: grid;
+  grid-template-columns: minmax(120px, auto) 1fr;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+.shortcut-row kbd {
+  justify-self: start;
+  padding: 2px 8px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--soft);
+  font:
+    12px/18px "Geist Mono",
+    ui-monospace,
+    monospace;
+  white-space: nowrap;
+}
+
+/* Touch fullscreen toolbar; keyboard-only hints are hidden on touch devices. */
+.touch-toolbar {
+  display: none;
+}
+@media (pointer: coarse) {
+  #console:fullscreen .touch-toolbar {
+    position: absolute;
+    z-index: 6;
+    left: 50%;
+    bottom: max(12px, env(safe-area-inset-bottom));
+    display: flex;
+    gap: 6px;
+    padding: 6px;
+    border-radius: 999px;
+    background: #000000b3;
+    backdrop-filter: blur(8px);
+    transform: translateX(-50%);
+  }
+  .touch-toolbar button {
+    min-height: 40px;
+    padding: 0 16px;
+    border: 1px solid #ffffff40;
+    border-radius: 999px;
+    background: transparent;
+    color: #fff;
+    font-size: 14px;
+  }
+  .touch-toolbar button.active {
+    border-color: var(--blue);
+    background: var(--blue);
+  }
+  .local-exit-hint {
+    display: none;
+  }
+}
+
+.quick-menu-common {
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+}
+.quick-menu-common .quick-more-sep {
+  grid-column: 1 / -1;
+}

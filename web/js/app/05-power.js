@@ -173,6 +173,87 @@
       closeTopbarPerf();
     }
   });
+  // In-app confirmation sized to the risk: short press and reset need one
+  // explicit click; force-off must be held for HOLD_TO_CONFIRM_MS so a stray
+  // click or Enter can never cut power to the target.
+  const HOLD_TO_CONFIRM_MS = 1000;
+  const POWER_CONFIRM = {
+    press: {
+      title: '短按电源',
+      desc: '向被控机发送一次电源按钮短按。被控机运行中时，这通常会触发关机。',
+      ok: '确认短按',
+      hold: false,
+    },
+    reset: { title: '复位', desc: '立即复位被控机，未保存的数据会丢失。', ok: '确认复位', hold: false },
+    'force-off': {
+      title: '强制关机',
+      desc: '长按电源 5 秒强制断电，可能导致数据丢失或文件系统损坏。',
+      ok: '按住 1 秒强制关机',
+      hold: true,
+    },
+  };
+  function confirmPowerAction(action) {
+    const spec = POWER_CONFIRM[action],
+      dialog = $('#power-confirm'),
+      ok = $('#power-confirm-ok');
+    if (!spec || !dialog?.showModal)
+      return Promise.resolve(confirm(spec ? `${tr(spec.title)}\n\n${tr(spec.desc)}` : ''));
+    $('#power-confirm-title').textContent = spec.title;
+    $('#power-confirm-desc').textContent = spec.desc;
+    $('.hold-label', ok).textContent = spec.ok;
+    ok.classList.toggle('danger', spec.hold);
+    ok.classList.toggle('primary', !spec.hold);
+    return new Promise((resolve) => {
+      let timer = 0,
+        done = false;
+      const finish = (result) => {
+        if (done) return;
+        done = true;
+        cancelHold();
+        ok.removeEventListener('click', onClick);
+        ok.removeEventListener('pointerdown', startHold);
+        ok.removeEventListener('keydown', onKeyDown);
+        ['pointerup', 'pointerleave', 'pointercancel', 'keyup', 'blur'].forEach((type) =>
+          ok.removeEventListener(type, cancelHold),
+        );
+        dialog.removeEventListener('close', onClose);
+        if (dialog.open) dialog.close();
+        resolve(result);
+      };
+      const startHold = (event) => {
+        if (timer || (event.type === 'pointerdown' && event.button !== 0)) return;
+        ok.classList.add('holding');
+        timer = setTimeout(() => finish(true), HOLD_TO_CONFIRM_MS);
+      };
+      const cancelHold = () => {
+        clearTimeout(timer);
+        timer = 0;
+        ok.classList.remove('holding');
+      };
+      const onKeyDown = (event) => {
+        if ((event.key === 'Enter' || event.key === ' ') && !event.repeat) {
+          event.preventDefault();
+          startHold(event);
+        }
+      };
+      const onClick = () => {
+        if (!spec.hold) finish(true);
+      };
+      const onClose = () => finish(false);
+      ok.addEventListener('click', onClick);
+      if (spec.hold) {
+        ok.addEventListener('pointerdown', startHold);
+        ok.addEventListener('keydown', onKeyDown);
+        ['pointerup', 'pointerleave', 'pointercancel', 'keyup', 'blur'].forEach((type) =>
+          ok.addEventListener(type, cancelHold),
+        );
+      }
+      dialog.addEventListener('close', onClose);
+      dialog.showModal();
+      // Focus Cancel first: a reflexive Enter must never confirm.
+      $('button[value="cancel"]', dialog)?.focus();
+    });
+  }
   async function executePowerAction(action) {
     const caps = bootstrap.capabilities || {};
     if (action === 'reset' && caps.gpio_reset !== true) {
@@ -186,13 +267,12 @@
     let url = '/power',
       duration = '0.5',
       label = '电源';
+    if (!(await confirmPowerAction(action))) return;
     if (action === 'reset') {
-      if (!confirm(tr('确定复位吗？'))) return;
       url = '/reset';
       duration = '0.5';
       label = '复位';
     } else if (action === 'force-off') {
-      if (!confirm(tr('确定长按电源 5 秒吗？这可能强制关机。'))) return;
       url = '/power';
       duration = '5';
       label = '强制关机';
@@ -297,9 +377,12 @@
       saveVideoUiPreference('transport', videoPreference);
       bootstrap = await request('/api/bootstrap');
       applyBootstrap();
-      toast('视频设置已应用');
+      formStatus(f, true);
     } catch (e) {
-      if (requestId === videoConfigRequestId) toast(e.message, true);
+      if (requestId === videoConfigRequestId) {
+        formStatus(f, false, e.message);
+        toast(e.message, true);
+      }
     } finally {
       if (requestId === videoConfigRequestId) {
         button.disabled = false;
