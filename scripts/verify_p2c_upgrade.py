@@ -358,6 +358,118 @@ install_managed_files
         self.record("trapped-term", not problems, "; ".join(problems) or "ok",
                     ["_tx_publish_one sends a real SIGTERM after entry 1"])
 
+    def case_python_isolation(self) -> None:
+        base = self.base("python-isolation")
+        root = self.root(base)
+        self.stubs(base)
+        before = self.hashes(root)
+        cwd = base / "cwd"
+        cwd.mkdir()
+        marker = base / "imported.marker"
+        payload = f"open({str(marker)!r}, 'a').write('executed\\n')\n".encode()
+        for name in ("json.py", "urllib.py", "http.py", "sitecustomize.py"):
+            write(cwd / name, payload, 0o644)
+        with HealthFixture([(200, b'{"status":"ok","service":"wingmankvm"}')]) as fixture:
+            result = self.run(self.driver(base, self.prelude() + f"""
+cd "{cwd}"
+HEALTH_URL="{fixture.url}"
+resolve_health_url
+probe_health "$HEALTH_URL"
+"""))
+        problems: list[str] = []
+        if result.returncode != 0:
+            problems.append("isolated health probe failed: " + result.stderr.strip())
+        if marker.exists():
+            problems.append("current-directory module was imported by root Python")
+        problems += self.tree(root, before, False)
+        self.record("python-isolated-health-probe", not problems,
+                    "; ".join(problems) or "ok",
+                    ["local HTTP fixture; malicious json/urllib/http/sitecustomize in CWD"])
+
+    def case_commit_signal(self) -> None:
+        for name, signo in (("TERM", 15), ("INT", 2)):
+            base = self.base("commit-signal-" + name.lower())
+            root = self.root(base)
+            self.stubs(base)
+            old = b"old-binary\n"
+            write(root / "usr/local/bin/wingmankvm", old, 0o755)
+            before = self.hashes(root)
+            result = self.run(self.driver(base, self.prelude() + f"""
+tx_init "$TX_STORE" "$DEST_ROOT"
+install_managed_files
+tx_commit
+tx_rollback "manual after commit" && exit 90
+kill -{name} $$
+sleep 5
+"""))
+            problems: list[str] = []
+            if result.returncode not in (128 + signo, -signo):
+                problems.append(f"unexpected exit after post-commit {name}: {result.returncode}")
+            if (root / "usr/local/bin/wingmankvm").read_bytes() != (base / "fixture-binary").read_bytes():
+                problems.append("committed binary was rolled back by a signal")
+            store = root / "var/lib/wingmankvm-deploy"
+            txns = sorted(store.glob("txn.*")) if store.is_dir() else []
+            if not txns or not (txns[-1] / "COMMITTED").is_file():
+                problems.append("COMMITTED marker missing")
+            if list(store.glob("txn.*/ROLLED_BACK")):
+                problems.append("ROLLED_BACK written after commit")
+            if (store / "PENDING").exists():
+                problems.append("PENDING reappeared after commit")
+            if "refusing to roll back a committed transaction" not in result.stderr + result.stdout:
+                problems.append("post-commit rollback refusal diagnostic missing")
+            problems += self.tree(root, before, True)
+            self.record(f"post-commit-{name.lower()}-does-not-rollback", not problems,
+                        "; ".join(problems) or "ok",
+                        [f"real SIG{name} after commit; direct tx_rollback refusal"])
+
+    def case_recover_refuses_committed(self) -> None:
+        base = self.base("recover-committed")
+        root = self.root(base)
+        self.stubs(base)
+        old = b"old-binary\n"
+        write(root / "usr/local/bin/wingmankvm", old, 0o755)
+        before = self.hashes(root)
+        result = self.run(self.driver(base, self.prelude() + """
+tx_init "$TX_STORE" "$DEST_ROOT"
+install_managed_files
+tx_commit
+"""))
+        problems: list[str] = []
+        if result.returncode != 0:
+            problems.append("commit driver failed: " + result.stderr.strip())
+        store = root / "var/lib/wingmankvm-deploy"
+        txns = sorted(store.glob("txn.*")) if store.is_dir() else []
+        if not txns:
+            problems.append("transaction directory missing")
+        else:
+            recover = txns[-1] / "recover.sh"
+            new_bytes = (base / "fixture-binary").read_bytes()
+            refused = subprocess.run(
+                ["bash", str(recover)], text=True, capture_output=True, timeout=60,
+            )
+            if refused.returncode == 0:
+                problems.append("recover.sh accepted a committed transaction")
+            if "committed" not in refused.stderr:
+                problems.append("committed-refusal diagnostic missing")
+            if (root / "usr/local/bin/wingmankvm").read_bytes() != new_bytes:
+                problems.append("refused recovery still changed the binary")
+            if (txns[-1] / "ROLLED_BACK").exists():
+                problems.append("refused recovery wrote ROLLED_BACK")
+            forced = subprocess.run(
+                ["bash", str(recover), "--force"], text=True, capture_output=True, timeout=60,
+            )
+            if forced.returncode != 0:
+                problems.append("--force recovery failed: " + forced.stderr.strip())
+            if (root / "usr/local/bin/wingmankvm").read_bytes() != old:
+                problems.append("--force recovery did not restore the old binary")
+            if not (txns[-1] / "ROLLED_BACK").is_file():
+                problems.append("--force recovery did not write ROLLED_BACK")
+        if (store / "PENDING").exists():
+            problems.append("PENDING left after recovery")
+        problems += self.tree(root, before, False)
+        self.record("recover-refuses-committed-until-force", not problems,
+                    "; ".join(problems) or "ok", ["real recover.sh with and without --force"])
+
     def case_sigkill(self) -> None:
         base = self.base("sigkill")
         root = self.root(base)
@@ -639,7 +751,10 @@ finish_no_start
     def run_all(self) -> bool:
         for name in (
             "case_success", "case_missing_helper", "case_partial", "case_term",
-            "case_sigkill", "case_health", "case_first_install_units", "case_rollback_failure", "case_no_start", "case_maintenance_transaction",
+            "case_python_isolation", "case_commit_signal",
+            "case_recover_refuses_committed", "case_sigkill", "case_health",
+            "case_first_install_units", "case_rollback_failure", "case_no_start",
+            "case_maintenance_transaction",
         ):
             try:
                 getattr(self, name)()

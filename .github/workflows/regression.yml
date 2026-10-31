@@ -35,6 +35,9 @@ jobs:
       - name: Verify vendored terminal provenance and integrity
         run: python3 scripts/verify_xterm_vendor.py
 
+      - name: Verify vendored dtls provenance and patches
+        run: python3 scripts/verify_dtls_vendor.py
+
       - name: Install system build dependencies
         run: |
           sudo apt-get update

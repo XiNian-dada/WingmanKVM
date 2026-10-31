@@ -28,8 +28,10 @@ Firefly RK3399 板载接口丰富，具体连接如下：
 sudo apt update
 sudo apt install -y \
   build-essential pkg-config clang libclang-dev linux-libc-dev \
-  libgpiod-tools v4l-utils usbutils curl
+  libgpiod-tools v4l-utils usbutils curl python3
 ```
+
+> **版本要求**：GPIO 电源控制依赖 **libgpiod >= 2.x**（`gpioset` 2.x 命令语法）；安装器的健康检查与配置解析依赖 `python3`。Debian bookworm 的 `libgpiod-tools` 为 1.x，启用电源控制前请从 bookworm-backports 或更新的发行版安装；不使用 GPIO 时可跳过电源部分。完整依赖见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 
 ---
 

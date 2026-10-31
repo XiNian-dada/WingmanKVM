@@ -122,6 +122,10 @@ _tx_print_recovery() {
 _tx_on_signal() {
     local name=$1 signo=$2
     trap - INT TERM HUP
+    if [[ $TX_STATE == committed ]]; then
+        tx_log "ignoring SIG$name after commit; installed files are final"
+        return 0
+    fi
     set +e
     tx_error "received SIG$name during installation"
     _tx_rollback "interrupted by SIG$name"
@@ -358,6 +362,10 @@ _tx_remove_one() {
 
 _tx_rollback() {
     local reason=$1 failures=0 i
+    if [[ $TX_STATE == committed ]]; then
+        tx_error "refusing to roll back a committed transaction"
+        return 1
+    fi
     [[ -n $TX_TXN && -d $TX_TXN ]] || return 0
     set +e
     TX_STATE=rolling_back
@@ -430,6 +438,7 @@ tx_commit() {
     TX_ROLLBACK_HOOK=''
     TX_PRE_ROLLBACK_HOOK=''
     TX_STATE=committed
+    trap - INT TERM HUP
     tx_log "transaction committed; snapshot retained at $TX_TXN"
 }
 
@@ -453,8 +462,24 @@ STAGE=$TX_DIR/stage
 PENDING=$STORE/PENDING
 LOCK=$STORE/install.lock
 FAILURES=0
+FORCE=false
 say() { printf 'wingmankvm-recover: %s\n' "$*"; }
 err() { printf 'wingmankvm-recover: error: %s\n' "$*" >&2; }
+for arg in "$@"; do
+    case $arg in
+        --force) FORCE=true ;;
+        -h | --help)
+            printf 'usage: %s [--force]\n' "${0##*/}"
+            printf 'Restores one interrupted upgrade transaction. A committed\n'
+            printf 'transaction is left untouched unless --force is given.\n'
+            exit 0
+            ;;
+        *)
+            err "unknown argument: $arg"
+            exit 2
+            ;;
+    esac
+done
 trusted_dir() {
     local path=$1 meta owner _group mode
     [ -d "$path" ] && [ ! -L "$path" ] || return 1
@@ -525,6 +550,12 @@ private_dir "$SNAPSHOT" || { err "snapshot directory ownership/mode is unsafe"; 
 private_dir "$STAGE" || { err "stage directory ownership/mode is unsafe"; exit 1; }
 private_meta_file "$MANIFEST" || { err "manifest ownership/mode is unsafe"; exit 1; }
 private_meta_file "$LOCK" || { err "lock ownership/mode is unsafe"; exit 1; }
+if [ "$FORCE" != true ] && [ -f "$TX_DIR/COMMITTED" ] && [ ! -L "$TX_DIR/COMMITTED" ] \
+    && [ ! -e "$PENDING" ]; then
+    err "transaction $TX_DIR is committed; refusing to restore an older snapshot"
+    err "re-run with --force only to deliberately downgrade the managed files"
+    exit 1
+fi
 exec 9>>"$LOCK" || { err "cannot open installation lock"; exit 1; }
 flock -n 9 || { err "another installer is running"; exit 1; }
 if [ -e "$PENDING" ]; then

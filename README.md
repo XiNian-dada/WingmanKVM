@@ -29,12 +29,14 @@
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential pkg-config clang libclang-dev linux-libc-dev libgpiod-tools v4l-utils
+sudo apt install -y build-essential pkg-config clang libclang-dev linux-libc-dev libgpiod-tools v4l-utils python3
 
 git clone https://github.com/XiNian-dada/WingmanKVM.git
 cd WingmanKVM
 cargo build --release --locked
 ```
+
+> **依赖版本**：GPIO 电源控制要求 **libgpiod >= 2.x**（即 `gpioset` 2.x 命令语法）；安装器的健康检查与配置解析需要 `python3`。Debian bookworm 自带的 `libgpiod-tools` 为 1.x，启用电源控制前请从 bookworm-backports 或更新的发行版安装。完整依赖列表见 [DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 
 ### 2. 一键安装与启动
 
