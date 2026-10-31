@@ -61,7 +61,9 @@ Browser                     <──  LAN  ────────────�
    cd wingmankvm && sudo ./deploy/install.sh --release ../wingmankvm-<版本>-<架构>.tar.gz
    ```
 
-3. When installation finishes, the terminal prints a one-time setup link `http://<IP>:8080/#setup=...`. Open it in a browser on the same LAN, set the administrator account, and confirm the automatically detected devices to enter the console.
+   To reach the KVM as `http://wingmankvm.local:8080` on the LAN, add `--install-deps --mdns` (and optionally `--mdns-hostname NAME`); Passkey requires a domain name rather than an IP, so this makes Passkey usable out of the box.
+
+3. When installation finishes, the terminal prints a one-time setup link `http://<IP>:8080/#setup=...` (with `--mdns`, the `.local` address is listed first). Open it in a browser on the same LAN, set the administrator account, and confirm the automatically detected devices to enter the console.
 
 The installer configures the systemd services, the USB Gadget (keyboard, mouse, absolute pointer, virtual media), and permission rules; upgrades keep a rollback snapshot and roll back automatically on failure. For runtime dependencies, building from source, and troubleshooting, see the [deployment guide](docs/en/DEPLOYMENT.md).
 

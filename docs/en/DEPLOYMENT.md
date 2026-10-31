@@ -110,6 +110,25 @@ sudo ./deploy/install.sh --release /path/to/wingmankvm-<版本>-<target>.tar.gz
 
 The installer verifies the contents of `SHA256SUMS` when it exists in the same directory as the release package; `--binary` and `--release` are mutually exclusive.
 
+### LAN name access (mDNS, `wingmankvm.local`)
+
+With `--mdns` the installer advertises `wingmankvm.local` on the LAN through avahi-daemon, and both the post-install output and `wingmankvm-setup-url` print `http://wingmankvm.local:8080/...` first, followed by the IP addresses. Passkey (WebAuthn) requires a domain name rather than an IP address, so enabling mDNS makes Passkey usable out of the box.
+
+```bash
+# Combined with --install-deps, avahi-daemon is installed automatically
+sudo ./deploy/install.sh --install-deps --mdns --release /path/to/wingmankvm-<version>-<target>.tar.gz
+# Custom label (1-63 lowercase letters, digits or hyphens), advertised as kvm-rack1.local
+sudo ./deploy/install.sh --mdns --mdns-hostname kvm-rack1 --release /path/to/wingmankvm-<version>-<target>.tar.gz
+```
+
+Notes:
+
+- Off by default. Without `--install-deps` the installer stops if `avahi-daemon` is missing.
+- The installer writes `/etc/avahi/services/wingmankvm.service` (`_http._tcp` on `server.port` from `config.json`) and never changes the system hostname. Only when the name avahi would announce differs from the requested one does it set `host-name=` in the `[server]` section of `/etc/avahi/avahi-daemon.conf`, keeping a one-time backup at `avahi-daemon.conf.wingmankvm.bak`; it then enables and restarts `avahi-daemon`.
+- The avahi files are not managed by the upgrade transaction: an install rollback does not undo them, and upgrades without `--mdns` leave an existing advertisement unchanged. To stop advertising, delete the service file and restore `avahi-daemon.conf` from the backup.
+- On name collisions avahi renames automatically (e.g. `wingmankvm-2.local`); give each device its own `--mdns-hostname`. Clients need mDNS support (macOS, iOS, most Linux desktops and Windows 10+ do; some Android versions do not).
+- Changing the port in the web UI later does not affect `.local` resolution, but the advertised service port is only refreshed by rerunning the installer.
+
 The installer validates the binary format and CPU architecture and idempotently:
 
 - creates the `wingmankvm` service user, the `wingman` web terminal user, and the `wingmankvm-hw` hardware group;

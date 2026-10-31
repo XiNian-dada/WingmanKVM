@@ -49,9 +49,13 @@ curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts
 # 指定版本，只安装文件，稍后再启动
 curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts/get.sh \
   | sudo bash -s -- --version v1.2.3 --no-start
+
+# 启用局域网域名 wingmankvm.local（Passkey 需要域名访问）
+curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts/get.sh \
+  | sudo bash -s -- --install-deps --mdns
 ```
 
-支持的透传参数包括 `--install-deps`、`--no-start`、`--maintenance-mode MODE` 和 `--health-url URL`。先下载审阅再执行：
+支持的透传参数包括 `--install-deps`、`--no-start`、`--mdns`、`--mdns-hostname NAME`、`--maintenance-mode MODE` 和 `--health-url URL`。先下载审阅再执行：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts/get.sh -o get.sh
@@ -159,6 +163,25 @@ sudo ./deploy/install.sh --install-deps --release /path/to/wingmankvm-<版本>-<
 ```
 
 该选项默认关闭，安装器不会静默修改系统包；非 Debian 系发行版请按缺失命令提示手工安装。
+
+### 局域网域名访问（mDNS，`wingmankvm.local`）
+
+追加 `--mdns` 后，安装器会通过 avahi-daemon 在局域网内广播 `wingmankvm.local`，并在安装完成提示和 `wingmankvm-setup-url` 中优先输出 `http://wingmankvm.local:8080/...`，随后才列出 IP 地址。Passkey（WebAuthn）要求使用域名而不能用 IP 访问，启用 mDNS 后 Passkey 即可开箱可用。
+
+```bash
+# 与 --install-deps 一起使用时会自动安装 avahi-daemon
+sudo ./deploy/install.sh --install-deps --mdns --release /path/to/wingmankvm-<版本>-<target>.tar.gz
+# 自定义名称（1-63 位小写字母、数字或连字符），广播为 kvm-rack1.local
+sudo ./deploy/install.sh --mdns --mdns-hostname kvm-rack1 --release /path/to/wingmankvm-<版本>-<target>.tar.gz
+```
+
+说明：
+
+- 默认关闭；未加 `--install-deps` 且系统缺少 `avahi-daemon` 时安装器会直接报错。
+- 安装器写入 `/etc/avahi/services/wingmankvm.service`（`_http._tcp`，端口取自 `config.json` 的 `server.port`），不会修改系统主机名；只有当 avahi 当前会使用的名称与目标名称不同时，才在 `/etc/avahi/avahi-daemon.conf` 的 `[server]` 段写入 `host-name=`，首次修改前备份为 `avahi-daemon.conf.wingmankvm.bak`，随后启用并重启 `avahi-daemon`。
+- avahi 文件不属于升级事务的托管文件：安装失败回滚不会撤销它们，不带 `--mdns` 的升级也不会改动已有广播。取消广播可删除该 service 文件，并用备份恢复 `avahi-daemon.conf`。
+- 同一局域网内出现重名时 avahi 会自动改名（如 `wingmankvm-2.local`），多台设备请用 `--mdns-hostname` 区分。客户端需要支持 mDNS（macOS、iOS、多数 Linux 桌面和 Windows 10+ 默认支持；部分 Android 版本不支持）。
+- 安装后在网页中修改端口时，`.local` 域名解析不受影响，但 service 文件中的端口要重新执行安装器才会更新。
 
 安装器会验证二进制格式与 CPU 架构，并幂等地完成：
 

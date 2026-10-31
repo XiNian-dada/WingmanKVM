@@ -38,6 +38,19 @@ contacts GitHub and never runs the real installer.
 python3 scripts/verify_get_script.py
 ```
 
+## mDNS installer helpers (no network, no root)
+
+`scripts/verify_mdns.py` sources `deploy/install.sh` against a scratch root and
+runs `deploy/wingmankvm-setup-url` with fake `id`/`systemctl`/`hostname`. It
+checks `--mdns-hostname` validation, the avahi service file, the minimal
+`avahi-daemon.conf` `host-name=` edit (backup, idempotence, other sections
+untouched) and that the `.local` URL is listed first only while avahi runs.
+The setup-url checks are skipped on bash older than 4.4 (stock macOS).
+
+```bash
+python3 scripts/verify_mdns.py
+```
+
 ## HTTP/API gates (real binary, black-box)
 
 ```bash
