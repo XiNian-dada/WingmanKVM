@@ -1798,8 +1798,14 @@ pub(crate) mod tests {
             let (devices, peer) = cached_test_device(path.clone());
             peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             let (mouse_tx, mouse_rx) = mpsc::channel(QUEUE_CAPACITY);
-            tokio::spawn(run_mouse_worker(mouse_rx, devices, Arc::default(), timings));
-            let manager = manager_for_mouse_queue(mouse_tx);
+            let mut manager = manager_for_mouse_queue(mouse_tx);
+            manager.closing = Arc::default();
+            tokio::spawn(run_mouse_worker(
+                mouse_rx,
+                devices,
+                Arc::clone(&manager.closing),
+                timings,
+            ));
             Self { manager, path, peer }
         }
 
@@ -1945,6 +1951,24 @@ pub(crate) mod tests {
         let moved = AbsolutePointerRequest::Move { x: 9, y: 9 };
         manager.mouse_absolute(path.clone(), moved).await.unwrap();
         assert_eq!(device.read::<6>().await, [0, 9, 0, 9, 0, 0]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_refuses_presses_but_still_lifts_buttons() {
+        let device = WorkerFixture::fast();
+        let path = device.device();
+        let manager = &device.manager;
+        manager.mouse_press(path.clone(), LEFT).await.unwrap();
+        assert_eq!(device.read::<4>().await, [1, 0, 0, 0]);
+        manager.closing.store(true, Ordering::Release);
+        assert!(matches!(
+            manager.mouse_press(path.clone(), RIGHT).await,
+            Err(HidError::WorkerStopped)
+        ));
+        device.assert_silent();
+        manager.mouse_release(path.clone(), LEFT).await.unwrap();
+        assert_eq!(device.read::<4>().await, [0, 0, 0, 0]);
     }
 
     #[cfg(unix)]
