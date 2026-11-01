@@ -2721,6 +2721,124 @@ def hdmi_audio_settings(browser, port, checks):
         context.close()
 
 
+# Audit round 3 (#109, #122). Helpers first: none of them take
+# (browser, port, checks), so they are not mistaken for scenarios.
+
+TOOLBAR_CONTROLS = ["#input-state", "#lang-toggle", "#power-menu-toggle", "#diagnostics-toggle",
+                    "#quick-more-toggle", "#settings-toggle"]
+
+
+def settle_toolbar(page):
+    """The inspector opens right after boot and resizes the console: wait for it to finish."""
+    page.wait_for_function("() => document.querySelector('#app').classList.contains('inspector-open')",
+                           timeout=5000)
+    page.wait_for_function("""(selectors) => new Promise((resolve) => {
+      const boxes = () => selectors.map((s) => {
+        const r = document.querySelector(s)?.getBoundingClientRect();
+        return r ? [r.x, r.y, r.width, r.height].join() : '';
+      }).join('|');
+      const before = boxes();
+      setTimeout(() => requestAnimationFrame(() => resolve(boxes() === before)), 250);
+    })""", arg=TOOLBAR_CONTROLS, timeout=8000)
+
+
+def count_toasts(page, pattern):
+    """Start counting every toast() whose text matches `pattern` (a JS regex source)."""
+    page.evaluate("""(pattern) => {
+      window.__toastHits = [];
+      const toast = document.querySelector('#toast'), re = new RegExp(pattern);
+      new MutationObserver(() => {
+        if (re.test(toast.textContent)) window.__toastHits.push(toast.textContent);
+      }).observe(toast, {childList: true, characterData: true, subtree: true});
+    }""", pattern)
+
+
+def toast_hits(page):
+    return page.evaluate("() => window.__toastHits.slice()")
+
+
+def input_socket_drop_does_not_replay(browser, port, checks):
+    """#109: a dropped input socket never replays possibly executed input over HTTP."""
+    state = State()
+    # A visible, playing feed is needed to map pointer positions to the target.
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    frames, sockets, http_moves = [], [], []
+    hold = {"on": False}
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    try:
+        page = context.new_page()
+
+        def on_socket(ws):
+            sockets.append(ws)
+
+            def reply(message):
+                body = json.loads(message)
+                frames.append(body)
+                # Holding = the server executed it but its reply never arrives.
+                if not hold["on"]:
+                    ws.send(json.dumps({"id": body["id"], "ok": True}))
+            ws.on_message(reply)
+
+        def record(route):
+            if urllib.parse.urlsplit(route.request.url).path == "/api/mouse/absolute":
+                http_moves.append(json.loads(route.request.post_data or "{}"))
+                return route.fulfill(status=200, content_type="application/json", body="{}")
+            return api_route(route, state)
+
+        page.route_web_socket("**/api/input/ws", on_socket)
+        page.route("**/api/**", record)
+        page.route("**/video_feed*", lambda route: route.fulfill(status=200, content_type="image/gif", body=GIF))
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        page.evaluate("""() => {
+          const feed = document.querySelector('#video-feed');
+          Object.defineProperty(feed, 'naturalWidth', {value: 1280});
+          Object.defineProperty(feed, 'naturalHeight', {value: 720});
+          feed.style.width = '640px';
+          feed.style.height = '360px';
+          feed.dispatchEvent(new Event('load'));
+        }""")
+        settle_toolbar(page)
+        page.click("#input-state")
+        page.keyboard.press("a")
+        ui_harness.wait_until(page, lambda: any(f.get("key") == "KeyA" for f in frames))
+        check(checks, any(f.get("key") == "KeyA" for f in frames) and not state.key_posts,
+              "drop_test_keys_use_socket", (frames[-3:], state.key_posts))
+
+        count_toasts(page, "可能未送达")
+        hold["on"] = True
+        for key in ("b", "c", "Enter"):
+            page.keyboard.press(key)
+        box = page.locator("#video-viewport").bounding_box()
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        page.mouse.move(box["x"] + box["width"] / 2 + 20, box["y"] + box["height"] / 2 + 10)
+        held = lambda: (sum(f.get("type") == "key" and f.get("key") in ("KeyB", "KeyC", "Enter") for f in frames) == 3
+                        and any(f.get("type") == "absolute" and f.get("action") == "move" for f in frames))
+        check(checks, ui_harness.wait_until(page, held), "drop_test_input_in_flight", frames[-6:])
+        sockets[-1].close()
+        ui_harness.wait_until(page, lambda: toast_hits(page) or state.key_posts)
+        hold["on"] = False
+        page.wait_for_timeout(400)
+        replayed = [p.get("key") for p in state.key_posts]
+        check(checks, not replayed, "dropped_socket_does_not_replay_keys", replayed)
+        check(checks, any(m.get("action") == "move" for m in http_moves),
+              "dropped_socket_retries_absolute_move", http_moves)
+        hits = toast_hits(page)
+        check(checks, len(hits) == 1, "dropped_socket_toasts_once_per_burst", hits)
+
+        # Typing carries on afterwards (over the reconnected socket or HTTP).
+        page.locator("#video-viewport").focus()
+        page.keyboard.press("d")
+        delivered = lambda: (any(f.get("key") == "KeyD" for f in frames)
+                             or any(p.get("key") == "KeyD" for p in state.key_posts))
+        check(checks, ui_harness.wait_until(page, delivered), "typing_continues_after_drop",
+              (frames[-2:], state.key_posts))
+        enabled = page.evaluate("() => document.querySelector('#input-state').getAttribute('aria-pressed')")
+        check(checks, enabled == "true", "forwarding_stays_on_after_drop", enabled)
+    finally:
+        context.close()
+
+
 # Every function taking (browser, port, checks) is a scenario, run in
 # definition order; new scenarios need no list edit (and no merge conflict).
 SCENARIOS = [

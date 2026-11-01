@@ -23,6 +23,8 @@ let lastHidToast = 0;
 // Only a write timeout (HTTP 504, e.g. target powered off) is noisy enough to
 // optionally silence; "not configured"/"not ready" failures always surface.
 function handleHidError(error) {
+  // A dropped input socket already toasted once for its whole burst.
+  if (error?.reported) return;
   const message = (error && (error.message || error.error)) || String(error);
   if (error?.status === 504) {
     if (getSetting('suppress_hid_timeout', false)) return;
@@ -239,7 +241,7 @@ async function sendQuickKey(action) {
     }
     if (res && res.keyboard_leds) renderKeyboardLeds(res.keyboard_leds);
   } catch (e) {
-    toast(e.message, true);
+    if (!e.reported) toast(e.message, true);
   }
 }
 
@@ -690,7 +692,7 @@ async function startPasteTyping() {
     }
   } catch (error) {
     setPasteStatus(`${tr('发送失败：')}${error.message}`, 'error');
-    toast(error.message, true);
+    if (!error.reported) toast(error.message, true);
   } finally {
     shared.pasteRun = null;
     if (sendButton) sendButton.disabled = false;
@@ -779,7 +781,7 @@ async function sendCombo(combo) {
     if (res && res.keyboard_leds) renderKeyboardLeds(res.keyboard_leds);
     toast(tr(`已发送组合键 ${comboLabel(combo)}`));
   } catch (error) {
-    toast(error.message, true);
+    if (!error.reported) toast(error.message, true);
   }
 }
 function createComboItem(combo, custom) {

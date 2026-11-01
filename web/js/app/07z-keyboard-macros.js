@@ -679,7 +679,7 @@ function startKeyboardMacro(macro) {
   shared.macroPlayback = run;
   runKeyboardMacro(run).catch((error) => {
     setMacroPlayStatus(`${tr('回放失败：')}${error.message}`, 'error');
-    toast(error.message, true);
+    if (!error.reported) toast(error.message, true);
   });
 }
 async function runKeyboardMacro(run) {
