@@ -357,16 +357,39 @@ tx_apply() {
     TX_STATE=applied
 }
 
+# Prints the recorded digest of snapshot entry $1 once it matches the
+# snapshot bytes; fails (with a diagnostic) otherwise.
+_tx_verified_snapshot_digest() {
+    local i=$1 dest=${TX_DEST[$1]} sum_file=$TX_SNAPSHOT/$1.sha256 want='' have
+    _tx_private_file "$sum_file" \
+        || { tx_error "snapshot digest missing or unsafe; $dest left unchanged: $sum_file"; return 1; }
+    IFS= read -r want <"$sum_file"
+    [[ $want =~ ^[0-9a-f]{64}$ ]] \
+        || { tx_error "malformed snapshot digest; $dest left unchanged: $sum_file"; return 1; }
+    have=$(_tx_sha256 "$TX_SNAPSHOT/$i") \
+        || { tx_error "cannot hash snapshot; $dest left unchanged"; return 1; }
+    [[ $have == "$want" ]] \
+        || { tx_error "snapshot digest mismatch (corrupt or truncated); $dest left unchanged"; return 1; }
+    printf '%s\n' "$want"
+}
+
 _tx_restore_one() {
-    local i=$1 parent tmp
+    local i=$1 parent tmp want have
     local dest=${TX_DEST[i]}
     parent=$(dirname -- "$dest")
     [[ -f $TX_SNAPSHOT/$i && ! -L $TX_SNAPSHOT/$i ]] \
         || { tx_error "snapshot missing for $dest"; return 1; }
+    want=$(_tx_verified_snapshot_digest "$i") || return 1
     [[ ! -d $dest ]] || { tx_error "refusing to restore over directory: $dest"; return 1; }
     _tx_trusted_dir "$parent" || { tx_error "untrusted restore directory: $parent"; return 1; }
     tmp=$(mktemp "$parent/.wingmankvm-restore.XXXXXX") || return 1
     if ! cp -- "$TX_SNAPSHOT/$i" "$tmp"; then rm -f -- "$tmp"; return 1; fi
+    have=$(_tx_sha256 "$tmp") || have=
+    if [[ $have != "$want" ]]; then
+        tx_error "copied snapshot does not match its digest; $dest left unchanged"
+        rm -f -- "$tmp"
+        return 1
+    fi
     if ! chmod "${TX_MODE[i]}" -- "$tmp"; then rm -f -- "$tmp"; return 1; fi
     if _tx_root && ! chown "${TX_UID[i]}:${TX_GID[i]}" -- "$tmp"; then
         rm -f -- "$tmp"
