@@ -1,3 +1,4 @@
+pub mod audio;
 pub mod discovery;
 pub mod hid;
 pub mod hotplug;

@@ -1,7 +1,8 @@
 """Shared fixtures for the Playwright UI regression suites.
 
 Every suite (verify_p1_ui, verify_p2_ui, verify_p2b_ui, verify_audit2_ui)
-serves the self-contained UI bundle from a local static server, mocks /api/**
+serves the UI (index.html with the stylesheet inlined, plus the app ES modules
+at /assets/js/) from a local static server, mocks /api/**
 inside the browser, records checks in the same JSON shape and prints one JSON
 summary line. This module holds those common pieces so a suite only defines
 its own API mock and scenarios. verify_ui_suite.py runs all of them.
@@ -10,7 +11,7 @@ import argparse, json, os, threading, time, urllib.parse
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from ui_bundle import REPO, load_index_html
+from ui_bundle import MODULE_TYPE, REPO, load_index_html, module_assets
 
 GIF = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
 ICON = b'<svg xmlns="http://www.w3.org/2000/svg"/>'
@@ -30,16 +31,17 @@ def read_assets(repo):
     return assets
 
 
-def serve_static(html, assets):
-    """Serve the inlined page plus vendored xterm assets on 127.0.0.1:<random>."""
+def serve_static(html, assets, modules=None):
+    """Serve the page, the app ES modules and vendored xterm assets on 127.0.0.1:<random>."""
     html_bytes = html.encode("utf-8")
-    files = {
+    files = {path: (body, MODULE_TYPE) for path, body in (modules or {}).items()}
+    files.update({
         "/assets/xterm.js": (assets["xterm.js"], "application/javascript"),
         "/assets/xterm-fit.js": (assets["addon-fit.js"], "application/javascript"),
         "/assets/xterm.css": (assets["xterm.css"], "text/css"),
         "/assets/icon.svg": (ICON, "image/svg+xml"),
         "/favicon.ico": (ICON, "image/svg+xml"),
-    }
+    })
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -80,7 +82,8 @@ def stop_server(server):
 @contextmanager
 def static_server(repo, html=None):
     """Yield the port of a static server for `html` (default: the UI bundle)."""
-    server, port = serve_static(extract_html(repo) if html is None else html, read_assets(repo))
+    page = extract_html(repo) if html is None else html
+    server, port = serve_static(page, read_assets(repo), module_assets(repo))
     try:
         yield port
     finally:

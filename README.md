@@ -2,6 +2,8 @@
 
 # WingmanKVM
 
+![WingmanKVM 操作演示：在浏览器控制台中用“粘贴为键入”把命令输入被控机，打开虚拟介质面板查看已挂载的 ISO，再打开连接与设备诊断](docs/images/demo-zh.webp)
+
 WingmanKVM 是一个运行在 ARM 开发板上的网页 KVM。把被控机的 HDMI 输出接到采集卡、USB 接到开发板的 OTG 口，就可以在浏览器里远程看画面、操作键鼠（包括 BIOS 阶段）、挂载 ISO 镜像，并可选地通过 GPIO 继电器控制电源。
 
 单个二进制部署，不需要额外的数据库或前端构建工具。
@@ -12,6 +14,7 @@ WingmanKVM 是一个运行在 ARM 开发板上的网页 KVM。把被控机的 HD
 
 **画面**
 - 自动选择传输方式：优先 WebRTC H.264（支持 RK3399 硬件编码），不可用时回退 MJPEG
+- 可选 HDMI 音频：采集卡声音以 Opus 随 WebRTC 传输（默认关闭，页面从静音开始，MJPEG 模式不支持）
 - 适应窗口 / 1:1 像素 / 填满三种显示方式，1:1 下可拖动平移
 - 画面截图（PNG）与本地录屏（WebM）
 
@@ -85,7 +88,7 @@ cargo test --locked
 python3 scripts/verify_audit2_ui.py   # 需要 Playwright 与本机 Chrome
 ```
 
-前端源码在 `web/`（HTML、按功能拆分的 CSS 与 JS），编译时嵌入二进制。测试与 CI 详见 [测试说明](docs/TESTING.md)。
+前端源码在 `web/`（HTML、按功能拆分的 CSS，以及 `web/js/app/` 下的原生 ES 模块，无需打包），编译时嵌入二进制；前端用 ESLint 检查（`npm ci && npx eslint`）。测试与 CI 详见 [测试说明](docs/TESTING.md)。
 
 ## 许可证
 

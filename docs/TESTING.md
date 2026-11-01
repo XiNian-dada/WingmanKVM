@@ -26,6 +26,39 @@ cargo test --locked -p dtls
 cargo build --locked
 ```
 
+## 前端模块与 ESLint
+
+浏览器端脚本是 `web/js/app/` 下的原生 ES 模块，没有打包器，也没有构建步骤：
+
+- `src/web_ui.rs` 的 `APP_JS_MODULES` 在编译时逐个内嵌这些文件，服务端在
+  `/assets/js/<name>` 原样提供（`text/javascript; charset=utf-8`、
+  `Cache-Control: no-store`，与 `/assets/app.css` 一致），发布二进制仍然自包含。
+  `index.html` 只加载 `<script type="module" src="/assets/js/main.js">`，其余模块由
+  浏览器沿 `import` 获取；CSP 的 `script-src 'self'` 无需改动。
+- 模块只用静态 `import { … } from './<name>.js'` 引用同级模块。被两个以上模块读写的
+  可变状态放在 `state.js` 的 `shared` 对象里（导入的绑定在导入方是只读的），只在一个
+  模块内使用的状态留作该模块的局部变量；不使用 `window` 全局变量
+  （测试钩子 `window.__wingmanTest` 除外）。
+- 模块求值时只声明函数和模块内状态，不调用其他模块：存在循环依赖时，模块的求值顺序
+  不是文件名顺序。DOM 事件绑定写在各模块导出的 `init()` 中，由 `main.js` 按原片段
+  顺序调用，最后执行启动序列。`00-settings.js`（本地偏好）不导入任何模块，因此可在
+  求值期间读取。
+- 新增模块：在 `web/js/app/` 建文件、从使用方 `import`，并加入 `APP_JS_MODULES`。
+  Rust 测试会检查：目录下每个文件都已内嵌、每个 `import` 都指向已内嵌的同级模块、
+  所有模块都能从 `main.js` 到达。
+
+ESLint（flat config：`eslint.config.js`）只检查非风格问题：`no-undef`、
+`no-unused-vars`、`no-import-assign`、`no-const-assign`、`no-func-assign`、
+`no-redeclare`、`no-dupe-keys`、`no-unreachable`，以及本地规则
+`local/import-exports`（`eslint-rules/import-exports.js`，只用 ESLint 自带的 espree：
+`import` 必须是同级 `./<name>.js`、文件存在且确实导出所引用的名字，禁止动态 `import()`）。
+版本固定在 `package.json` 与 `package-lock.json` 中，需要 Node.js 20.19+ / 22.13+ / 24+。
+
+```bash
+npm ci
+npx eslint --max-warnings 0
+```
+
 ## One-line installer gate (no network, no root)
 
 `scripts/verify_get_script.py` builds a fake release, serves it from a loopback
@@ -80,7 +113,9 @@ python3 scripts/verify_ui_suite.py --output-dir "$SCRATCH/ui" --browser-channel 
 ```
 
 All suites share `scripts/ui_harness.py` (static server, xterm assets, video
-feed mock, `check()` and the JSON report). A new suite only defines its API
+feed mock, `check()` and the JSON report). 页面来自 `scripts/ui_bundle.py`：它把样式表
+内联进 `index.html`，`web/js/app/` 下的模块则按生产路径 `/assets/js/<name>` 提供，
+所以浏览器执行的就是线上那份模块图。 A new suite only defines its API
 mock and scenarios; add it to `SUITES` in `verify_ui_suite.py` and to `CASES`
 in `verify_regressions.py` so CI runs it.
 
@@ -88,6 +123,28 @@ Headless Chromium may refuse pointer lock/fullscreen. Those cases are recorded
 as `"ok": null, "skipped": true`; the orchestrator counts them as explicit
 non-failure skips, never as true passes. `--skip-ui` exists for local debugging
 only and is recorded as skipped; CI always runs the UI gates.
+
+## README 截图与演示动图（#96）
+
+界面改动后，一条命令重新生成 `docs/images/` 下全部截图和 README 顶部的中英文演示动图
+（`demo-zh.webp`、`demo-en.webp`）：
+
+```bash
+python3 scripts/capture_screenshots.py --browser-channel chrome
+# 只生成截图 / 只生成动图：加 --skip-demo / --demo-only
+# 单独调试动图并保留逐帧 PNG：
+python3 scripts/capture_demo.py --lang en --output-dir "$SCRATCH/demo" --keep-frames "$SCRATCH/demo/frames"
+```
+
+- 与 UI 门禁一样用 `scripts/ui_harness.py` 提供真实界面，所有 `/api/**`、键鼠 WebSocket 和
+  `/video_feed` 都由 `scripts/capture_fixtures.py` 模拟，画面是合成的终端帧，不连接任何设备。
+- 动图流程：控制台 → 粘贴为键入 → 虚拟介质面板 → 诊断弹层；不展示也不点击电源/复位按钮。
+  每一步是固定时长的静态截图（不录屏），再用 `img2webp`（libwebp，`brew install webp` /
+  `apt install webp`）合成循环 WebP；单个文件超过 2 MB 时脚本报错。不依赖 ffmpeg：未编入 libwebp 的 ffmpeg 无法输出动画 WebP。
+- 视口、缩放、语言、时区、浏览器时钟和渲染参数都已固定，同一台机器重跑通常只在界面变化时
+  改变图片（个别帧可能有少量抗锯齿差异）。字体取自本机：请在 macOS 上生成要提交的图片，
+  中文界面才会使用 PingFang SC。
+- 提交前请逐张打开生成的图片检查：界面语言正确、没有错误提示、样式完整。
 
 ## Sequential orchestrator
 
@@ -139,6 +196,7 @@ python3 scripts/verify_regressions.py ... \
 
 | Gate | Covered scope | Not covered |
 | --- | --- | --- |
+| ESLint | 前端模块的未定义/未使用名字、import 解析 | 运行时行为（由 UI 套件覆盖） |
 | `cargo test` | Native unit/integration behavior | Real hardware |
 | API scripts | Real binary over loopback, stubbed host tools | Real capture/HID/GPIO |
 | UI scripts | Real Chrome DOM/JS with mocked API | Real backend, real devices |

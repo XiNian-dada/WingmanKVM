@@ -25,7 +25,7 @@ use webrtc::{
     api::{
         APIBuilder,
         interceptor_registry::register_default_interceptors,
-        media_engine::{MIME_TYPE_H264, MediaEngine},
+        media_engine::{MIME_TYPE_H264, MIME_TYPE_OPUS, MediaEngine},
         setting_engine::SettingEngine,
     },
     ice::{
@@ -51,7 +51,10 @@ use std::os::unix::{io::AsRawFd, process::CommandExt};
 use crate::{
     auth::SessionGuard,
     config::{H264Config, H264Encoder},
-    devices::video::VideoManager,
+    devices::{
+        audio::{self, AudioManager},
+        video::VideoManager,
+    },
 };
 
 const MAX_OFFER_BYTES: usize = 64 * 1024;
@@ -109,6 +112,8 @@ pub struct WebRtcOfferResponse {
     /// Configured (maximum) bitrate the session starts at.
     pub bitrate_kbps: u32,
     pub min_bitrate_kbps: u32,
+    /// Whether an Opus track was negotiated. Video never depends on it.
+    pub audio: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -223,6 +228,8 @@ struct UdpBinding {
 
 struct Inner {
     video: VideoManager,
+    /// Optional shared HDMI audio; independent of every video encoder.
+    audio: AudioManager,
     config: Mutex<H264Config>,
     encoder: Mutex<Result<EncoderSpec, String>>,
     sessions: Mutex<HashMap<String, Session>>,
@@ -398,12 +405,13 @@ fn spawn_startup_probe(inner: Arc<Inner>, config: H264Config) {
 }
 
 impl WebRtcManager {
-    pub fn new(video: VideoManager, config: H264Config) -> Self {
+    pub fn new(video: VideoManager, config: H264Config, audio: AudioManager) -> Self {
         // Encoder discovery shells out to FFmpeg and may take seconds. Publish
         // a "probing" state immediately and finish the probe in the background
         // so startup can begin listening without waiting for the media stack.
         let inner = Arc::new(Inner {
             video,
+            audio,
             config: Mutex::new(config.clone()),
             encoder: Mutex::new(Err(PROBE_PENDING.to_owned())),
             sessions: Mutex::new(HashMap::new()),
@@ -421,6 +429,7 @@ impl WebRtcManager {
     pub(crate) fn test_stub(video: VideoManager, config: H264Config) -> Self {
         let inner = Arc::new(Inner {
             video,
+            audio: disabled_audio(),
             config: Mutex::new(config),
             encoder: Mutex::new(Err("test stub".to_owned())),
             sessions: Mutex::new(HashMap::new()),
@@ -429,6 +438,10 @@ impl WebRtcManager {
             probe_epoch: AtomicU64::new(0),
         });
         Self { inner }
+    }
+
+    pub fn audio(&self) -> &AudioManager {
+        &self.inner.audio
     }
 
     pub fn status(&self) -> WebRtcStatus {
@@ -657,6 +670,7 @@ impl WebRtcManager {
             .await
             .map_err(internal_error)?;
         tokio::spawn(async move { while sender.read_rtcp().await.is_ok() {} });
+        let audio_track = add_audio_track(&peer, &self.inner.audio, &request.sdp).await;
 
         let remote = RTCSessionDescription::offer(request.sdp)
             .map_err(|error| WebRtcError::InvalidOffer(error.to_string()))?;
@@ -751,6 +765,9 @@ impl WebRtcManager {
         let inner = Arc::downgrade(&self.inner);
         let task_session_id = session_id.clone();
         let video = self.inner.video.clone();
+        let audio = audio_track
+            .clone()
+            .map(|track| (self.inner.audio.clone(), track));
         tokio::spawn(run_session_supervisor(
             inner,
             task_session_id,
@@ -763,6 +780,7 @@ impl WebRtcManager {
             shutdown_rx,
             state_rx,
             closed_tx,
+            audio,
             LifecyclePolicy::default(),
         ));
 
@@ -772,6 +790,7 @@ impl WebRtcManager {
             session_id,
             bitrate_kbps: config.bitrate_kbps,
             min_bitrate_kbps: MIN_ADAPTIVE_BITRATE_KBPS.min(config.bitrate_kbps),
+            audio: audio_track.is_some(),
         })
     }
 
@@ -839,12 +858,22 @@ fn set_session_bitrate(
 }
 
 #[cfg(test)]
+fn disabled_audio() -> AudioManager {
+    AudioManager::new(audio::AudioSettings::new(
+        crate::config::AudioConfig::default(),
+        None,
+        None,
+    ))
+}
+
+#[cfg(test)]
 impl WebRtcManager {
     /// Manager without an encoder probe, for HTTP handler tests.
     pub(crate) fn for_tests() -> Self {
         Self {
             inner: Arc::new(Inner {
                 video: VideoManager::new(crate::config::VideoConfig::default()),
+                audio: disabled_audio(),
                 config: Mutex::new(H264Config::default()),
                 encoder: Mutex::new(Err("test manager".to_owned())),
                 sessions: Mutex::new(HashMap::new()),
@@ -1043,6 +1072,76 @@ impl Drop for SessionCleanup {
     }
 }
 
+/// Whether the browser offered an audio media section.
+fn offer_requests_audio(sdp: &str) -> bool {
+    sdp.lines().any(|line| line.starts_with("m=audio "))
+}
+
+/// Add an Opus track when the browser asked for audio and HDMI audio is
+/// enabled with a present device. Every failure here only means "video
+/// without audio"; it never fails the offer.
+async fn add_audio_track(
+    peer: &RTCPeerConnection,
+    audio: &AudioManager,
+    offer: &str,
+) -> Option<Arc<TrackLocalStaticSample>> {
+    if !offer_requests_audio(offer) || !audio.enabled() {
+        return None;
+    }
+    let lookup = audio.clone();
+    let device = tokio::task::spawn_blocking(move || lookup.available_device())
+        .await
+        .ok()
+        .flatten()?;
+    let track = Arc::new(TrackLocalStaticSample::new(
+        RTCRtpCodecCapability {
+            mime_type: MIME_TYPE_OPUS.to_owned(),
+            clock_rate: 48_000,
+            channels: 2,
+            sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
+            ..Default::default()
+        },
+        "audio".to_owned(),
+        // Same stream as the video track, so the browser plays both from one
+        // <video> element and lip sync is kept by its jitter buffers.
+        "wingmankvm".to_owned(),
+    ));
+    match peer.add_track(track.clone()).await {
+        Ok(sender) => {
+            tokio::spawn(async move { while sender.read_rtcp().await.is_ok() {} });
+            tracing::debug!(%device, "HDMI audio track added to WebRTC session");
+            Some(track)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "HDMI audio track could not be added; continuing with video only");
+            None
+        }
+    }
+}
+
+/// Aborts a helper task when its owner returns or unwinds.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Start forwarding the shared audio feed into this session's track.
+///
+/// The task runs beside the session lifecycle rather than inside it: the
+/// supervisor never selects on it, so a failing, silent or restarting audio
+/// capture cannot end, restart or stall the video of this session. Dropping
+/// the guard releases the viewer's share of the capture process.
+fn start_audio_forwarding(
+    audio: Option<(AudioManager, Arc<TrackLocalStaticSample>)>,
+) -> Option<AbortOnDrop> {
+    let (audio, track) = audio?;
+    let feed = audio.subscribe()?;
+    Some(AbortOnDrop(tokio::spawn(audio::forward_to_track(feed, track))))
+}
+
 /// The one lifecycle task for a session. It owns the peer, the encoder future,
 /// the shutdown receiver and the authenticated session guard. The map only
 /// keeps signalling channels, never a strong reference back to `Inner`.
@@ -1059,11 +1158,13 @@ async fn run_session_supervisor(
     shutdown: watch::Receiver<bool>,
     state: watch::Receiver<ConnectionPhase>,
     closed: watch::Sender<bool>,
+    audio: Option<(AudioManager, Arc<TrackLocalStaticSample>)>,
     policy: LifecyclePolicy,
 ) {
     // Construct the cleanup guard before any fallible/panicking work so the
     // session map entry cannot outlive this task.
     let mut cleanup = SessionCleanup::new(inner, session_id.clone(), peer, closed);
+    let audio_forwarding = start_audio_forwarding(audio);
     let (progress_tx, progress_rx) = mpsc::channel(1);
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let encoder_future: EncoderFuture = Box::pin(run_encoder(
@@ -1095,6 +1196,9 @@ async fn run_session_supervisor(
         }
     }
 
+    // Leave the shared audio capture before the peer closes; the last viewer
+    // stops the capture process.
+    drop(audio_forwarding);
     cleanup.shutdown().await;
 }
 
@@ -1537,7 +1641,7 @@ fn select_encoder(
     })
 }
 
-struct EncoderGuard {
+pub(super) struct EncoderGuard {
     child: Option<TokioChild>,
     tasks: Vec<AbortHandle>,
 }
@@ -1560,14 +1664,14 @@ fn signal_encoder_group(child: &TokioChild) {
 fn signal_encoder_group(_child: &TokioChild) {}
 
 impl EncoderGuard {
-    fn new(child: TokioChild, tasks: Vec<AbortHandle>) -> Self {
+    pub(super) fn new(child: TokioChild, tasks: Vec<AbortHandle>) -> Self {
         Self {
             child: Some(child),
             tasks,
         }
     }
 
-    async fn wait_for_exit(&mut self, timeout: Duration) -> Option<ExitStatus> {
+    pub(super) async fn wait_for_exit(&mut self, timeout: Duration) -> Option<ExitStatus> {
         let child = self.child.as_mut()?;
         match tokio::time::timeout(timeout, child.wait()).await {
             Ok(Ok(status)) => {
@@ -1582,7 +1686,7 @@ impl EncoderGuard {
         }
     }
 
-    async fn shutdown(&mut self) {
+    pub(super) async fn shutdown(&mut self) {
         for task in self.tasks.drain(..) {
             task.abort();
         }
@@ -1606,7 +1710,7 @@ impl Drop for EncoderGuard {
     }
 }
 
-async fn wait_for_cancel(receiver: &mut watch::Receiver<bool>) {
+pub(super) async fn wait_for_cancel(receiver: &mut watch::Receiver<bool>) {
     if *receiver.borrow() {
         return;
     }
@@ -1923,8 +2027,12 @@ fn annex_b_nal_units(bytes: &[u8]) -> Vec<(usize, usize)> {
     units
 }
 
+#[cfg(all(test, unix))]
+#[path = "webrtc_audio_tests.rs"]
+mod audio_loopback_tests;
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::config::VideoConfig;
     use std::{fs, future::pending};
@@ -1933,7 +2041,7 @@ mod tests {
     static PROBE_FIXTURE_LOCK: Mutex<()> = Mutex::new(());
 
     #[cfg(unix)]
-    fn serial_probe_fixture() -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn serial_probe_fixture() -> std::sync::MutexGuard<'static, ()> {
         PROBE_FIXTURE_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1945,7 +2053,7 @@ mod tests {
     /// stop a test if the fixture never runs; it is not a performance
     /// assertion.
     #[cfg(unix)]
-    const FIXTURE_POLL_TIMEOUT: Duration = Duration::from_secs(20);
+    pub(crate) const FIXTURE_POLL_TIMEOUT: Duration = Duration::from_secs(20);
 
     /// The probe deadline used by tests that deliberately hang a fixture. It is
     /// intentionally much larger than the production default (3s) so the
@@ -2326,6 +2434,7 @@ mod tests {
         let video = VideoManager::new(VideoConfig::default());
         Arc::new(Inner {
             video,
+            audio: disabled_audio(),
             config: Mutex::new(H264Config::default()),
             encoder: Mutex::new(Err("fixture unavailable".to_owned())),
             sessions: Mutex::new(HashMap::new()),
@@ -2551,13 +2660,13 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[cfg(unix)]
-    struct ProbeFixture {
+    pub(crate) struct ProbeFixture {
         directory: PathBuf,
     }
 
     #[cfg(unix)]
     impl ProbeFixture {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let mut random = [0_u8; 8];
             getrandom::fill(&mut random).unwrap();
             let directory = std::env::temp_dir().join(format!(
@@ -2569,14 +2678,14 @@ mod tests {
             Self { directory }
         }
 
-        fn script(&self, name: &str, body: &str) -> PathBuf {
+        pub(crate) fn script(&self, name: &str, body: &str) -> PathBuf {
             let path = self.directory.join(name);
             fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
             path
         }
 
-        fn path(&self, name: &str) -> PathBuf {
+        pub(crate) fn path(&self, name: &str) -> PathBuf {
             self.directory.join(name)
         }
 
@@ -2598,7 +2707,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn shell_quote(value: &Path) -> String {
+    pub(crate) fn shell_quote(value: &Path) -> String {
         format!("'{}'", value.to_string_lossy().replace('\'', "'\\''"))
     }
 
@@ -2619,7 +2728,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn process_exists(pid: u32) -> bool {
+    pub(crate) fn process_exists(pid: u32) -> bool {
         let result = unsafe { libc::kill(pid as i32, 0) };
         result == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
@@ -2698,7 +2807,11 @@ mod tests {
         // returning while the probe is still pending. This proves the
         // non-blocking contract without depending on how fast the machine is;
         // the successful probe path is covered by the direct probe tests.
-        let manager = WebRtcManager::new(VideoManager::new(VideoConfig::default()), config);
+        let manager = WebRtcManager::new(
+            VideoManager::new(VideoConfig::default()),
+            config,
+            disabled_audio(),
+        );
         let probing = manager.status();
         assert!(!probing.available);
         assert_eq!(probing.message.as_deref(), Some(PROBE_PENDING));
@@ -2811,7 +2924,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn wait_for_fixture_pid(path: &Path) -> u32 {
+    pub(crate) async fn wait_for_fixture_pid(path: &Path) -> u32 {
         let deadline = Instant::now() + FIXTURE_POLL_TIMEOUT;
         loop {
             if let Ok(text) = fs::read_to_string(path)
@@ -2827,7 +2940,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn wait_for_fixture_exit(pid: u32) {
+    pub(crate) async fn wait_for_fixture_exit(pid: u32) {
         let deadline = Instant::now() + FIXTURE_POLL_TIMEOUT;
         while process_exists(pid) && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -2982,6 +3095,7 @@ mod tests {
         let manager = WebRtcManager {
             inner: Arc::new(Inner {
                 video,
+                audio: disabled_audio(),
                 config: Mutex::new(H264Config {
                     udp_bind_address: Some(address),
                     max_sessions: 2,

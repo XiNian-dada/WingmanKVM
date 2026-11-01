@@ -1181,23 +1181,25 @@ def csp_policy(repo, host):
 
 
 def serve_with_csp(repo):
-    """Serve the unbundled UI (index.html + /assets/app.{js,css}) with the real CSP."""
+    """Serve the UI as production does (index.html, /assets/app.css and the
+    app ES modules under /assets/js/) with the real CSP."""
     import threading, urllib.parse
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from ui_bundle import MODULE_TYPE, module_assets
     web = os.path.join(repo, "web")
     def concat(sub, ext):
         d = os.path.join(web, sub)
         return b"".join(open(os.path.join(d, n), "rb").read() for n in sorted(os.listdir(d)) if n.endswith(ext))
     xterm = read_assets(repo)
-    files = {
+    files = {path: (body, MODULE_TYPE) for path, body in module_assets(repo).items()}
+    files.update({
         "/": (open(os.path.join(web, "index.html"), "rb").read(), "text/html; charset=utf-8"),
-        "/assets/app.js": (concat("js/app", ".js"), "text/javascript"),
         "/assets/app.css": (concat("css/app", ".css"), "text/css"),
         "/assets/xterm.js": (xterm["xterm.js"], "text/javascript"),
         "/assets/xterm-fit.js": (xterm["addon-fit.js"], "text/javascript"),
         "/assets/xterm.css": (xterm["xterm.css"], "text/css"),
         "/assets/icon.svg": (open(os.path.join(web, "icon.svg"), "rb").read(), "image/svg+xml"),
-    }
+    })
     files["/favicon.ico"] = files["/assets/icon.svg"]
 
     class Handler(BaseHTTPRequestHandler):
@@ -2425,6 +2427,296 @@ def latency_tool_h264(browser, port, checks):
         rows = latency_rows(page)
         check(checks, rows.get("视频传输") == "H.264 (WebRTC)" and "实测" in rows.get("码率", "") and rows.get("有效样本") == "10 / 10",
               "latency_h264_reports_transport_and_bitrate", rows)
+    finally:
+        context.close()
+
+
+# HDMI audio (#71). The fake peer delivers a real WebAudio track next to the
+# canvas video, so the page's muting and stream wiring run unmodified.
+AUDIO_PEER = """
+(() => {
+  window.__peers = [];
+  window.__transceivers = [];
+  window.RTCPeerConnection = class {
+    constructor() {
+      this.iceGatheringState = 'complete';
+      this.connectionState = 'connected';
+      this.iceConnectionState = 'connected';
+      this.localDescription = {sdp: 'v=0'};
+      window.__peers.push(this);
+    }
+    addTransceiver(kind) { window.__transceivers.push(kind); return {}; }
+    async createOffer() { return {type: 'offer', sdp: 'v=0'}; }
+    async setLocalDescription() {}
+    async setRemoteDescription() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 64; canvas.height = 36;
+      const paint = canvas.getContext('2d');
+      setInterval(() => { paint.fillStyle = `hsl(${Date.now() % 360},50%,50%)`; paint.fillRect(0, 0, 64, 36); }, 50);
+      const stream = canvas.captureStream(20), video = stream.getVideoTracks()[0];
+      let audio = null;
+      try {
+        const ctx = new AudioContext(), sink = ctx.createMediaStreamDestination(), tone = ctx.createOscillator();
+        tone.connect(sink);
+        tone.start();
+        audio = sink.stream.getAudioTracks()[0];
+      } catch (_) {}
+      window.__audioTrack = audio;
+      setTimeout(() => {
+        if (audio) this.ontrack?.({track: audio, streams: [stream]});
+        this.ontrack?.({track: video, streams: [stream]});
+      }, 0);
+    }
+    getReceivers() { return []; }
+    addEventListener() {}
+    removeEventListener() {}
+    close() { this.connectionState = 'closed'; }
+    async getStats() { return new Map(); }
+  };
+})();
+"""
+
+AUDIO_CANDIDATES = [
+    {"device": "plughw:CARD=MS2109,DEV=0", "label": "MS2109 · USB Audio (card 1, dev 0)",
+     "card_index": 1, "card_id": "MS2109", "pcm_device": 0, "driver": "USB-Audio", "usb": True,
+     "capture_card": "/dev/video0"},
+    {"device": "plughw:CARD=Mic,DEV=0", "label": "USB PnP Sound Device · USB Audio (card 2, dev 0)",
+     "card_index": 2, "card_id": "Mic", "pcm_device": 0, "driver": "USB-Audio", "usb": True},
+]
+
+
+def audio_page(browser, state, port, h264=True, answer_audio=True, audio_status=None, posts=None):
+    """A page with HDMI audio enabled; H.264 optional, /api/status carries audio."""
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    page.add_init_script(AUDIO_PEER)
+    page.add_init_script(ADAPTIVE_OFF)
+    page.route("**/api/**", lambda route: api_route(route, state))
+    page.route("**/video_feed*", lambda route: route.fulfill(status=200, content_type="image/gif", body=GIF))
+    audio = audio_status if audio_status is not None else {
+        "enabled": True, "state": "running", "device": "plughw:CARD=MS2109,DEV=0", "message": None,
+        "viewers": 1, "codec": "opus", "bitrate_kbps": 96, "restarts": 0}
+
+    def bootstrap(route):
+        body = bootstrap_payload(state)
+        body["capabilities"]["audio"] = True
+        body["config"]["audio"] = {"enabled": True, "device": None, "bitrate_kbps": 96}
+        if h264:
+            body["capabilities"]["video_webrtc_h264"] = True
+            body["webrtc"] = {"available": True}
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+    def status(route):
+        payload = {"video": state.video, "audio": audio[0] if isinstance(audio, list) else audio,
+                   "power": {"power_led": {"configured": False, "state": "unknown"}},
+                   "hid": {"keyboard_leds": {"num_lock": False, "caps_lock": False, "scroll_lock": False, "raw": 0}},
+                   "client": {"ip": "127.0.0.1", "port": 12345, "source": "socket"}}
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+
+    def config(route):
+        if posts is not None and route.request.method == "POST":
+            posts.append(json.loads(route.request.post_data or "{}"))
+        route.fulfill(status=200, content_type="application/json", body="{}")
+
+    page.route("**/api/bootstrap", bootstrap)
+    page.route("**/api/status", status)
+    page.route("**/api/config", config)
+    page.route("**/api/devices/scan", lambda route: route.fulfill(
+        status=200, content_type="application/json", body=json.dumps({"video": [], "audio": AUDIO_CANDIDATES})))
+    page.route("**/api/webrtc/offer", lambda route: route.fulfill(
+        status=200, content_type="application/json",
+        body=json.dumps({"type": "answer", "session_id": "s1", "sdp": "a=rtpmap:96 H264/90000",
+                         "audio": answer_audio})))
+    page.route("**/api/webrtc/close", lambda route: route.fulfill(
+        status=200, content_type="application/json", body="{}"))
+    page.goto(f"http://127.0.0.1:{port}/", wait_until="load", timeout=15000)
+    page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+    page.bring_to_front()
+    return context, page
+
+
+def audio_button(page):
+    return page.evaluate("""() => {
+      const b = document.querySelector('#audio-toggle'), v = document.querySelector('#webrtc-feed');
+      return {visible: !!b && !b.classList.contains('hidden') && b.offsetParent !== null,
+              state: b?.dataset.audioState, disabled: b?.getAttribute('aria-disabled'),
+              pressed: b?.getAttribute('aria-pressed'), title: b?.title || '',
+              error: b?.classList.contains('audio-error'), muted: v.muted,
+              audioTracks: v.srcObject ? v.srcObject.getAudioTracks().length : 0};
+    }""")
+
+
+def hdmi_audio_webrtc(browser, port, checks):
+    """#71: WebRTC audio starts muted, toggles, survives an audio error and
+    reports itself unavailable after the MJPEG fallback."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    status = [{"enabled": True, "state": "running", "device": "plughw:CARD=MS2109,DEV=0", "message": None,
+               "viewers": 1, "codec": "opus", "bitrate_kbps": 96, "restarts": 0}]
+    context, page = audio_page(browser, state, port, audio_status=status)
+    try:
+        page.wait_for_function("() => /H.264/.test(document.querySelector('#video-transport-label').textContent)"
+                               " && /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
+        page.wait_for_function("() => document.querySelector('#audio-toggle').dataset.audioState === 'muted'", timeout=5000)
+        info = audio_button(page)
+        check(checks, page.evaluate("() => window.__transceivers") == ["video", "audio"],
+              "audio_offer_requests_audio_transceiver", page.evaluate("() => window.__transceivers"))
+        check(checks, info["visible"] and info["state"] == "muted" and info["muted"] is True
+              and info["pressed"] == "true" and info["disabled"] == "false",
+              "audio_starts_muted", info)
+        check(checks, info["audioTracks"] == 1, "audio_track_joins_video_stream", info)
+
+        page.click("#audio-toggle")
+        page.wait_for_timeout(100)
+        info = audio_button(page)
+        check(checks, info["state"] == "unmuted" and info["muted"] is False and info["pressed"] == "false",
+              "audio_unmute_click", info)
+        check(checks, "已取消静音" in (page.text_content("#toast") or ""), "audio_unmute_toast",
+              page.text_content("#toast"))
+        page.click("#audio-toggle")
+        page.wait_for_timeout(100)
+        info = audio_button(page)
+        check(checks, info["state"] == "muted" and info["muted"] is True, "audio_mute_click", info)
+
+        # A failing capture marks the control but never touches the video.
+        status[0] = {"enabled": True, "state": "error", "device": "plughw:CARD=MS2109,DEV=0",
+                     "message": "音频采集已退出：Input/output error", "viewers": 1, "codec": "opus",
+                     "bitrate_kbps": 96, "restarts": 2}
+        page.click("#diagnostics-toggle")
+        page.wait_for_function("() => document.querySelector('#audio-toggle').classList.contains('audio-error')",
+                               timeout=8000)
+        info = audio_button(page)
+        label = page.text_content("#video-transport-label") or ""
+        check(checks, info["error"] and "音频采集异常" in info["title"] and "LIVE" in label and "H.264" in label
+              and len(page.evaluate("() => window.__peers")) == 1,
+              "audio_error_keeps_video_session", {"info": info, "label": label})
+        diag = page.text_content("#diag-audio") or ""
+        check(checks, "音频采集异常" in diag and "Input/output error" in diag, "audio_error_in_diagnostics", diag)
+        page.click("#diagnostics-toggle")
+
+        # Transport fallback: MJPEG has no audio and says so.
+        page.evaluate("""() => {
+          const peer = window.__peers.at(-1);
+          peer.connectionState = 'failed';
+          peer.onconnectionstatechange();
+        }""")
+        page.wait_for_function("() => /MJPEG/.test(document.querySelector('#video-transport-label').textContent)",
+                               timeout=8000)
+        info = audio_button(page)
+        check(checks, info["visible"] and info["state"] == "unavailable" and info["disabled"] == "true"
+              and info["title"] == "MJPEG 模式不支持音频" and info["muted"] is True,
+              "audio_unavailable_after_mjpeg_fallback", info)
+    finally:
+        context.close()
+
+
+def hdmi_audio_mjpeg_unavailable(browser, port, checks):
+    """#71: in MJPEG mode the control stays visible and explains itself."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    context, page = audio_page(browser, state, port, h264=False)
+    try:
+        wait_mjpeg_playing(page)
+        info = audio_button(page)
+        check(checks, info["visible"] and info["state"] == "unavailable" and info["disabled"] == "true"
+              and info["title"] == "MJPEG 模式不支持音频", "audio_mjpeg_shows_unavailable", info)
+        # aria-disabled keeps the button clickable so it can explain itself;
+        # Playwright skips its actionability wait for it, so let the console
+        # finish fitting to the picture first.
+        # Right after load the inspector panel opens asynchronously and the
+        # console narrows, so the toolbar briefly sits under the panel. Click
+        # only once the button hit-tests to itself and has stopped moving.
+        hit_js = """() => {
+          const b = document.querySelector('#audio-toggle'), r = b.getBoundingClientRect();
+          const e = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+          return e && (e === b || b.contains(e)) ? [r.x, r.y] : null;
+        }"""
+        previous = None
+        for _ in range(40):
+            current = page.evaluate(hit_js)
+            if current and current == previous:
+                break
+            previous = current
+            page.wait_for_timeout(300)
+        page.click("#audio-toggle", force=True)
+        try:
+            page.wait_for_function(
+                "() => (document.querySelector('#toast')?.textContent || '').includes('MJPEG 模式不支持音频')",
+                timeout=3000,
+            )
+        except Exception:
+            pass
+        toast = page.text_content("#toast") or ""
+        check(checks, "MJPEG 模式不支持音频" in toast and audio_button(page)["state"] == "unavailable",
+              "audio_mjpeg_click_explains", toast)
+        page.click("#lang-toggle")
+        page.click('[data-lang="en"]')
+        page.wait_for_timeout(200)
+        title = page.get_attribute("#audio-toggle", "title") or ""
+        check(checks, title == "Audio is not supported in MJPEG mode", "audio_mjpeg_title_translated", title)
+    finally:
+        context.close()
+
+    # Audio disabled (the default): no control at all.
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        check(checks, not page.locator("#audio-toggle").is_visible(), "audio_hidden_when_disabled", "")
+    finally:
+        context.close()
+
+
+def hdmi_audio_without_track(browser, port, checks):
+    """#71: H.264 negotiated without an audio track (no device) keeps video."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    status = {"enabled": True, "state": "no_device", "device": None, "message": "未检测到音频采集设备",
+              "viewers": 0, "codec": "opus", "bitrate_kbps": 96, "restarts": 0}
+    context, page = audio_page(browser, state, port, answer_audio=False, audio_status=status)
+    try:
+        page.wait_for_function("() => /H.264/.test(document.querySelector('#video-transport-label').textContent)"
+                               " && /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
+        page.wait_for_function("() => document.querySelector('#audio-toggle').dataset.audioState === 'unavailable'",
+                               timeout=5000)
+        info = audio_button(page)
+        check(checks, info["visible"] and info["title"] == "音频不可用：未检测到音频采集设备" and info["muted"] is True,
+              "audio_without_track_reports_reason", info)
+    finally:
+        context.close()
+
+
+def hdmi_audio_settings(browser, port, checks):
+    """#71: settings list detected cards and save the audio section."""
+    state = State()
+    posts = []
+    context, page = audio_page(browser, state, port, h264=False, posts=posts)
+    try:
+        page.locator('[data-panel-target="video"]').click()
+        page.locator("#video-config details.audio-settings summary").click()
+        form = "#video-config"
+        check(checks, page.is_checked(f"{form} [name=audio_enabled]"), "audio_settings_reflect_config", "")
+        page.click("#audio-scan")
+        page.wait_for_function("() => document.querySelector('#video-config [name=audio_device]').options.length === 3",
+                               timeout=5000)
+        options = page.evaluate("""() => [...document.querySelector('#video-config [name=audio_device]').options]
+                                   .map((o) => [o.value, o.textContent])""")
+        check(checks, options[0][0] == "" and options[1][0] == "plughw:CARD=MS2109,DEV=0"
+              and "/dev/video0" in options[1][1], "audio_scan_lists_capture_card_first", options)
+        page.wait_for_function("() => /音频运行中/.test(document.querySelector('#audio-config-status').textContent)",
+                               timeout=8000)
+        check(checks, "plughw:CARD=MS2109,DEV=0" in (page.text_content("#audio-config-status") or ""),
+              "audio_settings_show_status", page.text_content("#audio-config-status"))
+        page.select_option(f"{form} [name=audio_device]", "plughw:CARD=Mic,DEV=0")
+        page.click(f"{form} button[type=submit]")
+        page.wait_for_timeout(500)
+        audio = (posts[-1] if posts else {}).get("audio")
+        check(checks, audio == {"enabled": True, "device": "plughw:CARD=Mic,DEV=0"}, "audio_settings_saved", posts)
+        page.uncheck(f"{form} [name=audio_enabled]")
+        page.select_option(f"{form} [name=audio_device]", "")
+        page.click(f"{form} button[type=submit]")
+        page.wait_for_timeout(500)
+        audio = (posts[-1] if posts else {}).get("audio")
+        check(checks, audio == {"enabled": False, "device": None}, "audio_settings_disable_and_auto", posts[-1:])
     finally:
         context.close()
 

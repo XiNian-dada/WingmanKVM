@@ -21,6 +21,7 @@ pub(super) fn validate_config(config: &Config) -> Result<(), ApiError> {
         .notifications
         .validate()
         .map_err(ApiError::bad_request)?;
+    config.audio.validate().map_err(ApiError::bad_request)?;
     if config.server.trusted_http_proxies.len() > 64
         || config.server.trusted_http_proxies.iter().any(|ip| ip.is_unspecified() || ip.is_multicast())
     {

@@ -2,16 +2,19 @@
 
 # WingmanKVM
 
+![WingmanKVM demo: in the browser console, paste-as-typing sends a command to the target machine, the virtual media panel shows the mounted ISO, and the connection and device diagnostics open](docs/images/demo-en.webp)
+
 WingmanKVM is a web-based KVM that runs on an ARM development board. Connect the target machine's HDMI output to a capture card and its USB to the development board's OTG port, and you can view the screen and operate the keyboard and mouse (including during BIOS) from a browser, mount ISO images, and optionally control power through GPIO relays.
 
 It deploys as a single binary and needs no separate database or frontend build tooling.
 
-![WingmanKVM console](docs/images/console-desktop.png)
+![WingmanKVM console](docs/images/console-desktop-en.png)
 
 ## Features
 
 **Video**
 - Automatic transport selection: WebRTC H.264 (with RK3399 hardware encoding) first, falling back to MJPEG when unavailable
+- Optional HDMI audio: the capture card's sound is sent as Opus over WebRTC (off by default, pages start muted, not available in MJPEG mode)
 - Fit-to-window / 1:1 pixels / fill display modes; pan by dragging in 1:1 mode
 - Screenshots (PNG) and local screen recording (WebM)
 
@@ -85,7 +88,7 @@ cargo test --locked
 python3 scripts/verify_audit2_ui.py   # requires Playwright and a local Chrome
 ```
 
-Frontend sources are in `web/` (HTML, CSS and JS split by feature) and are embedded into the binary at build time. For tests and CI, see the [testing guide](docs/en/TESTING.md).
+Frontend sources are in `web/` (HTML, CSS split by feature, and native ES modules in `web/js/app/` with no bundler) and are embedded into the binary at build time; the frontend is linted with ESLint (`npm ci && npx eslint`). For tests and CI, see the [testing guide](docs/en/TESTING.md).
 
 ## License
 

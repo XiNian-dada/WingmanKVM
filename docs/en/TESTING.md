@@ -28,6 +28,47 @@ cargo test --locked -p dtls
 cargo build --locked
 ```
 
+## Frontend modules and ESLint
+
+The browser script is a set of native ES modules in `web/js/app/`, with no
+bundler and no build step:
+
+- `APP_JS_MODULES` in `src/web_ui.rs` embeds each file at compile time and the
+  server serves it unchanged at `/assets/js/<name>` (`text/javascript;
+  charset=utf-8`, `Cache-Control: no-store`, like `/assets/app.css`), so the
+  release binary stays self-contained. `index.html` only loads
+  `<script type="module" src="/assets/js/main.js">`; the browser fetches the
+  other modules through their imports. The CSP `script-src 'self'` is unchanged.
+- Modules reference siblings only through static
+  `import { … } from './<name>.js'`. Mutable state that two or more modules read
+  or write lives on the `shared` object in `state.js` (an imported binding is
+  read-only in the importer); state used by one module stays local to it. No
+  `window` globals (apart from the `window.__wingmanTest` test hooks).
+- Evaluating a module only declares its functions and module state and never
+  calls into another module: with import cycles, modules are not evaluated in
+  file-name order. DOM wiring lives in each module's exported `init()`, which
+  `main.js` calls in the old fragment order before running the boot sequence.
+  `00-settings.js` (browser-local preferences) imports nothing, so it is safe to
+  read during evaluation.
+- To add a module: create the file in `web/js/app/`, `import` it where used,
+  and add it to `APP_JS_MODULES`. Rust tests check that every file there is
+  embedded, that every `import` names an embedded sibling module, and that
+  every module is reachable from `main.js`.
+
+ESLint (flat config, `eslint.config.js`) only checks non-stylistic problems:
+`no-undef`, `no-unused-vars`, `no-import-assign`, `no-const-assign`,
+`no-func-assign`, `no-redeclare`, `no-dupe-keys`, `no-unreachable`, and the
+local rule `local/import-exports` (`eslint-rules/import-exports.js`, using only
+ESLint's own espree parser: an import must be a sibling `./<name>.js` that
+exists and really exports the imported names; dynamic `import()` is rejected).
+Versions are pinned in `package.json` and `package-lock.json`; Node.js
+20.19+ / 22.13+ / 24+ is required.
+
+```bash
+npm ci
+npx eslint --max-warnings 0
+```
+
 ## HTTP/API gates (real binary, black-box)
 
 ```bash
@@ -57,7 +98,10 @@ python3 scripts/verify_ui_suite.py --output-dir "$SCRATCH/ui" --browser-channel 
 ```
 
 All suites share `scripts/ui_harness.py` (static server, xterm assets, video
-feed mock, `check()` and the JSON report). A new suite only defines its API
+feed mock, `check()` and the JSON report). The page comes from `scripts/ui_bundle.py`: it inlines
+the stylesheet into `index.html` and serves the `web/js/app/` modules at their
+production paths `/assets/js/<name>`, so the browser runs the same module
+graph as production. A new suite only defines its API
 mock and scenarios; add it to `SUITES` in `verify_ui_suite.py` and to `CASES`
 in `verify_regressions.py` so CI runs it.
 
@@ -65,6 +109,33 @@ Headless Chromium may refuse pointer lock/fullscreen. Those cases are recorded
 as `"ok": null, "skipped": true`; the orchestrator counts them as explicit
 non-failure skips, never as true passes. `--skip-ui` exists for local debugging
 only and is recorded as skipped; CI always runs the UI gates.
+
+## README screenshots and demo animation (#96)
+
+After a UI change, one command regenerates every screenshot in `docs/images/` and the
+Chinese/English demo animations at the top of the READMEs (`demo-zh.webp`, `demo-en.webp`):
+
+```bash
+python3 scripts/capture_screenshots.py --browser-channel chrome
+# screenshots only / animation only: add --skip-demo / --demo-only
+# debug the animation alone and keep the PNG frames:
+python3 scripts/capture_demo.py --lang en --output-dir "$SCRATCH/demo" --keep-frames "$SCRATCH/demo/frames"
+```
+
+- Like the UI gates, it serves the real UI through `scripts/ui_harness.py`; every `/api/**`
+  call, the input WebSocket and `/video_feed` are mocked by `scripts/capture_fixtures.py`, and
+  the picture is a synthetic terminal frame. No device is contacted.
+- Demo flow: console → paste as typing → virtual media panel → diagnostics popover. Power and
+  reset controls are never shown or clicked. Each step is a still screenshot with a fixed
+  duration (no screen recording), assembled into a looping WebP with `img2webp` (libwebp:
+  `brew install webp` / `apt install webp`). The script fails if a file exceeds 2 MB. ffmpeg is not
+  needed: builds without libwebp cannot write animated WebP.
+- Viewport, scale, language, time zone, browser clock and raster flags are fixed, so reruns on
+  the same machine normally change images only when the UI changes (a few frames may differ by
+  some anti-aliased pixels). Fonts come from the host: generate committed images on macOS so
+  the Chinese UI uses PingFang SC.
+- Before committing, open every generated image and check the language, that no error toast
+  is visible, and that styles are intact.
 
 ## Sequential orchestrator
 
@@ -116,6 +187,7 @@ python3 scripts/verify_regressions.py ... \
 
 | Gate | Covered scope | Not covered |
 | --- | --- | --- |
+| ESLint | Undefined/unused names and import resolution in the frontend modules | Runtime behavior (UI suites) |
 | `cargo test` | Native unit/integration behavior | Real hardware |
 | API scripts | Real binary over loopback, stubbed host tools | Real capture/HID/GPIO |
 | UI scripts | Real Chrome DOM/JS with mocked API | Real backend, real devices |

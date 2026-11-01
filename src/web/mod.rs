@@ -92,6 +92,7 @@ use crate::{
         HidConfig, PointerMode, VideoEncoding,
     },
     devices::{
+        audio::{AudioManager, AudioSettings},
         discovery,
         hid::{
             AbsolutePointerRequest, HidError, HidManager, KeyRequest, MouseClickRequest,
@@ -105,7 +106,7 @@ use crate::{
         video::VideoManager,
         webrtc::{WebRtcError, WebRtcManager, WebRtcOfferRequest, WebRtcStatus},
     },
-    web_ui::{APP_CSS, APP_JS, ICON_SVG, INDEX_HTML},
+    web_ui::{APP_CSS, ICON_SVG, INDEX_HTML},
 };
 
 #[derive(Clone)]
@@ -171,7 +172,8 @@ impl AppState {
             Some(token)
         };
         let video = VideoManager::new(config.video.clone());
-        let webrtc = WebRtcManager::new(video.clone(), config.video.h264.clone());
+        let audio = AudioManager::new(audio_settings(&config));
+        let webrtc = WebRtcManager::new(video.clone(), config.video.h264.clone(), audio);
         let power = PowerManager::new();
         let power_led = power_led_snapshot(&config.power);
         let power_for_led = power.clone();
@@ -333,7 +335,7 @@ pub fn router(state: AppState) -> Router {
         .route("/assets/xterm-fit.js", get(xterm_fit_js))
         .route("/assets/xterm.css", get(xterm_css))
         .route("/assets/app.css", get(app_css))
-        .route("/assets/app.js", get(app_js))
+        .route("/assets/js/{name}", get(app_js_module))
         .route("/api/bootstrap", get(bootstrap))
         .route(
             "/api/setup/devices",
@@ -398,6 +400,7 @@ pub(crate) mod test_support {
             absolute_pointer: Vec::new(),
             gpio: Vec::new(),
             mass_storage_luns: Vec::new(),
+            audio: Vec::new(),
             warnings: Vec::new(),
         }
     }

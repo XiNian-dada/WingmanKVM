@@ -36,6 +36,8 @@ pub struct Config {
     pub media: MediaConfig,
     #[serde(default)]
     pub notifications: NotificationsConfig,
+    #[serde(default)]
+    pub audio: AudioConfig,
 }
 
 impl Default for Config {
@@ -48,6 +50,7 @@ impl Default for Config {
             power: PowerConfig::default(),
             media: MediaConfig::default(),
             notifications: NotificationsConfig::default(),
+            audio: AudioConfig::default(),
         }
     }
 }
@@ -440,6 +443,67 @@ impl H264Config {
         }
         Ok(())
     }
+}
+
+/// Lowest and highest Opus bitrate accepted for HDMI audio.
+pub const AUDIO_BITRATE_RANGE: std::ops::RangeInclusive<u32> = 16..=256;
+const MAX_AUDIO_DEVICE_LEN: usize = 96;
+
+/// Optional HDMI audio forwarded over WebRTC (issue #71).
+///
+/// Audio is a separate top-level section so enabling, disabling or a failing
+/// audio device never counts as a video change: saving it does not restart
+/// the capture pipeline or any H.264 session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioConfig {
+    /// Off by default; MJPEG never carries audio.
+    pub enabled: bool,
+    /// ALSA capture PCM such as `plughw:CARD=MS2109,DEV=0`. `None` selects
+    /// the sound card that belongs to the configured capture card.
+    pub device: Option<String>,
+    /// Opus target bitrate.
+    pub bitrate_kbps: u32,
+}
+
+impl Default for AudioConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            device: None,
+            bitrate_kbps: 96,
+        }
+    }
+}
+
+impl AudioConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if !AUDIO_BITRATE_RANGE.contains(&self.bitrate_kbps) {
+            return Err("音频码率必须在 16 到 256 Kbps 之间");
+        }
+        if let Some(device) = self.device.as_deref() {
+            validate_alsa_device_name(device)?;
+        }
+        Ok(())
+    }
+}
+
+/// ALSA PCM names are passed to FFmpeg as one argument. Restrict them to the
+/// hardware capture plugins and to the characters real names use, so a value
+/// can never look like an option, a path, a URL or a file-writing plugin.
+pub fn validate_alsa_device_name(device: &str) -> Result<(), &'static str> {
+    const PLUGINS: [&str; 5] = ["hw", "plughw", "dsnoop", "sysdefault", "default"];
+    let plugin = device.split_once(':').map_or(device, |(plugin, _)| plugin);
+    if device.is_empty()
+        || device.len() > MAX_AUDIO_DEVICE_LEN
+        || !PLUGINS.contains(&plugin)
+        || !device
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_:,=.-".contains(&byte))
+    {
+        return Err("音频设备必须是 ALSA 设备名，例如 plughw:CARD=MS2109,DEV=0");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1312,6 +1376,63 @@ mod tests {
         assert_eq!(config.video.h264.encoder, H264Encoder::Auto);
         assert!(!config.video.h264.allow_software);
         assert_eq!(config.video.h264.max_sessions, 1);
+    }
+
+    #[test]
+    fn audio_is_off_by_default_and_legacy_files_keep_it_off() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "version": CONFIG_VERSION,
+            "video": { "device": "/dev/video0" }
+        }))
+        .unwrap();
+        assert_eq!(config.audio, AudioConfig::default());
+        assert!(!config.audio.enabled);
+        assert!(config.audio.device.is_none());
+        assert_eq!(config.audio.bitrate_kbps, 96);
+        assert!(config.audio.validate().is_ok());
+
+        let partial: AudioConfig =
+            serde_json::from_value(serde_json::json!({ "enabled": true })).unwrap();
+        assert!(partial.enabled);
+        assert_eq!(partial.bitrate_kbps, 96);
+    }
+
+    #[test]
+    fn audio_configuration_roundtrips_and_validates_device_names() {
+        let config = Config {
+            audio: AudioConfig {
+                enabled: true,
+                device: Some("plughw:CARD=MS2109,DEV=0".to_owned()),
+                bitrate_kbps: 128,
+            },
+            ..Config::default()
+        };
+        let text = serde_json::to_string(&config).unwrap();
+        let back: Config = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.audio, config.audio);
+        assert!(back.audio.validate().is_ok());
+
+        for good in ["hw:1,0", "plughw:CARD=USB3.0,DEV=0", "default", "hw:CARD=Capture_Card"] {
+            assert!(validate_alsa_device_name(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "",
+            "-i",
+            "hw:1,0 -f",
+            "/dev/snd/pcmC1D0c",
+            "file:secret",
+            "hw:1;rm",
+            &"a".repeat(97),
+        ] {
+            assert!(validate_alsa_device_name(bad).is_err(), "{bad:?}");
+        }
+        for bitrate in [0, 15, 257] {
+            let audio = AudioConfig {
+                bitrate_kbps: bitrate,
+                ..AudioConfig::default()
+            };
+            assert!(audio.validate().is_err(), "{bitrate}");
+        }
     }
 
     #[test]

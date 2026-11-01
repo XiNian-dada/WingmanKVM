@@ -316,7 +316,8 @@ pub(super) async fn finish_setup(
         .video
         .reconfigure(new_config.video.clone())
         .map_err(ApiError::internal)?;
-    state.webrtc.reconfigure(new_config.video.h264).await;
+    state.webrtc.reconfigure(new_config.video.h264.clone()).await;
+    state.webrtc.audio().reconfigure(audio_settings(&new_config));
     state
         .power
         .set_power_led_config(power_led_snapshot(&new_config.power))

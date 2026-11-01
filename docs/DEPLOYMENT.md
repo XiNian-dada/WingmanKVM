@@ -11,7 +11,8 @@ WingmanKVM 的推荐部署方式是：准备一个与目标机架构匹配的 Li
 - 可用或可切换到 Device 模式的 USB Device/OTG 控制器（Linux UDC）；
 - 内核 USB Gadget/configfs、HID function 和 Mass Storage function 支持；
 - 支持 V4L2 mmap 的 USB HDMI 采集卡；
-- 电源控制需要 libgpiod 2.x 的 `gpioset`，不使用 GPIO 时可以不安装。
+- 电源控制需要 libgpiod 2.x 的 `gpioset`，不使用 GPIO 时可以不安装；
+- 可选 HDMI 音频需要带 ALSA 输入和 `libopus` 编码器的 FFmpeg（Debian/Ubuntu 的 `ffmpeg` 包已包含），以及在 `/proc/asound` 中可见的采集卡 USB 声卡；不启用音频时无需任何额外依赖。
 
 Debian、Ubuntu、Armbian 的常用运行与诊断工具：
 
@@ -400,6 +401,17 @@ v4l2-ctl -d /dev/video0 --list-formats-ext
 
 选择实际支持 `MJPG` 的 capture 节点。一个采集卡可能同时暴露 metadata、raw video 或多个接口，不要只凭 `/dev/videoN` 的编号判断。确认旧 Python/OpenCV 测试程序没有继续占用设备。
 
+### 开启 HDMI 音频后没有声音
+
+```bash
+cat /proc/asound/cards          # 采集卡应显示为 USB-Audio 声卡
+cat /proc/asound/pcm            # 对应条目应包含 capture
+id wingmankvm                   # 应包含 audio 组
+ffmpeg -hide_banner -encoders | grep libopus
+```
+
+依次确认：浏览器使用的是 H.264 (WebRTC) 模式（MJPEG 不传输音频）；工具栏扬声器按钮已取消静音（每次打开页面都从静音开始）；诊断面板「HDMI 音频」的状态。`no_device` 表示自动选择没有找到与采集卡属于同一 USB 设备的声卡，或存在多个无法区分的 USB 声卡，此时请在「视频 → HDMI 音频」中手动选择设备；`error` 会附带 FFmpeg 的最后一条错误（例如设备被其他程序占用），服务会自动退避重试。安装器会把 `wingmankvm` 加入 `audio` 组，旧安装升级后请重启服务以使组成员生效。音频故障不会断开或重启视频。
+
 ### GPIO 电源控制不可用
 
 ```bash
@@ -501,6 +513,30 @@ done
 3. 只有需要限制网络带宽时使用 `transcode_jpeg` 和 JPEG quality。
 
 直通仍需从 mmap buffer 复制一次 `bytesused` 范围，因为驱动会在下一次 dequeue/queue 后复用缓冲区；它消除的是 JPEG 解码与重新编码。
+
+### HDMI 音频（可选，仅 WebRTC）
+
+多数 UVC 采集卡会同时暴露一个 USB Audio 声卡。开启后，采集卡的声音以 Opus 编码随 WebRTC 会话一起传输；MJPEG 模式不支持音频，页面上的扬声器按钮会显示为不可用并说明原因。该功能默认关闭，可在「视频 → HDMI 音频」中开启，或合并以下配置片段：
+
+```json
+{
+  "audio": {
+    "enabled": true,
+    "device": null,
+    "bitrate_kbps": 96
+  }
+}
+```
+
+- `device` 为 `null` 时自动选择：优先使用与当前采集卡（`video.device`）属于同一 USB 设备的声卡，其次是唯一的 USB 声卡；存在多个无法区分的声卡时不会自行猜测。也可以填写 ALSA 设备名，例如 `plughw:CARD=MS2109,DEV=0` 或 `hw:1,0`（只接受 `hw`、`plughw`、`dsnoop`、`sysdefault`、`default`）。
+- 设备检测只读取 `/proc/asound/cards`、`/proc/asound/pcm` 和 `/sys/class/sound`，不会打开 ALSA 设备，因此不会打断正在进行的采集；设置页的「检测音频设备」与 `POST /api/devices/scan` 返回的 `audio` 列表来自这里。
+- `bitrate_kbps` 范围为 16–256；音频使用与 H.264 相同的 FFmpeg（`video.h264.ffmpeg_path`），编码为 48 kHz 立体声 Opus、20 ms 帧。
+- 所有 WebRTC 会话共用一个 FFmpeg 采集进程：第一个需要音频的会话启动它，最后一个会话结束时停止并回收整个进程组。采集失败或 10 秒没有数据时，状态变为 `error`，在仍有观看者时以 1–30 秒退避重试。
+- 音频与视频互相独立：浏览器只在服务端启用音频时请求音频轨道；服务端只有在检测到设备时才添加 Opus 轨道，否则照常只协商视频。音频转发不参与会话看门狗，采集失败、设备拔出或修改音频设置都不会断开、重启或重新协商视频。只修改音频设置也不会重启视频采集。已建立的会话保留原有轨道：带音频轨道的会话会切换到新的采集设备，开启音频前建立的会话需重新连接才能获得音频（在设置页点击「应用」会让当前页面自动重连）。
+- 浏览器始终以静音开始（满足自动播放策略），点击工具栏扬声器按钮取消静音；若浏览器拒绝带声音播放，会自动回到静音并继续播放画面。
+- `/api/status` 的 `audio` 字段报告 `state`（`disabled`、`no_device`、`idle`、`starting`、`running`、`error`）、当前设备、错误信息、观看者数量和累计重试次数，诊断面板的「HDMI 音频」显示同一信息。
+
+权限：ALSA 设备节点 `/dev/snd/*` 通常属于 `audio` 组。安装器会在该组存在时把服务用户 `wingmankvm` 加入 `audio` 组；systemd 启动服务时会带上该补充组。服务单元的 `ProtectSystem=strict` 只把文件系统设为只读，不影响 `/dev`、`/proc`、`/sys`，也没有设置 `PrivateDevices` 或设备白名单，因此不需要放宽加固项。
 
 ## 11. HTTPS
 
