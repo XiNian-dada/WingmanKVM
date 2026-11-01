@@ -173,6 +173,10 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      # Artifact attestation only: id-token mints the OIDC token for the
+      # Sigstore signing certificate, attestations stores the result.
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # same pin as regression.yml
@@ -204,6 +208,16 @@ jobs:
             grep -q "  $name\$" dist/SHA256SUMS
             tar -tzf "dist/$name" | grep -qx './deploy/install.sh'
           done
+
+      # Signed SLSA build provenance for every archive and SHA256SUMS, checked
+      # with `gh attestation verify` (docs/UPGRADE_RECOVERY.md). get.sh and the
+      # online upgrade do not verify it; they still rely on SHA256SUMS.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
 
       - name: Create or update GitHub release
         env:

@@ -213,6 +213,37 @@ Managed files added for this feature:
 `/usr/local/sbin/wingmankvm-online-upgrade` (0755) and
 `/etc/systemd/system/wingmankvm-online-upgrade.service` (0644).
 
+## Verifying release provenance
+
+From the first release published after this change, the release workflow
+attaches a signed [GitHub artifact attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations)
+(SLSA build provenance, Sigstore-signed) to every `.tar.gz` archive and to
+`SHA256SUMS`. It records that the file was built by
+`.github/workflows/release.yml` in `XiNian-dada/WingmanKVM` from the release
+tag. Verify a downloaded file with a recent GitHub CLI (`gh attestation`):
+
+```bash
+gh attestation verify wingmankvm-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz \
+  --repo XiNian-dada/WingmanKVM \
+  --signer-workflow XiNian-dada/WingmanKVM/.github/workflows/release.yml \
+  --source-ref refs/tags/vX.Y.Z
+gh attestation verify SHA256SUMS --repo XiNian-dada/WingmanKVM \
+  --signer-workflow XiNian-dada/WingmanKVM/.github/workflows/release.yml \
+  --source-ref refs/tags/vX.Y.Z
+```
+
+Limits:
+
+- **Nothing verifies this automatically.** `scripts/get.sh`, `deploy/install.sh
+  --release` and the online upgrade only check `SHA256SUMS`. Run the commands
+  above yourself, before installing, if you need provenance.
+- The attestation shows which repository workflow built the file. It does not
+  protect against someone who can push tags or change that workflow in the
+  repository; it does stop a file that was uploaded to the release by hand, or
+  replaced afterwards, from passing.
+- Releases published before this change have no attestation, and the command
+  fails for them.
+
 ## Harness
 
 `scripts/verify_p2c_upgrade.py` runs the real library and installer integration
