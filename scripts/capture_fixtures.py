@@ -66,7 +66,7 @@ SYSTEM = {
 }
 
 VIDEO = {"state": "ready", "message": None, "device": "/dev/video0", "width": 1920, "height": 1080,
-         "frames_per_second": 60.0, "encoding": "mjpeg", "last_frame_unix_ms": None, "last_frame_age_ms": 16}
+         "frames_per_second": 60.0, "encoding": "mjpeg_passthrough", "last_frame_unix_ms": None, "last_frame_age_ms": 16}
 
 CLIENT = {"ip": "192.168.1.100", "port": 54321, "source": "socket"}
 
@@ -81,7 +81,7 @@ CONFIG = {
     "version": 1,
     "server": {"listen_address": "0.0.0.0", "port": 8080, "proxy_protocol": "disabled", "trusted_http_proxies": []},
     "video": {"device": "/dev/video0", "width": 1920, "height": 1080, "frames_per_second": 60,
-              "jpeg_quality": 85, "encoding": "mjpeg"},
+              "jpeg_quality": 85, "encoding": "mjpeg_passthrough"},
     "hid": {"keyboard_device": "/dev/hidg0", "mouse_device": "/dev/hidg1",
             "absolute_pointer_device": "/dev/hidg2", "pointer_mode": "absolute"},
     "power": {"enabled": True, "gpio_chip": "/dev/gpiochip1", "gpio_line": 7, "active_high": True},
