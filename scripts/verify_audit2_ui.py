@@ -3041,6 +3041,56 @@ def reset_preferences_covers_all(browser, port, checks):
         context.close()
 
 
+def escape_closes_menus(browser, port, checks):
+    """AUD3-30: Esc closes an open menu, returns focus to its toggle and keeps the inspector open."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        settle_toolbar(page)
+        for menu, toggle in (("#power-menu", "#power-menu-toggle"), ("#lang-menu", "#lang-toggle"),
+                             ("#quick-more-menu", "#quick-more-toggle"),
+                             ("#diagnostics-popover", "#diagnostics-toggle")):
+            page.click(toggle)
+            page.wait_for_selector(f"{menu}:not([hidden])", state="attached", timeout=3000)
+            # Focus inside the menu where it has focusable content, as a keyboard user would.
+            page.evaluate("""(menu) => {
+              const item = document.querySelector(menu).querySelector('button:not([hidden])');
+              if (item && item.offsetParent !== null) item.focus();
+            }""", menu)
+            page.keyboard.press("Escape")
+            result = page.evaluate("""([menu, toggle]) => ({
+              hidden: document.querySelector(menu).hasAttribute('hidden'),
+              expanded: document.querySelector(toggle).getAttribute('aria-expanded'),
+              focused: document.activeElement === document.querySelector(toggle),
+              inspector: document.querySelector('#app').classList.contains('inspector-open'),
+            })""", [menu, toggle])
+            check(checks, result == {"hidden": True, "expanded": "false", "focused": True, "inspector": True},
+                  f"escape_closes_{menu[1:]}", result)
+
+        # With the inspector and no menu open, Esc still collapses the inspector.
+        page.locator("#video-viewport").focus()
+        page.keyboard.press("Escape")
+        collapsed = page.evaluate("() => !document.querySelector('#app').classList.contains('inspector-open')")
+        check(checks, collapsed, "escape_without_menu_collapses_inspector", collapsed)
+
+        # While forwarding: Esc that closes a menu is not sent; the next one is.
+        page.click("#input-state")
+        page.click("#quick-more-toggle")
+        page.locator("#video-viewport").focus()
+        state.key_posts.clear()
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(200)
+        closed = page.evaluate("() => document.querySelector('#quick-more-menu').hasAttribute('hidden')")
+        sent = [p.get("key") for p in state.key_posts]
+        check(checks, closed and not sent, "escape_closing_menu_not_forwarded", (closed, sent))
+        page.locator("#video-viewport").focus()
+        page.keyboard.press("Escape")
+        forwarded = ui_harness.wait_until(page, lambda: any(p.get("key") == "Escape" for p in state.key_posts))
+        check(checks, forwarded, "escape_forwarded_when_no_menu_open", state.key_posts)
+    finally:
+        context.close()
+
+
 # Every function taking (browser, port, checks) is a scenario, run in
 # definition order; new scenarios need no list edit (and no merge conflict).
 SCENARIOS = [

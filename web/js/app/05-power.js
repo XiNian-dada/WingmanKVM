@@ -251,8 +251,36 @@ async function runGpioTest(target, button) {
   }
 }
 
+// Toolbar dropdowns and the toggle that opened each one. Esc closes an open
+// one before anything else sees the key (see init).
+const ESCAPE_MENUS = [
+  ['#power-menu', '#power-menu-toggle'],
+  ['#lang-menu', '#lang-toggle'],
+  ['#quick-more-menu', '#quick-more-toggle'],
+  ['#diagnostics-popover', '#diagnostics-toggle'],
+];
+function closeMenuOnEscape(event) {
+  if (event.key !== 'Escape' || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
+  const open = ESCAPE_MENUS.map(([menu, toggle]) => [$(menu), $(toggle)]).filter(
+    ([menu]) => menu && !menu.hasAttribute('hidden'),
+  );
+  if (!open.length) return;
+  // Consumed here: neither forwarded to the target (08-input) nor taken as
+  // "collapse the inspector" (10-workspace-status).
+  event.preventDefault();
+  event.stopPropagation();
+  for (const [menu, toggle] of open) {
+    menu.setAttribute('hidden', '');
+    toggle?.setAttribute('aria-expanded', 'false');
+  }
+  const [, toggle] = open.find(([menu]) => menu.contains(document.activeElement)) || open[0];
+  toggle?.focus({ preventScroll: true });
+}
+
 // DOM wiring; main.js calls this once, in the original fragment order.
 export function init() {
+  // Capture phase on window: runs before every other keydown listener.
+  window.addEventListener('keydown', closeMenuOnEscape, true);
   powerMenuToggle?.addEventListener('click', (event) => {
     event.stopPropagation();
     const open = !powerMenu.hasAttribute('hidden');
