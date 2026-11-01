@@ -80,6 +80,7 @@ WingmanKVM 能直接操作被控机，请把它当作服务器的物理控制台
 - [升级与恢复](docs/UPGRADE_RECOVERY.md)
 - [维护权限模式](docs/MAINTENANCE_MODES.md) · [会话 Cookie 策略](docs/SESSION_COOKIES.md) · [上传限制](docs/UPLOAD_LIMITS.md) · [HID 配置迁移](docs/HID_CONFIGURATION.md)
 - [测试说明](docs/TESTING.md)
+- [真机测试清单](docs/HARDWARE_TEST_CHECKLIST.md)
 - [变更日志](CHANGELOG.md)
 
 ## 开发
