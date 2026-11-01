@@ -86,7 +86,7 @@ cargo test --locked
 python3 scripts/verify_audit2_ui.py   # requires Playwright and a local Chrome
 ```
 
-Frontend sources are in `web/` (HTML, CSS and JS split by feature) and are embedded into the binary at build time. For tests and CI, see the [testing guide](docs/en/TESTING.md).
+Frontend sources are in `web/` (HTML, CSS split by feature, and native ES modules in `web/js/app/` with no bundler) and are embedded into the binary at build time; the frontend is linted with ESLint (`npm ci && npx eslint`). For tests and CI, see the [testing guide](docs/en/TESTING.md).
 
 ## License
 
