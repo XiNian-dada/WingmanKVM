@@ -109,7 +109,7 @@ cd WingmanKVM
 cargo build --release --locked
 ```
 
-需要近期的 stable Rust。`v4l2-sys-mit` 会通过 bindgen 使用 `linux/videodev2.h`、clang 和 libclang；如果构建时报找不到该头文件，请确认 Linux UAPI headers 已安装。
+需要 Rust 1.88 或更新的 stable 版本（`Cargo.toml` 中的 `rust-version`；发布包用 1.93.1 构建）。`v4l2-sys-mit` 会通过 bindgen 使用 `linux/videodev2.h`、clang 和 libclang；如果构建时报找不到该头文件，请确认 Linux UAPI headers 已安装。
 
 #### 在 Apple Silicon Mac 上构建 Linux ARM64 版本
 

@@ -16,6 +16,10 @@ from ui_bundle import MODULE_TYPE, REPO, load_index_html, module_assets
 GIF = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
 ICON = b'<svg xmlns="http://www.w3.org/2000/svg"/>'
 XTERM_ASSETS = ("xterm.js", "addon-fit.js", "xterm.css")
+# Init script for scenarios that call window.__wingmanTest: the app modules
+# only publish those hooks when this flag is set before they are evaluated, so
+# add it with add_init_script before the first navigation (or reload after).
+TEST_HOOKS = "window.__wingmanTestHooks = true;"
 
 
 def extract_html(repo):

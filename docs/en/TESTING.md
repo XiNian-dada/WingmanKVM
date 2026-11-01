@@ -60,6 +60,15 @@ bundler and no build step:
   reading it throws `ReferenceError` and leaves a blank page. Turning `latestOnly`
   into a `const` arrow function crashes startup, and the UI suites report that
   error with its stack.
+  `window` globals (apart from the `window.__wingmanTest` test hooks, which
+  exist only when a test set `window.__wingmanTestHooks = true` before the page
+  loaded, see `ui_harness.TEST_HOOKS`; a normal page has none).
+- Evaluating a module only declares its functions and module state and never
+  calls into another module: with import cycles, modules are not evaluated in
+  file-name order. DOM wiring lives in each module's exported `init()`, which
+  `main.js` calls in the old fragment order before running the boot sequence.
+  `00-settings.js` (browser-local preferences) imports nothing, so it is safe to
+  read during evaluation.
 - To add a module: create the file in `web/js/app/`, `import` it where used,
   and add it to `APP_JS_MODULES`. Rust tests check that every file there is
   embedded, that every `import` names an embedded sibling module, and that

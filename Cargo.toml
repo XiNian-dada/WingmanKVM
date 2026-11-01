@@ -2,6 +2,10 @@
 name = "wingmankvm"
 version = "2.0.0-rc.1"
 edition = "2024"
+# Minimum: let-chains (stable in 1.88) and dependencies such as webauthn-rs,
+# image and time that declare rust-version 1.88. Verified with cargo test on
+# 1.88.0; releases are built with 1.93.1 (see release.yml).
+rust-version = "1.88"
 license = "MIT"
 description = "A lightweight, configurable ARM KVM service"
 

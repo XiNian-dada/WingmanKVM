@@ -458,7 +458,7 @@ def paste_as_typing(browser, port, checks):
 def target_keyboard_layouts(browser, port, checks):
     """#63: paste-as-typing honors the selected target keyboard layout."""
     state = State()
-    context, page = new_page(browser, state, port)
+    context, page = media_page(browser, state, port, stubs=(ui_harness.TEST_HOOKS,))
     try:
         page.click("#input-state")
 
@@ -2171,7 +2171,7 @@ ADAPTIVE_DECISION_SCRIPT = """() => {
 def adaptive_bitrate_decision(browser, port, checks):
     """#82: the pure decision function's thresholds, cooldown and hysteresis."""
     state = State()
-    context, page = new_page(browser, state, port)
+    context, page = media_page(browser, state, port, stubs=(ui_harness.TEST_HOOKS,))
     try:
         r = page.evaluate(ADAPTIVE_DECISION_SCRIPT)
         check(checks, r["pure"], "adaptive_decision_is_pure", r["pure"])
@@ -2193,6 +2193,92 @@ def adaptive_bitrate_decision(browser, port, checks):
         context.close()
 
 
+def gated_test_hooks(browser, port, checks):
+    """AUD3-37: window.__wingmanTest exists only when the harness asked for it."""
+    probe = """() => ({
+      present: '__wingmanTest' in window,
+      flag: '__wingmanTestHooks' in window,
+      hooks: Object.keys(window.__wingmanTest || {}).sort(),
+    })"""
+    context, page = new_page(browser, State(), port)
+    try:
+        normal = page.evaluate(probe)
+        check(checks, normal == {"present": False, "flag": False, "hooks": []},
+              "test_hooks_absent_on_normal_page", normal)
+    finally:
+        context.close()
+    context, page = media_page(browser, State(), port, stubs=(ui_harness.TEST_HOOKS,))
+    try:
+        hooked = page.evaluate(probe)
+        wanted = {"adaptivePolicy", "decideAdaptiveBitrate", "textToKeystrokes", "validateMacroFile"}
+        check(checks, hooked["present"] and wanted <= set(hooked["hooks"]),
+              "test_hooks_present_when_requested", hooked)
+    finally:
+        context.close()
+
+
+ADAPTIVE_PROBE_SCRIPT = """() => {
+  const t = window.__wingmanTest, decide = t.decideAdaptiveBitrate, policy = t.adaptivePolicy;
+  const BAD = {packetLossPct: 8, rttMs: 30, jitterBufferMs: 40, receivedKbps: null};
+  const GOOD = {packetLossPct: 0, rttMs: 30, jitterBufferMs: 40, receivedKbps: 900};
+  // One sample per second from a link that carries capKbps: every sample is
+  // lossy while the target is above it and clean otherwise.
+  const link = (state, capKbps, from, seconds, p = policy) => {
+    const changes = [];
+    for (let i = 0; i < seconds; i++) {
+      const at = from + i * 1000;
+      const r = decide(state, state.currentKbps > capKbps ? BAD : GOOD, at, p);
+      state = r.state;
+      if (r.targetKbps !== null) changes.push([r.targetKbps, at]);
+    }
+    return {state, changes};
+  };
+  // Seconds from each decrease to the probe-up that follows it (every run
+  // starts at the maximum, so the first change is a decrease).
+  const waits = (changes) => {
+    const out = [];
+    for (let i = 0; i + 1 < changes.length; i++) {
+      const down = i === 0 || changes[i][0] < changes[i - 1][0];
+      if (down && changes[i + 1][0] > changes[i][0]) out.push((changes[i + 1][1] - changes[i][1]) / 1000);
+    }
+    return out;
+  };
+  const res = {};
+  // 30 minutes with the capacity between two steps (3000 kbps of 4000).
+  const edge = link(t.newAdaptiveState(4000), 3000, 0, 1800);
+  res.waits = waits(edge.changes);
+  res.restarts = edge.changes.length;
+  // The same link without backoff (the old behaviour): a probe every ~40 s.
+  const flat = link(t.newAdaptiveState(4000), 3000, 0, 1800, {...policy, maxRaiseAfterBadMs: policy.raiseAfterBadMs});
+  res.flatWaits = [...new Set(waits(flat.changes))];
+  res.flatRestarts = flat.changes.length;
+  // Capacity frees up: sustained good quality clears the count, so the next
+  // congestion is followed by the normal 30 s hold again.
+  const clear = link(edge.state, 1e9, 1800000, 400);
+  res.cleared = [clear.state.probeFailures, clear.state.currentKbps];
+  res.again = waits(link(clear.state, 3000, 2200000, 120).changes);
+  return res;
+}"""
+
+
+def adaptive_probe_backoff(browser, port, checks):
+    """AUD3-38: failed probe-ups at a capacity edge back off exponentially, capped, then reset."""
+    context, page = media_page(browser, State(), port, stubs=(ui_harness.TEST_HOOKS,))
+    try:
+        r = page.evaluate(ADAPTIVE_PROBE_SCRIPT)
+        check(checks, r["flatWaits"] == [30] and r["flatRestarts"] > 100,
+              "adaptive_edge_scenario_reproduces_40s_cycle", (r["flatWaits"], r["flatRestarts"]))
+        waits = r["waits"]
+        check(checks, waits[:4] == [30, 60, 120, 240], "adaptive_failed_probes_back_off_exponentially", waits)
+        check(checks, len(waits) >= 7 and set(waits[3:]) == {240}, "adaptive_probe_backoff_is_capped", waits)
+        check(checks, r["restarts"] * 3 < r["flatRestarts"], "adaptive_backoff_cuts_encoder_restarts",
+              (r["restarts"], r["flatRestarts"]))
+        check(checks, r["cleared"] == [0, 4000] and r["again"][:2] == [30, 60],
+              "adaptive_probe_backoff_resets_after_good_quality", (r["cleared"], r["again"]))
+    finally:
+        context.close()
+
+
 def adaptive_stats(at, scale, lost_per_1000):
     report = stats_report(at, scale)
     video = report[-1]
@@ -2205,7 +2291,7 @@ def adaptive_bitrate_webrtc(browser, port, checks):
     """#82: stubbed stats drive POST /api/webrtc/bitrate with cooldown and hysteresis."""
     state = State()
     state.video.update(state="ready", message="", last_frame_age_ms=10)
-    context, page = media_page(browser, state, port, h264=True, stubs=(FAKE_PEER,))
+    context, page = media_page(browser, state, port, h264=True, stubs=(FAKE_PEER, ui_harness.TEST_HOOKS))
     sent = []
 
     def bitrate(route):

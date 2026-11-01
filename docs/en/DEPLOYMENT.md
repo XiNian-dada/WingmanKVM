@@ -78,7 +78,7 @@ cd WingmanKVM
 cargo build --release --locked
 ```
 
-A recent stable Rust is required. `v4l2-sys-mit` uses `linux/videodev2.h`, clang, and libclang through bindgen; if the build reports that the header cannot be found, make sure the Linux UAPI headers are installed.
+Rust 1.88 or a newer stable release is required (`rust-version` in `Cargo.toml`; release archives are built with 1.93.1). `v4l2-sys-mit` uses `linux/videodev2.h`, clang, and libclang through bindgen; if the build reports that the header cannot be found, make sure the Linux UAPI headers are installed.
 
 #### Building a Linux ARM64 version on an Apple Silicon Mac
 

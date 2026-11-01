@@ -49,6 +49,12 @@ cargo build --locked
 
   其余 `const`/`let`/`class` 绑定此时可能还在暂时性死区，读取会抛 `ReferenceError` 并
   白屏：把 `latestOnly` 改成 `const` 箭头函数就会启动崩溃，UI 套件会报出错误和堆栈。
+  （测试钩子 `window.__wingmanTest` 除外：只有测试在页面加载前设置了
+  `window.__wingmanTestHooks = true`（`ui_harness.TEST_HOOKS`）时才会出现，正常页面上不存在）。
+- 模块求值时只声明函数和模块内状态，不调用其他模块：存在循环依赖时，模块的求值顺序
+  不是文件名顺序。DOM 事件绑定写在各模块导出的 `init()` 中，由 `main.js` 按原片段
+  顺序调用，最后执行启动序列。`00-settings.js`（本地偏好）不导入任何模块，因此可在
+  求值期间读取。
 - 新增模块：在 `web/js/app/` 建文件、从使用方 `import`，并加入 `APP_JS_MODULES`。
   Rust 测试会检查：目录下每个文件都已内嵌、每个 `import` 都指向已内嵌的同级模块、
   所有模块都能从 `main.js` 到达。
