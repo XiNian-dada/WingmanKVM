@@ -910,16 +910,15 @@ impl PointerTracker {
         result: &Result<(), HidError>,
         timings: PointerTimings,
     ) {
-        if result.is_err() {
-            let now = Instant::now();
-            let clock = self
-                .clocks
-                .entry(path.to_path_buf())
-                .or_insert_with(|| ButtonClock::new(now));
-            clock.retries_left = RELEASE_RETRIES;
-            clock.next_retry = now + timings.release_retry;
-        } else if let Some(clock) = self.clocks.get_mut(path) {
-            clock.retries_left = 0;
+        // No clock means no button was down: nothing is owed, and a routine
+        // release-all must not put a report on the wire when a node comes back.
+        if let Some(clock) = self.clocks.get_mut(path) {
+            if result.is_err() {
+                clock.retries_left = RELEASE_RETRIES;
+                clock.next_retry = Instant::now() + timings.release_retry;
+            } else {
+                clock.retries_left = 0;
+            }
         }
         self.forget_settled(path);
     }
@@ -2067,6 +2066,16 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("pointer");
+        let c_path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        // SAFETY: c_path is a valid NUL-terminated string for the call's duration.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let open_reader = || {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&path)
+                .unwrap()
+        };
         let (mouse_tx, mouse_rx) = mpsc::channel(QUEUE_CAPACITY);
         let manager = manager_for_mouse_queue(mouse_tx);
         tokio::spawn(run_mouse_worker(
@@ -2079,17 +2088,13 @@ pub(crate) mod tests {
                 release_retry: Duration::from_millis(50),
             },
         ));
-        // No node yet: the release fails, as it would during a gadget rebind.
+        let reader = open_reader();
+        manager.mouse_press(Some(path.clone()), LEFT).await.unwrap();
+        drop(reader);
+        // Nobody is reading: the release fails with the button believed down.
         assert!(manager.release_all(None, Some(path.clone()), None).await.is_err());
-        // The node comes back: the owed report lands without another request.
-        let c_path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
-        // SAFETY: c_path is a valid NUL-terminated string for the call's duration.
-        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
-        let mut reader = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK)
-            .open(&path)
-            .unwrap();
+        // The reader returns: the owed report lands without another request.
+        let mut reader = open_reader();
         let mut report = [0xffu8; 4];
         let mut got = 0;
         for _ in 0..200 {
