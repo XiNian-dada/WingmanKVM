@@ -3055,9 +3055,11 @@ def held_caps_page(browser, port, init_scripts=()):
     """A page whose Caps Lock presses stay unanswered until released, so a latency run stays active."""
     state = State()
     context = browser.new_context(viewport={"width": 1280, "height": 900})
-    for script in init_scripts:
-        context.add_init_script(script)
     page = context.new_page()
+    # On the page rather than the context: the context's initial about:blank
+    # would run them too, and localStorage throws there.
+    for script in init_scripts:
+        page.add_init_script(script)
     held = {"routes": [], "hold": True, "caps": 0}
 
     def key_route(route):
