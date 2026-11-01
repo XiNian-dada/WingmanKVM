@@ -343,6 +343,7 @@ fn video_supervisor(
 ) {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
+    let mut last_logged_error: Option<String> = None;
     loop {
         // A new session must never inherit a frame from the previous device or
         // configuration.
@@ -396,6 +397,11 @@ fn video_supervisor(
                 continue;
             }
             Ok(Err(error)) => {
+                // The session retries every second; log each distinct failure once.
+                if last_logged_error.as_deref() != Some(error.as_str()) {
+                    tracing::warn!(device = %device.display(), %error, "video capture failed");
+                    last_logged_error = Some(error.clone());
+                }
                 frame_tx.send_replace(None);
                 status_tx.send_replace(VideoStatus::from_config(
                     &config,

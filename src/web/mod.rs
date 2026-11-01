@@ -142,6 +142,14 @@ impl AppState {
     pub fn load() -> anyhow::Result<Self> {
         let config_path = config::default_config_path();
         let config = Config::load_or_default(&config_path)?;
+        // validate_config otherwise only runs on writes. A KVM should still
+        // come up with a hand-edited file, so report it rather than refuse.
+        if let Err(error) = validate_config(&config) {
+            tracing::error!(path = %config_path.display(), message = %error.message, "配置文件包含无效的值");
+        }
+        if let Some(image_dir) = &config.media.image_directory {
+            sweep_partial_uploads(image_dir);
+        }
         let state_dir = config::state_dir();
         let auth = AuthStore::new(state_dir.join("auth.json"));
         let token_file = setup_token_file(&state_dir);
