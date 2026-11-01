@@ -683,7 +683,7 @@ function startKeyboardMacro(macro) {
   const run = { macro, canceled: false, speed: macroPlaybackSpeed, wake: 0 };
   shared.macroPlayback = run;
   runKeyboardMacro(run).catch((error) => {
-    setMacroPlayStatus(`${tr('回放失败：')}${error.message}`, 'error');
+    setMacroPlayStatus(tr(`回放失败：${error.message}`), 'error');
     if (!error.reported) toast(error.message, true);
   });
 }

@@ -4,7 +4,7 @@
 Reuses the P2b mocked API harness: real DOM, real browser keyboard/pointer
 events and the real UI state machine; no hardware is touched.
 """
-import inspect, json, os, sys, time, urllib.parse
+import inspect, json, os, re, sys, time, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -3087,6 +3087,82 @@ def escape_closes_menus(browser, port, checks):
         page.keyboard.press("Escape")
         forwarded = ui_harness.wait_until(page, lambda: any(p.get("key") == "Escape" for p in state.key_posts))
         check(checks, forwarded, "escape_forwarded_when_no_menu_open", state.key_posts)
+    finally:
+        context.close()
+
+
+def served_text(port, path):
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as response:
+        return response.read().decode("utf-8")
+
+
+def i18n_key_tables(source):
+    """{lang: set(keys)} from the I18N object literal in 01-i18n.js (one `key: '...'` per line)."""
+    body = source[source.index("const I18N = {"):source.index("let currentLang")]
+    tables, lang = {}, None
+    for line in body.splitlines():
+        head = re.match(r"^  '?(zh-CN|zh-TW|en)'?: \{", line)
+        if head:
+            lang = head.group(1)
+            tables[lang] = set()
+            continue
+        key = re.match(r"^    ([A-Za-z0-9_]+):", line)
+        if key and lang:
+            tables[lang].add(key.group(1))
+    return tables
+
+
+def i18n_keys_complete(browser, port, checks):
+    """AUD3-31: every t('key') and data-i18n key exists in all three tables; flagged copy translates."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        modules = page.evaluate("""() => performance.getEntriesByType('resource')
+          .map((entry) => new URL(entry.name).pathname).filter((path) => path.startsWith('/assets/js/'))""")
+        tables = i18n_key_tables(served_text(port, "/assets/js/01-i18n.js"))
+        used = {}
+        for path in sorted(set(modules)):
+            for key in re.findall(r"\bt\(\s*'([A-Za-z0-9_]+)'", served_text(port, path)):
+                used.setdefault(key, path)
+        for key in re.findall(r'data-i18n="([^"]+)"', served_text(port, "/")):
+            used.setdefault(key, "index.html")
+        missing = sorted(f"{key}@{where}:{lang}" for key, where in used.items()
+                         for lang in ("zh-CN", "zh-TW", "en") if key not in tables.get(lang, ()))
+        check(checks, len(modules) > 20 and set(tables) == {"zh-CN", "zh-TW", "en"} and not missing,
+              "every_i18n_key_in_all_tables", missing[:12] or (len(modules), sorted(tables)))
+
+        settle_toolbar(page)
+        page.click("#lang-toggle")
+        page.click('[data-lang="en"]')
+        page.locator('[data-panel-target="video"]').click()
+        page.click('[data-video-preset="desktop"]')
+        cjk = re.compile("[一-鿿]")
+        toast = page.text_content("#toast") or ""
+        check(checks, toast and not cjk.search(toast), "preset_toast_translated", toast)
+        texts = page.evaluate("""async () => {
+          const {tr} = await import('/assets/js/01-i18n.js');
+          return [
+            document.querySelector('#macro-manager-title').textContent,
+            document.querySelector('#macro-play-progress').getAttribute('aria-label'),
+            document.querySelector('#media-download-form [name="sha256"]').getAttribute('placeholder'),
+            // xterm output bypasses the phrase observer, so the code must tr() it.
+            tr('终端连接失败'),
+          ];
+        }""")
+        check(checks, not any(cjk.search(text or "") for text in texts), "flagged_copy_translated", texts)
+
+        # xterm output bypasses the phrase observer; the mock has no terminal socket, so it fails.
+        page.click('[data-workspace="terminal"]')
+        read_terminal = """async () => {
+          const {shared} = await import('/assets/js/state.js'), buffer = shared.terminal?.buffer.active;
+          if (!buffer) return '';
+          return Array.from({length: buffer.length}, (_, i) => buffer.getLine(i)?.translateToString(true) || '')
+            .join('\\n').trim();
+        }"""
+        ui_harness.wait_until(page, lambda: page.evaluate(read_terminal), timeout=5)
+        terminal = page.evaluate(read_terminal)
+        check(checks, "Terminal connection failed" in terminal and not cjk.search(terminal),
+              "terminal_failure_translated", terminal)
     finally:
         context.close()
 
