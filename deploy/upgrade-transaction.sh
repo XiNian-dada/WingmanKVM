@@ -479,6 +479,7 @@ _tx_write_recovery_script() {
 # Does not need the WingmanKVM source tree. Restores only the fixed managed
 # file list; user data and existing gadget.env/profile are never touched.
 set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}
 TX_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
 STORE=$(dirname -- "$TX_DIR")
 PREFIX=${STORE%/var/lib/wingmankvm-deploy}
@@ -545,15 +546,41 @@ safe_dest() {
     esac
     return 1
 }
+is_digest() {
+    case $1 in '' | *[!0-9a-f]*) return 1 ;; esac
+    [ "${#1}" -eq 64 ]
+}
+file_digest() {
+    local out
+    out=$(sha256sum <"$1") || return 1
+    out=${out%% *}
+    is_digest "$out" || return 1
+    printf '%s\n' "$out"
+}
 restore_one() {
-    local dest=$1 snap=$2 mode=$3 uid=$4 gid=$5 parent tmp
+    local dest=$1 snap=$2 mode=$3 uid=$4 gid=$5 parent tmp sum_file want have
     parent=$(dirname -- "$dest")
+    sum_file=$snap.sha256
     [ -f "$snap" ] && [ ! -L "$snap" ] || { err "snapshot missing: $dest"; return 1; }
     private_meta_file "$snap" || { err "untrusted snapshot metadata: $snap"; return 1; }
+    # Verify before touching anything: a power cut may leave the snapshot
+    # empty or truncated, and restoring it would break the destination.
+    [ -f "$sum_file" ] && [ ! -L "$sum_file" ] \
+        || { err "snapshot digest missing; $dest left unchanged: $sum_file"; return 1; }
+    private_meta_file "$sum_file" || { err "untrusted snapshot digest metadata: $sum_file"; return 1; }
+    want=
+    IFS= read -r want <"$sum_file"
+    is_digest "$want" || { err "malformed snapshot digest; $dest left unchanged: $sum_file"; return 1; }
+    have=$(file_digest "$snap") || { err "cannot hash snapshot; $dest left unchanged: $snap"; return 1; }
+    [ "$have" = "$want" ] \
+        || { err "snapshot digest mismatch (corrupt or truncated); $dest left unchanged: $snap"; return 1; }
     [ ! -d "$dest" ] || { err "refusing to restore over directory: $dest"; return 1; }
     trusted_dir "$parent" || { err "untrusted destination directory: $parent"; return 1; }
     tmp=$(mktemp "$parent/.wingmankvm-recover.XXXXXX") || return 1
     cp -- "$snap" "$tmp" || { rm -f -- "$tmp"; return 1; }
+    have=$(file_digest "$tmp") || have=
+    [ "$have" = "$want" ] \
+        || { err "copied snapshot does not match its digest; $dest left unchanged"; rm -f -- "$tmp"; return 1; }
     chmod "$mode" -- "$tmp" || { rm -f -- "$tmp"; return 1; }
     if [ "$EUID_NOW" -eq 0 ]; then
         chown "$uid:$gid" -- "$tmp" || { rm -f -- "$tmp"; return 1; }
@@ -573,6 +600,7 @@ remove_created() {
     say "removed newly created managed file $dest"
 }
 case $STORE in */var/lib/wingmankvm-deploy) ;; *) err "unexpected store path: $STORE"; exit 1 ;; esac
+command -v sha256sum >/dev/null 2>&1 || { err "sha256sum (coreutils) is required to verify snapshots"; exit 1; }
 case ${TX_DIR##*/} in txn.*) ;; *) err "unexpected transaction directory name"; exit 1 ;; esac
 private_dir "$TX_DIR" || { err "transaction directory ownership/mode is unsafe"; exit 1; }
 private_dir "$STORE" || { err "store ownership/mode is unsafe"; exit 1; }
