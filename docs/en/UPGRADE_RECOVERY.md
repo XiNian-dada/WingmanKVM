@@ -49,6 +49,7 @@ User/service state is never touched by rollback:
   txn.<UTC>.<pid>/
     manifest
     snapshot/<index>
+    snapshot/<index>.sha256          digest recorded when the snapshot is taken
     stage/<index>
     recover.sh                       root-owned 0700, self-contained
     COMMITTED or ROLLED_BACK
@@ -124,20 +125,28 @@ restore the previous files or create a contradictory `ROLLED_BACK` marker.
 
 `SIGKILL` cannot run traps; the published `PENDING` marker remains and the next
 installer refuses to change files. Power loss or kernel failure also cannot run
-traps, but this installer does not fsync every snapshot and directory: it does
-not guarantee recovery from storage loss or a filesystem crash. Inspect the
-retained store and managed files after such an event. For an interrupted
-transaction with an intact snapshot, use the self-contained recovery command:
+traps. Every snapshot is recorded with its SHA-256 digest, and the installer
+runs `sync` before publishing `PENDING` and before clearing it on commit, so the
+snapshots and digests that `recover.sh` relies on reach the disk first. This is
+not a per-file fsync of every directory: it does not guarantee recovery from
+storage loss or a filesystem crash. Inspect the retained store and managed files
+after such an event. For an interrupted transaction, use the self-contained
+recovery command:
 
 ```bash
 sudo /var/lib/wingmankvm-deploy/txn.<...>/recover.sh
 ```
 
-It needs only Bash, coreutils, and `flock`; it does not need a source checkout.
-It validates the same exact destination list, trusted store/directory modes,
-manifest and snapshot ownership, and refuses unsafe content. It restores
-snapshots in reverse order, clears `PENDING` only after all file operations
-succeed, and writes `ROLLED_BACK`. If the transaction directory contains
+It needs only Bash, coreutils (including `sha256sum`), and `flock`; it does not
+need a source checkout. It validates the same exact destination list, trusted
+store/directory modes, manifest and snapshot ownership, and refuses unsafe
+content. Before restoring a file it checks the snapshot against its recorded
+SHA-256 digest; if the digest is missing, malformed, or does not match (for
+example an empty or truncated snapshot after a power cut), that file fails, its
+destination is left exactly as it is, and the error names the destination. The
+automatic rollback performs the same check. It restores snapshots in reverse
+order, clears `PENDING` only after all file operations succeed, and writes
+`ROLLED_BACK`. If the transaction directory contains
 `COMMITTED` and no `PENDING` marker, `recover.sh` refuses to run: that transaction
 already succeeded, and restoring its snapshot would downgrade the managed files.
 Use `--force` only when intentionally reverting a committed deployment:
@@ -156,7 +165,9 @@ sudo systemctl restart wingmankvm.service
 ```
 
 If recovery reports failures, keep the snapshot and fix the reported paths
-before rerunning. A successful upgrade also retains its snapshot and prints the
+before rerunning. A digest failure means that snapshot cannot be trusted: do not
+edit the digest to make it pass; reinstall that file from a known-good release
+instead. A successful upgrade also retains its snapshot and prints the
 path. Retain last-known-good snapshots according to local policy; the installer
 does not bulk-delete old transaction directories.
 

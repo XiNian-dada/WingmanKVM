@@ -55,6 +55,16 @@ _tx_private_file() {
     (( (8#$mode & 8#077) == 0 ))
 }
 
+# Digest of a file read via stdin, so the path never appears in (or alters)
+# the sha256sum output.
+_tx_sha256() {
+    local out
+    out=$(sha256sum <"$1") || return 1
+    out=${out%% *}
+    [[ $out =~ ^[0-9a-f]{64}$ ]] || return 1
+    printf '%s\n' "$out"
+}
+
 _tx_exact_destination() {
     local dest=$1 rel
     [[ $dest != *$'\t'* && $dest != *$'\n'* ]] || return 1
@@ -160,6 +170,8 @@ _tx_on_exit() {
 tx_init() {
     local store=$1 root=${2:-/} lock state_dir recovery
     [[ $TX_STATE == idle ]] || tx_fail "transaction library already initialized"
+    command -v sha256sum >/dev/null 2>&1 \
+        || tx_fail "sha256sum (coreutils) is required to record snapshot digests"
     [[ $store == /* && $store != *'/../'* ]] || tx_fail "store must be absolute and normalized"
     store=${store%/}
     TX_EUID=$(id -u)
@@ -219,7 +231,7 @@ tx_begin() {
 
 _tx_common() {
     local policy=$1 source=$2 dest=$3 mode=$4 owner=$5 group=$6
-    local idx presence old=absent old_mode=- old_uid=- old_gid=- meta
+    local idx presence old=absent old_mode=- old_uid=- old_gid=- meta sum
     [[ $TX_STATE == staging ]] || tx_fail "can only add files while staging"
     [[ -f $source && -r $source ]] || tx_fail "source missing or unreadable: $source"
     _tx_exact_destination "$dest" || tx_fail "destination is not in the fixed managed list: $dest"
@@ -244,6 +256,12 @@ _tx_common() {
         read -r old_mode old_uid old_gid <<<"$meta"
         cp -- "$dest" "$TX_SNAPSHOT/$idx" || tx_fail "cannot snapshot $dest"
         chmod 0600 -- "$TX_SNAPSHOT/$idx"
+        # Recovery refuses a snapshot that no longer matches this digest, so a
+        # power cut cannot restore an empty or truncated file.
+        sum=$(_tx_sha256 "$TX_SNAPSHOT/$idx") || tx_fail "cannot hash snapshot of $dest"
+        (umask 077 && printf '%s\n' "$sum" >"$TX_SNAPSHOT/$idx.sha256") \
+            || tx_fail "cannot record snapshot digest for $dest"
+        chmod 0600 -- "$TX_SNAPSHOT/$idx.sha256"
         old=file
     elif [[ $presence == present ]]; then
         old=present
@@ -326,7 +344,8 @@ tx_apply() {
         printf 'started=%s\n' "$(_tx_stamp)"
     } >"$tmp" || tx_fail "cannot prepare pending marker"
     chmod 0600 -- "$tmp" || tx_fail "cannot secure pending marker"
-    # Snapshots must be on disk before PENDING can send recover.sh to them.
+    # Snapshots and their .sha256 digests (written while staging) must be on
+    # disk before PENDING can send recover.sh to them.
     sync
     mv -f -- "$tmp" "$TX_STORE/PENDING" || tx_fail "cannot publish pending marker"
     sync
@@ -338,16 +357,39 @@ tx_apply() {
     TX_STATE=applied
 }
 
+# Prints the recorded digest of snapshot entry $1 once it matches the
+# snapshot bytes; fails (with a diagnostic) otherwise.
+_tx_verified_snapshot_digest() {
+    local i=$1 dest=${TX_DEST[$1]} sum_file=$TX_SNAPSHOT/$1.sha256 want='' have
+    _tx_private_file "$sum_file" \
+        || { tx_error "snapshot digest missing or unsafe; $dest left unchanged: $sum_file"; return 1; }
+    IFS= read -r want <"$sum_file"
+    [[ $want =~ ^[0-9a-f]{64}$ ]] \
+        || { tx_error "malformed snapshot digest; $dest left unchanged: $sum_file"; return 1; }
+    have=$(_tx_sha256 "$TX_SNAPSHOT/$i") \
+        || { tx_error "cannot hash snapshot; $dest left unchanged"; return 1; }
+    [[ $have == "$want" ]] \
+        || { tx_error "snapshot digest mismatch (corrupt or truncated); $dest left unchanged"; return 1; }
+    printf '%s\n' "$want"
+}
+
 _tx_restore_one() {
-    local i=$1 parent tmp
+    local i=$1 parent tmp want have
     local dest=${TX_DEST[i]}
     parent=$(dirname -- "$dest")
     [[ -f $TX_SNAPSHOT/$i && ! -L $TX_SNAPSHOT/$i ]] \
         || { tx_error "snapshot missing for $dest"; return 1; }
+    want=$(_tx_verified_snapshot_digest "$i") || return 1
     [[ ! -d $dest ]] || { tx_error "refusing to restore over directory: $dest"; return 1; }
     _tx_trusted_dir "$parent" || { tx_error "untrusted restore directory: $parent"; return 1; }
     tmp=$(mktemp "$parent/.wingmankvm-restore.XXXXXX") || return 1
     if ! cp -- "$TX_SNAPSHOT/$i" "$tmp"; then rm -f -- "$tmp"; return 1; fi
+    have=$(_tx_sha256 "$tmp") || have=
+    if [[ $have != "$want" ]]; then
+        tx_error "copied snapshot does not match its digest; $dest left unchanged"
+        rm -f -- "$tmp"
+        return 1
+    fi
     if ! chmod "${TX_MODE[i]}" -- "$tmp"; then rm -f -- "$tmp"; return 1; fi
     if _tx_root && ! chown "${TX_UID[i]}:${TX_GID[i]}" -- "$tmp"; then
         rm -f -- "$tmp"
@@ -460,6 +502,7 @@ _tx_write_recovery_script() {
 # Does not need the WingmanKVM source tree. Restores only the fixed managed
 # file list; user data and existing gadget.env/profile are never touched.
 set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}
 TX_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
 STORE=$(dirname -- "$TX_DIR")
 PREFIX=${STORE%/var/lib/wingmankvm-deploy}
@@ -526,15 +569,41 @@ safe_dest() {
     esac
     return 1
 }
+is_digest() {
+    case $1 in '' | *[!0-9a-f]*) return 1 ;; esac
+    [ "${#1}" -eq 64 ]
+}
+file_digest() {
+    local out
+    out=$(sha256sum <"$1") || return 1
+    out=${out%% *}
+    is_digest "$out" || return 1
+    printf '%s\n' "$out"
+}
 restore_one() {
-    local dest=$1 snap=$2 mode=$3 uid=$4 gid=$5 parent tmp
+    local dest=$1 snap=$2 mode=$3 uid=$4 gid=$5 parent tmp sum_file want have
     parent=$(dirname -- "$dest")
+    sum_file=$snap.sha256
     [ -f "$snap" ] && [ ! -L "$snap" ] || { err "snapshot missing: $dest"; return 1; }
     private_meta_file "$snap" || { err "untrusted snapshot metadata: $snap"; return 1; }
+    # Verify before touching anything: a power cut may leave the snapshot
+    # empty or truncated, and restoring it would break the destination.
+    [ -f "$sum_file" ] && [ ! -L "$sum_file" ] \
+        || { err "snapshot digest missing; $dest left unchanged: $sum_file"; return 1; }
+    private_meta_file "$sum_file" || { err "untrusted snapshot digest metadata: $sum_file"; return 1; }
+    want=
+    IFS= read -r want <"$sum_file"
+    is_digest "$want" || { err "malformed snapshot digest; $dest left unchanged: $sum_file"; return 1; }
+    have=$(file_digest "$snap") || { err "cannot hash snapshot; $dest left unchanged: $snap"; return 1; }
+    [ "$have" = "$want" ] \
+        || { err "snapshot digest mismatch (corrupt or truncated); $dest left unchanged: $snap"; return 1; }
     [ ! -d "$dest" ] || { err "refusing to restore over directory: $dest"; return 1; }
     trusted_dir "$parent" || { err "untrusted destination directory: $parent"; return 1; }
     tmp=$(mktemp "$parent/.wingmankvm-recover.XXXXXX") || return 1
     cp -- "$snap" "$tmp" || { rm -f -- "$tmp"; return 1; }
+    have=$(file_digest "$tmp") || have=
+    [ "$have" = "$want" ] \
+        || { err "copied snapshot does not match its digest; $dest left unchanged"; rm -f -- "$tmp"; return 1; }
     chmod "$mode" -- "$tmp" || { rm -f -- "$tmp"; return 1; }
     if [ "$EUID_NOW" -eq 0 ]; then
         chown "$uid:$gid" -- "$tmp" || { rm -f -- "$tmp"; return 1; }
@@ -554,6 +623,7 @@ remove_created() {
     say "removed newly created managed file $dest"
 }
 case $STORE in */var/lib/wingmankvm-deploy) ;; *) err "unexpected store path: $STORE"; exit 1 ;; esac
+command -v sha256sum >/dev/null 2>&1 || { err "sha256sum (coreutils) is required to verify snapshots"; exit 1; }
 case ${TX_DIR##*/} in txn.*) ;; *) err "unexpected transaction directory name"; exit 1 ;; esac
 private_dir "$TX_DIR" || { err "transaction directory ownership/mode is unsafe"; exit 1; }
 private_dir "$STORE" || { err "store ownership/mode is unsafe"; exit 1; }
