@@ -275,6 +275,15 @@ pub(super) struct ConfigPatch {
     pub(super) power: Option<PowerPatch>,
     pub(super) media: Option<MediaPatch>,
     pub(super) notifications: Option<NotificationsPatch>,
+    pub(super) audio: Option<AudioPatch>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct AudioPatch {
+    pub(super) enabled: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(super) device: Option<Option<String>>,
+    pub(super) bitrate_kbps: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -474,6 +483,9 @@ pub(super) async fn patch_config(
     if let Some(notifications) = patch.notifications {
         apply_notifications_patch(&mut config.notifications, notifications);
     }
+    if let Some(audio) = patch.audio {
+        apply_audio_patch(&mut config.audio, audio);
+    }
     validate_config(&config)?;
     commit_config(&state, &config).await?;
     audit_config_change(&state, connection, &headers, &previous, &config).await;
@@ -489,6 +501,7 @@ pub(super) fn changed_sections(previous: &Config, current: &Config) -> Vec<&'sta
         ("power", previous.power != current.power),
         ("media", previous.media != current.media),
         ("notifications", previous.notifications != current.notifications),
+        ("audio", previous.audio != current.audio),
     ]
     .into_iter()
     .filter_map(|(name, changed)| changed.then_some(name))
@@ -528,6 +541,29 @@ pub(super) fn apply_server_patch(config: &mut config::ServerConfig, patch: Serve
     if let Some(public_origin) = patch.public_origin {
         config.public_origin = public_origin.map(|value| value.trim().to_owned());
     }
+}
+
+pub(super) fn apply_audio_patch(config: &mut config::AudioConfig, patch: AudioPatch) {
+    if let Some(enabled) = patch.enabled {
+        config.enabled = enabled;
+    }
+    if let Some(device) = patch.device {
+        // An empty selection means "the capture card's own sound card".
+        config.device = optional_string(device);
+    }
+    if let Some(bitrate_kbps) = patch.bitrate_kbps {
+        config.bitrate_kbps = bitrate_kbps;
+    }
+}
+
+/// Inputs of the shared audio capture: its own section, the FFmpeg binary
+/// shared with H.264 and the capture card used to find its sound card.
+pub(super) fn audio_settings(config: &Config) -> AudioSettings {
+    AudioSettings::new(
+        config.audio.clone(),
+        config.video.h264.ffmpeg_path.clone(),
+        config.video.device.clone(),
+    )
 }
 
 pub(super) fn apply_video_patch(config: &mut config::VideoConfig, patch: VideoPatch) {
@@ -845,6 +881,9 @@ pub(super) async fn commit_config(state: &AppState, config: &Config) -> Result<(
         // Capture changes also invalidate the H.264 source feeding WebRTC.
         state.webrtc.reconfigure(config.video.h264.clone()).await;
     }
+    // Audio is applied on its own: an audio-only change never reaches the
+    // video pipeline above, and an unchanged setting is a no-op here.
+    state.webrtc.audio().reconfigure(audio_settings(config));
     let power_led = power_led_snapshot(&config.power);
     *state.config.write().await = config.clone();
     state.proxy_protocol_updates.send_replace(config.server.proxy_protocol);
@@ -1185,6 +1224,59 @@ pub(super) mod tests {
         let detail = changed_sections(&previous, &current).join(",");
         assert_eq!(detail, "video,power");
         assert!(!detail.contains(&current.video.jpeg_quality.to_string()));
+    }
+
+    #[test]
+    fn audio_patch_preserves_omitted_fields_and_empty_device_means_automatic() {
+        let mut audio = config::AudioConfig::default();
+        let patch: ConfigPatch = serde_json::from_value(json!({
+            "audio": { "enabled": true, "device": " plughw:CARD=MS2109,DEV=0 " }
+        }))
+        .unwrap();
+        apply_audio_patch(&mut audio, patch.audio.unwrap());
+        assert!(audio.enabled);
+        assert_eq!(audio.device.as_deref(), Some("plughw:CARD=MS2109,DEV=0"));
+        assert_eq!(audio.bitrate_kbps, 96);
+
+        let patch: AudioPatch = serde_json::from_value(json!({ "bitrate_kbps": 64 })).unwrap();
+        apply_audio_patch(&mut audio, patch);
+        assert_eq!(audio.device.as_deref(), Some("plughw:CARD=MS2109,DEV=0"));
+        assert_eq!(audio.bitrate_kbps, 64);
+        for clear in [json!({ "device": "" }), json!({ "device": null })] {
+            let mut cleared = audio.clone();
+            apply_audio_patch(&mut cleared, serde_json::from_value(clear).unwrap());
+            assert!(cleared.device.is_none());
+            assert!(cleared.enabled);
+        }
+
+        let previous = Config::default();
+        let mut current = previous.clone();
+        current.audio = audio;
+        assert_eq!(changed_sections(&previous, &current), vec!["audio"]);
+    }
+
+    #[tokio::test]
+    async fn audio_only_change_is_applied_without_touching_video() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("config.json");
+        let config = Config::default();
+        config.save_atomic(&path).unwrap();
+        let state = test_state(config.clone(), path.clone());
+        assert!(!state.webrtc.audio().enabled());
+
+        let mut next = config.clone();
+        next.audio.enabled = true;
+        next.audio.device = Some("hw:1,0".to_owned());
+        commit_config(&state, &next).await.unwrap();
+        assert!(state.webrtc.audio().enabled());
+        let live = state.config.read().await.clone();
+        assert_eq!(live.video, config.video, "video stays as it was");
+        assert_eq!(Config::load(&path).unwrap().audio, next.audio);
+
+        let mut invalid = next.clone();
+        invalid.audio.device = Some("file:/tmp/x".to_owned());
+        assert!(commit_config(&state, &invalid).await.is_err());
+        assert_eq!(Config::load(&path).unwrap().audio, next.audio);
     }
 
     #[test]
