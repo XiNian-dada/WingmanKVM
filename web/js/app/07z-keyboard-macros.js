@@ -665,6 +665,11 @@ function startKeyboardMacro(macro) {
     toast(tr('请先停止录制再回放'), true);
     return;
   }
+  // The latency tool toggles Caps Lock: replayed letters would change case.
+  if (shared.latencyRun) {
+    toast(tr('正在测量延迟，请结束后再回放'), true);
+    return;
+  }
   closeQuickMore();
   openMacroPlayDialog(macro);
   if (!inputEnabled()) setRemote(true);
@@ -678,8 +683,8 @@ function startKeyboardMacro(macro) {
   const run = { macro, canceled: false, speed: macroPlaybackSpeed, wake: 0 };
   shared.macroPlayback = run;
   runKeyboardMacro(run).catch((error) => {
-    setMacroPlayStatus(`${tr('回放失败：')}${error.message}`, 'error');
-    toast(error.message, true);
+    setMacroPlayStatus(tr(`回放失败：${error.message}`), 'error');
+    if (!error.reported) toast(error.message, true);
   });
 }
 async function runKeyboardMacro(run) {

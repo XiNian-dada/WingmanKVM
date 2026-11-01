@@ -1,10 +1,19 @@
 // Entry module: index.html loads it with <script type="module">, the browser
-// fetches the rest through the static imports. Evaluating a feature module only
-// declares its functions and module state (the evaluation order of a module
-// graph with cycles is not the old fragment order, so no module touches
-// another module's bindings while it is evaluated). Each module's DOM wiring
-// runs in its init(), called below in the old fragment order, and the boot
-// sequence runs last, once everything is wired.
+// fetches the rest through the static imports. The feature modules import each
+// other in cycles, so their evaluation order is not the old fragment order and
+// a module may be evaluated before some of the modules it imports. Top-level
+// code in a feature module therefore does only two things besides declaring
+// functions and module state:
+// - calls `$`/`$$` (00-core) and `getSetting` (00-settings); those modules
+//   import nothing, so they are always evaluated before any module that
+//   imports them;
+// - calls `latestOnly()` (06, 11, 12, 12a, 12b, 12c) although 03-session sits
+//   in the cycle and may not have been evaluated yet. That works only because
+//   latestOnly is a function declaration (hoisted, initialized when the module
+//   is linked) that reads no module state; as a `const` arrow function it
+//   would throw at startup.
+// Everything else, DOM wiring included, runs in each module's init(), called
+// below in the old fragment order, and the boot sequence runs last.
 import { getSetting } from './00-settings.js';
 import { collectStaticPhrases, setLanguage } from './01-i18n.js';
 import { applyTheme, getPreferredTheme, init as initThemeLayout } from './02-theme-layout.js';

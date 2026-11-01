@@ -4,7 +4,7 @@
 Reuses the P2b mocked API harness: real DOM, real browser keyboard/pointer
 events and the real UI state machine; no hardware is touched.
 """
-import inspect, json, os, sys, time, urllib.parse
+import inspect, json, os, re, sys, time, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -2086,22 +2086,28 @@ def online_update(browser, port, checks):
     finally:
         context.close()
 
-    state = State()
-    context, page = new_page(browser, state, port)
-    failed = {**status, "status": {"state": "failed", "phase": "verifying", "version": "v0.2.0",
-                                   "error": "checksum", "updated": 3}}
-    page.route("**/api/update/status", lambda route: route.fulfill(
-        status=200, content_type="application/json", body=json.dumps(failed)))
-    try:
-        page.click("#settings-toggle")
-        page.wait_for_function(
-            "() => /升级失败/.test(document.querySelector('#update-progress').textContent)", timeout=5000)
-        text = page.text_content("#update-progress") or ""
-        classes = page.get_attribute("#update-progress", "class") or ""
-        check(checks, "SHA256 校验失败" in text and "回滚" in text and "error" in classes,
-              "update_failure_reports_rollback", text)
-    finally:
-        context.close()
+    # AUD3-28: only a failed install rolls back; earlier failures change nothing.
+    for error, phase, reason, rolled_back in (("checksum", "verifying", "SHA256 校验失败", False),
+                                              ("network", "downloading", "网络错误", False),
+                                              ("interrupted", "installing", "升级任务被中断", False),
+                                              ("install_failed", "done", "安装失败", True)):
+        state = State()
+        context, page = new_page(browser, state, port)
+        failed = {**status, "status": {"state": "failed", "phase": phase, "version": "v0.2.0",
+                                       "error": error, "updated": 3}}
+        body = json.dumps(failed)
+        page.route("**/api/update/status", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=body))
+        try:
+            page.click("#settings-toggle")
+            page.wait_for_function(
+                "() => /升级失败/.test(document.querySelector('#update-progress').textContent)", timeout=5000)
+            text = page.text_content("#update-progress") or ""
+            classes = page.get_attribute("#update-progress", "class") or ""
+            check(checks, reason in text and ("回滚" in text) == rolled_back and "error" in classes,
+                  f"update_failure_{error}_rollback_text", text)
+        finally:
+            context.close()
 
 
 ADAPTIVE_OFF = "localStorage.setItem('wingman_setting_adaptive_bitrate', 'false');"
@@ -2717,6 +2723,446 @@ def hdmi_audio_settings(browser, port, checks):
         page.wait_for_timeout(500)
         audio = (posts[-1] if posts else {}).get("audio")
         check(checks, audio == {"enabled": False, "device": None}, "audio_settings_disable_and_auto", posts[-1:])
+    finally:
+        context.close()
+
+
+# Audit round 3 (#109, #122). Helpers first: none of them take
+# (browser, port, checks), so they are not mistaken for scenarios.
+
+TOOLBAR_CONTROLS = ["#input-state", "#lang-toggle", "#power-menu-toggle", "#diagnostics-toggle",
+                    "#quick-more-toggle", "#settings-toggle"]
+
+
+def settle_toolbar(page):
+    """The inspector opens right after boot and resizes the console: wait for it to finish."""
+    page.wait_for_function("() => document.querySelector('#app').classList.contains('inspector-open')",
+                           timeout=5000)
+    page.wait_for_function("""(selectors) => new Promise((resolve) => {
+      const boxes = () => selectors.map((s) => {
+        const r = document.querySelector(s)?.getBoundingClientRect();
+        return r ? [r.x, r.y, r.width, r.height].join() : '';
+      }).join('|');
+      const before = boxes();
+      setTimeout(() => requestAnimationFrame(() => resolve(boxes() === before)), 250);
+    })""", arg=TOOLBAR_CONTROLS, timeout=8000)
+
+
+def count_toasts(page, pattern):
+    """Start counting every toast() whose text matches `pattern` (a JS regex source)."""
+    page.evaluate("""(pattern) => {
+      window.__toastHits = [];
+      const toast = document.querySelector('#toast'), re = new RegExp(pattern);
+      new MutationObserver(() => {
+        if (re.test(toast.textContent)) window.__toastHits.push(toast.textContent);
+      }).observe(toast, {childList: true, characterData: true, subtree: true});
+    }""", pattern)
+
+
+def toast_hits(page):
+    return page.evaluate("() => window.__toastHits.slice()")
+
+
+def input_socket_drop_does_not_replay(browser, port, checks):
+    """#109: a dropped input socket never replays possibly executed input over HTTP."""
+    state = State()
+    # A visible, playing feed is needed to map pointer positions to the target.
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    frames, sockets, http_moves = [], [], []
+    hold = {"on": False}
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    try:
+        page = context.new_page()
+
+        def on_socket(ws):
+            sockets.append(ws)
+
+            def reply(message):
+                body = json.loads(message)
+                frames.append(body)
+                # Holding = the server executed it but its reply never arrives.
+                if not hold["on"]:
+                    ws.send(json.dumps({"id": body["id"], "ok": True}))
+            ws.on_message(reply)
+
+        def record(route):
+            if urllib.parse.urlsplit(route.request.url).path == "/api/mouse/absolute":
+                http_moves.append(json.loads(route.request.post_data or "{}"))
+                return route.fulfill(status=200, content_type="application/json", body="{}")
+            return api_route(route, state)
+
+        page.route_web_socket("**/api/input/ws", on_socket)
+        page.route("**/api/**", record)
+        page.route("**/video_feed*", lambda route: route.fulfill(status=200, content_type="image/gif", body=GIF))
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        page.evaluate("""() => {
+          const feed = document.querySelector('#video-feed');
+          Object.defineProperty(feed, 'naturalWidth', {value: 1280});
+          Object.defineProperty(feed, 'naturalHeight', {value: 720});
+          feed.style.width = '640px';
+          feed.style.height = '360px';
+          feed.dispatchEvent(new Event('load'));
+        }""")
+        settle_toolbar(page)
+        page.click("#input-state")
+        page.keyboard.press("a")
+        ui_harness.wait_until(page, lambda: any(f.get("key") == "KeyA" for f in frames))
+        check(checks, any(f.get("key") == "KeyA" for f in frames) and not state.key_posts,
+              "drop_test_keys_use_socket", (frames[-3:], state.key_posts))
+
+        count_toasts(page, "可能未送达")
+        hold["on"] = True
+        for key in ("b", "c", "Enter"):
+            page.keyboard.press(key)
+        box = page.locator("#video-viewport").bounding_box()
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        page.mouse.move(box["x"] + box["width"] / 2 + 20, box["y"] + box["height"] / 2 + 10)
+        held = lambda: (sum(f.get("type") == "key" and f.get("key") in ("KeyB", "KeyC", "Enter") for f in frames) == 3
+                        and any(f.get("type") == "absolute" and f.get("action") == "move" for f in frames))
+        check(checks, ui_harness.wait_until(page, held), "drop_test_input_in_flight", frames[-6:])
+        sockets[-1].close()
+        ui_harness.wait_until(page, lambda: toast_hits(page) or state.key_posts)
+        hold["on"] = False
+        page.wait_for_timeout(400)
+        replayed = [p.get("key") for p in state.key_posts]
+        check(checks, not replayed, "dropped_socket_does_not_replay_keys", replayed)
+        check(checks, any(m.get("action") == "move" for m in http_moves),
+              "dropped_socket_retries_absolute_move", http_moves)
+        hits = toast_hits(page)
+        check(checks, len(hits) == 1, "dropped_socket_toasts_once_per_burst", hits)
+
+        # Typing carries on afterwards (over the reconnected socket or HTTP).
+        page.locator("#video-viewport").focus()
+        page.keyboard.press("d")
+        delivered = lambda: (any(f.get("key") == "KeyD" for f in frames)
+                             or any(p.get("key") == "KeyD" for p in state.key_posts))
+        check(checks, ui_harness.wait_until(page, delivered), "typing_continues_after_drop",
+              (frames[-2:], state.key_posts))
+        enabled = page.evaluate("() => document.querySelector('#input-state').getAttribute('aria-pressed')")
+        check(checks, enabled == "true", "forwarding_stays_on_after_drop", enabled)
+    finally:
+        context.close()
+
+
+LATENCY_MACRO = ("localStorage.setItem('wingman_keyboard_macros', JSON.stringify([{id: 'm1', name: 'x', "
+                 "steps: [{key: 'KeyX', ctrl: false, shift: false, alt: false, meta: false, delay_ms: 0}]}]));")
+
+
+def held_caps_page(browser, port, init_scripts=()):
+    """A page whose Caps Lock presses stay unanswered until released, so a latency run stays active."""
+    state = State()
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    for script in init_scripts:
+        context.add_init_script(script)
+    page = context.new_page()
+    held = {"routes": [], "hold": True, "caps": 0}
+
+    def key_route(route):
+        body = json.loads(route.request.post_data or "{}")
+        if body.get("key") != "CapsLock":
+            return api_route(route, state)
+        held["caps"] += 1
+        if held["hold"]:
+            held["routes"].append(route)
+        else:
+            route.fulfill(status=200, content_type="application/json", body="{}")
+
+    page.route("**/api/**", lambda route: api_route(route, state))
+    page.route("**/api/key", key_route)
+    page.route("**/api/hid/leds", lambda route: route.fulfill(
+        status=200, content_type="application/json",
+        body=json.dumps({"num_lock": False, "caps_lock": False, "scroll_lock": False, "raw": 0})))
+    ui_harness.mock_video_feed(page)
+    page.on("dialog", lambda dialog: dialog.accept())
+    page.goto(f"http://127.0.0.1:{port}/", wait_until="load", timeout=15000)
+    page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+    settle_toolbar(page)
+
+    def release():
+        held["hold"] = False
+        while held["routes"]:
+            held["routes"].pop(0).fulfill(status=200, content_type="application/json", body="{}")
+    return state, context, page, held, release
+
+
+def start_held_latency_run(page, held, checks):
+    page.click("#diagnostics-toggle")
+    page.wait_for_selector("#latency-start", state="visible", timeout=3000)
+    page.click("#latency-start")
+    check(checks, ui_harness.wait_until(page, lambda: held["routes"]), "latency_run_started", held["caps"])
+
+
+def stop_latency_run(page, release):
+    release()
+    if page.get_attribute("#diagnostics-popover", "hidden") is not None:
+        page.click("#diagnostics-toggle")
+    page.click("#latency-stop")
+    page.wait_for_selector("#latency-result:not(.hidden)", timeout=10000)
+
+
+def latency_blocks_paste_and_macros(browser, port, checks):
+    """AUD3-26: paste typing and macro playback refuse to start during a latency run."""
+    state, context, page, held, release = held_caps_page(browser, port, init_scripts=(LATENCY_MACRO,))
+    try:
+        page.click("#input-state")
+        page.click("#keyboard-toggle")
+        page.click("#paste-typing-btn")
+        page.fill("#paste-key-text", "secret")
+        page.click("#paste-key-cancel")
+        start_held_latency_run(page, held, checks)
+
+        page.click("#paste-typing-btn")
+        page.fill("#paste-key-text", "secret")
+        page.click("#paste-key-send")
+        page.wait_for_timeout(300)
+        status = page.text_content("#paste-key-status") or ""
+        typed = [p.get("key") for p in state.key_posts]
+        check(checks, not typed and "测量延迟" in status, "paste_refused_during_latency_run", (typed, status))
+        page.click("#paste-key-cancel")
+
+        page.click("#quick-more-toggle")
+        page.click("#quick-more-menu [data-macro-play]")
+        page.wait_for_timeout(300)
+        toast = page.text_content("#toast") or ""
+        typed = [p.get("key") for p in state.key_posts]
+        check(checks, not typed and "测量延迟" in toast, "macro_refused_during_latency_run", (typed, toast))
+
+        stop_latency_run(page, release)
+        page.click("#quick-more-toggle")
+        page.click("#quick-more-menu [data-macro-play]")
+        ui_harness.wait_until(page, lambda: any(p.get("key") == "KeyX" for p in state.key_posts))
+        check(checks, any(p.get("key") == "KeyX" for p in state.key_posts), "macro_plays_after_latency_run",
+              state.key_posts)
+    finally:
+        release()
+        context.close()
+
+
+def latency_restores_caps_on_unload(browser, port, checks):
+    """AUD3-27: leaving mid-run after an odd number of taps sends one keepalive restore."""
+    state, context, page, held, release = held_caps_page(browser, port)
+    try:
+        start_held_latency_run(page, held, checks)
+        page.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pagehide'))")
+        check(checks, ui_harness.wait_until(page, lambda: held["caps"] == 2), "unload_after_odd_taps_restores_caps",
+              held["caps"])
+        page.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pagehide'))")
+        page.wait_for_timeout(300)
+        check(checks, held["caps"] == 2, "unload_restore_sent_once", held["caps"])
+        page.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pageshow'))")
+    finally:
+        release()
+        context.close()
+
+    # An even count (one sample answered, the second press in flight) needs nothing.
+    state, context, page, held, release = held_caps_page(browser, port)
+    try:
+        start_held_latency_run(page, held, checks)
+        held["routes"].pop(0).fulfill(status=200, content_type="application/json", body="{}")
+        check(checks, ui_harness.wait_until(page, lambda: held["caps"] == 2, timeout=6), "second_tap_in_flight",
+              held["caps"])
+        page.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pagehide'))")
+        page.wait_for_timeout(300)
+        check(checks, held["caps"] == 2, "unload_after_even_taps_sends_nothing", held["caps"])
+    finally:
+        release()
+        context.close()
+
+
+def latency_expired_session_not_restored(browser, port, checks):
+    """AUD3-27: a session that expires mid-run is never reported as Caps Lock restored."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    target = {"caps": False, "taps": 0, "expired": False}
+    unauthorized = dict(status=401, content_type="application/json", body='{"error":"unauthorized"}')
+
+    def key_route(route):
+        if target["expired"]:
+            return route.fulfill(**unauthorized)
+        target["taps"] += 1
+        target["caps"] = not target["caps"]
+        # The session ends right after the first press reached the target.
+        target["expired"] = True
+        route.fulfill(status=200, content_type="application/json", body="{}")
+
+    def leds_route(route):
+        if target["expired"]:
+            return route.fulfill(**unauthorized)
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(
+            {"num_lock": False, "caps_lock": target["caps"], "scroll_lock": False, "raw": 0}))
+
+    page.route("**/api/key", key_route)
+    page.route("**/api/hid/leds", leds_route)
+    page.on("dialog", lambda dialog: dialog.accept())
+    try:
+        settle_toolbar(page)
+        page.click("#diagnostics-toggle")
+        page.click("#latency-start")
+        page.wait_for_function("() => !document.querySelector('#latency-result').classList.contains('hidden')",
+                               timeout=15000)
+        rows = latency_rows(page)
+        check(checks, target["taps"] == 1 and rows.get("Caps Lock") == "未能恢复，请手动检查",
+              "expired_session_reports_caps_not_restored", (rows, target))
+    finally:
+        context.close()
+
+
+def reset_preferences_covers_all(browser, port, checks):
+    """AUD3-29: "reset preferences" also restores adaptive bitrate and the quality overlay, live."""
+    state = State()
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_init_script("localStorage.setItem('wingman_setting_adaptive_bitrate', 'false');"
+                            "localStorage.setItem('wingman_setting_quality_overlay', 'true');")
+    page = context.new_page()
+    page.route("**/api/**", lambda route: api_route(route, state))
+    ui_harness.mock_video_feed(page)
+    page.on("dialog", lambda dialog: dialog.accept())
+    try:
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="load", timeout=15000)
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        settle_toolbar(page)
+        page.click("#settings-toggle")
+        page.wait_for_selector("#settings-dialog[open]", timeout=3000)
+        before = (page.is_checked("#setting-adaptive-bitrate"), page.get_attribute("#quality-toggle", "aria-pressed"))
+        check(checks, before == (False, "true"), "reset_test_starts_from_changed_preferences", before)
+        page.click("#setting-reset-btn")
+        ui_harness.wait_until(page, lambda: page.is_checked("#setting-adaptive-bitrate"))
+        after = page.evaluate("""() => ({
+          adaptive: window.__wingmanTest.adaptiveBitrate().enabled,
+          overlay: document.querySelector('#quality-toggle').getAttribute('aria-pressed'),
+          stored: [localStorage.getItem('wingman_setting_adaptive_bitrate'),
+                   localStorage.getItem('wingman_setting_quality_overlay')],
+        })""")
+        check(checks, after["adaptive"] is True and after["overlay"] == "false"
+              and after["stored"][0] != "false" and after["stored"][1] != "true",
+              "reset_restores_adaptive_bitrate_and_quality_overlay", after)
+    finally:
+        context.close()
+
+
+def escape_closes_menus(browser, port, checks):
+    """AUD3-30: Esc closes an open menu, returns focus to its toggle and keeps the inspector open."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        settle_toolbar(page)
+        for menu, toggle in (("#power-menu", "#power-menu-toggle"), ("#lang-menu", "#lang-toggle"),
+                             ("#quick-more-menu", "#quick-more-toggle"),
+                             ("#diagnostics-popover", "#diagnostics-toggle")):
+            page.click(toggle)
+            page.wait_for_selector(f"{menu}:not([hidden])", state="attached", timeout=3000)
+            # Focus inside the menu where it has focusable content, as a keyboard user would.
+            page.evaluate("""(menu) => {
+              const item = document.querySelector(menu).querySelector('button:not([hidden])');
+              if (item && item.offsetParent !== null) item.focus();
+            }""", menu)
+            page.keyboard.press("Escape")
+            result = page.evaluate("""([menu, toggle]) => ({
+              hidden: document.querySelector(menu).hasAttribute('hidden'),
+              expanded: document.querySelector(toggle).getAttribute('aria-expanded'),
+              focused: document.activeElement === document.querySelector(toggle),
+              inspector: document.querySelector('#app').classList.contains('inspector-open'),
+            })""", [menu, toggle])
+            check(checks, result == {"hidden": True, "expanded": "false", "focused": True, "inspector": True},
+                  f"escape_closes_{menu[1:]}", result)
+
+        # With the inspector and no menu open, Esc still collapses the inspector.
+        page.locator("#video-viewport").focus()
+        page.keyboard.press("Escape")
+        collapsed = page.evaluate("() => !document.querySelector('#app').classList.contains('inspector-open')")
+        check(checks, collapsed, "escape_without_menu_collapses_inspector", collapsed)
+
+        # While forwarding: Esc that closes a menu is not sent; the next one is.
+        page.click("#input-state")
+        page.click("#quick-more-toggle")
+        page.locator("#video-viewport").focus()
+        state.key_posts.clear()
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(200)
+        closed = page.evaluate("() => document.querySelector('#quick-more-menu').hasAttribute('hidden')")
+        sent = [p.get("key") for p in state.key_posts]
+        check(checks, closed and not sent, "escape_closing_menu_not_forwarded", (closed, sent))
+        page.locator("#video-viewport").focus()
+        page.keyboard.press("Escape")
+        forwarded = ui_harness.wait_until(page, lambda: any(p.get("key") == "Escape" for p in state.key_posts))
+        check(checks, forwarded, "escape_forwarded_when_no_menu_open", state.key_posts)
+    finally:
+        context.close()
+
+
+def served_text(port, path):
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as response:
+        return response.read().decode("utf-8")
+
+
+def i18n_key_tables(source):
+    """{lang: set(keys)} from the I18N object literal in 01-i18n.js (one `key: '...'` per line)."""
+    body = source[source.index("const I18N = {"):source.index("let currentLang")]
+    tables, lang = {}, None
+    for line in body.splitlines():
+        head = re.match(r"^  '?(zh-CN|zh-TW|en)'?: \{", line)
+        if head:
+            lang = head.group(1)
+            tables[lang] = set()
+            continue
+        key = re.match(r"^    ([A-Za-z0-9_]+):", line)
+        if key and lang:
+            tables[lang].add(key.group(1))
+    return tables
+
+
+def i18n_keys_complete(browser, port, checks):
+    """AUD3-31: every t('key') and data-i18n key exists in all three tables; flagged copy translates."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        modules = page.evaluate("""() => performance.getEntriesByType('resource')
+          .map((entry) => new URL(entry.name).pathname).filter((path) => path.startsWith('/assets/js/'))""")
+        tables = i18n_key_tables(served_text(port, "/assets/js/01-i18n.js"))
+        used = {}
+        for path in sorted(set(modules)):
+            for key in re.findall(r"\bt\(\s*'([A-Za-z0-9_]+)'", served_text(port, path)):
+                used.setdefault(key, path)
+        for key in re.findall(r'data-i18n="([^"]+)"', served_text(port, "/")):
+            used.setdefault(key, "index.html")
+        missing = sorted(f"{key}@{where}:{lang}" for key, where in used.items()
+                         for lang in ("zh-CN", "zh-TW", "en") if key not in tables.get(lang, ()))
+        check(checks, len(modules) > 20 and set(tables) == {"zh-CN", "zh-TW", "en"} and not missing,
+              "every_i18n_key_in_all_tables", missing[:12] or (len(modules), sorted(tables)))
+
+        settle_toolbar(page)
+        page.click("#lang-toggle")
+        page.click('[data-lang="en"]')
+        page.locator('[data-panel-target="video"]').click()
+        page.click('[data-video-preset="desktop"]')
+        cjk = re.compile("[一-鿿]")
+        toast = page.text_content("#toast") or ""
+        check(checks, toast and not cjk.search(toast), "preset_toast_translated", toast)
+        texts = page.evaluate("""async () => {
+          const {tr} = await import('/assets/js/01-i18n.js');
+          return [
+            document.querySelector('#macro-manager-title').textContent,
+            document.querySelector('#macro-play-progress').getAttribute('aria-label'),
+            document.querySelector('#media-download-form [name="sha256"]').getAttribute('placeholder'),
+            // xterm output bypasses the phrase observer, so the code must tr() it.
+            tr('终端连接失败'),
+          ];
+        }""")
+        check(checks, not any(cjk.search(text or "") for text in texts), "flagged_copy_translated", texts)
+
+        # xterm output bypasses the phrase observer; the mock has no terminal socket, so it fails.
+        page.click('[data-workspace="terminal"]')
+        read_terminal = """async () => {
+          const {shared} = await import('/assets/js/state.js'), buffer = shared.terminal?.buffer.active;
+          if (!buffer) return '';
+          return Array.from({length: buffer.length}, (_, i) => buffer.getLine(i)?.translateToString(true) || '')
+            .join('\\n').trim();
+        }"""
+        ui_harness.wait_until(page, lambda: page.evaluate(read_terminal), timeout=5)
+        terminal = page.evaluate(read_terminal)
+        check(checks, "Terminal connection failed" in terminal and not cjk.search(terminal),
+              "terminal_failure_translated", terminal)
     finally:
         context.close()
 
