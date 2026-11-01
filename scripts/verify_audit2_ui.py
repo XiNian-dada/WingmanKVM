@@ -2621,13 +2621,29 @@ def hdmi_audio_mjpeg_unavailable(browser, port, checks):
         # aria-disabled keeps the button clickable so it can explain itself;
         # Playwright skips its actionability wait for it, so let the console
         # finish fitting to the picture first.
-        page.wait_for_function("""() => new Promise((resolve) => {
-          const box = () => JSON.stringify(document.querySelector('#audio-toggle').getBoundingClientRect());
-          const first = box();
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve(box() === first)));
-        })""", timeout=5000)
+        # Right after load the inspector panel opens asynchronously and the
+        # console narrows, so the toolbar briefly sits under the panel. Click
+        # only once the button hit-tests to itself and has stopped moving.
+        hit_js = """() => {
+          const b = document.querySelector('#audio-toggle'), r = b.getBoundingClientRect();
+          const e = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+          return e && (e === b || b.contains(e)) ? [r.x, r.y] : null;
+        }"""
+        previous = None
+        for _ in range(40):
+            current = page.evaluate(hit_js)
+            if current and current == previous:
+                break
+            previous = current
+            page.wait_for_timeout(300)
         page.click("#audio-toggle", force=True)
-        page.wait_for_timeout(100)
+        try:
+            page.wait_for_function(
+                "() => (document.querySelector('#toast')?.textContent || '').includes('MJPEG 模式不支持音频')",
+                timeout=3000,
+            )
+        except Exception:
+            pass
         toast = page.text_content("#toast") or ""
         check(checks, "MJPEG 模式不支持音频" in toast and audio_button(page)["state"] == "unavailable",
               "audio_mjpeg_click_explains", toast)
