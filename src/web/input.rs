@@ -122,10 +122,15 @@ pub(super) async fn send_release_all(state: &AppState) -> Result<(), ApiError> {
 
 /// A revoked session can no longer reach any input endpoint, so whatever it held
 /// (an HTTP client has no socket whose end would release it) is let go right away.
-pub(super) async fn release_after_session_end(state: &AppState) {
-    if let Err(error) = send_release_all(state).await {
-        tracing::warn!(error = %error.message, "release after session end failed");
-    }
+/// Spawned: a target that is off makes these writes time out, and that must not
+/// hold up the logout or revoke response.
+pub(super) fn release_after_session_end(state: &AppState) {
+    let state = state.clone();
+    tokio::spawn(async move {
+        if let Err(error) = send_release_all(&state).await {
+            tracing::warn!(error = %error.message, "release after session end failed");
+        }
+    });
 }
 
 pub(super) async fn key(

@@ -441,7 +441,7 @@ mod tests {
         let press = AbsolutePointerRequest::Press { x: 1, y: 2, button: 4 };
         send_mouse_absolute(&server.state, press).await.unwrap();
         assert_eq!(server.report::<6>().await, [4, 1, 0, 2, 0, 0]);
-        release_after_session_end(&server.state).await;
+        release_after_session_end(&server.state);
         assert_eq!(server.report::<6>().await, [0, 1, 0, 2, 0, 0]);
     }
 
