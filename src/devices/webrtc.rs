@@ -1537,7 +1537,7 @@ fn select_encoder(
     })
 }
 
-struct EncoderGuard {
+pub(super) struct EncoderGuard {
     child: Option<TokioChild>,
     tasks: Vec<AbortHandle>,
 }
@@ -1560,14 +1560,14 @@ fn signal_encoder_group(child: &TokioChild) {
 fn signal_encoder_group(_child: &TokioChild) {}
 
 impl EncoderGuard {
-    fn new(child: TokioChild, tasks: Vec<AbortHandle>) -> Self {
+    pub(super) fn new(child: TokioChild, tasks: Vec<AbortHandle>) -> Self {
         Self {
             child: Some(child),
             tasks,
         }
     }
 
-    async fn wait_for_exit(&mut self, timeout: Duration) -> Option<ExitStatus> {
+    pub(super) async fn wait_for_exit(&mut self, timeout: Duration) -> Option<ExitStatus> {
         let child = self.child.as_mut()?;
         match tokio::time::timeout(timeout, child.wait()).await {
             Ok(Ok(status)) => {
@@ -1582,7 +1582,7 @@ impl EncoderGuard {
         }
     }
 
-    async fn shutdown(&mut self) {
+    pub(super) async fn shutdown(&mut self) {
         for task in self.tasks.drain(..) {
             task.abort();
         }
@@ -1606,7 +1606,7 @@ impl Drop for EncoderGuard {
     }
 }
 
-async fn wait_for_cancel(receiver: &mut watch::Receiver<bool>) {
+pub(super) async fn wait_for_cancel(receiver: &mut watch::Receiver<bool>) {
     if *receiver.borrow() {
         return;
     }
@@ -1924,7 +1924,7 @@ fn annex_b_nal_units(bytes: &[u8]) -> Vec<(usize, usize)> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::config::VideoConfig;
     use std::{fs, future::pending};
@@ -1933,7 +1933,7 @@ mod tests {
     static PROBE_FIXTURE_LOCK: Mutex<()> = Mutex::new(());
 
     #[cfg(unix)]
-    fn serial_probe_fixture() -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn serial_probe_fixture() -> std::sync::MutexGuard<'static, ()> {
         PROBE_FIXTURE_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1945,7 +1945,7 @@ mod tests {
     /// stop a test if the fixture never runs; it is not a performance
     /// assertion.
     #[cfg(unix)]
-    const FIXTURE_POLL_TIMEOUT: Duration = Duration::from_secs(20);
+    pub(crate) const FIXTURE_POLL_TIMEOUT: Duration = Duration::from_secs(20);
 
     /// The probe deadline used by tests that deliberately hang a fixture. It is
     /// intentionally much larger than the production default (3s) so the
@@ -2551,13 +2551,13 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[cfg(unix)]
-    struct ProbeFixture {
+    pub(crate) struct ProbeFixture {
         directory: PathBuf,
     }
 
     #[cfg(unix)]
     impl ProbeFixture {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let mut random = [0_u8; 8];
             getrandom::fill(&mut random).unwrap();
             let directory = std::env::temp_dir().join(format!(
@@ -2569,14 +2569,14 @@ mod tests {
             Self { directory }
         }
 
-        fn script(&self, name: &str, body: &str) -> PathBuf {
+        pub(crate) fn script(&self, name: &str, body: &str) -> PathBuf {
             let path = self.directory.join(name);
             fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
             path
         }
 
-        fn path(&self, name: &str) -> PathBuf {
+        pub(crate) fn path(&self, name: &str) -> PathBuf {
             self.directory.join(name)
         }
 
@@ -2598,7 +2598,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn shell_quote(value: &Path) -> String {
+    pub(crate) fn shell_quote(value: &Path) -> String {
         format!("'{}'", value.to_string_lossy().replace('\'', "'\\''"))
     }
 
@@ -2619,7 +2619,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn process_exists(pid: u32) -> bool {
+    pub(crate) fn process_exists(pid: u32) -> bool {
         let result = unsafe { libc::kill(pid as i32, 0) };
         result == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
@@ -2811,7 +2811,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn wait_for_fixture_pid(path: &Path) -> u32 {
+    pub(crate) async fn wait_for_fixture_pid(path: &Path) -> u32 {
         let deadline = Instant::now() + FIXTURE_POLL_TIMEOUT;
         loop {
             if let Ok(text) = fs::read_to_string(path)
@@ -2827,7 +2827,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn wait_for_fixture_exit(pid: u32) {
+    pub(crate) async fn wait_for_fixture_exit(pid: u32) {
         let deadline = Instant::now() + FIXTURE_POLL_TIMEOUT;
         while process_exists(pid) && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(20)).await;
