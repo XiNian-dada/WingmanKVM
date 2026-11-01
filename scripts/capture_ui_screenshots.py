@@ -1,5 +1,5 @@
 import os
-from ui_bundle import load_index_html
+from ui_bundle import MODULE_TYPE, load_index_html, module_source
 import json
 import base64
 from playwright.sync_api import sync_playwright
@@ -129,7 +129,9 @@ CHROME_PATH = "/Users/bernard/Library/Caches/ms-playwright/chromium_headless_she
 def setup_routes(page):
     def route_main(route):
         url = route.request.url
-        if "/assets/xterm.css" in url:
+        if module_source(url) is not None:
+            route.fulfill(status=200, content_type=MODULE_TYPE, body=module_source(url))
+        elif "/assets/xterm.css" in url:
             route.fulfill(status=200, content_type="text/css", body=xterm_css)
         elif "/assets/xterm-fit.js" in url:
             route.fulfill(status=200, content_type="application/javascript", body=xterm_fit_js)

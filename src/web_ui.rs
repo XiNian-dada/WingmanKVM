@@ -21,48 +21,72 @@ pub static APP_CSS_PARTS: &[&str] = &[
 ];
 
 pub static APP_CSS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| APP_CSS_PARTS.concat());
-/// The app script is one IIFE split into ordered feature fragments. They share
-/// closure state, so they are concatenated rather than loaded as modules.
-pub static APP_JS_PARTS: &[&str] = &[
-    include_str!("../web/js/app/00-core.js"),
-    include_str!("../web/js/app/01-i18n-phrases.js"),
-    include_str!("../web/js/app/01-i18n.js"),
-    include_str!("../web/js/app/02-theme-layout.js"),
-    include_str!("../web/js/app/03-session.js"),
-    include_str!("../web/js/app/04-video-settings.js"),
-    include_str!("../web/js/app/05-power.js"),
-    include_str!("../web/js/app/06-devices.js"),
-    include_str!("../web/js/app/07-video.js"),
-    include_str!("../web/js/app/07a-pip.js"),
-    include_str!("../web/js/app/07b-quality.js"),
-    include_str!("../web/js/app/07z-keyboard-macros.js"),
-    include_str!("../web/js/app/07c-adaptive-bitrate.js"),
-    include_str!("../web/js/app/07d-audio.js"),
-    include_str!("../web/js/app/08-input.js"),
-    include_str!("../web/js/app/08a-input-socket.js"),
-    include_str!("../web/js/app/08b-touch.js"),
-    include_str!("../web/js/app/08c-latency.js"),
-    include_str!("../web/js/app/09-terminal.js"),
-    include_str!("../web/js/app/10-workspace-status.js"),
-    include_str!("../web/js/app/11-media.js"),
-    include_str!("../web/js/app/12-passkey.js"),
-    include_str!("../web/js/app/12a-sessions-audit.js"),
-    include_str!("../web/js/app/12b-notifications.js"),
-    include_str!("../web/js/app/12c-online-update.js"),
-    include_str!("../web/js/app/13-settings-boot.js"),
+
+/// Embeds each app module as `(file name, source)`.
+macro_rules! app_js_modules {
+    ($($name:literal),* $(,)?) => {
+        &[$(($name, include_str!(concat!("../web/js/app/", $name)))),*]
+    };
+}
+
+/// The app script ships as native ES modules: index.html loads `main.js` with
+/// `<script type="module">` and the browser follows the static imports. Every
+/// file of web/js/app/ is embedded here (a test keeps the list complete) and
+/// served unchanged at `/assets/js/<name>`; there is no bundler. Load order is
+/// not set here: `main.js` runs each module's `init()` and then the boot
+/// sequence.
+pub static APP_JS_MODULES: &[(&str, &str)] = app_js_modules![
+    "main.js",
+    "state.js",
+    "00-core.js",
+    "00-settings.js",
+    "01-i18n-phrases.js",
+    "01-i18n.js",
+    "02-theme-layout.js",
+    "03-session.js",
+    "04-video-settings.js",
+    "05-power.js",
+    "06-devices.js",
+    "07-video.js",
+    "07a-pip.js",
+    "07b-quality.js",
+    "07z-keyboard-macros.js",
+    "07c-adaptive-bitrate.js",
+    "07d-audio.js",
+    "08-input.js",
+    "08a-input-socket.js",
+    "08b-touch.js",
+    "08c-latency.js",
+    "09-terminal.js",
+    "10-workspace-status.js",
+    "11-media.js",
+    "12-passkey.js",
+    "12a-sessions-audit.js",
+    "12b-notifications.js",
+    "12c-online-update.js",
+    "13-settings-boot.js",
 ];
 
-pub static APP_JS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| APP_JS_PARTS.concat());
+/// Source of the embedded app module `name` (e.g. `"main.js"`).
+pub fn app_js_module(name: &str) -> Option<&'static str> {
+    APP_JS_MODULES
+        .iter()
+        .find(|(module, _)| *module == name)
+        .map(|(_, source)| *source)
+}
+
 pub static ICON_SVG: &str = include_str!("../web/icon.svg");
 
 #[cfg(test)]
 mod tests {
-    use super::{APP_CSS, APP_JS, ICON_SVG};
+    use super::{APP_CSS, APP_JS_MODULES, ICON_SVG};
 
-    /// The full UI source as the browser assembles it, with all whitespace
-    /// removed so assertions check content rather than source formatting.
+    /// The full UI source the browser loads (markup, stylesheet and every app
+    /// module), with all whitespace removed so assertions check content rather
+    /// than source formatting.
     static INDEX_HTML: std::sync::LazyLock<UiSource> = std::sync::LazyLock::new(|| {
-        UiSource(compact(&[super::INDEX_HTML, APP_CSS.as_str(), APP_JS.as_str()].concat()))
+        let modules: String = APP_JS_MODULES.iter().map(|(_, source)| *source).collect();
+        UiSource(compact(&[super::INDEX_HTML, APP_CSS.as_str(), modules.as_str()].concat()))
     });
 
     fn compact(text: &str) -> String {
@@ -81,6 +105,83 @@ mod tests {
         fn matches(&self, needle: &str) -> std::vec::IntoIter<()> {
             vec![(); self.0.matches(&compact(needle)).count()].into_iter()
         }
+    }
+
+    /// Specifiers of the static imports that open a module, plus the source
+    /// after them. Imports are `import { a } from './x.js';` or
+    /// `import './x.js';`; their name lists never contain `;`.
+    fn module_imports(source: &str) -> (Vec<&str>, &str) {
+        let mut specifiers = Vec::new();
+        let mut rest = source;
+        loop {
+            let trimmed = rest.trim_start();
+            if trimmed.starts_with("//") {
+                rest = trimmed.split_once('\n').map_or("", |(_, tail)| tail);
+            } else if trimmed.starts_with("import ") || trimmed.starts_with("import{") {
+                let (statement, tail) = trimmed.split_once(';').expect("import statement ends with ;");
+                let quoted = statement.rsplit('\'').nth(1).expect("import has a quoted specifier");
+                specifiers.push(quoted);
+                rest = tail;
+            } else {
+                return (specifiers, trimmed);
+            }
+        }
+    }
+
+    #[test]
+    fn every_module_import_resolves_to_an_embedded_module() {
+        let names: std::collections::HashSet<&str> = APP_JS_MODULES.iter().map(|(name, _)| *name).collect();
+        assert_eq!(names.len(), APP_JS_MODULES.len(), "duplicate module name");
+        for (name, source) in APP_JS_MODULES {
+            let (imports, body) = module_imports(source);
+            // A later import would be missed above, so none may exist.
+            assert!(
+                !body.lines().any(|line| line.trim_start().starts_with("import ") || line.contains("from './")),
+                "{name}: imports must open the module"
+            );
+            assert!(!body.contains("import("), "{name}: dynamic import is not embedded-checked");
+            for specifier in imports {
+                let target = specifier
+                    .strip_prefix("./")
+                    .filter(|target| !target.contains('/'))
+                    .unwrap_or_else(|| panic!("{name}: import {specifier:?} must name a sibling module"));
+                assert!(names.contains(target), "{name} imports {specifier}, which is not embedded");
+            }
+        }
+    }
+
+    #[test]
+    fn index_loads_the_entry_module_and_every_module_is_reachable() {
+        assert!(super::INDEX_HTML.contains(r#"<script src="/assets/js/main.js" type="module"></script>"#));
+        let mut seen = vec!["main.js"];
+        let mut queue = vec!["main.js"];
+        while let Some(name) = queue.pop() {
+            let source = super::app_js_module(name).expect("embedded module");
+            for specifier in module_imports(source).0 {
+                let target = specifier.trim_start_matches("./");
+                if !seen.contains(&target) {
+                    seen.push(target);
+                    queue.push(target);
+                }
+            }
+        }
+        for (name, _) in APP_JS_MODULES {
+            assert!(seen.contains(name), "{name} is embedded but never imported");
+        }
+    }
+
+    #[test]
+    fn every_module_file_is_embedded() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("web/js/app");
+        let mut on_disk: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.ends_with(".js"))
+            .collect();
+        on_disk.sort();
+        let mut embedded: Vec<&str> = APP_JS_MODULES.iter().map(|(name, _)| *name).collect();
+        embedded.sort();
+        assert_eq!(on_disk, embedded, "web/js/app and APP_JS_MODULES differ");
     }
 
     #[test]
@@ -262,7 +363,7 @@ mod tests {
         assert!(INDEX_HTML.contains("id=\"diag-audio\""));
         assert!(INDEX_HTML.contains("MJPEG 模式不支持音频"));
         assert!(INDEX_HTML.contains("peer.addTransceiver('audio', { direction: 'recvonly' })"));
-        assert!(INDEX_HTML.contains("webrtcFeed.muted = !active || audioMuted"));
+        assert!(INDEX_HTML.contains("webrtcFeed.muted = !active || shared.audioMuted"));
         // The <video> element starts muted for autoplay.
         assert!(INDEX_HTML.contains("autoplay muted playsinline"));
     }

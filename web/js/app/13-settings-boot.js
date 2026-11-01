@@ -1,55 +1,267 @@
-  const settingsDialog = $('#settings-dialog');
-  function applyRenderPixelated(enabled) {
-    setVideoRendering(enabled ? 'pixelated' : 'smooth', true);
+import { shared } from './state.js';
+import { $, $$ } from './00-core.js';
+import { getSetting, setSetting, SETTING_DEFAULTS } from './00-settings.js';
+import { t } from './01-i18n.js';
+import { request, toast } from './03-session.js';
+import { setVideoRendering, unwrapConfig } from './04-video-settings.js';
+import { setAdaptiveBitrateEnabled } from './07c-adaptive-bitrate.js';
+import { targetLayout, updatePasteLayoutLabel } from './08-input.js';
+import { refreshPasskeys } from './12-passkey.js';
+import { refreshAudit, refreshSessions } from './12a-sessions-audit.js';
+import { refreshNotifications } from './12b-notifications.js';
+import { refreshOnlineUpdate } from './12c-online-update.js';
+
+const settingsDialog = $('#settings-dialog');
+function applyRenderPixelated(enabled) {
+  setVideoRendering(enabled ? 'pixelated' : 'smooth', true);
+}
+function syncSettingsDialogUi() {
+  if (!settingsDialog) return;
+  const hidCheckbox = $('#setting-suppress-hid-timeout');
+  if (hidCheckbox) hidCheckbox.checked = getSetting('suppress_hid_timeout', false);
+  const pulseCheckbox = $('#setting-capture-pulse');
+  if (pulseCheckbox) pulseCheckbox.checked = getSetting('capture_pulse', true);
+  const releaseCheckbox = $('#setting-release-toast');
+  if (releaseCheckbox) releaseCheckbox.checked = getSetting('release_key_toast', true);
+  const pixelCheckbox = $('#setting-render-pixelated');
+  if (pixelCheckbox) pixelCheckbox.checked = getSetting('render_pixelated', true);
+  const inspectorCheckbox = $('#setting-auto-inspector');
+  if (inspectorCheckbox) inspectorCheckbox.checked = getSetting('auto_expand_inspector', true);
+  const adaptiveCheckbox = $('#setting-adaptive-bitrate');
+  if (adaptiveCheckbox) adaptiveCheckbox.checked = getSetting('adaptive_bitrate', true) !== false;
+  const proxySelect = $('#setting-proxy-protocol');
+  if (proxySelect) {
+    const config = unwrapConfig(shared.bootstrap);
+    proxySelect.value = config.server?.proxy_protocol || 'disabled';
   }
-  function syncSettingsDialogUi() {
-    if (!settingsDialog) return;
-    const hidCheckbox = $('#setting-suppress-hid-timeout');
-    if (hidCheckbox) hidCheckbox.checked = getSetting('suppress_hid_timeout', false);
-    const pulseCheckbox = $('#setting-capture-pulse');
-    if (pulseCheckbox) pulseCheckbox.checked = getSetting('capture_pulse', true);
-    const releaseCheckbox = $('#setting-release-toast');
-    if (releaseCheckbox) releaseCheckbox.checked = getSetting('release_key_toast', true);
-    const pixelCheckbox = $('#setting-render-pixelated');
-    if (pixelCheckbox) pixelCheckbox.checked = getSetting('render_pixelated', true);
-    const inspectorCheckbox = $('#setting-auto-inspector');
-    if (inspectorCheckbox) inspectorCheckbox.checked = getSetting('auto_expand_inspector', true);
-    const adaptiveCheckbox = $('#setting-adaptive-bitrate');
-    if (adaptiveCheckbox) adaptiveCheckbox.checked = getSetting('adaptive_bitrate', true) !== false;
-    const proxySelect = $('#setting-proxy-protocol');
-    if (proxySelect) {
-      const config = unwrapConfig(bootstrap);
-      proxySelect.value = config.server?.proxy_protocol || 'disabled';
+  const layoutSelect = $('#setting-target-layout');
+  if (layoutSelect) layoutSelect.value = targetLayout();
+}
+function openSettingsDialog() {
+  if (!settingsDialog) return;
+  syncSettingsDialogUi();
+  refreshPasskeys();
+  refreshSessions();
+  refreshAudit();
+  refreshNotifications();
+  refreshOnlineUpdate();
+  try {
+    if (typeof settingsDialog.showModal === 'function') {
+      settingsDialog.showModal();
+    } else if (typeof settingsDialog.show === 'function') {
+      settingsDialog.show();
     }
-    const layoutSelect = $('#setting-target-layout');
-    if (layoutSelect) layoutSelect.value = targetLayout();
-  }
-  function openSettingsDialog() {
-    if (!settingsDialog) return;
-    syncSettingsDialogUi();
-    refreshPasskeys();
-    refreshSessions();
-    refreshAudit();
-    refreshNotifications();
-    refreshOnlineUpdate();
+  } catch (_) {
     try {
-      if (typeof settingsDialog.showModal === 'function') {
-        settingsDialog.showModal();
-      } else if (typeof settingsDialog.show === 'function') {
-        settingsDialog.show();
-      }
-    } catch (_) {
-      try {
-        settingsDialog.show?.();
-      } catch (__) {}
+      settingsDialog.show?.();
+    } catch (__) {}
+  }
+}
+function closeSettingsDialog() {
+  if (!settingsDialog) return;
+  try {
+    settingsDialog.close?.();
+  } catch (_) {}
+}
+
+const configExportBtn = $('#config-export-btn');
+const configImportBtn = $('#config-import-btn');
+const configImportFile = $('#config-import-file');
+const configImportDialog = $('#config-import-dialog');
+const configImportConfirm = $('#config-import-confirm');
+let pendingConfigImport = null;
+let configImportBusy = false;
+
+async function configResponseError(response, fallback) {
+  try {
+    const data = await response.json();
+    if (data && data.error) return data.error;
+  } catch (_) {}
+  return fallback || `请求失败 (${response.status})`;
+}
+
+function configFilename(response) {
+  const disposition = response.headers.get('content-disposition') || '';
+  const match = /filename="?([^";]+)"?/i.exec(disposition);
+  return match ? match[1] : `wingmankvm-config-${new Date().toISOString().slice(0, 10)}.json`;
+}
+
+async function exportConfigFile() {
+  if (!configExportBtn || configExportBtn.disabled) return;
+  configExportBtn.disabled = true;
+  try {
+    const response = await fetch('/api/config/export', {
+      cache: 'no-store',
+      credentials: 'same-origin',
+    });
+    if (!response.ok) throw new Error(await configResponseError(response, '导出失败'));
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = configFilename(response);
+    link.rel = 'noopener';
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('配置已导出');
+  } catch (err) {
+    toast(err.message || '导出失败', true);
+  } finally {
+    configExportBtn.disabled = false;
+  }
+}
+
+function setConfigImportStatus(message, bad = false) {
+  const status = $('#config-import-status');
+  if (!status) return;
+  status.textContent = message;
+  status.classList.toggle('error', bad);
+}
+
+function formatConfigValue(value) {
+  if (value === undefined) return '—';
+  try {
+    return JSON.stringify(value);
+  } catch (_) {
+    return String(value);
+  }
+}
+
+function renderConfigChanges(changes) {
+  const list = $('#config-import-diff');
+  if (!list) return;
+  list.textContent = '';
+  if (!changes.length) {
+    const empty = document.createElement('p');
+    empty.className = 'config-diff-empty';
+    empty.textContent = '没有差异';
+    list.append(empty);
+    return;
+  }
+  for (const change of changes) {
+    const item = document.createElement('div');
+    item.className = 'config-diff-item';
+    const path = document.createElement('code');
+    path.className = 'config-diff-path';
+    path.textContent = change.path;
+    const values = document.createElement('span');
+    values.className = 'config-diff-values';
+    const oldValue = document.createElement('span');
+    oldValue.className = 'config-diff-old';
+    oldValue.textContent = formatConfigValue(change.old);
+    const arrow = document.createElement('span');
+    arrow.textContent = '→';
+    const newValue = document.createElement('span');
+    newValue.className = 'config-diff-new';
+    newValue.textContent = formatConfigValue(change.new);
+    values.append(oldValue, arrow, newValue);
+    item.append(path, values);
+    list.append(item);
+  }
+}
+
+function openConfigImportDialog() {
+  if (!configImportDialog) return;
+  try {
+    if (typeof configImportDialog.showModal === 'function') configImportDialog.showModal();
+    else configImportDialog.show?.();
+  } catch (_) {
+    try {
+      configImportDialog.show?.();
+    } catch (__) {}
+  }
+}
+
+function resetConfigImportDialog() {
+  pendingConfigImport = null;
+  configImportBusy = false;
+  if (configImportConfirm) configImportConfirm.disabled = true;
+  const summary = $('#config-import-summary');
+  if (summary) summary.textContent = '';
+  setConfigImportStatus('');
+  renderConfigChanges([]);
+}
+
+function closeConfigImportDialog() {
+  resetConfigImportDialog();
+  try {
+    configImportDialog?.close?.();
+  } catch (_) {}
+}
+
+async function previewConfigImport(file) {
+  if (!file || !configImportDialog) return;
+  resetConfigImportDialog();
+  openConfigImportDialog();
+  if (file.size > 256 * 1024) {
+    setConfigImportStatus('配置文件超过 256 KiB 限制', true);
+    return;
+  }
+  let text;
+  try {
+    text = await file.text();
+  } catch (_) {
+    setConfigImportStatus('无法读取配置文件', true);
+    return;
+  }
+  pendingConfigImport = text;
+  configImportBusy = true;
+  try {
+    const preview = await request('/api/config/import/preview', { method: 'POST', body: text });
+    const changes = Array.isArray(preview.changes) ? preview.changes : [];
+    renderConfigChanges(changes);
+    const summary = $('#config-import-summary');
+    if (summary) summary.textContent = `共 ${changes.length} 处更改`;
+    if (configImportConfirm) configImportConfirm.disabled = changes.length === 0;
+    if (preview.restart_required) {
+      setConfigImportStatus('导入后需要重启服务以应用新的监听地址或端口。');
+    } else {
+      setConfigImportStatus(
+        changes.length ? '预览完成，确认后才会写入配置。' : '当前配置与导入文件一致，无需更改。',
+      );
     }
+  } catch (err) {
+    pendingConfigImport = null;
+    renderConfigChanges([]);
+    const summary = $('#config-import-summary');
+    if (summary) summary.textContent = '';
+    setConfigImportStatus(`导入失败：${err.message}`, true);
+  } finally {
+    configImportBusy = false;
   }
-  function closeSettingsDialog() {
-    if (!settingsDialog) return;
-    try {
-      settingsDialog.close?.();
-    } catch (_) {}
+}
+
+async function applyConfigImport() {
+  if (!pendingConfigImport || configImportBusy || !configImportConfirm) return;
+  configImportBusy = true;
+  configImportConfirm.disabled = true;
+  try {
+    const result = await request('/api/config/import', {
+      method: 'POST',
+      body: pendingConfigImport,
+    });
+    pendingConfigImport = null;
+    const count = Array.isArray(result.changes) ? result.changes.length : 0;
+    if (result.restart_required) {
+      setConfigImportStatus(
+        `配置导入成功：共 ${count} 处更改。新的监听地址或端口将在重启服务后生效。`,
+      );
+    } else {
+      setConfigImportStatus(`配置导入成功：共 ${count} 处更改。`);
+    }
+    toast('配置导入成功');
+  } catch (err) {
+    setConfigImportStatus(`导入失败：${err.message}`, true);
+    configImportConfirm.disabled = false;
+  } finally {
+    configImportBusy = false;
   }
+}
+
+// DOM wiring; main.js calls this once, in the original fragment order.
+export function init() {
   $('#settings-toggle')?.addEventListener('click', openSettingsDialog);
   $('#settings-inspector-btn')?.addEventListener('click', openSettingsDialog);
   $$('[data-settings-close]', settingsDialog).forEach((btn) =>
@@ -90,7 +302,7 @@
   $('#setting-proxy-protocol')?.addEventListener('change', async (e) => {
     const select = e.target;
     const mode = select.value;
-    const previousMode = unwrapConfig(bootstrap).server?.proxy_protocol || 'disabled';
+    const previousMode = unwrapConfig(shared.bootstrap).server?.proxy_protocol || 'disabled';
     // This is a server listener setting that applies to every new connection
     // immediately; "required" locks out any client not behind a PPv2 proxy.
     const warning =
@@ -112,7 +324,7 @@
         method: 'POST',
         body: JSON.stringify({ server: { proxy_protocol: mode } }),
       });
-      const config = unwrapConfig(bootstrap);
+      const config = unwrapConfig(shared.bootstrap);
       if (!config.server) config.server = {};
       config.server.proxy_protocol = saved.server.proxy_protocol;
       select.value = config.server.proxy_protocol;
@@ -150,202 +362,6 @@
     toast(t('settings_reset_done', '已恢复默认设置'));
   });
 
-  const configExportBtn = $('#config-export-btn');
-  const configImportBtn = $('#config-import-btn');
-  const configImportFile = $('#config-import-file');
-  const configImportDialog = $('#config-import-dialog');
-  const configImportConfirm = $('#config-import-confirm');
-  let pendingConfigImport = null;
-  let configImportBusy = false;
-
-  async function configResponseError(response, fallback) {
-    try {
-      const data = await response.json();
-      if (data && data.error) return data.error;
-    } catch (_) {}
-    return fallback || `请求失败 (${response.status})`;
-  }
-
-  function configFilename(response) {
-    const disposition = response.headers.get('content-disposition') || '';
-    const match = /filename="?([^";]+)"?/i.exec(disposition);
-    return match ? match[1] : `wingmankvm-config-${new Date().toISOString().slice(0, 10)}.json`;
-  }
-
-  async function exportConfigFile() {
-    if (!configExportBtn || configExportBtn.disabled) return;
-    configExportBtn.disabled = true;
-    try {
-      const response = await fetch('/api/config/export', {
-        cache: 'no-store',
-        credentials: 'same-origin',
-      });
-      if (!response.ok) throw new Error(await configResponseError(response, '导出失败'));
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = configFilename(response);
-      link.rel = 'noopener';
-      document.body.append(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      toast('配置已导出');
-    } catch (err) {
-      toast(err.message || '导出失败', true);
-    } finally {
-      configExportBtn.disabled = false;
-    }
-  }
-
-  function setConfigImportStatus(message, bad = false) {
-    const status = $('#config-import-status');
-    if (!status) return;
-    status.textContent = message;
-    status.classList.toggle('error', bad);
-  }
-
-  function formatConfigValue(value) {
-    if (value === undefined) return '—';
-    try {
-      return JSON.stringify(value);
-    } catch (_) {
-      return String(value);
-    }
-  }
-
-  function renderConfigChanges(changes) {
-    const list = $('#config-import-diff');
-    if (!list) return;
-    list.textContent = '';
-    if (!changes.length) {
-      const empty = document.createElement('p');
-      empty.className = 'config-diff-empty';
-      empty.textContent = '没有差异';
-      list.append(empty);
-      return;
-    }
-    for (const change of changes) {
-      const item = document.createElement('div');
-      item.className = 'config-diff-item';
-      const path = document.createElement('code');
-      path.className = 'config-diff-path';
-      path.textContent = change.path;
-      const values = document.createElement('span');
-      values.className = 'config-diff-values';
-      const oldValue = document.createElement('span');
-      oldValue.className = 'config-diff-old';
-      oldValue.textContent = formatConfigValue(change.old);
-      const arrow = document.createElement('span');
-      arrow.textContent = '→';
-      const newValue = document.createElement('span');
-      newValue.className = 'config-diff-new';
-      newValue.textContent = formatConfigValue(change.new);
-      values.append(oldValue, arrow, newValue);
-      item.append(path, values);
-      list.append(item);
-    }
-  }
-
-  function openConfigImportDialog() {
-    if (!configImportDialog) return;
-    try {
-      if (typeof configImportDialog.showModal === 'function') configImportDialog.showModal();
-      else configImportDialog.show?.();
-    } catch (_) {
-      try {
-        configImportDialog.show?.();
-      } catch (__) {}
-    }
-  }
-
-  function resetConfigImportDialog() {
-    pendingConfigImport = null;
-    configImportBusy = false;
-    if (configImportConfirm) configImportConfirm.disabled = true;
-    const summary = $('#config-import-summary');
-    if (summary) summary.textContent = '';
-    setConfigImportStatus('');
-    renderConfigChanges([]);
-  }
-
-  function closeConfigImportDialog() {
-    resetConfigImportDialog();
-    try {
-      configImportDialog?.close?.();
-    } catch (_) {}
-  }
-
-  async function previewConfigImport(file) {
-    if (!file || !configImportDialog) return;
-    resetConfigImportDialog();
-    openConfigImportDialog();
-    if (file.size > 256 * 1024) {
-      setConfigImportStatus('配置文件超过 256 KiB 限制', true);
-      return;
-    }
-    let text;
-    try {
-      text = await file.text();
-    } catch (_) {
-      setConfigImportStatus('无法读取配置文件', true);
-      return;
-    }
-    pendingConfigImport = text;
-    configImportBusy = true;
-    try {
-      const preview = await request('/api/config/import/preview', { method: 'POST', body: text });
-      const changes = Array.isArray(preview.changes) ? preview.changes : [];
-      renderConfigChanges(changes);
-      const summary = $('#config-import-summary');
-      if (summary) summary.textContent = `共 ${changes.length} 处更改`;
-      if (configImportConfirm) configImportConfirm.disabled = changes.length === 0;
-      if (preview.restart_required) {
-        setConfigImportStatus('导入后需要重启服务以应用新的监听地址或端口。');
-      } else {
-        setConfigImportStatus(
-          changes.length ? '预览完成，确认后才会写入配置。' : '当前配置与导入文件一致，无需更改。',
-        );
-      }
-    } catch (err) {
-      pendingConfigImport = null;
-      renderConfigChanges([]);
-      const summary = $('#config-import-summary');
-      if (summary) summary.textContent = '';
-      setConfigImportStatus(`导入失败：${err.message}`, true);
-    } finally {
-      configImportBusy = false;
-    }
-  }
-
-  async function applyConfigImport() {
-    if (!pendingConfigImport || configImportBusy || !configImportConfirm) return;
-    configImportBusy = true;
-    configImportConfirm.disabled = true;
-    try {
-      const result = await request('/api/config/import', {
-        method: 'POST',
-        body: pendingConfigImport,
-      });
-      pendingConfigImport = null;
-      const count = Array.isArray(result.changes) ? result.changes.length : 0;
-      if (result.restart_required) {
-        setConfigImportStatus(
-          `配置导入成功：共 ${count} 处更改。新的监听地址或端口将在重启服务后生效。`,
-        );
-      } else {
-        setConfigImportStatus(`配置导入成功：共 ${count} 处更改。`);
-      }
-      toast('配置导入成功');
-    } catch (err) {
-      setConfigImportStatus(`导入失败：${err.message}`, true);
-      configImportConfirm.disabled = false;
-    } finally {
-      configImportBusy = false;
-    }
-  }
-
   configExportBtn?.addEventListener('click', exportConfigFile);
   configImportBtn?.addEventListener('click', () => {
     if (configImportFile) {
@@ -365,18 +381,6 @@
   configImportDialog?.addEventListener('click', (event) => {
     if (event.target === configImportDialog) closeConfigImportDialog();
   });
+}
 
-  applyTheme(getPreferredTheme());
-  applyRenderPixelated(getSetting('render_pixelated', true));
-  setDisplayScale(readVideoUiPreference('scale', 'fit'));
-  collectStaticPhrases();
-  try {
-    const savedLang = localStorage.getItem('wingman_lang');
-    if (savedLang && ['zh-CN', 'zh-TW', 'en'].includes(savedLang)) setLanguage(savedLang);
-    else setLanguage('zh-CN');
-  } catch (_) {
-    setLanguage('zh-CN');
-  }
-  consumeSetupToken();
-  start();
-})();
+export { applyRenderPixelated, closeSettingsDialog };

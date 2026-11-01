@@ -88,7 +88,7 @@ cargo test --locked
 python3 scripts/verify_audit2_ui.py   # 需要 Playwright 与本机 Chrome
 ```
 
-前端源码在 `web/`（HTML、按功能拆分的 CSS 与 JS），编译时嵌入二进制。测试与 CI 详见 [测试说明](docs/TESTING.md)。
+前端源码在 `web/`（HTML、按功能拆分的 CSS，以及 `web/js/app/` 下的原生 ES 模块，无需打包），编译时嵌入二进制；前端用 ESLint 检查（`npm ci && npx eslint`）。测试与 CI 详见 [测试说明](docs/TESTING.md)。
 
 ## 许可证
 
