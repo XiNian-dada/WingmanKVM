@@ -3047,7 +3047,8 @@ def input_socket_drop_does_not_replay(browser, port, checks):
         context.close()
 
 
-LATENCY_MACRO = ("localStorage.setItem('wingman_keyboard_macros', JSON.stringify([{id: 'm1', name: 'x', "
+LATENCY_MACRO = ("if (location.protocol === 'http:') "  # not on the initial about:blank (SecurityError)
+                 "localStorage.setItem('wingman_keyboard_macros', JSON.stringify([{id: 'm1', name: 'x', "
                  "steps: [{key: 'KeyX', ctrl: false, shift: false, alt: false, meta: false, delay_ms: 0}]}]));")
 
 
