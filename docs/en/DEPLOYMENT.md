@@ -44,7 +44,7 @@ The official installer requires systemd and a Linux UDC, and deploys the full HI
 
 ### Installing from a release package (recommended)
 
-Release packages are built by GitHub Actions when a `v*` tag is pushed. They are named `wingmankvm-<版本>-<target>.tar.gz` and contain the binary, the complete `deploy/` directory, `LICENSE`, `README.md`, and `CHANGELOG.md`. Choose `aarch64-unknown-linux-gnu` for ARM64 hosts and `armv7-unknown-linux-gnueabihf` for 32-bit ARM hosts.
+Release packages are built by GitHub Actions when a `v*` tag is pushed. They are named `wingmankvm-v<version>-<target>.tar.gz` and contain the binary, the complete `deploy/` directory, `LICENSE`, `README.md`, and `CHANGELOG.md`. Choose `aarch64-unknown-linux-gnu` for ARM64 hosts and `armv7-unknown-linux-gnueabihf` for 32-bit ARM hosts.
 
 1. Download the `.tar.gz` for your architecture and the `SHA256SUMS` from the same Release from [Releases](https://github.com/XiNian-dada/WingmanKVM/releases), and put them in the same directory.
 2. Verify and extract:
@@ -52,7 +52,7 @@ Release packages are built by GitHub Actions when a `v*` tag is pushed. They are
    ```bash
    sha256sum -c --ignore-missing SHA256SUMS
    mkdir -p wingmankvm-release
-   tar -xzf wingmankvm-<版本>-<target>.tar.gz -C wingmankvm-release
+   tar -xzf wingmankvm-v<version>-<target>.tar.gz -C wingmankvm-release
    ```
 
    `--ignore-missing` allows you to download only the release package for the current architecture; do not continue if verification fails.
@@ -60,7 +60,7 @@ Release packages are built by GitHub Actions when a `v*` tag is pushed. They are
 
    ```bash
    cd wingmankvm-release
-   sudo ./deploy/install.sh --release ../wingmankvm-<版本>-<target>.tar.gz
+   sudo ./deploy/install.sh --release ../wingmankvm-v<version>-<target>.tar.gz
    ```
 
 When the installer finds `SHA256SUMS` in the same directory as the release package, it verifies the checksums again, then unpacks the package into a securely created temporary directory and reuses the file installation, health check, failure rollback, and upgrade recovery flow of `--binary`. The temporary directory is cleaned up on success, failure, and rollback paths.
@@ -78,7 +78,7 @@ cd WingmanKVM
 cargo build --release --locked
 ```
 
-A recent stable Rust is required. `v4l2-sys-mit` uses `linux/videodev2.h`, clang, and libclang through bindgen; if the build reports that the header cannot be found, make sure the Linux UAPI headers are installed.
+Rust 1.88 or a newer stable release is required (`rust-version` in `Cargo.toml`; release archives are built with 1.93.1). `v4l2-sys-mit` uses `linux/videodev2.h`, clang, and libclang through bindgen; if the build reports that the header cannot be found, make sure the Linux UAPI headers are installed.
 
 #### Building a Linux ARM64 version on an Apple Silicon Mac
 
@@ -121,7 +121,7 @@ sudo ./deploy/install.sh --binary ./target/release/wingmankvm
 If you are using a release package from section 2, use `--release` instead; there is no need to extract the binary manually:
 
 ```bash
-sudo ./deploy/install.sh --release /path/to/wingmankvm-<版本>-<target>.tar.gz
+sudo ./deploy/install.sh --release /path/to/wingmankvm-v<version>-<target>.tar.gz
 ```
 
 The installer verifies the contents of `SHA256SUMS` when it exists in the same directory as the release package; `--binary` and `--release` are mutually exclusive.
@@ -132,9 +132,9 @@ With `--mdns` the installer advertises `wingmankvm.local` on the LAN through ava
 
 ```bash
 # Combined with --install-deps, avahi-daemon is installed automatically
-sudo ./deploy/install.sh --install-deps --mdns --release /path/to/wingmankvm-<version>-<target>.tar.gz
+sudo ./deploy/install.sh --install-deps --mdns --release /path/to/wingmankvm-v<version>-<target>.tar.gz
 # Custom label (1-63 lowercase letters, digits or hyphens), advertised as kvm-rack1.local
-sudo ./deploy/install.sh --mdns --mdns-hostname kvm-rack1 --release /path/to/wingmankvm-<version>-<target>.tar.gz
+sudo ./deploy/install.sh --mdns --mdns-hostname kvm-rack1 --release /path/to/wingmankvm-v<version>-<target>.tar.gz
 ```
 
 Notes:
@@ -221,7 +221,7 @@ Do not point `WINGMANKVM_GADGET_NAME` at a third-party Gadget that you do not in
 After a normal installation, open the one-time setup address shown at the end of the installer output. If the terminal output has been lost, obtain the address or token that is valid only before the administrator is created from the logs:
 
 ```bash
-sudo journalctl -u wingmankvm -b --no-pager
+sudo wingmankvm-setup-url
 ```
 
 Open `http://KVM-host-address:8080/`, then complete setup with the two-step wizard:
@@ -391,6 +391,14 @@ sudo systemctl restart wingmankvm.service
 
 Finally, change the image directory in the web UI to `/srv/wingmankvm-images`. Changing only the web UI path or the file owner is not enough; `ProtectSystem=strict` blocks uploads and writes to paths not listed in `ReadWritePaths=`.
 
+### Download from URL is refused
+
+"Download from URL" accepts only http/https URLs and refuses targets on these addresses: loopback (`127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`, including the cloud metadata address `169.254.169.254`, and `fe80::/10`), unspecified (`0.0.0.0/8`, `::`), multicast (`224.0.0.0/4`, `ff00::/8`) and broadcast (`255.255.255.255`). IPv4-mapped IPv6 addresses such as `::ffff:127.0.0.1` are judged by their IPv4 address. Private LAN ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), IPv6 unique-local addresses (`fc00::/7`) and public addresses are not affected, so downloading from a NAS keeps working.
+
+The check happens when the connection is made: denied addresses are dropped from DNS results and the download fails if none remain; IP-literal hosts and every redirect target are checked separately. A hostname such as `localhost`, or a redirect to `127.0.0.1`, therefore fails too, and the web UI shows "Download URL points to a loopback, link-local, multicast or broadcast address and was refused" (HTTP `422`). There is no setting for this restriction and it cannot be turned off through the web API.
+
+If the service environment sets `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY`, downloads go through that proxy and the proxy resolves hostnames. The check then only covers IP-literal hosts, including IP literals in redirects; the proxy has to restrict hostname targets itself. The official systemd service does not set these variables.
+
 ## 9. Advanced: custom Gadget checks
 
 This section applies only to people who already have a board vendor Gadget, need custom USB VID/PID/descriptors, or are troubleshooting kernel compatibility. For a default installation, use `wingmankvm-gadget.service` and do not manually create duplicate functions with the same name.
@@ -465,7 +473,7 @@ Most UVC capture cards also expose a USB Audio sound card. When enabled, the car
 
 - With `device` set to `null`, selection is automatic: the sound card on the same USB device as the current capture card (`video.device`) first, otherwise the only USB sound card; with several indistinguishable cards nothing is guessed. You can also enter an ALSA name such as `plughw:CARD=MS2109,DEV=0` or `hw:1,0` (only `hw`, `plughw`, `dsnoop`, `sysdefault` and `default` are accepted).
 - Detection only reads `/proc/asound/cards`, `/proc/asound/pcm` and `/sys/class/sound`; it never opens an ALSA device, so it cannot interrupt a running capture. "Detect audio devices" in the settings and the `audio` list of `POST /api/devices/scan` come from it.
-- `bitrate_kbps` ranges from 16 to 256. Audio uses the same FFmpeg as H.264 (`video.h264.ffmpeg_path`) and encodes 48 kHz stereo Opus in 20 ms frames.
+- `bitrate_kbps` ranges from 16 to 256. Audio uses the same FFmpeg as H.264 (`video.h264.ffmpeg_path`, which can only be changed in the config file on the host; the web API rejects it) and encodes 48 kHz stereo Opus in 20 ms frames.
 - All WebRTC sessions share one FFmpeg capture process: the first session that needs audio starts it and the last one to end stops it and reaps its whole process group. When capture fails or produces no data for 10 seconds the state becomes `error`, and it is retried with a 1–30 second backoff while viewers remain.
 - Audio and video are independent: the browser only asks for an audio track when the server has audio enabled, and the server only adds the Opus track when a device is detected; otherwise only video is negotiated, as before. Audio forwarding is not part of the session watchdog, so a failing capture, an unplugged device or a changed audio setting never disconnects, restarts or renegotiates video. Changing only the audio settings does not restart video capture either. Established sessions keep their tracks: a session with an audio track switches to the new capture device, and a session opened before audio was enabled needs to reconnect to get audio (applying the settings page reconnects the current page automatically).
 - The browser always starts muted (to satisfy autoplay policies); click the speaker button in the toolbar to unmute. If the browser refuses playback with sound, the page returns to muted and keeps showing the picture.

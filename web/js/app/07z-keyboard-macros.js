@@ -665,6 +665,11 @@ function startKeyboardMacro(macro) {
     toast(tr('请先停止录制再回放'), true);
     return;
   }
+  // The latency tool toggles Caps Lock: replayed letters would change case.
+  if (shared.latencyRun) {
+    toast(tr('正在测量延迟，请结束后再回放'), true);
+    return;
+  }
   closeQuickMore();
   openMacroPlayDialog(macro);
   if (!inputEnabled()) setRemote(true);
@@ -678,8 +683,8 @@ function startKeyboardMacro(macro) {
   const run = { macro, canceled: false, speed: macroPlaybackSpeed, wake: 0 };
   shared.macroPlayback = run;
   runKeyboardMacro(run).catch((error) => {
-    setMacroPlayStatus(`${tr('回放失败：')}${error.message}`, 'error');
-    toast(error.message, true);
+    setMacroPlayStatus(tr(`回放失败：${error.message}`), 'error');
+    if (!error.reported) toast(error.message, true);
   });
 }
 async function runKeyboardMacro(run) {
@@ -768,15 +773,17 @@ export function init() {
   updateMacroSpeedButtons();
   updateMacroRecordingIndicator();
   // Pure helpers used by the UI verification harness: no network or DOM.
-  window.__wingmanTest = Object.assign(window.__wingmanTest || {}, {
-    macroKeyNameValid,
-    validateMacroFile,
-    exportMacroDocument,
-    macroStepFromStored,
-    macroMaxCount: MACRO_MAX_COUNT,
-    macroMaxSteps: MACRO_MAX_STEPS,
-    macroMaxDelayMs: MACRO_MAX_DELAY_MS,
-  });
+  // Only exposed when the harness set window.__wingmanTestHooks before load.
+  if (window.__wingmanTestHooks === true)
+    window.__wingmanTest = Object.assign(window.__wingmanTest || {}, {
+      macroKeyNameValid,
+      validateMacroFile,
+      exportMacroDocument,
+      macroStepFromStored,
+      macroMaxCount: MACRO_MAX_COUNT,
+      macroMaxSteps: MACRO_MAX_STEPS,
+      macroMaxDelayMs: MACRO_MAX_DELAY_MS,
+    });
 }
 
 export { recordMacroKey, renderKeyboardMacroMenu };

@@ -4,7 +4,7 @@
 Reuses the P2b mocked API harness: real DOM, real browser keyboard/pointer
 events and the real UI state machine; no hardware is touched.
 """
-import inspect, json, os, sys, time, urllib.parse
+import inspect, json, os, re, sys, time, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -123,7 +123,7 @@ def main():
     checks = summary["checks"]
     try:
         with ui_harness.static_server(args.repo) as port, sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, channel=args.browser_channel)
+            browser = ui_harness.launch_browser(p, args.browser_channel)
             try:
                 for scenario in SCENARIOS:
                     scenario(browser, port, checks)
@@ -267,7 +267,8 @@ def low_risk_ui(browser, port, checks):
     state = State()
     context = browser.new_context(viewport={"width": 1400, "height": 900})
     try:
-        context.add_init_script(
+        context.add_init_script(  # not on the initial about:blank (SecurityError)
+            "if (location.protocol !== 'about:') "
             "localStorage.setItem('wingman_setting_auto_expand_inspector','false')")
         page = context.new_page()
         from verify_p2b_ui import api_route, GIF, bootstrap_payload
@@ -457,7 +458,7 @@ def paste_as_typing(browser, port, checks):
 def target_keyboard_layouts(browser, port, checks):
     """#63: paste-as-typing honors the selected target keyboard layout."""
     state = State()
-    context, page = new_page(browser, state, port)
+    context, page = media_page(browser, state, port, stubs=(ui_harness.TEST_HOOKS,))
     try:
         page.click("#input-state")
 
@@ -1229,9 +1230,11 @@ def csp_no_violations(browser, port, checks):
     server, csp_port = serve_with_csp(repo)
     state = p2.State(authenticated=False, mass_storage=False)
     context = browser.new_context(viewport={"width": 1280, "height": 900})
+    # Context init scripts also run on the initial about:blank, where
+    # localStorage throws SecurityError; only seed it on the served page.
     context.add_init_script("""
       window.__csp = [];
-      localStorage.setItem('wingman_theme', 'dark');
+      if (location.protocol !== 'about:') localStorage.setItem('wingman_theme', 'dark');
       document.addEventListener('securitypolicyviolation', e =>
         window.__csp.push(e.violatedDirective + ' ' + (e.blockedURI || 'inline')));
     """)
@@ -1403,6 +1406,119 @@ def pip_webrtc(browser, port, checks):
         page.wait_for_timeout(200)
         check(checks, page.evaluate("() => document.pictureInPictureElement") is None
               and page.get_attribute("#pip", "aria-pressed") == "false", "pip_ends_on_transport_fallback", "")
+    finally:
+        context.close()
+
+
+H264_LIVE = ("() => { const t = document.querySelector('#video-transport-label').textContent;"
+             " return /H.264/.test(t) && /LIVE/.test(t); }")
+MJPEG_SHOWN = "() => /MJPEG/.test(document.querySelector('#video-transport-label').textContent)"
+SERVER_CLOSE = """() => {
+  const peer = window.__peers.at(-1);
+  peer.connectionState = 'closed';
+  peer.onconnectionstatechange();
+}"""
+
+
+def h264_retry_page(browser, state, port, offers, fail):
+    """An H.264-capable page whose offer endpoint records the time of every
+    POST and answers 503 while fail[0] is true."""
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    for stub in (PIP_STUB, FAKE_PEER):
+        page.add_init_script(stub)
+    page.route("**/api/**", lambda route: api_route(route, state))
+    page.route("**/video_feed*", lambda route: route.fulfill(
+        status=200, content_type="image/gif", body=GIF))
+
+    def bootstrap(route):
+        body = bootstrap_payload(state)
+        body["capabilities"]["video_webrtc_h264"] = True
+        body["webrtc"] = {"available": True}
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+    def offer(route):
+        offers.append(time.monotonic())
+        if fail[0]:
+            route.fulfill(status=503, content_type="application/json",
+                          body=json.dumps({"error": "H.264 编码器正在后台探测"}))
+        else:
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(
+                {"type": "answer", "session_id": f"s{len(offers)}", "sdp": "a=rtpmap:96 H264/90000"}))
+
+    page.route("**/api/bootstrap", bootstrap)
+    page.route("**/api/webrtc/offer", offer)
+    page.route("**/api/webrtc/close", lambda route: route.fulfill(
+        status=200, content_type="application/json", body="{}"))
+    page.goto(f"http://127.0.0.1:{port}/", wait_until="load", timeout=15000)
+    page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+    page.bring_to_front()
+    return context, page
+
+
+def label(page):
+    return page.text_content("#video-transport-label")
+
+
+def h264_returns_after_server_close(browser, port, checks):
+    """AUD3-21: the server closed the H.264 session (settings saved in another
+    tab): MJPEG keeps the picture, then H.264 comes back by itself."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    offers, fail = [], [False]
+    context, page = h264_retry_page(browser, state, port, offers, fail)
+    try:
+        page.wait_for_function(H264_LIVE, timeout=8000)
+        closed_at = time.monotonic()
+        page.evaluate(SERVER_CLOSE)
+        page.wait_for_function(MJPEG_SHOWN, timeout=3000)
+        check(checks, len(offers) == 1, "h264_server_close_falls_back_to_mjpeg_first", label(page))
+        page.wait_for_function(f"() => ({H264_LIVE})()", timeout=10000)
+        gap = offers[-1] - closed_at
+        check(checks, len(offers) == 2 and gap >= 2.5, "h264_retried_once_after_a_pause",
+              f"offers={len(offers)} gap={gap:.2f}s")
+        check(checks, "H.264" in label(page), "h264_recovers_after_server_close", label(page))
+    finally:
+        context.close()
+
+
+def h264_retry_backs_off(browser, port, checks):
+    """AUD3-21: while H.264 keeps failing, retries slow down instead of
+    storming the server, and the MJPEG picture stays up meanwhile."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    offers, fail = [], [True]
+    context, page = h264_retry_page(browser, state, port, offers, fail)
+    try:
+        page.wait_for_function(MJPEG_SHOWN, timeout=8000)
+        page.wait_for_timeout(10_500 - int((time.monotonic() - offers[0]) * 1000))
+        gaps = [later - earlier for earlier, later in zip(offers, offers[1:])]
+        check(checks, len(offers) == 3, "h264_failed_retries_are_bounded",
+              f"offers={len(offers)} gaps={[round(g, 2) for g in gaps]}")
+        check(checks, 2.5 <= gaps[0] <= 5 and gaps[1] >= 1.6 * gaps[0], "h264_retry_delay_doubles",
+              [round(g, 2) for g in gaps])
+        check(checks, "MJPEG" in label(page) and page.is_visible("#video-feed"),
+              "mjpeg_kept_while_h264_retries", label(page))
+    finally:
+        context.close()
+
+
+def h264_retry_respects_mjpeg_choice(browser, port, checks):
+    """AUD3-21: choosing MJPEG cancels a pending H.264 retry for good."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    offers, fail = [], [False]
+    context, page = h264_retry_page(browser, state, port, offers, fail)
+    try:
+        page.wait_for_function(H264_LIVE, timeout=8000)
+        page.locator('[data-panel-target="video"]').click()
+        page.evaluate(SERVER_CLOSE)
+        page.wait_for_function(MJPEG_SHOWN, timeout=3000)
+        # A retry is now pending; the user picks the MJPEG preset before it fires.
+        page.click('[data-video-preset="bios"]')
+        page.wait_for_timeout(6000)
+        check(checks, len(offers) == 1 and "MJPEG" in label(page), "h264_not_retried_after_mjpeg_choice",
+              f"offers={len(offers)} label={label(page)}")
     finally:
         context.close()
 
@@ -2086,22 +2202,28 @@ def online_update(browser, port, checks):
     finally:
         context.close()
 
-    state = State()
-    context, page = new_page(browser, state, port)
-    failed = {**status, "status": {"state": "failed", "phase": "verifying", "version": "v0.2.0",
-                                   "error": "checksum", "updated": 3}}
-    page.route("**/api/update/status", lambda route: route.fulfill(
-        status=200, content_type="application/json", body=json.dumps(failed)))
-    try:
-        page.click("#settings-toggle")
-        page.wait_for_function(
-            "() => /升级失败/.test(document.querySelector('#update-progress').textContent)", timeout=5000)
-        text = page.text_content("#update-progress") or ""
-        classes = page.get_attribute("#update-progress", "class") or ""
-        check(checks, "SHA256 校验失败" in text and "回滚" in text and "error" in classes,
-              "update_failure_reports_rollback", text)
-    finally:
-        context.close()
+    # AUD3-28: only a failed install rolls back; earlier failures change nothing.
+    for error, phase, reason, rolled_back in (("checksum", "verifying", "SHA256 校验失败", False),
+                                              ("network", "downloading", "网络错误", False),
+                                              ("interrupted", "installing", "升级任务被中断", False),
+                                              ("install_failed", "done", "安装失败", True)):
+        state = State()
+        context, page = new_page(browser, state, port)
+        failed = {**status, "status": {"state": "failed", "phase": phase, "version": "v0.2.0",
+                                       "error": error, "updated": 3}}
+        body = json.dumps(failed)
+        page.route("**/api/update/status", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=body))
+        try:
+            page.click("#settings-toggle")
+            page.wait_for_function(
+                "() => /升级失败/.test(document.querySelector('#update-progress').textContent)", timeout=5000)
+            text = page.text_content("#update-progress") or ""
+            classes = page.get_attribute("#update-progress", "class") or ""
+            check(checks, reason in text and ("回滚" in text) == rolled_back and "error" in classes,
+                  f"update_failure_{error}_rollback_text", text)
+        finally:
+            context.close()
 
 
 ADAPTIVE_OFF = "localStorage.setItem('wingman_setting_adaptive_bitrate', 'false');"
@@ -2162,7 +2284,7 @@ ADAPTIVE_DECISION_SCRIPT = """() => {
 def adaptive_bitrate_decision(browser, port, checks):
     """#82: the pure decision function's thresholds, cooldown and hysteresis."""
     state = State()
-    context, page = new_page(browser, state, port)
+    context, page = media_page(browser, state, port, stubs=(ui_harness.TEST_HOOKS,))
     try:
         r = page.evaluate(ADAPTIVE_DECISION_SCRIPT)
         check(checks, r["pure"], "adaptive_decision_is_pure", r["pure"])
@@ -2184,6 +2306,92 @@ def adaptive_bitrate_decision(browser, port, checks):
         context.close()
 
 
+def gated_test_hooks(browser, port, checks):
+    """AUD3-37: window.__wingmanTest exists only when the harness asked for it."""
+    probe = """() => ({
+      present: '__wingmanTest' in window,
+      flag: '__wingmanTestHooks' in window,
+      hooks: Object.keys(window.__wingmanTest || {}).sort(),
+    })"""
+    context, page = new_page(browser, State(), port)
+    try:
+        normal = page.evaluate(probe)
+        check(checks, normal == {"present": False, "flag": False, "hooks": []},
+              "test_hooks_absent_on_normal_page", normal)
+    finally:
+        context.close()
+    context, page = media_page(browser, State(), port, stubs=(ui_harness.TEST_HOOKS,))
+    try:
+        hooked = page.evaluate(probe)
+        wanted = {"adaptivePolicy", "decideAdaptiveBitrate", "textToKeystrokes", "validateMacroFile"}
+        check(checks, hooked["present"] and wanted <= set(hooked["hooks"]),
+              "test_hooks_present_when_requested", hooked)
+    finally:
+        context.close()
+
+
+ADAPTIVE_PROBE_SCRIPT = """() => {
+  const t = window.__wingmanTest, decide = t.decideAdaptiveBitrate, policy = t.adaptivePolicy;
+  const BAD = {packetLossPct: 8, rttMs: 30, jitterBufferMs: 40, receivedKbps: null};
+  const GOOD = {packetLossPct: 0, rttMs: 30, jitterBufferMs: 40, receivedKbps: 900};
+  // One sample per second from a link that carries capKbps: every sample is
+  // lossy while the target is above it and clean otherwise.
+  const link = (state, capKbps, from, seconds, p = policy) => {
+    const changes = [];
+    for (let i = 0; i < seconds; i++) {
+      const at = from + i * 1000;
+      const r = decide(state, state.currentKbps > capKbps ? BAD : GOOD, at, p);
+      state = r.state;
+      if (r.targetKbps !== null) changes.push([r.targetKbps, at]);
+    }
+    return {state, changes};
+  };
+  // Seconds from each decrease to the probe-up that follows it (every run
+  // starts at the maximum, so the first change is a decrease).
+  const waits = (changes) => {
+    const out = [];
+    for (let i = 0; i + 1 < changes.length; i++) {
+      const down = i === 0 || changes[i][0] < changes[i - 1][0];
+      if (down && changes[i + 1][0] > changes[i][0]) out.push((changes[i + 1][1] - changes[i][1]) / 1000);
+    }
+    return out;
+  };
+  const res = {};
+  // 30 minutes with the capacity between two steps (3000 kbps of 4000).
+  const edge = link(t.newAdaptiveState(4000), 3000, 0, 1800);
+  res.waits = waits(edge.changes);
+  res.restarts = edge.changes.length;
+  // The same link without backoff (the old behaviour): a probe every ~40 s.
+  const flat = link(t.newAdaptiveState(4000), 3000, 0, 1800, {...policy, maxRaiseAfterBadMs: policy.raiseAfterBadMs});
+  res.flatWaits = [...new Set(waits(flat.changes))];
+  res.flatRestarts = flat.changes.length;
+  // Capacity frees up: sustained good quality clears the count, so the next
+  // congestion is followed by the normal 30 s hold again.
+  const clear = link(edge.state, 1e9, 1800000, 400);
+  res.cleared = [clear.state.probeFailures, clear.state.currentKbps];
+  res.again = waits(link(clear.state, 3000, 2200000, 120).changes);
+  return res;
+}"""
+
+
+def adaptive_probe_backoff(browser, port, checks):
+    """AUD3-38: failed probe-ups at a capacity edge back off exponentially, capped, then reset."""
+    context, page = media_page(browser, State(), port, stubs=(ui_harness.TEST_HOOKS,))
+    try:
+        r = page.evaluate(ADAPTIVE_PROBE_SCRIPT)
+        check(checks, r["flatWaits"] == [30] and r["flatRestarts"] > 100,
+              "adaptive_edge_scenario_reproduces_40s_cycle", (r["flatWaits"], r["flatRestarts"]))
+        waits = r["waits"]
+        check(checks, waits[:4] == [30, 60, 120, 240], "adaptive_failed_probes_back_off_exponentially", waits)
+        check(checks, len(waits) >= 7 and set(waits[3:]) == {240}, "adaptive_probe_backoff_is_capped", waits)
+        check(checks, r["restarts"] * 3 < r["flatRestarts"], "adaptive_backoff_cuts_encoder_restarts",
+              (r["restarts"], r["flatRestarts"]))
+        check(checks, r["cleared"] == [0, 4000] and r["again"][:2] == [30, 60],
+              "adaptive_probe_backoff_resets_after_good_quality", (r["cleared"], r["again"]))
+    finally:
+        context.close()
+
+
 def adaptive_stats(at, scale, lost_per_1000):
     report = stats_report(at, scale)
     video = report[-1]
@@ -2196,7 +2404,7 @@ def adaptive_bitrate_webrtc(browser, port, checks):
     """#82: stubbed stats drive POST /api/webrtc/bitrate with cooldown and hysteresis."""
     state = State()
     state.video.update(state="ready", message="", last_frame_age_ms=10)
-    context, page = media_page(browser, state, port, h264=True, stubs=(FAKE_PEER,))
+    context, page = media_page(browser, state, port, h264=True, stubs=(FAKE_PEER, ui_harness.TEST_HOOKS))
     sent = []
 
     def bitrate(route):
@@ -2719,6 +2927,1392 @@ def hdmi_audio_settings(browser, port, checks):
         check(checks, audio == {"enabled": False, "device": None}, "audio_settings_disable_and_auto", posts[-1:])
     finally:
         context.close()
+
+
+# Audit round 3 (#109, #122). Helpers first: none of them take
+# (browser, port, checks), so they are not mistaken for scenarios.
+
+TOOLBAR_CONTROLS = ["#input-state", "#lang-toggle", "#power-menu-toggle", "#diagnostics-toggle",
+                    "#quick-more-toggle", "#settings-toggle"]
+
+
+def settle_toolbar(page):
+    """The inspector opens right after boot and resizes the console: wait for it to finish."""
+    page.wait_for_function("() => document.querySelector('#app').classList.contains('inspector-open')",
+                           timeout=5000)
+    page.wait_for_function("""(selectors) => new Promise((resolve) => {
+      const boxes = () => selectors.map((s) => {
+        const r = document.querySelector(s)?.getBoundingClientRect();
+        return r ? [r.x, r.y, r.width, r.height].join() : '';
+      }).join('|');
+      const before = boxes();
+      setTimeout(() => requestAnimationFrame(() => resolve(boxes() === before)), 250);
+    })""", arg=TOOLBAR_CONTROLS, timeout=8000)
+
+
+def count_toasts(page, pattern):
+    """Start counting every toast() whose text matches `pattern` (a JS regex source)."""
+    page.evaluate("""(pattern) => {
+      window.__toastHits = [];
+      const toast = document.querySelector('#toast'), re = new RegExp(pattern);
+      new MutationObserver(() => {
+        if (re.test(toast.textContent)) window.__toastHits.push(toast.textContent);
+      }).observe(toast, {childList: true, characterData: true, subtree: true});
+    }""", pattern)
+
+
+def toast_hits(page):
+    return page.evaluate("() => window.__toastHits.slice()")
+
+
+def input_socket_drop_does_not_replay(browser, port, checks):
+    """#109: a dropped input socket never replays possibly executed input over HTTP."""
+    state = State()
+    # A visible, playing feed is needed to map pointer positions to the target.
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    frames, sockets, http_moves = [], [], []
+    hold = {"on": False}
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    try:
+        page = context.new_page()
+
+        def on_socket(ws):
+            sockets.append(ws)
+
+            def reply(message):
+                body = json.loads(message)
+                frames.append(body)
+                # Holding = the server executed it but its reply never arrives.
+                if not hold["on"]:
+                    ws.send(json.dumps({"id": body["id"], "ok": True}))
+            ws.on_message(reply)
+
+        def record(route):
+            if urllib.parse.urlsplit(route.request.url).path == "/api/mouse/absolute":
+                http_moves.append(json.loads(route.request.post_data or "{}"))
+                return route.fulfill(status=200, content_type="application/json", body="{}")
+            return api_route(route, state)
+
+        page.route_web_socket("**/api/input/ws", on_socket)
+        page.route("**/api/**", record)
+        page.route("**/video_feed*", lambda route: route.fulfill(status=200, content_type="image/gif", body=GIF))
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        page.evaluate("""() => {
+          const feed = document.querySelector('#video-feed');
+          Object.defineProperty(feed, 'naturalWidth', {value: 1280});
+          Object.defineProperty(feed, 'naturalHeight', {value: 720});
+          feed.style.width = '640px';
+          feed.style.height = '360px';
+          feed.dispatchEvent(new Event('load'));
+        }""")
+        settle_toolbar(page)
+        page.click("#input-state")
+        page.keyboard.press("a")
+        ui_harness.wait_until(page, lambda: any(f.get("key") == "KeyA" for f in frames))
+        check(checks, any(f.get("key") == "KeyA" for f in frames) and not state.key_posts,
+              "drop_test_keys_use_socket", (frames[-3:], state.key_posts))
+
+        count_toasts(page, "可能未送达")
+        hold["on"] = True
+        for key in ("b", "c", "Enter"):
+            page.keyboard.press(key)
+        box = page.locator("#video-viewport").bounding_box()
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        page.mouse.move(box["x"] + box["width"] / 2 + 20, box["y"] + box["height"] / 2 + 10)
+        held = lambda: (sum(f.get("type") == "key" and f.get("key") in ("KeyB", "KeyC", "Enter") for f in frames) == 3
+                        and any(f.get("type") == "absolute" and f.get("action") == "move" for f in frames))
+        check(checks, ui_harness.wait_until(page, held), "drop_test_input_in_flight", frames[-6:])
+        sockets[-1].close()
+        ui_harness.wait_until(page, lambda: toast_hits(page) or state.key_posts)
+        hold["on"] = False
+        page.wait_for_timeout(400)
+        replayed = [p.get("key") for p in state.key_posts]
+        check(checks, not replayed, "dropped_socket_does_not_replay_keys", replayed)
+        check(checks, any(m.get("action") == "move" for m in http_moves),
+              "dropped_socket_retries_absolute_move", http_moves)
+        hits = toast_hits(page)
+        check(checks, len(hits) == 1, "dropped_socket_toasts_once_per_burst", hits)
+
+        # Typing carries on afterwards (over the reconnected socket or HTTP).
+        page.locator("#video-viewport").focus()
+        page.keyboard.press("d")
+        delivered = lambda: (any(f.get("key") == "KeyD" for f in frames)
+                             or any(p.get("key") == "KeyD" for p in state.key_posts))
+        check(checks, ui_harness.wait_until(page, delivered), "typing_continues_after_drop",
+              (frames[-2:], state.key_posts))
+        enabled = page.evaluate("() => document.querySelector('#input-state').getAttribute('aria-pressed')")
+        check(checks, enabled == "true", "forwarding_stays_on_after_drop", enabled)
+    finally:
+        context.close()
+
+
+LATENCY_MACRO = ("if (location.protocol === 'http:') "  # not on the initial about:blank (SecurityError)
+                 "localStorage.setItem('wingman_keyboard_macros', JSON.stringify([{id: 'm1', name: 'x', "
+                 "steps: [{key: 'KeyX', ctrl: false, shift: false, alt: false, meta: false, delay_ms: 0}]}]));")
+
+
+def held_caps_page(browser, port, init_scripts=()):
+    """A page whose Caps Lock presses stay unanswered until released, so a latency run stays active."""
+    state = State()
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    # On the page rather than the context: the context's initial about:blank
+    # would run them too, and localStorage throws there.
+    for script in init_scripts:
+        page.add_init_script(script)
+    held = {"routes": [], "hold": True, "caps": 0}
+
+    def key_route(route):
+        body = json.loads(route.request.post_data or "{}")
+        if body.get("key") != "CapsLock":
+            return api_route(route, state)
+        held["caps"] += 1
+        if held["hold"]:
+            held["routes"].append(route)
+        else:
+            route.fulfill(status=200, content_type="application/json", body="{}")
+
+    page.route("**/api/**", lambda route: api_route(route, state))
+    page.route("**/api/key", key_route)
+    page.route("**/api/hid/leds", lambda route: route.fulfill(
+        status=200, content_type="application/json",
+        body=json.dumps({"num_lock": False, "caps_lock": False, "scroll_lock": False, "raw": 0})))
+    ui_harness.mock_video_feed(page)
+    page.on("dialog", lambda dialog: dialog.accept())
+    page.goto(f"http://127.0.0.1:{port}/", wait_until="load", timeout=15000)
+    page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+    settle_toolbar(page)
+
+    def release():
+        held["hold"] = False
+        while held["routes"]:
+            held["routes"].pop(0).fulfill(status=200, content_type="application/json", body="{}")
+    return state, context, page, held, release
+
+
+def start_held_latency_run(page, held, checks):
+    page.click("#diagnostics-toggle")
+    page.wait_for_selector("#latency-start", state="visible", timeout=3000)
+    page.click("#latency-start")
+    check(checks, ui_harness.wait_until(page, lambda: held["routes"]), "latency_run_started", held["caps"])
+
+
+def stop_latency_run(page, release):
+    release()
+    if page.get_attribute("#diagnostics-popover", "hidden") is not None:
+        page.click("#diagnostics-toggle")
+    page.click("#latency-stop")
+    page.wait_for_selector("#latency-result:not(.hidden)", timeout=10000)
+
+
+def latency_blocks_paste_and_macros(browser, port, checks):
+    """AUD3-26: paste typing and macro playback refuse to start during a latency run."""
+    state, context, page, held, release = held_caps_page(browser, port, init_scripts=(LATENCY_MACRO,))
+    try:
+        page.click("#input-state")
+        page.click("#keyboard-toggle")
+        page.click("#paste-typing-btn")
+        page.fill("#paste-key-text", "secret")
+        page.click("#paste-key-cancel")
+        start_held_latency_run(page, held, checks)
+
+        page.click("#paste-typing-btn")
+        page.fill("#paste-key-text", "secret")
+        page.click("#paste-key-send")
+        page.wait_for_timeout(300)
+        status = page.text_content("#paste-key-status") or ""
+        typed = [p.get("key") for p in state.key_posts]
+        check(checks, not typed and "测量延迟" in status, "paste_refused_during_latency_run", (typed, status))
+        page.click("#paste-key-cancel")
+
+        page.click("#quick-more-toggle")
+        page.click("#quick-more-menu [data-macro-play]")
+        page.wait_for_timeout(300)
+        toast = page.text_content("#toast") or ""
+        typed = [p.get("key") for p in state.key_posts]
+        check(checks, not typed and "测量延迟" in toast, "macro_refused_during_latency_run", (typed, toast))
+
+        stop_latency_run(page, release)
+        page.click("#quick-more-toggle")
+        page.click("#quick-more-menu [data-macro-play]")
+        ui_harness.wait_until(page, lambda: any(p.get("key") == "KeyX" for p in state.key_posts))
+        check(checks, any(p.get("key") == "KeyX" for p in state.key_posts), "macro_plays_after_latency_run",
+              state.key_posts)
+    finally:
+        release()
+        context.close()
+
+
+def latency_restores_caps_on_unload(browser, port, checks):
+    """AUD3-27: leaving mid-run after an odd number of taps sends one keepalive restore."""
+    state, context, page, held, release = held_caps_page(browser, port)
+    try:
+        start_held_latency_run(page, held, checks)
+        page.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pagehide'))")
+        check(checks, ui_harness.wait_until(page, lambda: held["caps"] == 2), "unload_after_odd_taps_restores_caps",
+              held["caps"])
+        page.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pagehide'))")
+        page.wait_for_timeout(300)
+        check(checks, held["caps"] == 2, "unload_restore_sent_once", held["caps"])
+        page.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pageshow'))")
+    finally:
+        release()
+        context.close()
+
+    # An even count (one sample answered, the second press in flight) needs nothing.
+    state, context, page, held, release = held_caps_page(browser, port)
+    try:
+        start_held_latency_run(page, held, checks)
+        held["routes"].pop(0).fulfill(status=200, content_type="application/json", body="{}")
+        check(checks, ui_harness.wait_until(page, lambda: held["caps"] == 2, timeout=6), "second_tap_in_flight",
+              held["caps"])
+        page.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pagehide'))")
+        page.wait_for_timeout(300)
+        check(checks, held["caps"] == 2, "unload_after_even_taps_sends_nothing", held["caps"])
+    finally:
+        release()
+        context.close()
+
+
+def latency_expired_session_not_restored(browser, port, checks):
+    """AUD3-27: a session that expires mid-run is never reported as Caps Lock restored."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    target = {"caps": False, "taps": 0, "expired": False}
+    unauthorized = dict(status=401, content_type="application/json", body='{"error":"unauthorized"}')
+
+    def key_route(route):
+        if target["expired"]:
+            return route.fulfill(**unauthorized)
+        target["taps"] += 1
+        target["caps"] = not target["caps"]
+        # The session ends right after the first press reached the target.
+        target["expired"] = True
+        route.fulfill(status=200, content_type="application/json", body="{}")
+
+    def leds_route(route):
+        if target["expired"]:
+            return route.fulfill(**unauthorized)
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(
+            {"num_lock": False, "caps_lock": target["caps"], "scroll_lock": False, "raw": 0}))
+
+    page.route("**/api/key", key_route)
+    page.route("**/api/hid/leds", leds_route)
+    page.on("dialog", lambda dialog: dialog.accept())
+    try:
+        settle_toolbar(page)
+        page.click("#diagnostics-toggle")
+        page.click("#latency-start")
+        page.wait_for_function("() => !document.querySelector('#latency-result').classList.contains('hidden')",
+                               timeout=15000)
+        rows = latency_rows(page)
+        check(checks, target["taps"] == 1 and rows.get("Caps Lock") == "未能恢复，请手动检查",
+              "expired_session_reports_caps_not_restored", (rows, target))
+    finally:
+        context.close()
+
+
+def reset_preferences_covers_all(browser, port, checks):
+    """AUD3-29: "reset preferences" also restores adaptive bitrate and the quality overlay, live."""
+    state = State()
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_init_script(ui_harness.TEST_HOOKS)
+    context.add_init_script("if (location.protocol === 'http:') {"
+                            "localStorage.setItem('wingman_setting_adaptive_bitrate', 'false');"
+                            "localStorage.setItem('wingman_setting_quality_overlay', 'true');}")
+    page = context.new_page()
+    page.route("**/api/**", lambda route: api_route(route, state))
+    ui_harness.mock_video_feed(page)
+    page.on("dialog", lambda dialog: dialog.accept())
+    try:
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="load", timeout=15000)
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        settle_toolbar(page)
+        page.click("#settings-toggle")
+        page.wait_for_selector("#settings-dialog[open]", timeout=3000)
+        before = (page.is_checked("#setting-adaptive-bitrate"), page.get_attribute("#quality-toggle", "aria-pressed"))
+        check(checks, before == (False, "true"), "reset_test_starts_from_changed_preferences", before)
+        page.click("#setting-reset-btn")
+        ui_harness.wait_until(page, lambda: page.is_checked("#setting-adaptive-bitrate"))
+        after = page.evaluate("""() => ({
+          adaptive: window.__wingmanTest.adaptiveBitrate().enabled,
+          overlay: document.querySelector('#quality-toggle').getAttribute('aria-pressed'),
+          stored: [localStorage.getItem('wingman_setting_adaptive_bitrate'),
+                   localStorage.getItem('wingman_setting_quality_overlay')],
+        })""")
+        check(checks, after["adaptive"] is True and after["overlay"] == "false"
+              and after["stored"][0] != "false" and after["stored"][1] != "true",
+              "reset_restores_adaptive_bitrate_and_quality_overlay", after)
+    finally:
+        context.close()
+
+
+def escape_closes_menus(browser, port, checks):
+    """AUD3-30: Esc closes an open menu, returns focus to its toggle and keeps the inspector open."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        settle_toolbar(page)
+        for menu, toggle in (("#power-menu", "#power-menu-toggle"), ("#lang-menu", "#lang-toggle"),
+                             ("#quick-more-menu", "#quick-more-toggle"),
+                             ("#diagnostics-popover", "#diagnostics-toggle")):
+            page.click(toggle)
+            page.wait_for_selector(f"{menu}:not([hidden])", state="attached", timeout=3000)
+            # Focus inside the menu where it has focusable content, as a keyboard user would.
+            page.evaluate("""(menu) => {
+              const item = document.querySelector(menu).querySelector('button:not([hidden])');
+              if (item && item.offsetParent !== null) item.focus();
+            }""", menu)
+            page.keyboard.press("Escape")
+            result = page.evaluate("""([menu, toggle]) => ({
+              hidden: document.querySelector(menu).hasAttribute('hidden'),
+              expanded: document.querySelector(toggle).getAttribute('aria-expanded'),
+              focused: document.activeElement === document.querySelector(toggle),
+              inspector: document.querySelector('#app').classList.contains('inspector-open'),
+            })""", [menu, toggle])
+            check(checks, result == {"hidden": True, "expanded": "false", "focused": True, "inspector": True},
+                  f"escape_closes_{menu[1:]}", result)
+
+        # With the inspector and no menu open, Esc still collapses the inspector.
+        page.locator("#video-viewport").focus()
+        page.keyboard.press("Escape")
+        collapsed = page.evaluate("() => !document.querySelector('#app').classList.contains('inspector-open')")
+        check(checks, collapsed, "escape_without_menu_collapses_inspector", collapsed)
+
+        # While forwarding: Esc that closes a menu is not sent; the next one is.
+        page.click("#input-state")
+        page.click("#quick-more-toggle")
+        page.locator("#video-viewport").focus()
+        state.key_posts.clear()
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(200)
+        closed = page.evaluate("() => document.querySelector('#quick-more-menu').hasAttribute('hidden')")
+        sent = [p.get("key") for p in state.key_posts]
+        check(checks, closed and not sent, "escape_closing_menu_not_forwarded", (closed, sent))
+        page.locator("#video-viewport").focus()
+        page.keyboard.press("Escape")
+        forwarded = ui_harness.wait_until(page, lambda: any(p.get("key") == "Escape" for p in state.key_posts))
+        check(checks, forwarded, "escape_forwarded_when_no_menu_open", state.key_posts)
+    finally:
+        context.close()
+
+
+def served_text(port, path):
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as response:
+        return response.read().decode("utf-8")
+
+
+def i18n_key_tables(source):
+    """{lang: set(keys)} from the I18N object literal in 01-i18n.js (one `key: '...'` per line)."""
+    body = source[source.index("const I18N = {"):source.index("let currentLang")]
+    tables, lang = {}, None
+    for line in body.splitlines():
+        head = re.match(r"^  '?(zh-CN|zh-TW|en)'?: \{", line)
+        if head:
+            lang = head.group(1)
+            tables[lang] = set()
+            continue
+        key = re.match(r"^    ([A-Za-z0-9_]+):", line)
+        if key and lang:
+            tables[lang].add(key.group(1))
+    return tables
+
+
+def i18n_keys_complete(browser, port, checks):
+    """AUD3-31: every t('key') and data-i18n key exists in all three tables; flagged copy translates."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    try:
+        modules = page.evaluate("""() => performance.getEntriesByType('resource')
+          .map((entry) => new URL(entry.name).pathname).filter((path) => path.startsWith('/assets/js/'))""")
+        tables = i18n_key_tables(served_text(port, "/assets/js/01-i18n.js"))
+        used = {}
+        for path in sorted(set(modules)):
+            for key in re.findall(r"\bt\(\s*'([A-Za-z0-9_]+)'", served_text(port, path)):
+                used.setdefault(key, path)
+        for key in re.findall(r'data-i18n="([^"]+)"', served_text(port, "/")):
+            used.setdefault(key, "index.html")
+        missing = sorted(f"{key}@{where}:{lang}" for key, where in used.items()
+                         for lang in ("zh-CN", "zh-TW", "en") if key not in tables.get(lang, ()))
+        check(checks, len(modules) > 20 and set(tables) == {"zh-CN", "zh-TW", "en"} and not missing,
+              "every_i18n_key_in_all_tables", missing[:12] or (len(modules), sorted(tables)))
+
+        settle_toolbar(page)
+        page.click("#lang-toggle")
+        page.click('[data-lang="en"]')
+        page.locator('[data-panel-target="video"]').click()
+        page.click('[data-video-preset="desktop"]')
+        cjk = re.compile("[一-鿿]")
+        toast = page.text_content("#toast") or ""
+        check(checks, toast and not cjk.search(toast), "preset_toast_translated", toast)
+        texts = page.evaluate("""async () => {
+          const {tr} = await import('/assets/js/01-i18n.js');
+          return [
+            document.querySelector('#macro-manager-title').textContent,
+            document.querySelector('#macro-play-progress').getAttribute('aria-label'),
+            document.querySelector('#media-download-form [name="sha256"]').getAttribute('placeholder'),
+            // xterm output bypasses the phrase observer, so the code must tr() it.
+            tr('终端连接失败'),
+          ];
+        }""")
+        check(checks, not any(cjk.search(text or "") for text in texts), "flagged_copy_translated", texts)
+
+        # xterm output bypasses the phrase observer; the mock has no terminal socket, so it fails.
+        page.click('[data-workspace="terminal"]')
+        read_terminal = """async () => {
+          const {shared} = await import('/assets/js/state.js'), buffer = shared.terminal?.buffer.active;
+          if (!buffer) return '';
+          return Array.from({length: buffer.length}, (_, i) => buffer.getLine(i)?.translateToString(true) || '')
+            .join('\\n').trim();
+        }"""
+        ui_harness.wait_until(page, lambda: page.evaluate(read_terminal), timeout=5)
+        terminal = page.evaluate(read_terminal)
+        check(checks, "Terminal connection failed" in terminal and not cjk.search(terminal),
+              "terminal_failure_translated", terminal)
+    finally:
+        context.close()
+
+
+SOURCE_WIDTH, SOURCE_HEIGHT = 1280, 720
+HID_MAX = 32767
+
+
+POINTER_PROBE = """
+(() => {
+  const seen = (window.__pointerSeen = []);
+  for (const type of ['pointermove', 'pointerdown', 'wheel'])
+    window.addEventListener(type, (e) => seen.push({type, button: e.button, x: e.clientX, y: e.clientY,
+      dx: e.movementX, dy: e.movementY, deltaY: e.deltaY, pointerId: e.pointerId}), true);
+})();
+"""
+
+
+POINTER_LOCK_STUB = """() => {
+  let locked = null;
+  window.__lockRequests = 0;
+  Object.defineProperty(Document.prototype, 'pointerLockElement', {configurable: true, get: () => locked});
+  Element.prototype.requestPointerLock = function () {
+    window.__lockRequests++;
+    locked = this;
+    document.dispatchEvent(new Event('pointerlockchange'));
+    return Promise.resolve();
+  };
+  Document.prototype.exitPointerLock = function () {
+    locked = null;
+    document.dispatchEvent(new Event('pointerlockchange'));
+  };
+}"""
+
+
+def input_page(browser, port, pointer_mode="absolute"):
+    state = State(pointer_mode=pointer_mode)
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    context, page = new_page(browser, state, port, init_scripts=(POINTER_PROBE,))
+    return state, context, page
+
+
+def size_feed(page, width, height):
+    """Give the mocked 1x1 feed a 1280x720 source and a known rendered box."""
+    page.evaluate("""([width, height, sourceWidth, sourceHeight]) => {
+      const feed = document.querySelector('#video-feed');
+      Object.defineProperty(feed, 'naturalWidth', {value: sourceWidth});
+      Object.defineProperty(feed, 'naturalHeight', {value: sourceHeight});
+      feed.style.width = width + 'px';
+      feed.style.height = height + 'px';
+      feed.dispatchEvent(new Event('load'));
+      window.dispatchEvent(new Event('resize'));  // drops the app's cached surface box
+    }""", [width, height, SOURCE_WIDTH, SOURCE_HEIGHT])
+
+
+def settled_box(page, selector="#video-feed", timeout_ms=6000):
+    """The element's box once the layout has settled: the console animates its
+    size for 140 ms and a loaded machine can stall that mid-way, so two samples in
+    a row are not enough. Wait for no running animation on the element or its
+    ancestors and several frames with an identical box."""
+    return page.evaluate("""async ([selector, timeoutMs]) => {
+      const element = document.querySelector(selector);
+      const frame = () => new Promise(requestAnimationFrame);
+      const animating = () => document.getAnimations().some((animation) =>
+        animation.playState === 'running' && animation.effect?.target?.contains?.(element));
+      const measure = () => {
+        const r = element.getBoundingClientRect();
+        return [r.x, r.y, r.width, r.height];
+      };
+      const deadline = performance.now() + timeoutMs;
+      let box = measure(), steady = 0;
+      while (performance.now() < deadline && steady < 5) {
+        await frame();
+        const latest = measure();
+        steady = !animating() && latest.every((value, index) => value === box[index]) ? steady + 1 : 0;
+        box = latest;
+      }
+      return box;
+    }""", [selector, timeout_ms])
+
+
+def take_control(page):
+    """Turn forwarding on through the status badge and wait until it took effect."""
+    page.locator("#input-state").click()
+    page.wait_for_function("() => document.querySelector('#input-state').getAttribute('aria-pressed') === 'true'",
+                           timeout=3000)
+
+
+def seen_event(page, event_type):
+    return page.evaluate("(t) => window.__pointerSeen.filter((e) => e.type === t).pop() || null", event_type)
+
+
+def fit_geometry(box):
+    """Where a 1280x720 source lands in `box` under fit mode: contained, centered."""
+    x, y, width, height = box
+    scale = min(width / SOURCE_WIDTH, height / SOURCE_HEIGHT)
+    content_w, content_h = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
+    return x + (width - content_w) / 2, y + (height - content_h) / 2, content_w, content_h
+
+
+def expected_hid(event, geometry):
+    left, top, width, height = geometry
+    return (round((event["x"] - left) / width * HID_MAX), round((event["y"] - top) / height * HID_MAX))
+
+
+def desktop_mouse_absolute(browser, port, checks):
+    """#107: real mouse input in fit mode maps to absolute HID x/y, buttons and wheel."""
+    state, context, page = input_page(browser, port)
+    try:
+        # Wider than 16:9, so fit mode leaves 80 px bars left and right of the
+        # picture and the mapping has to account for them.
+        size_feed(page, 800, 360)
+        box = settled_box(page)
+        classes = page.evaluate("() => document.querySelector('#console').className")
+        check(checks, "mode-fit" in classes, "mouse_scenario_runs_in_fit_mode", classes)
+        check(checks, box[2:] == [800, 360], "mouse_feed_has_known_box", box)
+        geometry = fit_geometry(box)
+        left, top, width, height = geometry
+        check(checks, abs(left - box[0] - 80) < 0.01 and abs(width - 640) < 0.01, "mouse_letterbox_geometry", geometry)
+        take_control(page)
+        box = settled_box(page)
+        geometry = fit_geometry(box)
+        left, top, width, height = geometry
+
+        # Each known point: the client point is checked, then the HID value is
+        # asserted against the fraction of the picture (±1 of 32767).
+        for name, fx, fy in (("center", 0.5, 0.5), ("quarter", 0.25, 0.25), ("far", 0.75, 0.9), ("origin", 0.0, 0.0)):
+            client_x, client_y = left + fx * width + (0.5 if fx == 0 else 0), top + fy * height + (0.5 if fy == 0 else 0)
+            state.mouse_posts.clear()
+            page.mouse.move(client_x, client_y)
+            moved = ui_harness.wait_until(page, lambda: any(b.get("action") == "move" for p, b in state.mouse_posts))
+            check(checks, moved, f"mouse_move_posted_{name}", state.mouse_posts)
+            event = seen_event(page, "pointermove")
+            check(checks, abs(event["x"] - client_x) <= 1 and abs(event["y"] - client_y) <= 1,
+                  f"mouse_event_at_known_point_{name}", (event, client_x, client_y))
+            want_x, want_y = expected_hid(event, geometry)
+            last = [b for p, b in state.mouse_posts if p == "absolute" and b.get("action") == "move"][-1]
+            check(checks, abs(last["x"] - want_x) <= 1 and abs(last["y"] - want_y) <= 1,
+                  f"mouse_absolute_move_{name}", (last, want_x, want_y))
+            # The fraction itself pins the mapping: one CSS pixel is ~51 HID units.
+            check(checks, abs(last["x"] - fx * HID_MAX) <= 60 and abs(last["y"] - fy * HID_MAX) <= 100,
+                  f"mouse_absolute_fraction_{name}", (last, fx, fy))
+
+        # Left, right and middle, each with the position of the press.
+        center_x, center_y = left + width / 2, top + height / 2
+        for button, code in (("left", 1), ("right", 2), ("middle", 4)):
+            state.mouse_posts.clear()
+            page.mouse.click(center_x, center_y, button=button)
+            # #124: a desktop click is a press and a release, not one `click`.
+            clicked = ui_harness.wait_until(page, lambda: any(b.get("action") == "release" for p, b in state.mouse_posts))
+            presses = [b for p, b in state.mouse_posts if b.get("action") == "press"]
+            releases = [b for p, b in state.mouse_posts if b.get("action") == "release"]
+            check(checks, clicked and len(presses) == 1 and len(releases) == 1
+                  and presses[0].get("button") == code and releases[0].get("button") == code,
+                  f"mouse_absolute_{button}_button", state.mouse_posts)
+            event = seen_event(page, "pointerdown")
+            want_x, want_y = expected_hid(event, geometry)
+            check(checks, abs(presses[0]["x"] - want_x) <= 1 and abs(presses[0]["y"] - want_y) <= 1,
+                  f"mouse_absolute_{button}_position", (presses[0], want_x, want_y))
+
+        # Wheel: scrolling down is negative, up is positive, and small
+        # high-resolution deltas still produce a step.
+        page.mouse.move(center_x, center_y)
+        for label, delta_y, wheel in (("down", 120, -3), ("up", -120, 3), ("small_down", 10, -1), ("small_up", -10, 1),
+                                      ("huge_down", 8000, -127), ("huge_up", -8000, 127)):
+            state.mouse_posts.clear()
+            page.mouse.wheel(0, delta_y)
+            scrolled = ui_harness.wait_until(page, lambda: any(b.get("action") == "scroll" for p, b in state.mouse_posts))
+            scrolls = [b for p, b in state.mouse_posts if b.get("action") == "scroll"]
+            check(checks, scrolled and scrolls[-1].get("delta") == wheel, f"mouse_wheel_{label}", state.mouse_posts)
+            event = seen_event(page, "wheel")
+            want_x, want_y = expected_hid(event, geometry)
+            check(checks, abs(scrolls[-1]["x"] - want_x) <= 1 and abs(scrolls[-1]["y"] - want_y) <= 1,
+                  f"mouse_wheel_{label}_position", (scrolls[-1], want_x, want_y))
+
+        # A press in the letterbox bar is outside the picture and sends nothing.
+        page.wait_for_timeout(100)
+        state.mouse_posts.clear()
+        page.mouse.click(box[0] + 40, center_y)
+        page.wait_for_timeout(200)
+        check(checks, not state.mouse_posts, "mouse_letterbox_press_sends_nothing", state.mouse_posts)
+    finally:
+        context.close()
+
+
+def capture_relative(page):
+    """Capture through the app's own path; stub pointer lock only if refused."""
+    viewport = settled_box(page, "#video-viewport")
+    center_x, center_y = viewport[0] + viewport[2] / 2, viewport[1] + viewport[3] / 2
+    page.mouse.move(center_x, center_y)
+    page.mouse.click(center_x, center_y)  # first press takes control
+    page.wait_for_function("() => document.querySelector('#input-state').getAttribute('aria-pressed') === 'true'",
+                           timeout=3000)
+    page.mouse.click(center_x, center_y)  # second press asks for pointer lock
+    page.wait_for_timeout(200)
+    stubbed = False
+    if not page.evaluate("() => !!document.pointerLockElement"):
+        stubbed = True
+        page.evaluate(POINTER_LOCK_STUB)
+        page.mouse.click(center_x, center_y)
+    return center_x, center_y, viewport, stubbed
+
+
+def mouse_sum(state):
+    moves = [b for p, b in state.mouse_posts if p == "move"]
+    return sum(b.get("dx", 0) for b in moves), sum(b.get("dy", 0) for b in moves), moves
+
+
+def desktop_click_after_layout_transition(browser, port, checks):
+    """A pointer move during the console's resize animation must not leave a
+    stale surface box behind: later clicks would land off target."""
+    state, context, page = input_page(browser, port)
+    try:
+        size_feed(page, 800, 360)
+        settled_box(page)
+        take_control(page)
+        settled_box(page)
+        # Long enough that the move below lands inside the animation.
+        page.add_style_tag(content="#console { transition-duration: 900ms !important; }")
+        page.evaluate("() => document.querySelector('#inspector-toggle').click()")
+        page.wait_for_function(
+            "() => document.getAnimations().some((a) => a.effect?.target?.id === 'console')",
+            timeout=3000,
+        )
+        moving = page.evaluate("""() => {
+          const r = document.querySelector('#video-feed').getBoundingClientRect();
+          return [r.x + r.width / 2, r.y + r.height / 2];
+        }""")
+        page.mouse.move(*moving)
+        box = settled_box(page)
+        geometry = fit_geometry(box)
+        left, top, width, height = geometry
+        state.mouse_posts.clear()
+        page.mouse.click(left + width / 2, top + height / 2)
+        clicked = ui_harness.wait_until(page, lambda: any(b.get("action") == "press" for p, b in state.mouse_posts))
+        clicks = [b for p, b in state.mouse_posts if b.get("action") == "press"]
+        check(checks, clicked and abs(clicks[0]["x"] - HID_MAX / 2) <= 60 and abs(clicks[0]["y"] - HID_MAX / 2) <= 100,
+              "mouse_click_centered_after_layout_transition", clicks)
+    finally:
+        context.close()
+
+
+def diagnostics_delivery_health(browser, port, checks):
+    """AUD3-20: failed notification delivery and audit writes show in diagnostics."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    health = {"notifications": {"dropped": 0, "channels": {"telegram": {"sent": 0, "failed": 3, "last_error": "HTTP 401", "last_error_unix": 1}}},
+              "audit": {"write_failures": 2}}
+
+    class WithHealth:
+        def __init__(self, route):
+            self.route, self.request = route, route.request
+
+        def fulfill(self, **kwargs):
+            body = {**json.loads(kwargs.get("body") or "{}"), **health}
+            return self.route.fulfill(**{**kwargs, "body": json.dumps(body)})
+
+    context, page = new_page(browser, state, port)
+    try:
+        page.unroute("**/api/**")
+        page.route("**/api/**", lambda route: api_route(
+            WithHealth(route) if route.request.url.endswith("/api/status") else route, state))
+        ok = ui_harness.wait_until(page, lambda: "401" in (page.text_content("#diag-notify") or ""), timeout=8.0)
+        text = page.text_content("#diag-notify") or ""
+        check(checks, ok and "telegram" in text and "3" in text and "2" in text, "diagnostics_show_delivery_failures", text)
+        health.update(notifications={"dropped": 0, "channels": {"telegram": {"sent": 1, "failed": 0, "last_error": None}}},
+                      audit={"write_failures": 0})
+        ok = ui_harness.wait_until(page, lambda: (page.text_content("#diag-notify") or "") == "正常", timeout=8.0)
+        check(checks, ok, "diagnostics_show_healthy_delivery", page.text_content("#diag-notify"))
+    finally:
+        context.close()
+
+
+def desktop_mouse_relative(browser, port, checks):
+    """#107: relative mode forwards movement deltas, clamped to one HID report."""
+    state, context, page = input_page(browser, port, pointer_mode="relative")
+    try:
+        # Large enough that every move below stays over the viewport: with the
+        # stubbed lock the browser still targets the element under the pointer.
+        page.set_viewport_size({"width": 1700, "height": 1100})
+        size_feed(page, 640, 360)
+        center_x, center_y, viewport, stubbed = capture_relative(page)
+        margin_x, margin_y = viewport[2] / 2, viewport[3] / 2
+        check(checks, margin_x > 340 and margin_y > 230, "relative_mouse_viewport_fits_moves", viewport)
+        locked = page.evaluate(
+            "() => document.pointerLockElement === document.querySelector('#video-viewport')")
+        check(checks, locked, "relative_mouse_captured_viewport", {"stubbed": stubbed})
+        if stubbed:
+            check(checks, page.evaluate("() => window.__lockRequests") >= 1,
+                  "relative_mouse_app_requested_lock", "stubbed lock only engages when the app asks")
+
+        # Small move: the delta arrives as-is, in one report or a few.
+        state.mouse_posts.clear()
+        page.mouse.move(center_x + 30, center_y + 20)
+        ui_harness.wait_until(page, lambda: mouse_sum(state)[:2] == (30, 20))
+        sum_x, sum_y, moves = mouse_sum(state)
+        check(checks, (sum_x, sum_y) == (30, 20), "relative_mouse_small_move", moves)
+        check(checks, all(not b.get("action") for b in moves), "relative_mouse_uses_move_endpoint", state.mouse_posts)
+
+        # A single large move is split into reports of at most ±127 per axis,
+        # and nothing is lost in the split.
+        for label, step_x, step_y in (("positive", 300, 0), ("negative", -300, 0), ("vertical", 0, 200), ("up", 0, -200)):
+            start = page.evaluate("() => { const m = window.__pointerSeen.filter((e) => e.type === 'pointermove').pop(); return [m.x, m.y]; }")
+            state.mouse_posts.clear()
+            page.mouse.move(start[0] + step_x, start[1] + step_y)
+            ui_harness.wait_until(page, lambda: mouse_sum(state)[:2] == (step_x, step_y))
+            sum_x, sum_y, moves = mouse_sum(state)
+            check(checks, (sum_x, sum_y) == (step_x, step_y), f"relative_mouse_large_{label}_keeps_total", moves)
+            values = [abs(b.get("dx", 0)) for b in moves] + [abs(b.get("dy", 0)) for b in moves]
+            check(checks, max(values) == 127, f"relative_mouse_large_{label}_clamps_to_127", moves)
+            check(checks, len(moves) >= 2, f"relative_mouse_large_{label}_splits_reports", moves)
+
+        # Buttons and wheel use the relative endpoints.
+        page.mouse.move(center_x, center_y)
+        for button, code in (("left", 1), ("right", 2), ("middle", 4)):
+            state.mouse_posts.clear()
+            page.mouse.down(button=button)
+            page.mouse.up(button=button)
+            # #124: a press and a release, not one `click`.
+            ui_harness.wait_until(page, lambda: any(p == "release" for p, b in state.mouse_posts))
+            presses = [b for p, b in state.mouse_posts if p == "press"]
+            releases = [b for p, b in state.mouse_posts if p == "release"]
+            check(checks, presses == [{"button": code}] and releases == [{"button": code}],
+                  f"relative_mouse_{button}_button", state.mouse_posts)
+        for label, delta_y, wheel in (("down", 120, -3), ("up", -120, 3)):
+            state.mouse_posts.clear()
+            page.mouse.wheel(0, delta_y)
+            ui_harness.wait_until(page, lambda: any(p == "scroll" for p, b in state.mouse_posts))
+            scrolls = [b for p, b in state.mouse_posts if p == "scroll"]
+            check(checks, scrolls == [{"wheel": wheel}], f"relative_mouse_wheel_{label}", state.mouse_posts)
+    finally:
+        context.close()
+
+
+def mouse_seq(state):
+    """Pointer posts as (action, body), in the order the server received them."""
+    return [(body.get("action") or endpoint, body) for endpoint, body in state.mouse_posts]
+
+
+def actions_of(state):
+    return [action for action, _ in mouse_seq(state)]
+
+
+# Holds mouse requests back in the page, so anything not explicitly ordered would
+# overtake (press longest), and the throttle is busy when the pointer stops.
+SLOW_MOUSE_FETCH = """() => {
+  const original = window.fetch;
+  window.fetch = async (url, options = {}) => {
+    if (String(url).includes('/api/mouse/')) {
+      const body = String(options.body || '');
+      await new Promise((done) => setTimeout(done, body.includes('press') || String(url).endsWith('/press') ? 180 : 40));
+    }
+    return original(url, options);
+  };
+}"""
+
+
+def drag_page(browser, port, pointer_mode="absolute"):
+    state, context, page = input_page(browser, port, pointer_mode=pointer_mode)
+    size_feed(page, 800, 360)
+    settled_box(page)
+    take_control(page)
+    box = settled_box(page)
+    return state, context, page, box, fit_geometry(box)
+
+
+def hid_at(geometry, fx, fy):
+    left, top, width, height = geometry
+    return left + fx * width, top + fy * height
+
+
+def close_to(body, want, tolerance=60):
+    return abs(body["x"] - want[0]) <= tolerance and abs(body["y"] - want[1]) <= tolerance
+
+
+def desktop_mouse_drag(browser, port, checks):
+    """#124: a real drag is press, moves in order, the final position, release."""
+    state, context, page, box, geometry = drag_page(browser, port)
+    try:
+        page.evaluate(SLOW_MOUSE_FETCH)
+        start, end = hid_at(geometry, 0.2, 0.5), hid_at(geometry, 0.8, 0.5)
+        page.mouse.move(*start)
+        ui_harness.wait_until(page, lambda: "move" in actions_of(state))
+        page.wait_for_timeout(120)
+        state.mouse_posts.clear()
+        page.mouse.down()
+        for step in range(1, 10):
+            page.mouse.move(start[0] + (end[0] - start[0]) * step / 10, start[1])
+            page.wait_for_timeout(10)
+        # Stops and lifts at once: the throttle is still sitting on this one.
+        page.mouse.move(*end)
+        page.mouse.up()
+        ui_harness.wait_until(page, lambda: "release" in actions_of(state), timeout=5)
+        page.wait_for_timeout(150)
+        seq = mouse_seq(state)
+        actions = [action for action, _ in seq]
+        check(checks, actions[0] == "press" and actions[-1] == "release" and actions.count("press") == 1
+              and actions.count("release") == 1 and set(actions) == {"press", "move", "release"} and "click" not in actions,
+              "mouse_drag_is_press_moves_release", actions)
+        check(checks, seq[0][1]["button"] == 1 and close_to(seq[0][1], (0.2 * HID_MAX, 0.5 * HID_MAX)),
+              "mouse_drag_press_at_start", seq[0])
+        xs = [body["x"] for action, body in seq if action == "move"]
+        check(checks, len(xs) >= 2 and xs == sorted(xs), "mouse_drag_moves_in_order", xs)
+        check(checks, close_to(seq[-2][1], (0.8 * HID_MAX, 0.5 * HID_MAX)) and seq[-2][0] == "move",
+              "mouse_drag_final_position_flushed_before_release", seq[-3:])
+        check(checks, seq[-1][1]["x"] == seq[-2][1]["x"] and seq[-1][1]["y"] == seq[-2][1]["y"] and seq[-1][1]["button"] == 1,
+              "mouse_drag_release_at_final_position", seq[-2:])
+    finally:
+        context.close()
+
+
+def desktop_mouse_plain_click(browser, port, checks):
+    """#124: a plain click is one press and one release at the same position."""
+    state, context, page, box, geometry = drag_page(browser, port)
+    try:
+        target = hid_at(geometry, 0.3, 0.6)
+        page.mouse.move(*target)
+        page.wait_for_timeout(150)
+        state.mouse_posts.clear()
+        page.mouse.down()
+        page.mouse.up()
+        ui_harness.wait_until(page, lambda: "release" in actions_of(state))
+        page.wait_for_timeout(100)
+        seq = mouse_seq(state)
+        check(checks, [action for action, _ in seq] == ["press", "release"], "mouse_plain_click_press_release", seq)
+        check(checks, (seq[0][1]["x"], seq[0][1]["y"]) == (seq[1][1]["x"], seq[1][1]["y"])
+              and close_to(seq[0][1], (0.3 * HID_MAX, 0.6 * HID_MAX)), "mouse_plain_click_same_position", seq)
+        check(checks, state.release_posts == 0, "mouse_plain_click_no_emergency_release", state.release_posts)
+    finally:
+        context.close()
+
+
+def desktop_mouse_release_outside_video(browser, port, checks):
+    """#124: pointer capture keeps a drag alive off the picture, down to its release."""
+    state, context, page, box, geometry = drag_page(browser, port)
+    try:
+        center = hid_at(geometry, 0.5, 0.5)
+        page.mouse.move(*center)
+        page.wait_for_timeout(120)
+        state.mouse_posts.clear()
+        page.mouse.down()
+        ui_harness.wait_until(page, lambda: "press" in actions_of(state))
+        pointer_id = seen_event(page, "pointerdown")["pointerId"]
+        captured = page.evaluate("(id) => document.querySelector('#video-viewport').hasPointerCapture(id)", pointer_id)
+        check(checks, captured, "mouse_drag_has_pointer_capture", pointer_id)
+        # Well above the console: over the page chrome, off the viewport.
+        page.mouse.move(geometry[0] - 60, 2)
+        ui_harness.wait_until(page, lambda: any(a == "move" and b["y"] == 0 for a, b in mouse_seq(state)))
+        moves = [body for action, body in mouse_seq(state) if action == "move"]
+        check(checks, moves and moves[-1]["x"] == 0 and moves[-1]["y"] == 0, "mouse_drag_outside_clamps_to_edge", moves)
+        page.mouse.up()
+        released = ui_harness.wait_until(page, lambda: "release" in actions_of(state))
+        seq = mouse_seq(state)
+        check(checks, released and seq[-1][1]["x"] == 0 and seq[-1][1]["y"] == 0, "mouse_release_outside_seen", seq[-2:])
+        page.wait_for_timeout(100)
+        check(checks, state.release_posts == 0, "mouse_release_outside_is_a_normal_release", state.release_posts)
+    finally:
+        context.close()
+
+
+def desktop_mouse_multi_button(browser, port, checks):
+    """#124: a second button during a drag is its own press and its own release."""
+    state, context, page, box, geometry = drag_page(browser, port)
+    try:
+        page.mouse.move(*hid_at(geometry, 0.5, 0.5))
+        page.wait_for_timeout(120)
+        state.mouse_posts.clear()
+        page.mouse.down(button="left")
+        page.mouse.down(button="right")
+        page.mouse.up(button="left")
+        ui_harness.wait_until(page, lambda: "release" in actions_of(state))
+        page.wait_for_timeout(50)
+        buttons = [(a, b["button"]) for a, b in mouse_seq(state) if a in ("press", "release")]
+        check(checks, buttons == [("press", 1), ("press", 2), ("release", 1)], "mouse_second_button_presses_and_keeps_first", buttons)
+        page.mouse.up(button="right")
+        ui_harness.wait_until(page, lambda: actions_of(state).count("release") == 2)
+        buttons = [(a, b["button"]) for a, b in mouse_seq(state) if a in ("press", "release")]
+        check(checks, buttons[-1] == ("release", 2) and len(buttons) == 4, "mouse_last_button_releases", buttons)
+    finally:
+        context.close()
+
+
+def desktop_mouse_context_menu(browser, port, checks):
+    """#124: the local menu stays away, also after a right drag ended off the viewport."""
+    state, context, page, box, geometry = drag_page(browser, port)
+    try:
+        menu = """(selector) => document.querySelector(selector).dispatchEvent(
+          new MouseEvent('contextmenu', {bubbles: true, cancelable: true}))"""
+        check(checks, page.evaluate(menu, "#video-viewport") is False, "context_menu_suppressed_on_viewport", "")
+        page.mouse.move(*hid_at(geometry, 0.5, 0.5))
+        page.mouse.down(button="right")
+        page.mouse.move(geometry[0] - 60, 2)
+        check(checks, page.evaluate(menu, "body") is False, "context_menu_suppressed_during_right_drag", "")
+        page.mouse.up(button="right")
+        check(checks, page.evaluate(menu, "body") is False, "context_menu_suppressed_after_right_release_outside", "")
+        ui_harness.wait_until(page, lambda: "release" in actions_of(state))
+        page.wait_for_timeout(600)
+        check(checks, page.evaluate(menu, "body") is True, "context_menu_elsewhere_works_again", "")
+    finally:
+        context.close()
+
+
+# Records whether each release-all asked for keepalive delivery.
+RELEASE_KEEPALIVE_PROBE = """() => {
+  window.__releaseKeepalive = [];
+  const original = window.fetch;
+  window.fetch = (url, options = {}) => {
+    if (String(url).endsWith('/api/input/release-all')) window.__releaseKeepalive.push(!!options.keepalive);
+    return original(url, options);
+  };
+}"""
+
+STUCK_BUTTON_PATHS = {
+    "window_blur": "() => window.dispatchEvent(new Event('blur'))",
+    "tab_hidden": """() => {
+      Object.defineProperty(document, 'hidden', {configurable: true, get: () => true});
+      document.dispatchEvent(new Event('visibilitychange'));
+    }""",
+    "pagehide": "() => window.dispatchEvent(new PageTransitionEvent('pagehide'))",
+    "pointercancel": """(id) => document.querySelector('#video-viewport').dispatchEvent(
+      new PointerEvent('pointercancel', {pointerId: id, pointerType: 'mouse', bubbles: true}))""",
+    "lostpointercapture": "(id) => document.querySelector('#video-viewport').releasePointerCapture(id)",
+    "leave_input_capture": "() => document.querySelector('#input-state').click()",
+    "terminal_tab": """() => document.querySelector('[data-workspace="terminal"]').click()""",
+    "video_transport": "async () => (await import('/assets/js/07-video.js')).restartVideo()",
+    "release_keys_button": "() => document.querySelector('#input-release').click()",
+}
+
+
+def desktop_mouse_stuck_button_paths(browser, port, checks):
+    """#124: everything that loses sight of the button sends a release, and the
+    button still physically down does not press again afterwards."""
+    for name, trigger in [*STUCK_BUTTON_PATHS.items(), ("exit_shortcut", None)]:
+        state, context, page, box, geometry = drag_page(browser, port)
+        try:
+            page.evaluate(RELEASE_KEEPALIVE_PROBE)
+            center = hid_at(geometry, 0.5, 0.5)
+            page.mouse.move(*center)
+            page.mouse.down()
+            pressed = ui_harness.wait_until(page, lambda: "press" in actions_of(state))
+            check(checks, pressed and state.release_posts == 0, f"stuck_{name}_drag_started", state.mouse_posts)
+            pointer_id = seen_event(page, "pointerdown")["pointerId"]
+            if name == "lostpointercapture":
+                # Capture changes take effect on the next pointer event, so one
+                # before (capture active) and one after (the loss is delivered).
+                page.mouse.move(center[0] + 1, center[1])
+            if trigger is None:
+                page.keyboard.press("Control+Alt+Backquote")
+            elif "id" in trigger.split("=>")[0]:
+                page.evaluate(trigger, pointer_id)
+            else:
+                page.evaluate(trigger)
+            if name == "lostpointercapture":
+                page.mouse.move(center[0] + 2, center[1])
+            released = ui_harness.wait_until(page, lambda: state.release_posts > 0)
+            check(checks, released, f"stuck_{name}_sends_release", state.release_posts)
+            check(checks, all(page.evaluate("() => window.__releaseKeepalive")), f"stuck_{name}_release_is_keepalive",
+                  page.evaluate("() => window.__releaseKeepalive"))
+            # The physical button is still down: moving must not press again, and
+            # lifting it has nothing left to release.
+            sent = state.release_posts
+            page.mouse.move(center[0] + 30, center[1])
+            page.wait_for_timeout(60)
+            page.mouse.up()
+            page.wait_for_timeout(120)
+            actions = actions_of(state)
+            check(checks, actions.count("press") == 1, f"stuck_{name}_no_second_press", actions)
+            check(checks, "release" not in actions and state.release_posts == sent, f"stuck_{name}_client_state_cleared",
+                  (actions, state.release_posts, sent))
+        finally:
+            context.close()
+
+
+def desktop_mouse_press_refused(browser, port, checks):
+    """#124: a refused press leaves nothing held and tells the user."""
+    state, context, page, box, geometry = drag_page(browser, port)
+    try:
+        page.route("**/api/mouse/absolute", lambda route: (
+            route.fulfill(status=409, content_type="application/json", body='{"error":"当前配置未启用绝对指针模式"}')
+            if '"press"' in (route.request.post_data or "") else route.fallback()))
+        page.mouse.move(*hid_at(geometry, 0.5, 0.5))
+        page.wait_for_timeout(120)
+        state.mouse_posts.clear()
+        page.mouse.down()
+        toasted = page.locator("#toast.show").wait_for(timeout=3000) is None
+        check(checks, toasted, "refused_press_shows_error", "")
+        ui_harness.wait_until(page, lambda: "release" in actions_of(state))
+        check(checks, "release" in actions_of(state), "refused_press_is_still_released", actions_of(state))
+        before = len(state.mouse_posts)
+        page.mouse.up()
+        page.wait_for_timeout(120)
+        check(checks, "release" not in actions_of(state)[before:], "refused_press_needs_no_second_release", actions_of(state))
+    finally:
+        context.close()
+
+
+def desktop_mouse_heartbeat(browser, port, checks):
+    """#124: a button held still keeps telling the server the client is alive, so
+    the idle release only ever hits a client that is really gone."""
+    for mode in ("absolute", "relative"):
+        state, context, page, box, geometry = drag_page(browser, port, pointer_mode=mode)
+        try:
+            if mode == "absolute":
+                page.mouse.move(*hid_at(geometry, 0.5, 0.5))
+            else:
+                page.evaluate(POINTER_LOCK_STUB)
+                page.evaluate("() => document.querySelector('#video-viewport').requestPointerLock()")
+                page.mouse.move(*hid_at(geometry, 0.5, 0.5))
+            page.clock.install()
+            page.mouse.down()
+            ui_harness.wait_until(page, lambda: "press" in actions_of(state))
+            page.wait_for_timeout(100)
+            state.mouse_posts.clear()
+            page.clock.fast_forward(9000)
+            page.wait_for_timeout(100)
+            check(checks, not state.mouse_posts, f"heartbeat_{mode}_quiet_before_interval", state.mouse_posts)
+            for beat in (1, 2, 3):
+                page.clock.fast_forward(10000)
+                ui_harness.wait_until(page, lambda: len(state.mouse_posts) >= beat)
+            seq = mouse_seq(state)
+            check(checks, len(seq) >= 3 and all(action == "move" for action, _ in seq), f"heartbeat_{mode}_restates_position", seq)
+            if mode == "relative":
+                check(checks, all(body == {"dx": 0, "dy": 0} for _, body in seq), "heartbeat_relative_has_no_motion", seq)
+            check(checks, state.release_posts == 0, f"heartbeat_{mode}_keeps_button_held", state.release_posts)
+            state.mouse_posts.clear()
+            page.mouse.up()
+            ui_harness.wait_until(page, lambda: "release" in actions_of(state))
+            page.clock.fast_forward(30000)
+            page.wait_for_timeout(100)
+            check(checks, actions_of(state) == ["release"], f"heartbeat_{mode}_stops_after_release", actions_of(state))
+        finally:
+            context.close()
+
+
+def desktop_mouse_drag_relative(browser, port, checks):
+    """#124: relative mode: press, moves with every delta delivered, release; and
+    leaving pointer lock releases."""
+    state, context, page = input_page(browser, port, pointer_mode="relative")
+    try:
+        page.set_viewport_size({"width": 1700, "height": 1100})
+        size_feed(page, 640, 360)
+        center_x, center_y, viewport, stubbed = capture_relative(page)
+        page.evaluate(SLOW_MOUSE_FETCH)
+        page.wait_for_timeout(200)
+        state.mouse_posts.clear()
+        page.mouse.down()
+        seen_before = page.evaluate("() => window.__pointerSeen.length")
+        for step in range(1, 11):
+            page.mouse.move(center_x + 20 * step, center_y + 10 * step)
+        # Lifted with deltas still queued behind the busy throttle.
+        page.mouse.up()
+        ui_harness.wait_until(page, lambda: "release" in actions_of(state), timeout=5)
+        page.wait_for_timeout(100)
+        seq = mouse_seq(state)
+        actions = [action for action, _ in seq]
+        check(checks, actions[0] == "press" and actions[-1] == "release" and set(actions) == {"press", "move", "release"},
+              "relative_drag_is_press_moves_release", actions)
+        check(checks, seq[0][1] == {"button": 1} and seq[-1][1] == {"button": 1}, "relative_drag_button_bodies", (seq[0], seq[-1]))
+        moved = page.evaluate("""(from) => window.__pointerSeen.slice(from).filter((e) => e.type === 'pointermove')
+          .reduce((sum, e) => [sum[0] + e.dx, sum[1] + e.dy], [0, 0])""", seen_before)
+        total = (sum(b.get("dx", 0) for a, b in seq if a == "move"), sum(b.get("dy", 0) for a, b in seq if a == "move"))
+        check(checks, list(total) == moved, "relative_drag_delivers_every_delta_before_release", (total, moved))
+        check(checks, state.release_posts == 0, "relative_drag_normal_release", state.release_posts)
+
+        state.mouse_posts.clear()
+        page.mouse.down()
+        ui_harness.wait_until(page, lambda: "press" in actions_of(state))
+        page.evaluate("() => document.exitPointerLock()")
+        check(checks, ui_harness.wait_until(page, lambda: state.release_posts > 0), "relative_leaving_lock_releases", state.release_posts)
+        page.mouse.up()
+        page.wait_for_timeout(100)
+        check(checks, "release" not in actions_of(state), "relative_leaving_lock_clears_client_state", actions_of(state))
+
+        # Relative mode can hold a button with no video at all, so switching to
+        # the terminal has no transport change to rely on.
+        page.evaluate("async () => (await import('/assets/js/07-video.js')).stopVideo()")
+        page.evaluate("() => document.querySelector('#video-viewport').requestPointerLock()")
+        page.wait_for_function("() => !!document.pointerLockElement", timeout=3000)
+        page.wait_for_timeout(100)
+        state.mouse_posts.clear()
+        state.release_posts = 0
+        page.mouse.down()
+        ui_harness.wait_until(page, lambda: "press" in actions_of(state))
+        page.evaluate("""() => document.querySelector('[data-workspace="terminal"]').click()""")
+        check(checks, ui_harness.wait_until(page, lambda: state.release_posts > 0), "relative_terminal_tab_releases_without_video", state.release_posts)
+        page.mouse.up()
+    finally:
+        context.close()
+
+
+def input_socket_page(browser, port, hold_replies):
+    """The console over a mocked input socket. Frames of a type in `hold_replies`
+    get no answer, so they are in flight when the socket drops."""
+    from verify_p2b_ui import api_route, GIF
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    frames, sockets = [], []
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+
+    def on_socket(ws):
+        sockets.append(ws)
+
+        def reply(message):
+            body = json.loads(message)
+            frames.append(body)
+            if body.get("action", body["type"]) not in hold_replies:
+                ws.send(json.dumps({"id": body["id"], "ok": True}))
+        ws.on_message(reply)
+    page.add_init_script(POINTER_PROBE)
+    page.route_web_socket("**/api/input/ws", on_socket)
+    page.route("**/api/**", lambda route: api_route(route, state))
+    page.route("**/video_feed*", lambda route: route.fulfill(status=200, content_type="image/gif", body=GIF))
+    page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
+    page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+    size_feed(page, 800, 360)
+    settled_box(page)
+    take_control(page)
+    box = settled_box(page)
+    ui_harness.wait_until(page, lambda: bool(sockets))
+    page.wait_for_timeout(100)
+    return state, context, page, frames, sockets, fit_geometry(box)
+
+
+def desktop_mouse_socket_drag(browser, port, checks):
+    """#124: over the input socket a drag is frames in order; a drop mid-drag
+    leaves the client believing nothing is held; a press is never replayed, a
+    release is."""
+    state, context, page, frames, sockets, geometry = input_socket_page(browser, port, ())
+    try:
+        page.mouse.move(*hid_at(geometry, 0.2, 0.5))
+        page.wait_for_timeout(100)
+        frames.clear()
+        page.mouse.down()
+        page.mouse.move(*hid_at(geometry, 0.5, 0.5))
+        page.mouse.move(*hid_at(geometry, 0.8, 0.5))
+        page.mouse.up()
+        ui_harness.wait_until(page, lambda: any(f.get("action") == "release" for f in frames))
+        actions = [f.get("action") for f in frames]
+        check(checks, actions[0] == "press" and actions[-1] == "release" and set(actions) == {"press", "move", "release"}
+              and all(f["type"] == "absolute" for f in frames) and not state.mouse_posts,
+              "socket_drag_frames_in_order", frames)
+        check(checks, close_to(frames[-1], (0.8 * HID_MAX, 0.5 * HID_MAX)), "socket_drag_release_at_final_position", frames[-1])
+
+        # The socket dies mid-drag: the server released on its end, so the client
+        # has nothing held any more, and says so once more over HTTP.
+        frames.clear()
+        page.mouse.down()
+        ui_harness.wait_until(page, lambda: any(f.get("action") == "press" for f in frames))
+        page.wait_for_timeout(50)
+        sockets[-1].close()
+        check(checks, ui_harness.wait_until(page, lambda: state.release_posts > 0), "socket_drop_mid_drag_releases", state.release_posts)
+        page.mouse.up()
+        page.wait_for_timeout(150)
+        check(checks, "release" not in actions_of(state), "socket_drop_mid_drag_clears_client_state", state.mouse_posts)
+    finally:
+        context.close()
+
+    # A press whose reply was lost must not run again: the server has released.
+    state, context, page, frames, sockets, geometry = input_socket_page(browser, port, ("press",))
+    try:
+        page.mouse.move(*hid_at(geometry, 0.5, 0.5))
+        page.wait_for_timeout(100)
+        page.mouse.down()
+        ui_harness.wait_until(page, lambda: any(f.get("action") == "press" for f in frames))
+        sockets[-1].close()
+        ui_harness.wait_until(page, lambda: state.release_posts > 0)
+        page.wait_for_timeout(200)
+        check(checks, "press" not in actions_of(state), "socket_drop_press_not_replayed", state.mouse_posts)
+        toast = page.text_content("#toast") or ""
+        check(checks, "可能未送达" in toast, "socket_drop_press_reports_undelivered", toast)
+        page.mouse.up()
+    finally:
+        context.close()
+
+    # A release whose reply was lost is simply sent again over HTTP.
+    state, context, page, frames, sockets, geometry = input_socket_page(browser, port, ("release",))
+    try:
+        page.mouse.move(*hid_at(geometry, 0.5, 0.5))
+        page.wait_for_timeout(100)
+        page.mouse.down()
+        page.mouse.up()
+        ui_harness.wait_until(page, lambda: any(f.get("action") == "release" for f in frames))
+        sockets[-1].close()
+        retried = ui_harness.wait_until(page, lambda: "release" in actions_of(state))
+        check(checks, retried, "socket_drop_release_retried_over_http", state.mouse_posts)
+    finally:
+        context.close()
+
+
+QUICK_KEY_PAYLOADS = {
+    "cad": {"key": "Delete", "ctrl": True, "alt": True, "hold_ms": 100},
+    "win": {"key": "Meta", "meta": True, "hold_ms": 60},
+    "alttab": {"key": "Tab", "alt": True, "hold_ms": 100},
+    "esc": {"key": "Escape", "hold_ms": 40},
+}
+
+
+def key_payload(post):
+    """Normalise a key post so an absent modifier compares equal to false."""
+    normal = {"key": post.get("key"), "hold_ms": post.get("hold_ms")}
+    for modifier in ("ctrl", "shift", "alt", "meta"):
+        normal[modifier] = bool(post.get(modifier))
+    return normal
+
+
+def desktop_quick_keys(browser, port, checks):
+    """#107: every quick-key button sends exactly its documented key and modifiers."""
+    state, context, page = input_page(browser, port)
+    try:
+        # The inline buttons only show on a wide console, and the console takes
+        # the video's aspect ratio, so the 1x1 mock feed needs a real size too.
+        # Below 880 px of console width they move into the "组合键" menu (see below).
+        page.set_viewport_size({"width": 1700, "height": 900})
+        size_feed(page, 640, 360)
+        settled_box(page, "#console")
+        actions = page.evaluate("() => [...document.querySelectorAll('[data-quick-key]')].map((b) => b.dataset.quickKey)")
+        check(checks, sorted(actions) == sorted(QUICK_KEY_PAYLOADS), "quick_key_buttons_all_have_expected_payloads", actions)
+        for action in actions:
+            state.key_posts.clear()
+            page.locator(f'[data-quick-key="{action}"]').click()
+            sent = ui_harness.wait_until(page, lambda: len(state.key_posts) >= 1)
+            page.wait_for_timeout(50)
+            check(checks, sent and len(state.key_posts) == 1, f"quick_key_{action}_sends_one_key", state.key_posts)
+            want = key_payload(QUICK_KEY_PAYLOADS[action])
+            check(checks, key_payload(state.key_posts[0]) == want, f"quick_key_{action}_payload",
+                  (state.key_posts[0], want))
+            # The first quick key also turned forwarding on for the ones after it.
+            pressed = page.get_attribute("#input-state", "aria-pressed")
+            check(checks, pressed == "true", f"quick_key_{action}_enables_forwarding", pressed)
+
+        # Narrow console: the same four keys from the menu, with the same payloads.
+        page.set_viewport_size({"width": 1000, "height": 900})
+        page.locator('[data-quick-key="cad"]').wait_for(state="hidden", timeout=3000)
+        labels = {"cad": "Ctrl+Alt+Del", "win": "Win", "alttab": "Alt+Tab", "esc": "Esc"}
+        for action, label in labels.items():
+            page.locator("#quick-more-toggle").click()
+            state.key_posts.clear()
+            page.locator(".quick-menu-common .quick-combo-item", has_text=label).first.click()
+            sent = ui_harness.wait_until(page, lambda: len(state.key_posts) >= 1)
+            want = key_payload(QUICK_KEY_PAYLOADS[action])
+            check(checks, sent and key_payload(state.key_posts[0]) == want, f"quick_menu_{action}_payload",
+                  (state.key_posts, want))
+    finally:
+        context.close()
+
+
+def virtual_key_press(page, state, key):
+    state.key_posts.clear()
+    page.locator(f'#virtual-keyboard button[data-key="{key}"]').first.click()
+    ui_harness.wait_until(page, lambda: len(state.key_posts) >= 1)
+    return key_payload(state.key_posts[0]) if state.key_posts else {}
+
+
+def modifier_pressed(page, key):
+    """aria-pressed of every on-screen button for `key` (each side has its own)."""
+    return page.evaluate("""(key) => [...document.querySelectorAll('#virtual-keyboard button')]
+      .filter((b) => b.dataset.key === key).map((b) => b.getAttribute('aria-pressed'))""", key)
+
+
+def desktop_virtual_modifiers(browser, port, checks):
+    """#107: on-screen modifiers stay on across keys until toggled off or released."""
+    state, context, page = input_page(browser, port)
+    try:
+        take_control(page)
+        page.locator("#keyboard-toggle").click()
+        page.wait_for_selector("#keyboard-dialog[open]", timeout=3000)
+
+        plain = virtual_key_press(page, state, "Q")
+        check(checks, plain == {"key": "Q", "hold_ms": 25, "ctrl": False, "shift": False, "alt": False, "meta": False},
+              "virtual_key_without_modifier", plain)
+
+        state.key_posts.clear()
+        page.locator('#virtual-keyboard button[data-key="Control"]').first.click()
+        check(checks, modifier_pressed(page, "Control") == ["true", "true"], "virtual_control_marks_both_sides",
+              modifier_pressed(page, "Control"))
+        page.wait_for_timeout(100)
+        check(checks, not state.key_posts, "virtual_modifier_alone_sends_nothing", state.key_posts)
+
+        first = virtual_key_press(page, state, "W")
+        check(checks, first["ctrl"] and not (first["shift"] or first["alt"] or first["meta"]),
+              "virtual_control_applies_to_key", first)
+        # Sticky: still held for the next key without another click.
+        second = virtual_key_press(page, state, "E")
+        check(checks, second["ctrl"], "virtual_control_stays_on_for_next_key", second)
+        check(checks, modifier_pressed(page, "Control") == ["true", "true"], "virtual_control_still_marked",
+              modifier_pressed(page, "Control"))
+
+        for modifier in ("Shift", "Alt", "Meta"):
+            page.locator(f'#virtual-keyboard button[data-key="{modifier}"]').first.click()
+        all_on = virtual_key_press(page, state, "R")
+        check(checks, all_on["ctrl"] and all_on["shift"] and all_on["alt"] and all_on["meta"],
+              "virtual_modifiers_combine", all_on)
+
+        # The right-hand button toggles the same state off.
+        page.locator('#virtual-keyboard button[data-key="Control"]').last.click()
+        check(checks, modifier_pressed(page, "Control") == ["false", "false"], "virtual_control_toggles_off",
+              modifier_pressed(page, "Control"))
+        fewer = virtual_key_press(page, state, "T")
+        check(checks, not fewer["ctrl"] and fewer["shift"] and fewer["alt"] and fewer["meta"],
+              "virtual_control_off_for_next_key", fewer)
+
+        # The app's release-all path clears whatever is still held.
+        page.locator("#input-release").click()
+        released = ui_harness.wait_until(page, lambda: modifier_pressed(page, "Shift") == ["false", "false"])
+        check(checks, released, "virtual_modifiers_cleared_by_release", modifier_pressed(page, "Shift"))
+        after = virtual_key_press(page, state, "Y")
+        check(checks, not (after["ctrl"] or after["shift"] or after["alt"] or after["meta"]),
+              "virtual_key_after_release_has_no_modifier", after)
+
+        # Closing the keyboard never leaves a modifier held for the next time.
+        page.locator('#virtual-keyboard button[data-key="Alt"]').first.click()
+        page.locator("#keyboard-dialog [data-close]").click()
+        page.wait_for_selector("#keyboard-dialog:not([open])", state="attached", timeout=3000)
+        page.locator("#keyboard-toggle").click()
+        page.wait_for_selector("#keyboard-dialog[open]", timeout=3000)
+        check(checks, modifier_pressed(page, "Alt") == ["false", "false"], "virtual_modifiers_cleared_by_closing",
+              modifier_pressed(page, "Alt"))
+        reopened = virtual_key_press(page, state, "U")
+        check(checks, not reopened["alt"], "virtual_key_after_reopen_has_no_modifier", reopened)
+    finally:
+        context.close()
+
+
+def harness_reports_page_errors(browser, port, checks):
+    """AUD3-32: a module that throws while evaluating reaches the report with its stack."""
+    before = len(ui_harness.PAGE_ERRORS)
+    context = browser.new_context()
+    try:
+        page = context.new_page()
+        page.route("**/assets/js/main.js", lambda route: route.fulfill(
+            status=200, content_type="text/javascript; charset=utf-8",
+            body="throw new Error('AUD3-32 injected failure');\n"))
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="load", timeout=15000)
+        ui_harness.wait_until(page, lambda: len(ui_harness.PAGE_ERRORS) > before)
+    finally:
+        context.close()
+    # Taken out again so this deliberate error does not fail the suite.
+    injected = ui_harness.PAGE_ERRORS[before:]
+    del ui_harness.PAGE_ERRORS[before:]
+    check(checks, len(injected) == 1 and "AUD3-32 injected failure" in injected[0]["message"],
+          "harness_records_page_error_message", injected)
+    check(checks, "main.js" in injected[0]["stack"], "harness_records_page_error_stack", injected)
 
 
 # Every function taking (browser, port, checks) is a scenario, run in

@@ -1,16 +1,21 @@
 import { app } from './00-core.js';
+import { tr } from './01-i18n.js';
+import { toast } from './03-session.js';
 import { updateDiagnosticsCard } from './05-power.js';
 
 // Keyboard/mouse transport. While the console is open, HID requests travel
 // over one WebSocket (/api/input/ws) instead of one HTTP request per event,
 // which removes per-event connection and header overhead. request() routes
 // the HID endpoints here when the socket is open and falls back to HTTP
-// otherwise, so callers never need to know which transport carried them.
+// otherwise. The one difference callers see: a request in flight when the
+// socket drops may be rejected as possibly undelivered (see below).
 const HID_SOCKET_ROUTES = {
   '/api/key': 'key',
   '/api/mouse/move': 'move',
   '/api/mouse/absolute': 'absolute',
   '/api/mouse/click': 'click',
+  '/api/mouse/press': 'press',
+  '/api/mouse/release': 'release',
   '/api/mouse/scroll': 'scroll',
   '/api/input/release-all': 'release_all',
 };
@@ -21,20 +26,54 @@ let inputSocket = null,
   inputSocketDelay = 500,
   inputSocketNextId = 1;
 const inputSocketPending = new Map();
+// Told when an open socket drops: the server has released everything by then,
+// so the input code has to stop believing a button is down.
+let onInputSocketLost = () => {};
+function setInputSocketLostHandler(handler) {
+  onInputSocketLost = handler;
+}
 
 function inputSocketReady() {
   return inputSocket?.readyState === WebSocket.OPEN;
 }
-// A dropped socket hands its in-flight requests to HTTP, so the user sees
-// neither an error nor a lost key; the server also releases held keys when
-// a socket ends, so a retried key press is never left stuck.
-function retryPendingOverHttp() {
+// A dropped socket cannot say which in-flight requests the server already
+// executed: it runs each message and only then replies, so a lost reply may
+// belong to a key press or click that did reach the target. Replaying those
+// over HTTP could type a key twice (an Enter on a confirmation prompt), so
+// only idempotent requests are retried: an absolute move just restates the
+// position, and a button release or release_all releases what is already
+// released. A mouse press is not: replayed after the server released on socket
+// end, it would hold a button nobody is holding. Everything else is
+// rejected as possibly undelivered, with one toast per drop however
+// many requests were pending; `reported` tells callers not to toast again.
+// (Requests the socket never accepted fall back to HTTP in
+// sendOverInputSocket, see below.)
+const UNDELIVERED_MESSAGE = '键鼠连接中断，刚才的操作可能未送达被控机，请确认后再重试';
+function idempotentInput(type, payload) {
+  return (
+    type === 'release_all' ||
+    type === 'release' ||
+    (type === 'absolute' && (payload.action === 'move' || payload.action === 'release'))
+  );
+}
+function settlePendingAfterClose() {
   const pending = [...inputSocketPending.values()];
   inputSocketPending.clear();
-  for (const { resolve, reject, timer, fallback } of pending) {
+  let rejected = 0;
+  for (const { resolve, reject, timer, fallback, idempotent } of pending) {
     clearTimeout(timer);
-    fallback().then(resolve, reject);
+    if (idempotent) {
+      fallback().then(resolve, reject);
+      continue;
+    }
+    const error = new Error(tr(UNDELIVERED_MESSAGE));
+    error.status = 0;
+    error.undelivered = true;
+    error.reported = true;
+    rejected += 1;
+    reject(error);
   }
+  if (rejected) toast(tr(UNDELIVERED_MESSAGE), true);
 }
 function connectInputSocket() {
   inputSocketWanted = true;
@@ -42,8 +81,10 @@ function connectInputSocket() {
   if (inputSocket || typeof WebSocket !== 'function') return;
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws',
     socket = new WebSocket(`${scheme}://${location.host}/api/input/ws`);
+  let opened = false;
   inputSocket = socket;
   socket.onopen = () => {
+    opened = true;
     inputSocketDelay = 500;
     updateDiagnosticsCard();
   };
@@ -68,7 +109,8 @@ function connectInputSocket() {
   socket.onclose = () => {
     if (inputSocket !== socket) return;
     inputSocket = null;
-    retryPendingOverHttp();
+    settlePendingAfterClose();
+    if (opened) onInputSocketLost();
     updateDiagnosticsCard();
     // Reconnect with backoff while the console is open; meanwhile request()
     // transparently uses HTTP, which also surfaces 401 after a logout.
@@ -83,13 +125,14 @@ function disconnectInputSocket() {
   clearTimeout(inputSocketRetry);
   const socket = inputSocket;
   inputSocket = null;
-  retryPendingOverHttp();
+  settlePendingAfterClose();
   socket?.close();
 }
 // Pure pointer motion is disposable: when the socket is backed up, a newer
-// position supersedes it. Keys, clicks, scrolls and releases always go out.
+// position supersedes it. Keys, clicks, scrolls and releases always go out, and
+// so does motion marked `reliable` (the last position before a release).
 const INPUT_SOCKET_BACKLOG_BYTES = 16 * 1024;
-function sendOverInputSocket(type, body, fallback) {
+function sendOverInputSocket(type, body, fallback, reliable = false) {
   let payload = {};
   if (body) {
     try {
@@ -99,7 +142,7 @@ function sendOverInputSocket(type, body, fallback) {
     }
   }
   const motion = type === 'move' || (type === 'absolute' && payload.action === 'move');
-  if (motion && inputSocket.bufferedAmount > INPUT_SOCKET_BACKLOG_BYTES) return Promise.resolve({ ok: true });
+  if (motion && !reliable && inputSocket.bufferedAmount > INPUT_SOCKET_BACKLOG_BYTES) return Promise.resolve({ ok: true });
   const id = inputSocketNextId++;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -108,11 +151,20 @@ function sendOverInputSocket(type, body, fallback) {
       error.status = 504;
       reject(error);
     }, INPUT_SOCKET_TIMEOUT_MS);
-    inputSocketPending.set(id, { resolve, reject, timer, fallback });
-    inputSocket.send(JSON.stringify({ ...payload, id, type }));
+    inputSocketPending.set(id, { resolve, reject, timer, fallback, idempotent: idempotentInput(type, payload) });
+    try {
+      inputSocket.send(JSON.stringify({ ...payload, id, type }));
+    } catch (_) {
+      // The socket refused the message, so the server never saw it: HTTP
+      // can carry it without any risk of running it twice.
+      inputSocketPending.delete(id);
+      clearTimeout(timer);
+      fallback().then(resolve, reject);
+    }
   });
 }
 
 export {
   connectInputSocket, disconnectInputSocket, HID_SOCKET_ROUTES, inputSocketReady, sendOverInputSocket,
+  setInputSocketLostHandler,
 };

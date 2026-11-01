@@ -20,7 +20,8 @@ WingmanKVM 是一个运行在 ARM 开发板上的网页 KVM。把被控机的 HD
 
 **键盘与鼠标**
 - 模拟 USB 键盘、相对鼠标和绝对指针，BIOS / UEFI 中可用
-- 键鼠事件走 WebSocket 长连接，断开时自动回退 HTTP；连接中断时服务端自动释放所有按键
+- 鼠标支持按住拖拽（拖动窗口、框选文本、拖动滚动条）和多键同按，绝对与相对指针模式均可
+- 键鼠事件走 WebSocket 长连接，断开时自动回退 HTTP；连接中断时服务端自动释放所有按键和鼠标键
 - 粘贴为键入：把本机剪贴板文字逐字输入被控机，支持 US / UK / DE / FR / JP 布局
 - 组合键菜单（Ctrl+Alt+Del、Ctrl+Alt+F1–F7 等）与自定义组合
 - 虚拟键盘、键盘指示灯同步、手机触屏手势（点按、长按右键、双指滚动）
@@ -53,6 +54,8 @@ WingmanKVM 是一个运行在 ARM 开发板上的网页 KVM。把被控机的 HD
 
 ## 快速开始
 
+> 目前只有预发布版本 `v2.0.0-rc.1`，正式版发布前请在第 1 步的命令末尾加上 `--version v2.0.0-rc.1`。
+
 1. 在 KVM 主机上运行安装命令（自动识别架构、校验并安装，`--install-deps` 会补齐缺少的运行依赖）：
 
    ```bash
@@ -78,6 +81,7 @@ WingmanKVM 能直接操作被控机，请把它当作服务器的物理控制台
 - [升级与恢复](docs/UPGRADE_RECOVERY.md)
 - [维护权限模式](docs/MAINTENANCE_MODES.md) · [会话 Cookie 策略](docs/SESSION_COOKIES.md) · [上传限制](docs/UPLOAD_LIMITS.md) · [HID 配置迁移](docs/HID_CONFIGURATION.md)
 - [测试说明](docs/TESTING.md)
+- [真机测试清单](docs/HARDWARE_TEST_CHECKLIST.md)
 - [变更日志](CHANGELOG.md)
 
 ## 开发

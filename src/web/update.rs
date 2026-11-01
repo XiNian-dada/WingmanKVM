@@ -713,6 +713,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn logged_out_browser_can_load_the_page_and_every_module() {
+        let fixture = Fixture::new("assets");
+        let state = super::super::config_api::tests::test_state(
+            Config::default(),
+            fixture.dir.join("config.json"),
+        );
+        let app = router(state);
+        let Ok(listener) = tokio::net::TcpListener::bind("127.0.0.1:0").await else {
+            eprintln!("Skipping network test: bind not permitted");
+            return;
+        };
+        let address = listener.local_addr().unwrap();
+        let listener = crate::client_ip::ClientIpListener(
+            crate::proxy_protocol::ProxyProtocolListener::new(listener, ProxyProtocolMode::Disabled),
+        );
+        tokio::spawn(async move {
+            use axum::serve::ListenerExt;
+            let _ = axum::serve(
+                listener.tap_io(|_| {}),
+                app.into_make_service_with_connect_info::<ClientConnection>(),
+            )
+            .await;
+        });
+        let client = reqwest::Client::new();
+        let base = format!("http://{address}");
+        let mut paths = vec!["/".to_owned(), "/assets/app.css".to_owned()];
+        paths.extend(
+            crate::web_ui::APP_JS_MODULES
+                .iter()
+                .map(|(name, _)| format!("/assets/js/{name}")),
+        );
+        for path in paths {
+            let response = client.get(format!("{base}{path}")).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path} without a session");
+            assert!(!response.bytes().await.unwrap().is_empty(), "{path} is empty");
+        }
+        let missing = client.get(format!("{base}/assets/js/nope.js")).send().await.unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn update_routes_require_a_session_and_same_origin_posts() {
         let fixture = Fixture::new("routes");
         let state = super::super::config_api::tests::test_state(

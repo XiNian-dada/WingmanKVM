@@ -23,7 +23,6 @@ pub(super) async fn login(
     };
     let auth = state.auth.clone();
     let username = request.username;
-    let username_for_audit = username.clone();
     let password = request.password;
     let password_for_verification = password.clone();
     let verified = run_with_password_slot(password_slot, move || {
@@ -43,7 +42,7 @@ pub(super) async fn login(
                 AuditEvent::LoginFailed,
                 Some(client_ip),
                 None,
-                Some(login_failure_detail(&username_for_audit)),
+                Some(login_failure_detail()),
             )
             .await;
         return Err(ApiError::new(
@@ -131,15 +130,10 @@ where
     .map_err(map_auth_error)
 }
 
-pub(super) fn login_failure_detail(username: &str) -> String {
-    // Only the submitted username may be recorded. Passwords, passkey
-    // material, and every other request field never reach the audit log.
-    let username: String = username
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(64)
-        .collect();
-    format!("method=password username={username}")
+pub(super) fn login_failure_detail() -> String {
+    // The submitted username is not recorded: users sometimes type their
+    // password into that field. Nothing from the request reaches the log.
+    "method=password".to_owned()
 }
 
 pub(super) async fn logout(
@@ -151,7 +145,9 @@ pub(super) async fn logout(
     let mut revoked_session = None;
     if let Some(token) = session_token(&headers) {
         revoked_session = state.sessions.session_id(token);
-        state.sessions.revoke(token);
+        if state.sessions.revoke(token) {
+            release_after_session_end(&state);
+        }
     }
     if let Some(session_id) = revoked_session {
         state
@@ -262,15 +258,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn failed_login_audit_contains_only_the_username_and_method() {
-        let detail = login_failure_detail("admin");
-        assert_eq!(detail, "method=password username=admin");
-        assert!(!detail.contains("Correct-Horse7!"));
-        assert!(!detail.contains("password="));
-
-        let noisy = login_failure_detail(&format!("bad\nname{}", "x".repeat(200)));
-        assert!(!noisy.contains('\n'));
-        assert!(noisy.chars().count() <= "method=password username=".len() + 64);
+    fn failed_login_audit_records_only_the_method() {
+        assert_eq!(login_failure_detail(), "method=password");
     }
 
     #[test]

@@ -84,6 +84,27 @@ pub(super) async fn write_upload_chunk<W: tokio::io::AsyncWrite + Unpin>(
 
 pub(super) struct PartialUpload { path: Option<PathBuf>, file: Option<fs::File> }
 
+/// Removes uploads a crash or restart left behind; they are hidden from the
+/// image list and share a filesystem with config.json. Call only before any
+/// upload can be running.
+pub(super) fn sweep_partial_uploads(image_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(image_dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with(".wingmankvm-upload-") || !name.ends_with(".partial") {
+            continue;
+        }
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        match std::fs::remove_file(entry.path()) {
+            Ok(()) => tracing::info!(path = %entry.path().display(), "removed an interrupted upload"),
+            Err(error) => tracing::warn!(path = %entry.path().display(), %error, "cannot remove an interrupted upload"),
+        }
+    }
+}
+
 impl PartialUpload {
     pub(super) fn create(image_dir: &Path) -> Result<Self, ApiError> {
         let token = generate_token().map_err(ApiError::internal)?;
@@ -248,6 +269,20 @@ pub(super) async fn media_snapshot(state: &AppState) -> Option<MediaConfigSnapsh
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sweep_removes_only_interrupted_uploads() {
+        let dir = UploadTestDir::new();
+        let leftover = dir.path().join(".wingmankvm-upload-abc.partial");
+        let image = dir.path().join("keep.iso");
+        let other = dir.path().join(".wingmankvm-upload-note.txt");
+        for path in [&leftover, &image, &other] {
+            std::fs::write(path, b"x").unwrap();
+        }
+        sweep_partial_uploads(dir.path());
+        assert!(!leftover.exists());
+        assert!(image.exists() && other.exists());
+    }
 
     #[test]
     fn virtual_media_attach_payload_supports_writable_disks() {

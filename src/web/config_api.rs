@@ -138,7 +138,25 @@ pub(super) fn config_changes(old: &Config, new: &Config) -> Vec<ConfigChange> {
     let new = serde_json::to_value(new).unwrap_or(serde_json::Value::Null);
     let mut changes = Vec::new();
     collect_config_changes(&old, &new, "", &mut changes);
+    for change in &mut changes {
+        if SECRET_CONFIG_PATHS.contains(&change.path.as_str()) {
+            change.old = mask_secret(&change.old);
+            change.new = mask_secret(&change.new);
+        }
+    }
     changes
+}
+
+/// Same values that GET /api/config and exports never reveal.
+const SECRET_CONFIG_PATHS: [&str; 4] = [
+    "notifications.webhook.url",
+    "notifications.ntfy.token",
+    "notifications.ntfy.topic",
+    "notifications.telegram.bot_token",
+];
+
+fn mask_secret(value: &serde_json::Value) -> serde_json::Value {
+    if value.is_null() { serde_json::Value::Null } else { json!("***") }
 }
 
 pub(super) fn listen_address_changed(previous: &Config, next: &Config) -> bool {
@@ -176,8 +194,9 @@ pub(super) async fn preview_import_config(
     State(state): State<AppState>,
     ApiJson(file): ApiJson<ConfigImportFile>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let imported = file.into_config()?;
+    let mut imported = file.into_config()?;
     let current = state.config.read().await.clone();
+    keep_device_values(&mut imported, &current);
     let changes = config_changes(&current, &imported);
     Ok(no_store(Json(json!({
         "changes": changes,
@@ -192,9 +211,13 @@ pub(super) async fn import_config(
     ApiJson(file): ApiJson<ConfigImportFile>,
 ) -> Result<Response, ApiError> {
     let imported = file.into_config()?;
-    let (response, previous, current) = import_config_with_state(state.clone(), imported).await?;
-    audit_config_change(&state, connection, &headers, &previous, &current).await;
-    Ok(response)
+    run_to_completion(async move {
+        let (response, previous, current) =
+            import_config_with_state(state.clone(), imported).await?;
+        audit_config_change(&state, connection, &headers, &previous, &current).await;
+        Ok(response)
+    })
+    .await
 }
 
 async fn import_config_with_state(
@@ -203,11 +226,7 @@ async fn import_config_with_state(
 ) -> Result<(Response, Config, Config), ApiError> {
     let _update_guard = state.config_update.lock().await;
     let previous = state.config.read().await.clone();
-    // Exports omit notification credentials; keep the device's own.
-    imported.notifications.inherit_secrets(&previous.notifications);
-    if imported.notifications.ntfy_topic().is_none() {
-        imported.notifications.ntfy.topic.clone_from(&previous.notifications.ntfy.topic);
-    }
+    keep_device_values(&mut imported, &previous);
     let changes = config_changes(&previous, &imported);
     let restart_required = listen_address_changed(&previous, &imported);
     commit_config(&state, &imported).await?;
@@ -246,25 +265,58 @@ pub(super) async fn update_config(
     ConnectInfo(connection): ConnectInfo<ClientConnection>,
     headers: HeaderMap,
     ApiJson(FullConfigUpdate(mut config)): ApiJson<FullConfigUpdate>,
-) -> Result<impl IntoResponse, ApiError> {
-    let _update_guard = state.config_update.lock().await;
-    let previous = state.config.read().await.clone();
-    // The browser never sees notification secrets, so a full update that
-    // leaves them empty keeps the stored values.
-    config.notifications.inherit_secrets(&previous.notifications);
-    validate_config(&config)?;
-    let listener_changed = previous.server.listen_address != config.server.listen_address
-        || previous.server.port != config.server.port;
-    commit_config(&state, &config).await?;
-    audit_config_change(&state, connection, &headers, &previous, &config).await;
-    let mut response = no_store(Json(config.redacted_json())).into_response();
-    if listener_changed {
-        response.headers_mut().insert(
-            "x-wingmankvm-restart-required",
-            HeaderValue::from_static("true"),
-        );
+) -> Result<Response, ApiError> {
+    run_to_completion(async move {
+        let _update_guard = state.config_update.lock().await;
+        let previous = state.config.read().await.clone();
+        // The browser never sees notification secrets, so a full update that
+        // leaves them empty keeps the stored values.
+        config.notifications.inherit_secrets(&previous.notifications);
+        reject_ffmpeg_path_change(&previous, &config)?;
+        validate_config(&config)?;
+        let listener_changed = previous.server.listen_address != config.server.listen_address
+            || previous.server.port != config.server.port;
+        commit_config(&state, &config).await?;
+        audit_config_change(&state, connection, &headers, &previous, &config).await;
+        let mut response = no_store(Json(config.redacted_json())).into_response();
+        if listener_changed {
+            response.headers_mut().insert(
+                "x-wingmankvm-restart-required",
+                HeaderValue::from_static("true"),
+            );
+        }
+        Ok(response)
+    })
+    .await
+}
+
+/// A client hanging up drops its handler. A config change that has started
+/// must still finish, or the file on disk and the live config disagree.
+pub(super) async fn run_to_completion<T: Send + 'static>(
+    work: impl Future<Output = Result<T, ApiError>> + Send + 'static,
+) -> Result<T, ApiError> {
+    tokio::spawn(work).await.map_err(ApiError::internal)?
+}
+
+/// The FFmpeg path is executed as the service user, so it is host
+/// administration: it can be set in config.json but not through the web API.
+fn reject_ffmpeg_path_change(previous: &Config, next: &Config) -> Result<(), ApiError> {
+    if previous.video.h264.ffmpeg_path == next.video.h264.ffmpeg_path {
+        return Ok(());
     }
-    Ok(response)
+    Err(ApiError::bad_request(
+        "video.h264.ffmpeg_path 只能在主机的配置文件中修改",
+    ))
+}
+
+/// Settings a backup must not carry onto this device: exports omit the
+/// notification credentials, and the FFmpeg path is host administration.
+fn keep_device_values(imported: &mut Config, previous: &Config) {
+    imported.notifications.inherit_secrets(&previous.notifications);
+    if imported.notifications.ntfy_topic().is_none() {
+        imported.notifications.ntfy.topic.clone_from(&previous.notifications.ntfy.topic);
+    }
+    imported.video.h264.ffmpeg_path.clone_from(&previous.video.h264.ffmpeg_path);
 }
 
 #[derive(Default, Deserialize)]
@@ -461,35 +513,39 @@ pub(super) async fn patch_config(
     ConnectInfo(connection): ConnectInfo<ClientConnection>,
     headers: HeaderMap,
     ApiJson(patch): ApiJson<ConfigPatch>,
-) -> Result<impl IntoResponse, ApiError> {
-    let _update_guard = state.config_update.lock().await;
-    let previous = state.config.read().await.clone();
-    let mut config = previous.clone();
-    if let Some(server) = patch.server {
-        apply_server_patch(&mut config.server, server);
-    }
-    if let Some(video) = patch.video {
-        apply_video_patch(&mut config.video, video);
-    }
-    if let Some(hid) = patch.hid {
-        apply_hid_patch(&mut config.hid, hid);
-    }
-    if let Some(power) = patch.power {
-        apply_power_patch(&mut config.power, power);
-    }
-    if let Some(media) = patch.media {
-        apply_media_patch(&mut config.media, media);
-    }
-    if let Some(notifications) = patch.notifications {
-        apply_notifications_patch(&mut config.notifications, notifications);
-    }
-    if let Some(audio) = patch.audio {
-        apply_audio_patch(&mut config.audio, audio);
-    }
-    validate_config(&config)?;
-    commit_config(&state, &config).await?;
-    audit_config_change(&state, connection, &headers, &previous, &config).await;
-    Ok(no_store(Json(config.redacted_json())))
+) -> Result<Response, ApiError> {
+    run_to_completion(async move {
+        let _update_guard = state.config_update.lock().await;
+        let previous = state.config.read().await.clone();
+        let mut config = previous.clone();
+        if let Some(server) = patch.server {
+            apply_server_patch(&mut config.server, server);
+        }
+        if let Some(video) = patch.video {
+            apply_video_patch(&mut config.video, video);
+        }
+        if let Some(hid) = patch.hid {
+            apply_hid_patch(&mut config.hid, hid);
+        }
+        if let Some(power) = patch.power {
+            apply_power_patch(&mut config.power, power);
+        }
+        if let Some(media) = patch.media {
+            apply_media_patch(&mut config.media, media);
+        }
+        if let Some(notifications) = patch.notifications {
+            apply_notifications_patch(&mut config.notifications, notifications);
+        }
+        if let Some(audio) = patch.audio {
+            apply_audio_patch(&mut config.audio, audio);
+        }
+        reject_ffmpeg_path_change(&previous, &config)?;
+        validate_config(&config)?;
+        commit_config(&state, &config).await?;
+        audit_config_change(&state, connection, &headers, &previous, &config).await;
+        Ok(no_store(Json(config.redacted_json())).into_response())
+    })
+    .await
 }
 
 /// Audit only the names of changed top-level sections; never their values.
@@ -801,11 +857,16 @@ pub(super) fn apply_notifications_patch(
         }
         if let Some(server) = ntfy.server {
             let server = server.trim();
-            config.ntfy.server = if server.is_empty() {
+            let server = if server.is_empty() {
                 config::DEFAULT_NTFY_SERVER.to_owned()
             } else {
                 server.to_owned()
             };
+            // The token belongs to one server; never present it to another.
+            if server != config.ntfy.server {
+                config.ntfy.token = None;
+            }
+            config.ntfy.server = server;
         }
         if let Some(topic) = ntfy.topic {
             config.ntfy.topic = optional_string(topic);
@@ -867,19 +928,27 @@ pub(super) async fn persist_config(path: &Path, config: &Config) -> Result<(), A
 pub(super) async fn commit_config(state: &AppState, config: &Config) -> Result<(), ApiError> {
     validate_config(config)?;
     let previous = state.config.read().await.clone();
-    let video_changed = previous.video != config.video;
+    // Saving the video form sends every field. Only what really changed may
+    // disturb viewers: a JPEG quality tweak must not reopen the capture card
+    // or drop everybody's H.264 session to MJPEG.
+    let capture = capture_change(&previous.video, &config.video);
+    let sessions = session_impact(&previous.video, &config.video);
     persist_config(state.config_path.as_ref(), config).await?;
-    if video_changed {
-        if let Err(error) = state.video.reconfigure(config.video.clone()) {
-            tracing::error!(%error, "failed to reconfigure video after saving configuration");
-            if let Err(restore_error) = persist_config(state.config_path.as_ref(), &previous).await {
-                tracing::error!(message = %restore_error.message, "failed to restore previous configuration");
-            }
-            return Err(ApiError::internal(error));
+    if capture != CaptureChange::Unchanged
+        && let Err(error) = state.video.reconfigure(config.video.clone())
+    {
+        tracing::error!(%error, "failed to reconfigure video after saving configuration");
+        if let Err(restore_error) = persist_config(state.config_path.as_ref(), &previous).await {
+            tracing::error!(message = %restore_error.message, "failed to restore previous configuration");
         }
-
-        // Capture changes also invalidate the H.264 source feeding WebRTC.
-        state.webrtc.reconfigure(config.video.h264.clone()).await;
+        return Err(ApiError::internal(error));
+    }
+    match sessions {
+        SessionImpact::Reconnect => state.webrtc.reconfigure(config.video.h264.clone()).await,
+        SessionImpact::LimitOnly => {
+            state.webrtc.set_session_limit(config.video.h264.clone()).await;
+        }
+        SessionImpact::Unaffected => {}
     }
     // Audio is applied on its own: an audio-only change never reaches the
     // video pipeline above, and an unchanged setting is a no-op here.
@@ -1213,6 +1282,82 @@ pub(super) mod tests {
         assert_eq!(state.config.read().await.notifications, config.notifications);
     }
 
+    #[tokio::test]
+    async fn import_preview_never_reveals_stored_secrets() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("config.json");
+        let config = with_notification_secrets(Config::default());
+        config.save_atomic(&path).unwrap();
+        let state = test_state(config.clone(), path);
+
+        // A normal backup carries no secrets; nothing may look as if it changes.
+        let document = serde_json::to_value(ConfigExport::new(config.clone())).unwrap();
+        let file: ConfigImportFile = serde_json::from_value(document.clone()).unwrap();
+        let response = preview_import_config(State(state.clone()), ApiJson(file))
+            .await
+            .unwrap()
+            .into_response();
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        assert!(!String::from_utf8_lossy(&body).contains("SECRET-"));
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["changes"], json!([]));
+
+        // A file with different secrets still shows that they change, masked.
+        let mut next = config.clone();
+        next.notifications.ntfy.token = Some("SECRET-OTHER".into());
+        let changes = config_changes(&config, &next);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].old, json!("***"));
+        assert_eq!(changes[0].new, json!("***"));
+    }
+
+    #[tokio::test]
+    async fn run_to_completion_survives_a_dropped_caller() {
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let caller = tokio::spawn(run_to_completion(async move {
+            let _ = release_rx.await;
+            let _ = done_tx.send(());
+            Ok(())
+        }));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        caller.abort();
+        let _ = caller.await;
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), done_rx)
+            .await
+            .expect("the work must finish after its caller is gone")
+            .unwrap();
+    }
+
+    #[test]
+    fn ffmpeg_path_cannot_change_through_the_web_api() {
+        let previous = Config::default();
+        let mut next = previous.clone();
+        assert!(reject_ffmpeg_path_change(&previous, &next).is_ok());
+        next.video.h264.ffmpeg_path = Some(PathBuf::from("/home/wingman/run.sh"));
+        assert!(reject_ffmpeg_path_change(&previous, &next).is_err());
+
+        let mut imported = next.clone();
+        keep_device_values(&mut imported, &previous);
+        assert_eq!(imported.video.h264.ffmpeg_path, None);
+    }
+
+    #[test]
+    fn ntfy_token_is_dropped_when_the_server_changes() {
+        let mut config = with_notification_secrets(Config::default()).notifications;
+        let patch: NotificationsPatch =
+            serde_json::from_value(json!({"ntfy": {"server": "https://other.example"}})).unwrap();
+        apply_notifications_patch(&mut config, patch);
+        assert_eq!(config.ntfy.token, None);
+
+        let mut full = with_notification_secrets(Config::default()).notifications;
+        full.ntfy.token = None;
+        full.ntfy.server = "https://other.example".into();
+        full.inherit_secrets(&with_notification_secrets(Config::default()).notifications);
+        assert_eq!(full.ntfy.token, None, "a full update must not carry it over either");
+    }
+
     #[test]
     fn changed_sections_reports_only_top_level_names() {
         let previous = Config::default();
@@ -1277,6 +1422,81 @@ pub(super) mod tests {
         invalid.audio.device = Some("file:/tmp/x".to_owned());
         assert!(commit_config(&state, &invalid).await.is_err());
         assert_eq!(Config::load(&path).unwrap().audio, next.audio);
+    }
+
+    /// A state whose H.264 probe can never find a real FFmpeg.
+    fn video_test_state(directory: &TestDirectory) -> (AppState, Config) {
+        let path = directory.0.join("config.json");
+        let mut config = Config::default();
+        config.video.device = Some(PathBuf::from("/dev/video-test"));
+        config.video.h264.ffmpeg_path = Some(directory.0.join("no-ffmpeg"));
+        config.save_atomic(&path).unwrap();
+        (test_state(config.clone(), path), config)
+    }
+
+    fn viewer(state: &AppState) -> watch::Receiver<bool> {
+        let token = state.sessions.create().unwrap();
+        let owner = state.sessions.validate_guard(&token).unwrap();
+        state.webrtc.insert_supervised_test_session("viewer", owner)
+    }
+
+    #[tokio::test]
+    async fn jpeg_settings_keep_h264_viewers_and_the_capture_open() {
+        let directory = TestDirectory::new();
+        let (state, config) = video_test_state(&directory);
+        let shutdown = viewer(&state);
+
+        // The form always sends every field; only the quality differs.
+        let mut next = config.clone();
+        next.video.jpeg_quality = 55;
+        commit_config(&state, &next).await.unwrap();
+        assert!(!*shutdown.borrow(), "H.264 viewer must stay connected");
+        assert_eq!(state.webrtc.status().sessions, 1);
+        // Handed to the capture as a live change (it does not reopen for it).
+        assert_eq!(state.video.take_test_reconfigures(), [next.video.clone()]);
+
+        next.video.encoding = config::VideoEncoding::TranscodeJpeg;
+        commit_config(&state, &next).await.unwrap();
+        assert!(!*shutdown.borrow());
+        assert_eq!(state.video.take_test_reconfigures(), [next.video.clone()]);
+
+        // Saving unchanged settings, or only the session limit, sends nothing.
+        commit_config(&state, &next).await.unwrap();
+        next.video.h264.max_sessions = 3;
+        commit_config(&state, &next).await.unwrap();
+        assert!(state.video.take_test_reconfigures().is_empty());
+        assert!(!*shutdown.borrow());
+        assert_eq!(state.webrtc.status().max_sessions, 3);
+        assert_eq!(Config::load(directory.0.join("config.json")).unwrap().video, next.video);
+    }
+
+    #[tokio::test]
+    async fn capture_and_encoder_changes_close_h264_sessions() {
+        for edit in [
+            (|c: &mut Config| c.video.width = Some(1280)) as fn(&mut Config),
+            |c| c.video.frames_per_second = Some(60),
+            |c| c.video.device = Some(PathBuf::from("/dev/video-other")),
+        ] {
+            let directory = TestDirectory::new();
+            let (state, config) = video_test_state(&directory);
+            let shutdown = viewer(&state);
+            let mut next = config.clone();
+            edit(&mut next);
+            commit_config(&state, &next).await.unwrap();
+            assert!(*shutdown.borrow(), "capture reopened: {:?}", next.video);
+            assert_eq!(state.video.take_test_reconfigures(), [next.video.clone()]);
+            assert_eq!(state.webrtc.status().sessions, 0);
+        }
+
+        let directory = TestDirectory::new();
+        let (state, config) = video_test_state(&directory);
+        let shutdown = viewer(&state);
+        let mut next = config.clone();
+        next.video.h264.bitrate_kbps = 2_000;
+        commit_config(&state, &next).await.unwrap();
+        assert!(*shutdown.borrow(), "bitrate change reconnects");
+        assert!(state.video.take_test_reconfigures().is_empty(), "capture untouched");
+        assert_eq!(state.webrtc.status().bitrate_kbps, 2_000);
     }
 
     #[test]

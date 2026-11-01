@@ -7,7 +7,7 @@ import { renderClientInfo } from './04-video-settings.js';
 import { renderPowerLed } from './05-power.js';
 import { renderVideoUi, startVideo, stopVideo } from './07-video.js';
 import { renderAudioStatus } from './07d-audio.js';
-import { inputEnabled, interactiveTarget, renderKeyboardLeds, syncInputUi } from './08-input.js';
+import { inputEnabled, interactiveTarget, releaseHeldButtons, renderKeyboardLeds, syncInputUi } from './08-input.js';
 import { scheduleTerminalFit, syncTerminalTabIndicator, terminalConnect } from './09-terminal.js';
 
 let statusTimer = 0;
@@ -16,6 +16,7 @@ function setWorkspaceMode(mode) {
   const next = mode === 'terminal' ? 'terminal' : 'video',
     terminalMode = next === 'terminal',
     changed = shared.videoWorkspace !== next;
+  if (changed) releaseHeldButtons();
   shared.videoWorkspace = next;
   syncTerminalTabIndicator();
   invalidateSurfaceBox();
@@ -99,6 +100,7 @@ async function refreshStatus() {
     if (status.runtime) renderRuntimeMetrics(status.runtime, status.webrtc);
     shared.latestAudioStatus = status.audio || null;
     renderAudioStatus();
+    renderDeliveryHealth(status.notifications, status.audit);
     renderVideoUi();
   } catch {
     // A failed status poll says nothing about the video stream itself: keep
@@ -216,6 +218,16 @@ function renderRuntimeMetrics(runtime, webrtc) {
   let text = `成功 ${hid.ok ?? 0} · 失败 ${hid.failed ?? 0}`;
   if (hid.last_error) text += ` · 最近错误：${hid.last_error}（${formatUptime(hid.last_error_age_seconds || 1)}前）`;
   setText('#diag-hid', text);
+}
+// A revoked token must show here, not only in the journal. last_error is
+// scrubbed of URLs and credentials by the server.
+function renderDeliveryHealth(notifications, audit) {
+  const channels = Object.entries(notifications?.channels || {});
+  const failing = channels.filter(([, health]) => health?.last_error && health.failed > 0);
+  const parts = failing.map(([name, health]) => `${name} 失败 ${health.failed}：${health.last_error}`);
+  if (notifications?.dropped) parts.push(`通知丢弃 ${notifications.dropped}`);
+  if (audit?.write_failures) parts.push(`审计写入失败 ${audit.write_failures}`);
+  setText('#diag-notify', parts.length ? parts.join(' · ') : '正常');
 }
 function renderSystemMetrics(sys) {
   if (!sys) return;

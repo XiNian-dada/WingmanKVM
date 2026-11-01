@@ -92,7 +92,7 @@ collect_missing_dependencies() {
         "awk:mawk" "cmp:diffutils" "flock:util-linux" "getent:libc-bin"
         "groupadd:passwd" "install:coreutils" "mktemp:coreutils" "od:coreutils"
         "python3:python3" "systemctl:systemd" "timeout:coreutils"
-        "udevadm:udev" "useradd:passwd" "usermod:passwd" "visudo:sudo"
+        "udevadm:udev" "useradd:passwd" "usermod:passwd" "visudo:sudo" "sha256sum:coreutils"
     )
 
     MISSING_ITEMS=()
