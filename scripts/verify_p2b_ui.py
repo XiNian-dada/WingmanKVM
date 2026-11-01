@@ -27,7 +27,6 @@ class State:
         self.video = dict(BASE_VIDEO)
         self.key_posts = []
         self.mouse_posts = []
-        self.unmocked = []
         self.release_posts = 0
         self.status_polls = 0
 
@@ -114,10 +113,8 @@ def api_route(route, state):
         return route.fulfill(status=200, headers=headers,
                              body=json.dumps(bootstrap_payload(state)["config"]))
     # Anything else is not mocked: answer like an unknown route instead of a
-    # blanket 200 so a renamed or new endpoint cannot pass unnoticed (AUD3-33).
-    state.unmocked.append(f"{method} {path}")
-    return route.fulfill(status=404, headers=headers,
-                         body=json.dumps({"error": f"unmocked endpoint {method} {path}"}))
+    # blanket 200 and fail the suite (AUD3-33).
+    return ui_harness.answer_unmocked(route, path)
 
 
 def new_page(browser, state, port, init_scripts=()):

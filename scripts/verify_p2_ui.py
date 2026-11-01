@@ -138,9 +138,14 @@ def api_route(route, state):
         return route.fulfill(status=200, headers=headers, body='{"sessions":[]}')
     if path == "/api/audit":
         return route.fulfill(status=200, headers=headers, body='{"entries":[]}')
-    # Unmocked: answer like an unknown route, not a blanket 200 (AUD3-33).
-    return route.fulfill(status=404, headers=headers,
-                         body=json.dumps({"error": f"unmocked endpoint {path}"}))
+    if path == "/api/update/status":
+        return route.fulfill(status=200, headers=headers, body=json.dumps(
+            {"current_version": "0.0.0-test", "supported": False, "status": {"state": "idle"}}))
+    if path == "/api/config" and route.request.method == "GET":
+        return route.fulfill(status=200, headers=headers,
+                             body=json.dumps(bootstrap_payload(state)["config"]))
+    # Unmocked: answer like an unknown route and fail the suite (AUD3-33).
+    return ui_harness.answer_unmocked(route, path)
 
 
 def new_page(browser, state, port, fragment=""):

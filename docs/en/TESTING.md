@@ -175,8 +175,10 @@ only and is recorded as skipped; CI always runs the UI gates.
   scripts also run on the initial `about:blank`, where touching `localStorage`
   throws, so check `location.protocol` first.
 - API mocks: each suite's default API mock answers unknown paths with 404 rather
-  than a blanket 200, so a renamed or new endpoint cannot pass unnoticed. When the
-  page starts a new request, add it to the mock in the shape the server returns.
+  than a blanket 200. The app may swallow that 404, so
+  `ui_harness.answer_unmocked()` also records the path and fails the suite
+  (`no_unmocked_api_requests`): a renamed or new endpoint cannot pass unnoticed. When
+  the page starts a new request, add it to the mock in the shape the server returns.
 - Desktop input (the `desktop_*` scenarios in `verify_audit2_ui.py`): real
   `page.mouse` input and clicks, asserted on the payloads sent to the HID
   endpoints: absolute coordinates at known points in fit mode (±1, with

@@ -176,8 +176,8 @@ def api_route(route, state):
         route.fulfill(status=200, headers=headers, body='{"devices":{}}')
     elif path == "/api/input/release-all":
         route.fulfill(status=200, headers=headers, body='{"ok":true}')
-    else:  # unmocked: an unknown route, not a blanket 200 (AUD3-33)
-        route.fulfill(status=404, headers=headers, body=json.dumps({"error": f"unmocked endpoint {path}"}))
+    else:  # unmocked: an unknown route, and a suite failure (AUD3-33)
+        ui_harness.answer_unmocked(route, path)
 def wait_login(page, timeout=7000):
     page.wait_for_selector("#login-form:not(.hidden)", state="visible", timeout=timeout)
 def main():

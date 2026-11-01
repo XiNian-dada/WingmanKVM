@@ -156,8 +156,10 @@ only and is recorded as skipped; CI always runs the UI gates.
   异常或未处理的 Promise 拒绝都会让套件失败，报告的 `error`/`page_errors` 带消息和堆栈，
   并增加检查项 `no_uncaught_page_errors`。上下文级 init 脚本也会在初始 `about:blank` 上
   运行，在那里访问 `localStorage` 会抛错，需先判断 `location.protocol`。
-- 接口模拟：各套件的默认 API 模拟对未知路径返回 404，不再是一律 200，所以接口改名或新增
-  接口不会被悄悄放过。新增页面请求时要在模拟里按服务端的返回结构补上。
+- 接口模拟：各套件的默认 API 模拟对未知路径返回 404，不再是一律 200。应用可能吞掉这个
+  404，所以 `ui_harness.answer_unmocked()` 还会记录路径并让套件失败（检查项
+  `no_unmocked_api_requests`），接口改名或新增接口不会被悄悄放过。新增页面请求时要在模拟里
+  按服务端的返回结构补上。
 - 桌面输入（`verify_audit2_ui.py` 的 `desktop_*` 场景）：用真实的 `page.mouse` 和点击
   断言发往 HID 接口的载荷：fit 模式已知点的绝对坐标（±1，含黑边）、左右中键、滚轮符号与
   ±127 钳位、相对移动拆包、每个 `[data-quick-key]`、虚拟键盘粘滞修饰键。无头浏览器拒绝

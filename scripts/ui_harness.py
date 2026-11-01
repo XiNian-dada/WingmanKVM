@@ -158,6 +158,33 @@ def page_errors_check(summary):
     summary["error"] = (summary.get("error", "") + "\n" if summary.get("error") else "") + detail[:4000]
 
 
+# API paths the page asked for that no mock knows. They are answered like an
+# unknown route, and because the app may swallow that 404, finish() also fails
+# the suite: a renamed or new endpoint cannot pass unnoticed (AUD3-33).
+UNMOCKED_REQUESTS = []
+
+
+def answer_unmocked(route, path):
+    entry = f"{route.request.method} {path}"
+    if entry not in UNMOCKED_REQUESTS:
+        UNMOCKED_REQUESTS.append(entry)
+    return route.fulfill(status=404, headers={"content-type": "application/json"},
+                         body=json.dumps({"error": f"unmocked endpoint {entry}"}))
+
+
+def unmocked_requests_check(summary):
+    """Fail `summary` when the page called an endpoint no mock answers."""
+    if not _tracking["enabled"]:
+        return
+    if not UNMOCKED_REQUESTS:
+        summary["checks"].append({"name": "no_unmocked_api_requests", "ok": True, "evidence": "none"})
+        return
+    detail = "page called endpoints no mock answers: " + ", ".join(UNMOCKED_REQUESTS)
+    summary["checks"].append({"name": "no_unmocked_api_requests", "ok": False, "evidence": detail[:2000]})
+    summary["status"] = "FAIL"
+    summary["error"] = (summary.get("error", "") + "\n" if summary.get("error") else "") + detail[:2000]
+
+
 def wait_until(page, predicate, timeout=3.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -195,6 +222,7 @@ def new_summary(repo, **extra):
 def finish(summary, output_dir, report_name):
     """Write the optional report file, print the JSON line, return the exit code."""
     page_errors_check(summary)
+    unmocked_requests_check(summary)
     if output_dir:
         try:
             os.makedirs(output_dir, exist_ok=True)
