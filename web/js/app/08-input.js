@@ -204,7 +204,7 @@ async function sendKey(key, event = {}) {
       shift: !!event.shiftKey || activeModifiers.has('Shift'),
       alt: !!event.altKey || activeModifiers.has('Alt'),
       meta: !!event.metaKey || activeModifiers.has('Meta'),
-      hold_ms: key.startsWith('F') ? 100 : 25,
+      hold_ms: /^F\d+$/.test(key) ? 100 : 25,
     }),
   });
   if (res && res.keyboard_leds) renderKeyboardLeds(res.keyboard_leds);
@@ -782,7 +782,7 @@ async function sendCombo(combo) {
         shift: !!combo.shift,
         alt: !!combo.alt,
         meta: !!combo.meta,
-        hold_ms: combo.hold_ms || (combo.key.startsWith('F') ? 100 : 40),
+        hold_ms: combo.hold_ms || (/^F\d+$/.test(combo.key) ? 100 : 40),
       }),
     });
     if (res && res.keyboard_leds) renderKeyboardLeds(res.keyboard_leds);
