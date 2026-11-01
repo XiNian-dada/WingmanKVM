@@ -138,7 +138,8 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          archive="wingmankvm-${VERSION}-${TARGET}"
+          # get.sh and the online upgrade request wingmankvm-v<version>-<target>.
+          archive="wingmankvm-v${VERSION}-${TARGET}"
           staging="$RUNNER_TEMP/package/$archive"
           rm -rf "$RUNNER_TEMP/package"
           install -d -m 0755 "$staging"
@@ -153,7 +154,7 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0, same pin as regression.yml
         with:
           name: wingmankvm-${{ matrix.target }}
-          path: ${{ runner.temp }}/wingmankvm-${{ needs.version.outputs.version }}-${{ matrix.target }}.tar.gz
+          path: ${{ runner.temp }}/wingmankvm-v${{ needs.version.outputs.version }}-${{ matrix.target }}.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -186,6 +187,18 @@ jobs:
           sha256sum -- *.tar.gz > SHA256SUMS
           cat SHA256SUMS
 
+      - name: Check archives match what get.sh and the online upgrade request
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          for target in aarch64-unknown-linux-gnu armv7-unknown-linux-gnueabihf; do
+            name="wingmankvm-v${VERSION}-${target}.tar.gz"
+            test -s "dist/$name"
+            grep -q "  $name\$" dist/SHA256SUMS
+            tar -tzf "dist/$name" | grep -qx './deploy/install.sh'
+          done
+
       - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -198,9 +211,14 @@ jobs:
             gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS scripts/get.sh \
               --repo "$GITHUB_REPOSITORY" --clobber
           else
+            # A tag with a suffix (v2.0.0-rc.1) must not become "latest":
+            # the one-line installer and online upgrade follow that release.
+            prerelease=()
+            if [[ $TAG == *-* ]]; then prerelease=(--prerelease); fi
             gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS scripts/get.sh \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --title "WingmanKVM $VERSION" \
-              --generate-notes
+              --generate-notes \
+              "${prerelease[@]}"
           fi

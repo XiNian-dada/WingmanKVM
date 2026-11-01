@@ -75,7 +75,7 @@ less /tmp/wingmankvm-release/wingmankvm-review.*/deploy/install.sh
 
 ### 手动下载发布包（备选）
 
-发布包由 GitHub Actions 在推送 `v*` tag 时构建，命名格式为 `wingmankvm-<版本>-<target>.tar.gz`，包含二进制、完整的 `deploy/` 目录、`LICENSE`、`README.md` 和 `CHANGELOG.md`。ARM64 主机选择 `aarch64-unknown-linux-gnu`，32 位 ARM 主机选择 `armv7-unknown-linux-gnueabihf`。
+发布包由 GitHub Actions 在推送 `v*` tag 时构建，命名格式为 `wingmankvm-v<版本>-<target>.tar.gz`（例如 `wingmankvm-v2.0.0-aarch64-unknown-linux-gnu.tar.gz`），包含二进制、完整的 `deploy/` 目录、`LICENSE`、`README.md` 和 `CHANGELOG.md`。ARM64 主机选择 `aarch64-unknown-linux-gnu`，32 位 ARM 主机选择 `armv7-unknown-linux-gnueabihf`。
 
 1. 从 [Releases](https://github.com/XiNian-dada/WingmanKVM/releases) 下载对应架构的 `.tar.gz` 和同一 Release 的 `SHA256SUMS`，放在同一目录。
 2. 校验并解压：
@@ -83,7 +83,7 @@ less /tmp/wingmankvm-release/wingmankvm-review.*/deploy/install.sh
    ```bash
    sha256sum -c --ignore-missing SHA256SUMS
    mkdir -p wingmankvm-release
-   tar -xzf wingmankvm-<版本>-<target>.tar.gz -C wingmankvm-release
+   tar -xzf wingmankvm-v<版本>-<target>.tar.gz -C wingmankvm-release
    ```
 
    `--ignore-missing` 允许只下载当前架构的发布包；校验失败时不要继续。
@@ -91,7 +91,7 @@ less /tmp/wingmankvm-release/wingmankvm-review.*/deploy/install.sh
 
    ```bash
    cd wingmankvm-release
-   sudo ./deploy/install.sh --release ../wingmankvm-<版本>-<target>.tar.gz
+   sudo ./deploy/install.sh --release ../wingmankvm-v<版本>-<target>.tar.gz
    ```
 
 安装器发现发布包同目录存在 `SHA256SUMS` 时会再次核对校验和，然后解包到安全创建的临时目录，并复用 `--binary` 的文件安装、健康检查、失败回滚和升级恢复流程。临时目录在成功、失败和回滚路径都会清理。
@@ -152,7 +152,7 @@ sudo ./deploy/install.sh --binary ./target/release/wingmankvm
 如果使用第 2 节的发布包，则改用 `--release`，无需手工解出二进制：
 
 ```bash
-sudo ./deploy/install.sh --release /path/to/wingmankvm-<版本>-<target>.tar.gz
+sudo ./deploy/install.sh --release /path/to/wingmankvm-v<版本>-<target>.tar.gz
 ```
 
 安装器会在发布包同目录存在 `SHA256SUMS` 时校验其内容；`--binary` 与 `--release` 只能选择一个。
@@ -160,7 +160,7 @@ sudo ./deploy/install.sh --release /path/to/wingmankvm-<版本>-<target>.tar.gz
 Debian、Ubuntu、Armbian 上可以追加 `--install-deps`，让安装器用 `apt-get install -y --no-install-recommends` 补齐缺失的运行包：
 
 ```bash
-sudo ./deploy/install.sh --install-deps --release /path/to/wingmankvm-<版本>-<target>.tar.gz
+sudo ./deploy/install.sh --install-deps --release /path/to/wingmankvm-v<版本>-<target>.tar.gz
 ```
 
 该选项默认关闭，安装器不会静默修改系统包；非 Debian 系发行版请按缺失命令提示手工安装。
@@ -171,9 +171,9 @@ sudo ./deploy/install.sh --install-deps --release /path/to/wingmankvm-<版本>-<
 
 ```bash
 # 与 --install-deps 一起使用时会自动安装 avahi-daemon
-sudo ./deploy/install.sh --install-deps --mdns --release /path/to/wingmankvm-<版本>-<target>.tar.gz
+sudo ./deploy/install.sh --install-deps --mdns --release /path/to/wingmankvm-v<版本>-<target>.tar.gz
 # 自定义名称（1-63 位小写字母、数字或连字符），广播为 kvm-rack1.local
-sudo ./deploy/install.sh --mdns --mdns-hostname kvm-rack1 --release /path/to/wingmankvm-<版本>-<target>.tar.gz
+sudo ./deploy/install.sh --mdns --mdns-hostname kvm-rack1 --release /path/to/wingmankvm-v<版本>-<target>.tar.gz
 ```
 
 说明：

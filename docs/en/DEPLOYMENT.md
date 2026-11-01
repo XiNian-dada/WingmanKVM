@@ -44,7 +44,7 @@ The official installer requires systemd and a Linux UDC, and deploys the full HI
 
 ### Installing from a release package (recommended)
 
-Release packages are built by GitHub Actions when a `v*` tag is pushed. They are named `wingmankvm-<版本>-<target>.tar.gz` and contain the binary, the complete `deploy/` directory, `LICENSE`, `README.md`, and `CHANGELOG.md`. Choose `aarch64-unknown-linux-gnu` for ARM64 hosts and `armv7-unknown-linux-gnueabihf` for 32-bit ARM hosts.
+Release packages are built by GitHub Actions when a `v*` tag is pushed. They are named `wingmankvm-v<version>-<target>.tar.gz` and contain the binary, the complete `deploy/` directory, `LICENSE`, `README.md`, and `CHANGELOG.md`. Choose `aarch64-unknown-linux-gnu` for ARM64 hosts and `armv7-unknown-linux-gnueabihf` for 32-bit ARM hosts.
 
 1. Download the `.tar.gz` for your architecture and the `SHA256SUMS` from the same Release from [Releases](https://github.com/XiNian-dada/WingmanKVM/releases), and put them in the same directory.
 2. Verify and extract:
@@ -52,7 +52,7 @@ Release packages are built by GitHub Actions when a `v*` tag is pushed. They are
    ```bash
    sha256sum -c --ignore-missing SHA256SUMS
    mkdir -p wingmankvm-release
-   tar -xzf wingmankvm-<版本>-<target>.tar.gz -C wingmankvm-release
+   tar -xzf wingmankvm-v<version>-<target>.tar.gz -C wingmankvm-release
    ```
 
    `--ignore-missing` allows you to download only the release package for the current architecture; do not continue if verification fails.
@@ -60,7 +60,7 @@ Release packages are built by GitHub Actions when a `v*` tag is pushed. They are
 
    ```bash
    cd wingmankvm-release
-   sudo ./deploy/install.sh --release ../wingmankvm-<版本>-<target>.tar.gz
+   sudo ./deploy/install.sh --release ../wingmankvm-v<version>-<target>.tar.gz
    ```
 
 When the installer finds `SHA256SUMS` in the same directory as the release package, it verifies the checksums again, then unpacks the package into a securely created temporary directory and reuses the file installation, health check, failure rollback, and upgrade recovery flow of `--binary`. The temporary directory is cleaned up on success, failure, and rollback paths.
@@ -121,7 +121,7 @@ sudo ./deploy/install.sh --binary ./target/release/wingmankvm
 If you are using a release package from section 2, use `--release` instead; there is no need to extract the binary manually:
 
 ```bash
-sudo ./deploy/install.sh --release /path/to/wingmankvm-<版本>-<target>.tar.gz
+sudo ./deploy/install.sh --release /path/to/wingmankvm-v<version>-<target>.tar.gz
 ```
 
 The installer verifies the contents of `SHA256SUMS` when it exists in the same directory as the release package; `--binary` and `--release` are mutually exclusive.
@@ -132,9 +132,9 @@ With `--mdns` the installer advertises `wingmankvm.local` on the LAN through ava
 
 ```bash
 # Combined with --install-deps, avahi-daemon is installed automatically
-sudo ./deploy/install.sh --install-deps --mdns --release /path/to/wingmankvm-<version>-<target>.tar.gz
+sudo ./deploy/install.sh --install-deps --mdns --release /path/to/wingmankvm-v<version>-<target>.tar.gz
 # Custom label (1-63 lowercase letters, digits or hyphens), advertised as kvm-rack1.local
-sudo ./deploy/install.sh --mdns --mdns-hostname kvm-rack1 --release /path/to/wingmankvm-<version>-<target>.tar.gz
+sudo ./deploy/install.sh --mdns --mdns-hostname kvm-rack1 --release /path/to/wingmankvm-v<version>-<target>.tar.gz
 ```
 
 Notes:
