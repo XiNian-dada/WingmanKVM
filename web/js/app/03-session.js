@@ -19,6 +19,13 @@
     latestPowerStatus = null,
     latestSystemStatus = null,
     videoConfigRequestId = 0;
+  // HDMI audio rides on the WebRTC session: `webrtcAudio` is null until the
+  // answer says whether an Opus track was negotiated. Playback always starts
+  // muted (browser autoplay rules); the user unmutes explicitly.
+  let webrtcAudio = null,
+    audioMuted = true,
+    latestAudioStatus = null,
+    audioCandidates = [];
   let toastTimer = 0,
     mouseX = 0,
     mouseY = 0,

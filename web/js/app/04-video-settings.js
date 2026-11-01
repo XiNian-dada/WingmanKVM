@@ -184,6 +184,7 @@
       if (video[name] != null && vf.elements[name]) vf.elements[name].value = video[name];
     selectVideoPresets(video);
     selectH264Preset(h264);
+    applyAudioConfig(config.audio || {});
     for (const name of ['keyboard_device', 'mouse_device', 'absolute_pointer_device'])
       df.elements[name].value = hid[name] || '';
     df.elements.pointer_mode.value =

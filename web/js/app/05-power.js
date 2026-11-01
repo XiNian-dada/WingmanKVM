@@ -117,6 +117,8 @@
     const led = latestPowerStatus?.power_led;
     const ledOn = led?.state === 'on' || led?.active === true;
     const ledOff = led?.state === 'off' || led?.active === false;
+    renderAudioStatus();
+    renderAudioStatus();
     $('#diag-power-led').textContent = ledOn
       ? '已开机 (LED 亮)'
       : ledOff
@@ -365,6 +367,11 @@
             allow_software: f.elements.h264_allow_software.checked,
             max_sessions: Number(value(f, 'h264_max_sessions')),
           },
+        },
+        // A separate section: an audio-only change never restarts capture.
+        audio: {
+          enabled: f.elements.audio_enabled.checked,
+          device: value(f, 'audio_device') || null,
         },
       };
     button.disabled = true;

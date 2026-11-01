@@ -41,6 +41,7 @@
   }
   function renderVideoUi() {
     syncQualityOverlay();
+    syncAudioUi();
     const dot = $('#status-dot'),
       label = $('#status-label'),
       meta = $('#video-transport-label'),
@@ -135,6 +136,7 @@
       abort = webrtcAbort;
     webrtcPeer = null;
     webrtcSessionId = null;
+    webrtcAudio = null;
     resetAdaptiveBitrate(null);
     webrtcAbort = null;
     abort?.abort();
@@ -150,6 +152,7 @@
     webrtcFeed.onloadedmetadata = null;
     webrtcFeed.pause();
     webrtcFeed.srcObject = null;
+    syncAudioUi();
   }
   function stopVideo(showPaused = true) {
     videoGeneration++;
@@ -269,15 +272,36 @@
         if (h264.length)
           transceiver.setCodecPreferences([...h264, ...codecs.filter((codec) => !h264.includes(codec))]);
       }
+      // Optional HDMI audio: only asked for when enabled on the server. The
+      // answer decides whether a track really exists; video never waits on it.
+      if (audioConfigured()) {
+        try {
+          peer.addTransceiver('audio', { direction: 'recvonly' });
+        } catch (error) {
+          console.warn('无法请求音频轨道:', error);
+        }
+      }
+      let audioTrack = null;
+      const joinAudio = (stream) => {
+        if (audioTrack && stream && !stream.getTracks().includes(audioTrack)) stream.addTrack(audioTrack);
+      };
       peer.ontrack = (event) => {
         if (
           generation !== videoGeneration ||
           !shouldVideoRun() ||
-          activeVideoTransport !== 'webrtc_h264' ||
-          event.track.kind !== 'video'
+          activeVideoTransport !== 'webrtc_h264'
         )
           return;
+        if (event.track.kind === 'audio') {
+          // An audio track that ends or never plays must not touch video.
+          audioTrack = event.track;
+          joinAudio(webrtcFeed.srcObject);
+          syncAudioUi();
+          return;
+        }
+        if (event.track.kind !== 'video') return;
         const stream = event.streams?.[0] || new MediaStream([event.track]);
+        joinAudio(stream);
         webrtcFeed.srcObject = stream;
         webrtcFeed.onplaying = () => markVideoPlaying(generation, 'webrtc_h264');
         webrtcFeed.onloadedmetadata = () => {
@@ -287,7 +311,15 @@
         webrtcFeed.onresize = () => fitConsoleToVideo();
         event.track.onended = () => fallbackToMjpeg(generation, 'H.264 视频轨道已结束');
         showVideoSurface('webrtc_h264');
-        webrtcFeed.play().catch(() => {});
+        // Muted until the user unmutes, so autoplay is always permitted. If an
+        // earlier unmute is refused on reconnect, drop the sound, keep video.
+        syncAudioUi();
+        webrtcFeed.play().catch(() => {
+          if (webrtcFeed.muted) return;
+          audioMuted = true;
+          syncAudioUi();
+          webrtcFeed.play().catch(() => {});
+        });
       };
       peer.onconnectionstatechange = () => {
         if (generation !== videoGeneration || peer !== webrtcPeer) return;
@@ -326,6 +358,8 @@
         return;
       }
       webrtcSessionId = answer?.session_id || null;
+      webrtcAudio = answer?.audio === true;
+      syncAudioUi();
       resetAdaptiveBitrate(webrtcSessionId, answer?.bitrate_kbps, answer?.min_bitrate_kbps);
       if (!answer?.sdp || !/H264\/90000/i.test(answer.sdp)) throw new Error('未协商 H.264');
       clearTimeout(videoFirstFrameTimer);
