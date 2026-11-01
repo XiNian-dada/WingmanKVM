@@ -103,8 +103,11 @@ use crate::{
             GpioPulseConfigSnapshot, PowerConfigSnapshot, PowerError, PowerLedConfigSnapshot,
             PowerManager, PowerPress,
         },
-        video::VideoManager,
-        webrtc::{WebRtcError, WebRtcManager, WebRtcOfferRequest, WebRtcStatus},
+        video::{CaptureChange, VideoManager, capture_change},
+        webrtc::{
+            SessionImpact, WebRtcError, WebRtcManager, WebRtcOfferRequest, WebRtcStatus,
+            session_impact,
+        },
     },
     web_ui::{APP_CSS, ICON_SVG, INDEX_HTML},
 };

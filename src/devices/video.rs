@@ -85,11 +85,54 @@ impl VideoStatus {
     }
 }
 
+/// What a settings change from one video configuration to the next requires
+/// of the running capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureChange {
+    /// Nothing the capture uses changed (for example only the H.264 section).
+    Unchanged,
+    /// Only per-frame processing changed (`encoding`, `jpeg_quality`): applied
+    /// to the next frame without closing the device or interrupting viewers.
+    /// With MJPEG passthrough the quality is not used at all.
+    Live,
+    /// The device or the format negotiated with it changed: reopen it.
+    Restart,
+}
+
+pub fn capture_change(previous: &VideoConfig, next: &VideoConfig) -> CaptureChange {
+    if previous.device != next.device
+        || previous.width != next.width
+        || previous.height != next.height
+        || previous.frames_per_second != next.frames_per_second
+    {
+        CaptureChange::Restart
+    } else if previous.encoding != next.encoding || previous.jpeg_quality != next.jpeg_quality {
+        CaptureChange::Live
+    } else {
+        CaptureChange::Unchanged
+    }
+}
+
+/// Applies `next` to a running session in place when it can; returns it when
+/// the session has to be restarted instead.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn apply_to_session(current: &mut VideoConfig, next: VideoConfig) -> Option<VideoConfig> {
+    if capture_change(current, &next) == CaptureChange::Restart {
+        Some(next)
+    } else {
+        *current = next;
+        None
+    }
+}
+
 #[derive(Clone)]
 pub struct VideoManager {
     command_tx: mpsc::Sender<VideoCommand>,
     frame_tx: watch::Sender<Option<Arc<VideoFrame>>>,
     status_tx: watch::Sender<VideoStatus>,
+    /// The test source's command queue, so tests can see what was sent.
+    #[cfg(test)]
+    test_commands: Option<Arc<std::sync::Mutex<mpsc::Receiver<VideoCommand>>>>,
 }
 
 impl VideoManager {
@@ -113,6 +156,8 @@ impl VideoManager {
             command_tx,
             frame_tx,
             status_tx,
+            #[cfg(test)]
+            test_commands: None,
         }
     }
 
@@ -123,7 +168,7 @@ impl VideoManager {
     pub(crate) fn test_source(
         initial: VideoConfig,
     ) -> (Self, watch::Sender<Option<Arc<VideoFrame>>>) {
-        let (command_tx, _command_rx) = mpsc::channel();
+        let (command_tx, command_rx) = mpsc::channel();
         let (frame_tx, _) = watch::channel(None);
         let (status_tx, _) = watch::channel(VideoStatus::from_config(
             &initial,
@@ -134,10 +179,24 @@ impl VideoManager {
             command_tx,
             frame_tx: frame_tx.clone(),
             status_tx,
+            test_commands: Some(Arc::new(std::sync::Mutex::new(command_rx))),
         };
         (manager, frame_tx)
     }
 
+    /// Configurations sent to the test source since the last call.
+    #[cfg(test)]
+    pub(crate) fn take_test_reconfigures(&self) -> Vec<VideoConfig> {
+        let commands = self.test_commands.as_ref().expect("a test source");
+        let commands = commands.lock().unwrap();
+        std::iter::from_fn(|| commands.try_recv().ok())
+            .map(|VideoCommand::Reconfigure(config)| config)
+            .collect()
+    }
+
+    /// Hands a new configuration to the capture thread. A running session
+    /// applies a [`CaptureChange::Live`] change in place and only restarts
+    /// for a [`CaptureChange::Restart`] one.
     pub fn reconfigure(&self, config: VideoConfig) -> Result<(), String> {
         self.command_tx
             .send(VideoCommand::Reconfigure(config))
@@ -388,7 +447,7 @@ fn video_supervisor(
             }),
         ));
         let result = catch_unwind(AssertUnwindSafe(|| {
-            capture_session(&config, &command_rx, &frame_tx, &status_tx)
+            capture_session(&mut config, &command_rx, &frame_tx, &status_tx)
         }));
 
         match result {
@@ -433,9 +492,11 @@ fn video_supervisor(
     }
 }
 
+/// Live changes are written to `config`, so the supervisor restarts a failed
+/// session with them rather than with the settings it was opened with.
 #[cfg(target_os = "linux")]
 fn capture_session(
-    config: &VideoConfig,
+    config: &mut VideoConfig,
     command_rx: &mpsc::Receiver<VideoCommand>,
     frame_tx: &watch::Sender<Option<Arc<VideoFrame>>>,
     status_tx: &watch::Sender<VideoStatus>,
@@ -503,7 +564,21 @@ fn capture_session(
     let mut sequence = 0_u64;
     loop {
         match command_rx.try_recv() {
-            Ok(VideoCommand::Reconfigure(next)) => return Ok(SessionExit::Reconfigure(next)),
+            Ok(VideoCommand::Reconfigure(next)) => {
+                if let Some(next) = apply_to_session(config, next) {
+                    return Ok(SessionExit::Reconfigure(next));
+                }
+                // Encoding or quality only: the next frame uses it.
+                publish_health(
+                    frame_tx,
+                    status_tx,
+                    config,
+                    &health,
+                    Instant::now(),
+                    geometry,
+                    None,
+                );
+            }
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => {
                 return Err("video capture controller stopped".to_owned());
@@ -836,6 +911,66 @@ mod tests {
 
         let age = manager.status().last_frame_age_ms.expect("frame age");
         assert!((2_400..=5_000).contains(&age), "unexpected age {age}");
+    }
+
+    #[test]
+    fn only_device_and_format_changes_restart_the_capture() {
+        let base = VideoConfig {
+            width: Some(1920),
+            height: Some(1080),
+            frames_per_second: Some(30),
+            ..test_config()
+        };
+        let changed = |edit: fn(&mut VideoConfig)| {
+            let mut next = base.clone();
+            edit(&mut next);
+            capture_change(&base, &next)
+        };
+        assert_eq!(capture_change(&base, &base), CaptureChange::Unchanged);
+        assert_eq!(changed(|c| c.device = Some("/dev/video9".into())), CaptureChange::Restart);
+        assert_eq!(changed(|c| c.device = None), CaptureChange::Restart);
+        assert_eq!(changed(|c| c.width = Some(1280)), CaptureChange::Restart);
+        assert_eq!(changed(|c| c.height = None), CaptureChange::Restart);
+        assert_eq!(changed(|c| c.frames_per_second = Some(60)), CaptureChange::Restart);
+        assert_eq!(changed(|c| c.jpeg_quality = 55), CaptureChange::Live);
+        assert_eq!(
+            changed(|c| c.encoding = VideoEncoding::TranscodeJpeg),
+            CaptureChange::Live
+        );
+        assert_eq!(changed(|c| c.auto_detect = !c.auto_detect), CaptureChange::Unchanged);
+        assert_eq!(changed(|c| c.h264.bitrate_kbps = 1_000), CaptureChange::Unchanged);
+        assert_eq!(changed(|c| c.h264.max_sessions = 4), CaptureChange::Unchanged);
+    }
+
+    #[test]
+    fn live_changes_apply_in_place_and_reach_the_next_frame() {
+        let source = {
+            let image = image::RgbImage::from_pixel(16, 16, image::Rgb([200, 40, 40]));
+            let mut jpeg = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 95)
+                .encode_image(&image)
+                .unwrap();
+            jpeg
+        };
+        let mut current = test_config();
+        assert_eq!(encode_frame(&source, &current).unwrap(), source, "passthrough");
+
+        let mut next = current.clone();
+        next.encoding = VideoEncoding::TranscodeJpeg;
+        next.jpeg_quality = 10;
+        assert!(apply_to_session(&mut current, next.clone()).is_none(), "no restart");
+        assert_eq!(current, next);
+        let low = encode_frame(&source, &current).unwrap();
+        assert_ne!(low, source);
+
+        next.jpeg_quality = 100;
+        assert!(apply_to_session(&mut current, next.clone()).is_none());
+        assert!(encode_frame(&source, &current).unwrap().len() > low.len());
+
+        let mut resized = current.clone();
+        resized.width = Some(640);
+        assert_eq!(apply_to_session(&mut current, resized.clone()), Some(resized));
+        assert_eq!(current, next, "a restart leaves the session's copy alone");
     }
 
     #[test]
