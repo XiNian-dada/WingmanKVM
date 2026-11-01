@@ -176,6 +176,9 @@ pub struct HidManager {
     keyboard_path_tx: watch::Sender<Option<PathBuf>>,
     keyboard_link_lost: Arc<AtomicBool>,
     mouse_link_lost: Arc<AtomicBool>,
+    /// Set for good once the process starts shutting down: the workers then
+    /// only execute releases, so nothing can be pressed after the last one.
+    closing: Arc<AtomicBool>,
 }
 
 impl Default for HidManager {
@@ -322,25 +325,41 @@ impl HidManager {
     }
 
     pub fn with_keyboard_device(keyboard_device: Option<PathBuf>) -> Self {
+        Self::build(keyboard_device, true)
+    }
+
+    /// Tests that read a fake keyboard node must not race the LED reader for
+    /// its bytes.
+    #[cfg(test)]
+    fn without_led_reader() -> Self {
+        Self::build(None, false)
+    }
+
+    fn build(keyboard_device: Option<PathBuf>, led_reader: bool) -> Self {
         let (keyboard_tx, keyboard_rx) = mpsc::channel(QUEUE_CAPACITY);
         let (mouse_tx, mouse_rx) = mpsc::channel(QUEUE_CAPACITY);
         let (keyboard_path_tx, keyboard_path_rx) = watch::channel(keyboard_device);
         let keyboard_leds = Arc::new(AtomicU8::new(0));
         let keyboard_link_lost = Arc::new(AtomicBool::new(false));
         let mouse_link_lost = Arc::new(AtomicBool::new(false));
+        let closing = Arc::new(AtomicBool::new(false));
 
         tokio::spawn(keyboard_worker(
             keyboard_rx,
             HidDeviceCache::with_link(Arc::clone(&keyboard_link_lost)),
+            Arc::clone(&closing),
         ));
         tokio::spawn(mouse_worker(
             mouse_rx,
             HidDeviceCache::with_link(Arc::clone(&mouse_link_lost)),
+            Arc::clone(&closing),
         ));
-        tokio::spawn(keyboard_led_reader(
-            keyboard_path_rx,
-            Arc::clone(&keyboard_leds),
-        ));
+        if led_reader {
+            tokio::spawn(keyboard_led_reader(
+                keyboard_path_rx,
+                Arc::clone(&keyboard_leds),
+            ));
+        }
 
         Self {
             keyboard_tx,
@@ -349,6 +368,7 @@ impl HidManager {
             keyboard_path_tx,
             keyboard_link_lost,
             mouse_link_lost,
+            closing,
         }
     }
 
@@ -495,6 +515,21 @@ impl HidManager {
         }
         first_error.map_or(Ok(()), Err)
     }
+
+    /// Final release before the process exits. Presses still queued are
+    /// dropped and later ones refused, because a press that reached the target
+    /// after this release would stay down with nobody left to release it. A
+    /// key already being held finishes with its own release first.
+    pub async fn release_for_shutdown(
+        &self,
+        keyboard_path: Option<PathBuf>,
+        relative_mouse_path: Option<PathBuf>,
+        absolute_pointer_path: Option<PathBuf>,
+    ) -> Result<(), HidError> {
+        self.closing.store(true, Ordering::Release);
+        self.release_all(keyboard_path, relative_mouse_path, absolute_pointer_path)
+            .await
+    }
 }
 
 /// Emergency releases must not be dropped just because the queue is briefly
@@ -527,8 +562,16 @@ fn map_send_error<T>(error: mpsc::error::TrySendError<T>) -> HidError {
     }
 }
 
-async fn keyboard_worker(mut rx: mpsc::Receiver<KeyboardCommand>, mut devices: HidDeviceCache) {
+async fn keyboard_worker(
+    mut rx: mpsc::Receiver<KeyboardCommand>,
+    mut devices: HidDeviceCache,
+    closing: Arc<AtomicBool>,
+) {
     while let Some(command) = rx.recv().await {
+        // Dropping the command makes its caller see `WorkerStopped`.
+        if closing.load(Ordering::Acquire) && !matches!(command, KeyboardCommand::Release { .. }) {
+            continue;
+        }
         match command {
             KeyboardCommand::Key {
                 path,
@@ -642,9 +685,22 @@ async fn keyboard_led_reader(mut path_rx: watch::Receiver<Option<PathBuf>>, leds
     }
 }
 
-async fn mouse_worker(mut rx: mpsc::Receiver<MouseCommand>, mut devices: HidDeviceCache) {
+async fn mouse_worker(
+    mut rx: mpsc::Receiver<MouseCommand>,
+    mut devices: HidDeviceCache,
+    closing: Arc<AtomicBool>,
+) {
     let mut absolute_states = HashMap::<PathBuf, AbsolutePointerState>::new();
     while let Some(command) = rx.recv().await {
+        // Dropping the command makes its caller see `WorkerStopped`.
+        if closing.load(Ordering::Acquire)
+            && !matches!(
+                command,
+                MouseCommand::Release { .. } | MouseCommand::ReleaseAbsolute { .. }
+            )
+        {
+            continue;
+        }
         match command {
             MouseCommand::Move {
                 path,
@@ -1050,7 +1106,7 @@ pub fn keycode(code: &str) -> Option<u8> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1163,6 +1219,7 @@ mod tests {
             keyboard_path_tx,
             keyboard_link_lost: Arc::default(),
             mouse_link_lost: Arc::default(),
+            closing: Arc::default(),
         };
         let mouse_releases = tokio::spawn(async move {
             let mut relative = false;
@@ -1207,6 +1264,7 @@ mod tests {
             keyboard_path_tx,
             keyboard_link_lost: Arc::default(),
             mouse_link_lost: Arc::default(),
+            closing: Arc::default(),
         };
         let (dummy_reply, _dummy_response) = oneshot::channel();
         manager
@@ -1340,6 +1398,132 @@ mod tests {
             source: io::Error::from_raw_os_error(libc::EIO),
         };
         assert!(!is_device_gone(&eio));
+    }
+
+    /// A fake hidg node: a FIFO whose read end the test holds, so a report
+    /// written by the workers can be inspected byte for byte.
+    #[cfg(unix)]
+    pub(crate) fn fake_hidg(path: &Path) -> std::fs::File {
+        use std::os::unix::ffi::OsStrExt;
+
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `name` is a valid NUL-terminated path for the whole call.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0, "{path:?}");
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    fn drain(mut reader: &std::fs::File) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut chunk = [0_u8; 64];
+        while let Ok(count) = reader.read(&mut chunk) {
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..count]);
+        }
+        bytes
+    }
+
+    fn key(name: &str, hold_ms: u64) -> KeyRequest {
+        KeyRequest {
+            key: name.to_owned(),
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
+            hold_ms,
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn release_writes_an_idle_report_to_every_fake_hidg_node() {
+        let root = crate::devices::hotplug::tests::temp_root("hidg-release");
+        let (keyboard, mouse, absolute) =
+            (root.join("hidg0"), root.join("hidg1"), root.join("hidg2"));
+        let readers = [fake_hidg(&keyboard), fake_hidg(&mouse), fake_hidg(&absolute)];
+
+        let manager = HidManager::without_led_reader();
+        manager
+            .release_all(Some(keyboard), Some(mouse), Some(absolute))
+            .await
+            .unwrap();
+
+        assert_eq!(drain(&readers[0]), [0_u8; 8]);
+        assert_eq!(drain(&readers[1]), [0_u8; 4]);
+        // Not all zero on purpose: X/Y are absolute, and 0,0 would throw the
+        // pointer into the top-left (hot) corner. The button byte is what
+        // releases.
+        let absolute_report = AbsolutePointerState::default().report(0);
+        assert_eq!(absolute_report[0], 0);
+        assert_eq!(drain(&readers[2]), absolute_report);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_release_lets_the_held_key_finish_and_drops_queued_presses() {
+        let root = crate::devices::hotplug::tests::temp_root("hidg-shutdown");
+        let path = root.join("hidg0");
+        let reader = fake_hidg(&path);
+        let manager = HidManager::without_led_reader();
+
+        // Being held when the shutdown starts.
+        let held = {
+            let (manager, path) = (manager.clone(), path.clone());
+            tokio::spawn(async move { manager.key(Some(path), key("KeyA", 150)).await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(drain(&reader), [0, 0, 0x04, 0, 0, 0, 0, 0], "KeyA is down");
+        // Queued behind it, so it would press after the final release.
+        let queued = {
+            let (manager, path) = (manager.clone(), path.clone());
+            tokio::spawn(async move { manager.key(Some(path), key("KeyB", 10)).await })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        manager
+            .release_for_shutdown(Some(path.clone()), None, None)
+            .await
+            .unwrap();
+
+        assert!(held.await.unwrap().is_ok());
+        assert!(matches!(queued.await.unwrap(), Err(HidError::WorkerStopped)));
+        let late = manager.key(Some(path.clone()), key("KeyC", 10)).await;
+        assert!(matches!(late, Err(HidError::WorkerStopped)));
+        // KeyA's own release and the final release; never a KeyB or KeyC press.
+        assert_eq!(drain(&reader), [0_u8; 16]);
+
+        // Anything racing the exit can still only release.
+        manager.release_all(Some(path), None, None).await.unwrap();
+        assert_eq!(drain(&reader), [0_u8; 8]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_release_refuses_queued_pointer_input() {
+        let root = crate::devices::hotplug::tests::temp_root("hidg-shutdown-mouse");
+        let path = root.join("hidg1");
+        let reader = fake_hidg(&path);
+        let manager = HidManager::new();
+
+        manager
+            .release_for_shutdown(None, Some(path.clone()), None)
+            .await
+            .unwrap();
+        assert_eq!(drain(&reader), [0_u8; 4]);
+        let click = manager
+            .mouse_click(Some(path), MouseClickRequest { button: 1 })
+            .await;
+        assert!(matches!(click, Err(HidError::WorkerStopped)));
+        assert!(drain(&reader).is_empty());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

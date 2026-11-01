@@ -13,6 +13,9 @@ Environment=RUST_LOG=wingmankvm=info
 ExecStart=/usr/local/bin/wingmankvm
 Restart=on-failure
 RestartSec=2s
+# The service releases all input on SIGTERM and exits within about 5 s on its
+# own; this only covers a runtime too wedged to run that handler.
+TimeoutStopSec=10s
 PrivateTmp=true
 ProtectSystem=strict
 # sudo keeps terminal authentication timestamps under /run/sudo.  The web

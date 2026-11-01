@@ -202,6 +202,23 @@ impl AppState {
         });
 
         let hid = HidManager::with_keyboard_device(config.hid.keyboard_device.clone());
+        // A previous process may have died with a key or button down, and
+        // nobody else will ever release it. Not awaited: a host that has
+        // stopped reading must not delay the web interface. The absolute
+        // pointer is left alone: every report carries a position, the last one
+        // is unknown here, so releasing it would move the target's cursor on
+        // each restart (and all zeros would throw it into the top-left corner).
+        // Its clicks press and release back to back, so nothing stays held.
+        let startup_hid = hid.clone();
+        let startup_paths = config.hid.clone();
+        tokio::spawn(async move {
+            if let Err(error) = startup_hid
+                .release_all(startup_paths.keyboard_device, startup_paths.mouse_device, None)
+                .await
+            {
+                tracing::warn!(%error, "HID release at startup failed");
+            }
+        });
         let metrics = Arc::new(RuntimeMetrics::new());
         let notifier = crate::notify::Notifier::new(config.notifications.clone());
         audit.set_observer(audit_observer(notifier.clone()));
@@ -256,6 +273,19 @@ impl AppState {
 
     pub fn proxy_protocol_updates(&self) -> watch::Receiver<ProxyProtocolMode> {
         self.proxy_protocol_updates.subscribe()
+    }
+
+    /// Release all input on the target before the process exits. The caller
+    /// bounds this: a wedged host must not hold up the stop.
+    pub async fn release_input_for_shutdown(&self) {
+        let hid = self.config.read().await.hid.clone();
+        if let Err(error) = self
+            .hid
+            .release_for_shutdown(hid.keyboard_device, hid.mouse_device, hid.absolute_pointer_device)
+            .await
+        {
+            tracing::warn!(%error, "HID release at shutdown failed");
+        }
     }
 
     async fn client_address(&self, connection: ClientConnection, headers: &HeaderMap) -> ClientAddress {
