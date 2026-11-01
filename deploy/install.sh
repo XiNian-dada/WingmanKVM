@@ -406,6 +406,16 @@ create_users() {
         log "created service user: wingmankvm"
     fi
     usermod -a -G wingmankvm-hw wingmankvm
+    # Optional HDMI audio reads the capture card's ALSA PCM (/dev/snd/*),
+    # which distributions grant to the standard `audio` group. Membership is
+    # picked up through initgroups() when systemd starts the service, so the
+    # hardened unit needs no extra device rule. Hosts without that group
+    # (no ALSA) simply keep audio unavailable.
+    if getent group audio >/dev/null; then
+        usermod -a -G audio wingmankvm
+    else
+        log "optional HDMI audio: no 'audio' group on this host; audio capture stays unavailable"
+    fi
 
     create_group wingman regular
     if getent passwd wingman >/dev/null; then
