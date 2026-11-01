@@ -2933,6 +2933,75 @@ def latency_blocks_paste_and_macros(browser, port, checks):
         context.close()
 
 
+def latency_restores_caps_on_unload(browser, port, checks):
+    """AUD3-27: leaving mid-run after an odd number of taps sends one keepalive restore."""
+    state, context, page, held, release = held_caps_page(browser, port)
+    try:
+        start_held_latency_run(page, held, checks)
+        page.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pagehide'))")
+        check(checks, ui_harness.wait_until(page, lambda: held["caps"] == 2), "unload_after_odd_taps_restores_caps",
+              held["caps"])
+        page.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pagehide'))")
+        page.wait_for_timeout(300)
+        check(checks, held["caps"] == 2, "unload_restore_sent_once", held["caps"])
+        page.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pageshow'))")
+    finally:
+        release()
+        context.close()
+
+    # An even count (one sample answered, the second press in flight) needs nothing.
+    state, context, page, held, release = held_caps_page(browser, port)
+    try:
+        start_held_latency_run(page, held, checks)
+        held["routes"].pop(0).fulfill(status=200, content_type="application/json", body="{}")
+        check(checks, ui_harness.wait_until(page, lambda: held["caps"] == 2, timeout=6), "second_tap_in_flight",
+              held["caps"])
+        page.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pagehide'))")
+        page.wait_for_timeout(300)
+        check(checks, held["caps"] == 2, "unload_after_even_taps_sends_nothing", held["caps"])
+    finally:
+        release()
+        context.close()
+
+
+def latency_expired_session_not_restored(browser, port, checks):
+    """AUD3-27: a session that expires mid-run is never reported as Caps Lock restored."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    target = {"caps": False, "taps": 0, "expired": False}
+    unauthorized = dict(status=401, content_type="application/json", body='{"error":"unauthorized"}')
+
+    def key_route(route):
+        if target["expired"]:
+            return route.fulfill(**unauthorized)
+        target["taps"] += 1
+        target["caps"] = not target["caps"]
+        # The session ends right after the first press reached the target.
+        target["expired"] = True
+        route.fulfill(status=200, content_type="application/json", body="{}")
+
+    def leds_route(route):
+        if target["expired"]:
+            return route.fulfill(**unauthorized)
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(
+            {"num_lock": False, "caps_lock": target["caps"], "scroll_lock": False, "raw": 0}))
+
+    page.route("**/api/key", key_route)
+    page.route("**/api/hid/leds", leds_route)
+    page.on("dialog", lambda dialog: dialog.accept())
+    try:
+        settle_toolbar(page)
+        page.click("#diagnostics-toggle")
+        page.click("#latency-start")
+        page.wait_for_function("() => !document.querySelector('#latency-result').classList.contains('hidden')",
+                               timeout=15000)
+        rows = latency_rows(page)
+        check(checks, target["taps"] == 1 and rows.get("Caps Lock") == "未能恢复，请手动检查",
+              "expired_session_reports_caps_not_restored", (rows, target))
+    finally:
+        context.close()
+
+
 # Every function taking (browser, port, checks) is a scenario, run in
 # definition order; new scenarios need no list edit (and no merge conflict).
 SCENARIOS = [
