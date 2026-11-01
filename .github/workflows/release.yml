@@ -117,6 +117,12 @@ jobs:
           fi
           rustup target add "$TARGET"
 
+      # The native ARM64 job can execute the tests; a tag on a failing commit
+      # must not publish. armv7 is cross-compiled and shares the same code.
+      - name: Run tests before publishing
+        if: matrix.target == 'aarch64-unknown-linux-gnu' && github.event_name == 'push'
+        run: cargo test --locked
+
       - name: Build release binary
         run: cargo build --locked --release --target "$TARGET"
 
@@ -145,7 +151,7 @@ jobs:
           install -d -m 0755 "$staging"
           install -m 0755 "target/$TARGET/release/wingmankvm" "$staging/wingmankvm"
           cp -a deploy "$staging/deploy"
-          cp LICENSE README.md CHANGELOG.md "$staging/"
+          cp LICENSE README.md CHANGELOG.md docs/UPGRADE_RECOVERY.md "$staging/"
           tar --owner=0 --group=0 --numeric-owner \
             -C "$staging" -czf "$RUNNER_TEMP/$archive.tar.gz" .
           ls -l "$RUNNER_TEMP/$archive.tar.gz"
