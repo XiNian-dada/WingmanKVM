@@ -70,7 +70,11 @@ class Harness:
         script.write_text(
             "set -Eeuo pipefail\n"
             f'source "{self.repo}/deploy/install.sh"\n'
-            f'DEST_ROOT="{root}"\n' + body
+            f'DEST_ROOT="{root}"\n'
+            # install.sh puts the system directories first in PATH, so on Linux
+            # a real systemctl would otherwise win over the fake one.
+            + (f'PATH="{path_prefix}:$PATH"\n' if path_prefix is not None else "")
+            + body
         )
         env = dict(os.environ)
         if path_prefix is not None:
