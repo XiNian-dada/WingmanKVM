@@ -100,7 +100,7 @@ def api_route(route, state):
         except Exception:
             body = {}
         state.mouse_posts.append((path.rsplit("/", 1)[1], body))
-        return route.fulfill(status=200, headers=headers, body='{"ok":true}')
+        return route.fulfill(status=204)
     # Real GET endpoints the console polls on its own, in the shapes the
     # server returns (src/web/session.rs, audit_api.rs, update.rs, config_api.rs).
     if method == "GET" and path == "/api/sessions":
