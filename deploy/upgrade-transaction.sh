@@ -55,6 +55,16 @@ _tx_private_file() {
     (( (8#$mode & 8#077) == 0 ))
 }
 
+# Digest of a file read via stdin, so the path never appears in (or alters)
+# the sha256sum output.
+_tx_sha256() {
+    local out
+    out=$(sha256sum <"$1") || return 1
+    out=${out%% *}
+    [[ $out =~ ^[0-9a-f]{64}$ ]] || return 1
+    printf '%s\n' "$out"
+}
+
 _tx_exact_destination() {
     local dest=$1 rel
     [[ $dest != *$'\t'* && $dest != *$'\n'* ]] || return 1
@@ -160,6 +170,8 @@ _tx_on_exit() {
 tx_init() {
     local store=$1 root=${2:-/} lock state_dir recovery
     [[ $TX_STATE == idle ]] || tx_fail "transaction library already initialized"
+    command -v sha256sum >/dev/null 2>&1 \
+        || tx_fail "sha256sum (coreutils) is required to record snapshot digests"
     [[ $store == /* && $store != *'/../'* ]] || tx_fail "store must be absolute and normalized"
     store=${store%/}
     TX_EUID=$(id -u)
@@ -219,7 +231,7 @@ tx_begin() {
 
 _tx_common() {
     local policy=$1 source=$2 dest=$3 mode=$4 owner=$5 group=$6
-    local idx presence old=absent old_mode=- old_uid=- old_gid=- meta
+    local idx presence old=absent old_mode=- old_uid=- old_gid=- meta sum
     [[ $TX_STATE == staging ]] || tx_fail "can only add files while staging"
     [[ -f $source && -r $source ]] || tx_fail "source missing or unreadable: $source"
     _tx_exact_destination "$dest" || tx_fail "destination is not in the fixed managed list: $dest"
@@ -244,6 +256,12 @@ _tx_common() {
         read -r old_mode old_uid old_gid <<<"$meta"
         cp -- "$dest" "$TX_SNAPSHOT/$idx" || tx_fail "cannot snapshot $dest"
         chmod 0600 -- "$TX_SNAPSHOT/$idx"
+        # Recovery refuses a snapshot that no longer matches this digest, so a
+        # power cut cannot restore an empty or truncated file.
+        sum=$(_tx_sha256 "$TX_SNAPSHOT/$idx") || tx_fail "cannot hash snapshot of $dest"
+        (umask 077 && printf '%s\n' "$sum" >"$TX_SNAPSHOT/$idx.sha256") \
+            || tx_fail "cannot record snapshot digest for $dest"
+        chmod 0600 -- "$TX_SNAPSHOT/$idx.sha256"
         old=file
     elif [[ $presence == present ]]; then
         old=present
@@ -326,7 +344,8 @@ tx_apply() {
         printf 'started=%s\n' "$(_tx_stamp)"
     } >"$tmp" || tx_fail "cannot prepare pending marker"
     chmod 0600 -- "$tmp" || tx_fail "cannot secure pending marker"
-    # Snapshots must be on disk before PENDING can send recover.sh to them.
+    # Snapshots and their .sha256 digests (written while staging) must be on
+    # disk before PENDING can send recover.sh to them.
     sync
     mv -f -- "$tmp" "$TX_STORE/PENDING" || tx_fail "cannot publish pending marker"
     sync
