@@ -39,6 +39,18 @@ async fn send_mouse_click_unrecorded(state: &AppState, request: MouseClickReques
     state.hid.mouse_click(path, request).await.map_err(map_hid_error)
 }
 
+async fn send_mouse_press_unrecorded(state: &AppState, request: MouseClickRequest) -> Result<(), ApiError> {
+    let config = state.config.read().await.hid.clone();
+    let path = relative_mouse_path(&config)?;
+    state.hid.mouse_press(path, request).await.map_err(map_hid_error)
+}
+
+async fn send_mouse_release_unrecorded(state: &AppState, request: MouseClickRequest) -> Result<(), ApiError> {
+    let config = state.config.read().await.hid.clone();
+    let path = relative_mouse_path(&config)?;
+    state.hid.mouse_release(path, request).await.map_err(map_hid_error)
+}
+
 async fn send_mouse_scroll_unrecorded(state: &AppState, request: MouseScrollRequest) -> Result<(), ApiError> {
     let config = state.config.read().await.hid.clone();
     let path = relative_mouse_path(&config)?;
@@ -84,6 +96,18 @@ pub(super) async fn send_mouse_click(state: &AppState, request: MouseClickReques
     result
 }
 
+pub(super) async fn send_mouse_press(state: &AppState, request: MouseClickRequest) -> Result<(), ApiError> {
+    let result = send_mouse_press_unrecorded(state, request).await;
+    state.metrics.record_hid(&result);
+    result
+}
+
+pub(super) async fn send_mouse_release(state: &AppState, request: MouseClickRequest) -> Result<(), ApiError> {
+    let result = send_mouse_release_unrecorded(state, request).await;
+    state.metrics.record_hid(&result);
+    result
+}
+
 pub(super) async fn send_mouse_scroll(state: &AppState, request: MouseScrollRequest) -> Result<(), ApiError> {
     let result = send_mouse_scroll_unrecorded(state, request).await;
     state.metrics.record_hid(&result);
@@ -94,6 +118,14 @@ pub(super) async fn send_release_all(state: &AppState) -> Result<(), ApiError> {
     let result = send_release_all_unrecorded(state).await;
     state.metrics.record_hid(&result);
     result
+}
+
+/// A revoked session can no longer reach any input endpoint, so whatever it held
+/// (an HTTP client has no socket whose end would release it) is let go right away.
+pub(super) async fn release_after_session_end(state: &AppState) {
+    if let Err(error) = send_release_all(state).await {
+        tracing::warn!(error = %error.message, "release after session end failed");
+    }
 }
 
 pub(super) async fn key(
@@ -128,6 +160,22 @@ pub(super) async fn mouse_click(
     ApiJson(request): ApiJson<MouseClickRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     send_mouse_click(&state, request).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(super) async fn mouse_press(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<MouseClickRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    send_mouse_press(&state, request).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(super) async fn mouse_release(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<MouseClickRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    send_mouse_release(&state, request).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

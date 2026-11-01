@@ -168,6 +168,7 @@ pub(super) async fn revoke_session(
     if !state.sessions.revoke_by_id(&request.id) {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "会话不存在或已下线"));
     }
+    release_after_session_end(&state).await;
     state
         .audit
         .record(
@@ -206,6 +207,9 @@ pub(super) async fn revoke_other_sessions(
     };
     let ip = Some(state.client_address(connection, &headers).await.ip);
     let revoked = state.sessions.revoke_all_except(token);
+    if revoked > 0 {
+        release_after_session_end(&state).await;
+    }
     state
         .audit
         .record(
