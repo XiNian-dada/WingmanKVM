@@ -3101,8 +3101,10 @@ def reset_preferences_covers_all(browser, port, checks):
     """AUD3-29: "reset preferences" also restores adaptive bitrate and the quality overlay, live."""
     state = State()
     context = browser.new_context(viewport={"width": 1280, "height": 900})
-    context.add_init_script("localStorage.setItem('wingman_setting_adaptive_bitrate', 'false');"
-                            "localStorage.setItem('wingman_setting_quality_overlay', 'true');")
+    context.add_init_script(ui_harness.TEST_HOOKS)
+    context.add_init_script("if (location.protocol === 'http:') {"
+                            "localStorage.setItem('wingman_setting_adaptive_bitrate', 'false');"
+                            "localStorage.setItem('wingman_setting_quality_overlay', 'true');}")
     page = context.new_page()
     page.route("**/api/**", lambda route: api_route(route, state))
     ui_harness.mock_video_feed(page)
