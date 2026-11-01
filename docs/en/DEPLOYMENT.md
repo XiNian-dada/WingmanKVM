@@ -391,6 +391,14 @@ sudo systemctl restart wingmankvm.service
 
 Finally, change the image directory in the web UI to `/srv/wingmankvm-images`. Changing only the web UI path or the file owner is not enough; `ProtectSystem=strict` blocks uploads and writes to paths not listed in `ReadWritePaths=`.
 
+### Download from URL is refused
+
+"Download from URL" accepts only http/https URLs and refuses targets on these addresses: loopback (`127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`, including the cloud metadata address `169.254.169.254`, and `fe80::/10`), unspecified (`0.0.0.0/8`, `::`), multicast (`224.0.0.0/4`, `ff00::/8`) and broadcast (`255.255.255.255`). IPv4-mapped IPv6 addresses such as `::ffff:127.0.0.1` are judged by their IPv4 address. Private LAN ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), IPv6 unique-local addresses (`fc00::/7`) and public addresses are not affected, so downloading from a NAS keeps working.
+
+The check happens when the connection is made: denied addresses are dropped from DNS results and the download fails if none remain; IP-literal hosts and every redirect target are checked separately. A hostname such as `localhost`, or a redirect to `127.0.0.1`, therefore fails too, and the web UI shows "Download URL points to a loopback, link-local, multicast or broadcast address and was refused" (HTTP `422`). There is no setting for this restriction and it cannot be turned off through the web API.
+
+If the service environment sets `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY`, downloads go through that proxy and the proxy resolves hostnames. The check then only covers IP-literal hosts, including IP literals in redirects; the proxy has to restrict hostname targets itself. The official systemd service does not set these variables.
+
 ## 9. Advanced: custom Gadget checks
 
 This section applies only to people who already have a board vendor Gadget, need custom USB VID/PID/descriptors, or are troubleshooting kernel compatibility. For a default installation, use `wingmankvm-gadget.service` and do not manually create duplicate functions with the same name.
