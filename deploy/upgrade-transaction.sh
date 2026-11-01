@@ -326,7 +326,10 @@ tx_apply() {
         printf 'started=%s\n' "$(_tx_stamp)"
     } >"$tmp" || tx_fail "cannot prepare pending marker"
     chmod 0600 -- "$tmp" || tx_fail "cannot secure pending marker"
+    # Snapshots must be on disk before PENDING can send recover.sh to them.
+    sync
     mv -f -- "$tmp" "$TX_STORE/PENDING" || tx_fail "cannot publish pending marker"
+    sync
     TX_STATE=applying
     for ((i = 0; i < TX_ENTRY_COUNT; i++)); do
         [[ ${TX_POLICY[i]} == preserved && ${TX_OLD[i]} == present ]] && continue
@@ -438,6 +441,7 @@ tx_commit() {
         done
     } >"$TX_TXN/COMMITTED" || tx_fail "cannot write commit marker"
     chmod 0600 -- "$TX_TXN/COMMITTED"
+    sync
     _tx_clear_pending || tx_fail "cannot clear pending marker after commit"
     TX_ROLLBACK_HOOK=''
     TX_PRE_ROLLBACK_HOOK=''
