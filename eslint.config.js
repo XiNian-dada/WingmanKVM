@@ -6,7 +6,7 @@ import globals from 'globals';
 import importExports from './eslint-rules/import-exports.js';
 
 export default [
-  { ignores: ['target/**', 'vendor/**', 'web/vendor/**', 'node_modules/**'] },
+  { ignores: ['target/**', 'vendor/**', 'web/vendor/**', 'node_modules/**', '.claude/**'] },
   {
     files: ['web/js/app/**/*.js'],
     languageOptions: {
