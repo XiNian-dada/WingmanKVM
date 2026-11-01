@@ -1181,23 +1181,25 @@ def csp_policy(repo, host):
 
 
 def serve_with_csp(repo):
-    """Serve the unbundled UI (index.html + /assets/app.{js,css}) with the real CSP."""
+    """Serve the UI as production does (index.html, /assets/app.css and the
+    app ES modules under /assets/js/) with the real CSP."""
     import threading, urllib.parse
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from ui_bundle import MODULE_TYPE, module_assets
     web = os.path.join(repo, "web")
     def concat(sub, ext):
         d = os.path.join(web, sub)
         return b"".join(open(os.path.join(d, n), "rb").read() for n in sorted(os.listdir(d)) if n.endswith(ext))
     xterm = read_assets(repo)
-    files = {
+    files = {path: (body, MODULE_TYPE) for path, body in module_assets(repo).items()}
+    files.update({
         "/": (open(os.path.join(web, "index.html"), "rb").read(), "text/html; charset=utf-8"),
-        "/assets/app.js": (concat("js/app", ".js"), "text/javascript"),
         "/assets/app.css": (concat("css/app", ".css"), "text/css"),
         "/assets/xterm.js": (xterm["xterm.js"], "text/javascript"),
         "/assets/xterm-fit.js": (xterm["addon-fit.js"], "text/javascript"),
         "/assets/xterm.css": (xterm["xterm.css"], "text/css"),
         "/assets/icon.svg": (open(os.path.join(web, "icon.svg"), "rb").read(), "image/svg+xml"),
-    }
+    })
     files["/favicon.ico"] = files["/assets/icon.svg"]
 
     class Handler(BaseHTTPRequestHandler):
