@@ -68,7 +68,8 @@ function renderMediaStatus(status, items) {
     const parts = [mediaTypeLabel(status?.media_type), status?.read_only === false ? '读写' : '只读'];
     const stateText = mediaStateLabel(state);
     if (stateText && stateText !== '已挂载') parts.unshift(stateText);
-    detail.textContent = parts.join(' · ');
+    // One text node per part, so each is translated as its own phrase.
+    detail.append(...parts.flatMap((part, index) => (index ? [' · ', part] : [part])));
   } else detail.textContent = state === 'error' ? '请检查 LUN 配置' : '选择镜像即可挂载';
   copy.append(title, detail);
   box.append(dot, copy);

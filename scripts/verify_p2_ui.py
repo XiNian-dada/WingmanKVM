@@ -230,6 +230,33 @@ def media_default_true(browser, port, checks):
     return page
 
 
+def media_english_labels(browser, port, checks):
+    """Interface text inside the media list and status line is translated; the file name is not."""
+    state = State(default_ro=True)
+    state.media_items = [{"name": "\u5df2\u6302\u8f7d", "size": 1024, "mounted": True}]
+    state.media_status = {"state": "attached", "mounted_name": "\u5df2\u6302\u8f7d",
+                          "media_type": "cdrom", "read_only": True}
+    page = new_page(browser, state, port)
+    wait_main(page)
+    page.click("#lang-toggle")
+    page.click('[data-lang="en"]')
+    page.click('button[data-panel-target="media"]')
+    wait_media(page, 1)
+    page.wait_for_timeout(200)
+    badge = page.text_content("#media-list .media-badge")
+    check(checks, badge == "Mounted", "media_badge_translated", badge)
+    name = page.text_content("#media-list .media-item-name strong")
+    check(checks, name == "\u5df2\u6302\u8f7d", "media_file_name_kept_verbatim", name)
+    detail = page.text_content("#media-status .media-status-copy span")
+    check(checks, detail == "Optical drive \u00b7 Read-only", "media_status_line_translated", detail)
+    page.click("#input-state")
+    page.wait_for_function("() => document.querySelector('#toast').classList.contains('show')", timeout=3000)
+    toast = page.text_content("#toast") or ""
+    check(checks, not any("\u4e00" <= c <= "\u9fff" for c in toast) and "forwarding" in toast,
+          "input_forwarding_toast_translated", toast)
+    return page
+
+
 def media_mounted(browser, port, checks):
     state = State(default_ro=True)
     state.media_items = [{"name": "mounted-rw.img", "size": 1024, "mounted": True}]
@@ -431,6 +458,7 @@ def main():
             try:
                 current = media_page = media_default_true(browser, port, checks)
                 current = media_mounted(browser, port, checks)
+                current = media_english_labels(browser, port, checks)
                 current = media_default_false(browser, port, checks)
                 current = media_default_absent(browser, port, checks)
                 current = login_success_before_bootstrap_failure(browser, port, checks)

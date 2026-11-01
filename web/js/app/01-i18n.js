@@ -565,6 +565,8 @@ function tr(source) {
 const NO_TRANSLATE =
   'script,style,pre,code,#terminal-host,[data-no-i18n],.media-item-name,#session-user,#session-ip,#diag-client-ip';
 function untranslatable(el) {
+  // The mounted badge is interface text inside the otherwise verbatim name box.
+  if (el?.classList.contains('media-badge')) return false;
   return !el || !!el.closest(`${NO_TRANSLATE},[data-i18n]`);
 }
 function translatePhrase(holder, key, current, write) {
