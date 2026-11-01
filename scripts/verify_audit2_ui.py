@@ -123,7 +123,7 @@ def main():
     checks = summary["checks"]
     try:
         with ui_harness.static_server(args.repo) as port, sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, channel=args.browser_channel)
+            browser = ui_harness.launch_browser(p, args.browser_channel)
             try:
                 for scenario in SCENARIOS:
                     scenario(browser, port, checks)
@@ -267,7 +267,8 @@ def low_risk_ui(browser, port, checks):
     state = State()
     context = browser.new_context(viewport={"width": 1400, "height": 900})
     try:
-        context.add_init_script(
+        context.add_init_script(  # not on the initial about:blank (SecurityError)
+            "if (location.protocol !== 'about:') "
             "localStorage.setItem('wingman_setting_auto_expand_inspector','false')")
         page = context.new_page()
         from verify_p2b_ui import api_route, GIF, bootstrap_payload
@@ -1229,9 +1230,11 @@ def csp_no_violations(browser, port, checks):
     server, csp_port = serve_with_csp(repo)
     state = p2.State(authenticated=False, mass_storage=False)
     context = browser.new_context(viewport={"width": 1280, "height": 900})
+    # Context init scripts also run on the initial about:blank, where
+    # localStorage throws SecurityError; only seed it on the served page.
     context.add_init_script("""
       window.__csp = [];
-      localStorage.setItem('wingman_theme', 'dark');
+      if (location.protocol !== 'about:') localStorage.setItem('wingman_theme', 'dark');
       document.addEventListener('securitypolicyviolation', e =>
         window.__csp.push(e.violatedDirective + ' ' + (e.blockedURI || 'inline')));
     """)
@@ -3165,6 +3168,419 @@ def i18n_keys_complete(browser, port, checks):
               "terminal_failure_translated", terminal)
     finally:
         context.close()
+
+
+HID_MAX = 32767
+
+
+POINTER_PROBE = """
+(() => {
+  const seen = (window.__pointerSeen = []);
+  for (const type of ['pointermove', 'pointerdown', 'wheel'])
+    window.addEventListener(type, (e) => seen.push({type, button: e.button, x: e.clientX, y: e.clientY,
+      dx: e.movementX, dy: e.movementY, deltaY: e.deltaY}), true);
+})();
+"""
+
+
+POINTER_LOCK_STUB = """() => {
+  let locked = null;
+  window.__lockRequests = 0;
+  Object.defineProperty(Document.prototype, 'pointerLockElement', {configurable: true, get: () => locked});
+  Element.prototype.requestPointerLock = function () {
+    window.__lockRequests++;
+    locked = this;
+    document.dispatchEvent(new Event('pointerlockchange'));
+    return Promise.resolve();
+  };
+  Document.prototype.exitPointerLock = function () {
+    locked = null;
+    document.dispatchEvent(new Event('pointerlockchange'));
+  };
+}"""
+
+
+def input_page(browser, port, pointer_mode="absolute"):
+    state = State(pointer_mode=pointer_mode)
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    context, page = new_page(browser, state, port, init_scripts=(POINTER_PROBE,))
+    return state, context, page
+
+
+def size_feed(page, width, height):
+    """Give the mocked 1x1 feed a 1280x720 source and a known rendered box."""
+    page.evaluate("""([width, height, sourceWidth, sourceHeight]) => {
+      const feed = document.querySelector('#video-feed');
+      Object.defineProperty(feed, 'naturalWidth', {value: sourceWidth});
+      Object.defineProperty(feed, 'naturalHeight', {value: sourceHeight});
+      feed.style.width = width + 'px';
+      feed.style.height = height + 'px';
+      feed.dispatchEvent(new Event('load'));
+      window.dispatchEvent(new Event('resize'));  // drops the app's cached surface box
+    }""", [width, height, SOURCE_WIDTH, SOURCE_HEIGHT])
+
+
+def settled_box(page, selector="#video-feed", timeout_ms=6000):
+    """The element's box once the layout has settled: the console animates its
+    size for 140 ms and a loaded machine can stall that mid-way, so two samples in
+    a row are not enough. Wait for no running animation on the element or its
+    ancestors and several frames with an identical box."""
+    return page.evaluate("""async ([selector, timeoutMs]) => {
+      const element = document.querySelector(selector);
+      const frame = () => new Promise(requestAnimationFrame);
+      const animating = () => document.getAnimations().some((animation) =>
+        animation.playState === 'running' && animation.effect?.target?.contains?.(element));
+      const measure = () => {
+        const r = element.getBoundingClientRect();
+        return [r.x, r.y, r.width, r.height];
+      };
+      const deadline = performance.now() + timeoutMs;
+      let box = measure(), steady = 0;
+      while (performance.now() < deadline && steady < 5) {
+        await frame();
+        const latest = measure();
+        steady = !animating() && latest.every((value, index) => value === box[index]) ? steady + 1 : 0;
+        box = latest;
+      }
+      return box;
+    }""", [selector, timeout_ms])
+
+
+def take_control(page):
+    """Turn forwarding on through the status badge and wait until it took effect."""
+    page.locator("#input-state").click()
+    page.wait_for_function("() => document.querySelector('#input-state').getAttribute('aria-pressed') === 'true'",
+                           timeout=3000)
+
+
+def seen_event(page, event_type):
+    return page.evaluate("(t) => window.__pointerSeen.filter((e) => e.type === t).pop() || null", event_type)
+
+
+def fit_geometry(box):
+    """Where a 1280x720 source lands in `box` under fit mode: contained, centered."""
+    x, y, width, height = box
+    scale = min(width / SOURCE_WIDTH, height / SOURCE_HEIGHT)
+    content_w, content_h = SOURCE_WIDTH * scale, SOURCE_HEIGHT * scale
+    return x + (width - content_w) / 2, y + (height - content_h) / 2, content_w, content_h
+
+
+def expected_hid(event, geometry):
+    left, top, width, height = geometry
+    return (round((event["x"] - left) / width * HID_MAX), round((event["y"] - top) / height * HID_MAX))
+
+
+def desktop_mouse_absolute(browser, port, checks):
+    """#107: real mouse input in fit mode maps to absolute HID x/y, buttons and wheel."""
+    state, context, page = input_page(browser, port)
+    try:
+        # Wider than 16:9, so fit mode leaves 80 px bars left and right of the
+        # picture and the mapping has to account for them.
+        size_feed(page, 800, 360)
+        box = settled_box(page)
+        classes = page.evaluate("() => document.querySelector('#console').className")
+        check(checks, "mode-fit" in classes, "mouse_scenario_runs_in_fit_mode", classes)
+        check(checks, box[2:] == [800, 360], "mouse_feed_has_known_box", box)
+        geometry = fit_geometry(box)
+        left, top, width, height = geometry
+        check(checks, abs(left - box[0] - 80) < 0.01 and abs(width - 640) < 0.01, "mouse_letterbox_geometry", geometry)
+        take_control(page)
+        box = settled_box(page)
+        geometry = fit_geometry(box)
+        left, top, width, height = geometry
+
+        # Each known point: the client point is checked, then the HID value is
+        # asserted against the fraction of the picture (±1 of 32767).
+        for name, fx, fy in (("center", 0.5, 0.5), ("quarter", 0.25, 0.25), ("far", 0.75, 0.9), ("origin", 0.0, 0.0)):
+            client_x, client_y = left + fx * width + (0.5 if fx == 0 else 0), top + fy * height + (0.5 if fy == 0 else 0)
+            state.mouse_posts.clear()
+            page.mouse.move(client_x, client_y)
+            moved = ui_harness.wait_until(page, lambda: any(b.get("action") == "move" for p, b in state.mouse_posts))
+            check(checks, moved, f"mouse_move_posted_{name}", state.mouse_posts)
+            event = seen_event(page, "pointermove")
+            check(checks, abs(event["x"] - client_x) <= 1 and abs(event["y"] - client_y) <= 1,
+                  f"mouse_event_at_known_point_{name}", (event, client_x, client_y))
+            want_x, want_y = expected_hid(event, geometry)
+            last = [b for p, b in state.mouse_posts if p == "absolute" and b.get("action") == "move"][-1]
+            check(checks, abs(last["x"] - want_x) <= 1 and abs(last["y"] - want_y) <= 1,
+                  f"mouse_absolute_move_{name}", (last, want_x, want_y))
+            # The fraction itself pins the mapping: one CSS pixel is ~51 HID units.
+            check(checks, abs(last["x"] - fx * HID_MAX) <= 60 and abs(last["y"] - fy * HID_MAX) <= 100,
+                  f"mouse_absolute_fraction_{name}", (last, fx, fy))
+
+        # Left, right and middle, each with the position of the press.
+        center_x, center_y = left + width / 2, top + height / 2
+        for button, code in (("left", 1), ("right", 2), ("middle", 4)):
+            state.mouse_posts.clear()
+            page.mouse.click(center_x, center_y, button=button)
+            clicked = ui_harness.wait_until(page, lambda: any(b.get("action") == "click" for p, b in state.mouse_posts))
+            clicks = [b for p, b in state.mouse_posts if b.get("action") == "click"]
+            check(checks, clicked and len(clicks) == 1 and clicks[0].get("button") == code,
+                  f"mouse_absolute_{button}_button", state.mouse_posts)
+            event = seen_event(page, "pointerdown")
+            want_x, want_y = expected_hid(event, geometry)
+            check(checks, abs(clicks[0]["x"] - want_x) <= 1 and abs(clicks[0]["y"] - want_y) <= 1,
+                  f"mouse_absolute_{button}_position", (clicks[0], want_x, want_y))
+
+        # Wheel: scrolling down is negative, up is positive, and small
+        # high-resolution deltas still produce a step.
+        page.mouse.move(center_x, center_y)
+        for label, delta_y, wheel in (("down", 120, -3), ("up", -120, 3), ("small_down", 10, -1), ("small_up", -10, 1),
+                                      ("huge_down", 8000, -127), ("huge_up", -8000, 127)):
+            state.mouse_posts.clear()
+            page.mouse.wheel(0, delta_y)
+            scrolled = ui_harness.wait_until(page, lambda: any(b.get("action") == "scroll" for p, b in state.mouse_posts))
+            scrolls = [b for p, b in state.mouse_posts if b.get("action") == "scroll"]
+            check(checks, scrolled and scrolls[-1].get("delta") == wheel, f"mouse_wheel_{label}", state.mouse_posts)
+            event = seen_event(page, "wheel")
+            want_x, want_y = expected_hid(event, geometry)
+            check(checks, abs(scrolls[-1]["x"] - want_x) <= 1 and abs(scrolls[-1]["y"] - want_y) <= 1,
+                  f"mouse_wheel_{label}_position", (scrolls[-1], want_x, want_y))
+
+        # A press in the letterbox bar is outside the picture and sends nothing.
+        page.wait_for_timeout(100)
+        state.mouse_posts.clear()
+        page.mouse.click(box[0] + 40, center_y)
+        page.wait_for_timeout(200)
+        check(checks, not state.mouse_posts, "mouse_letterbox_press_sends_nothing", state.mouse_posts)
+    finally:
+        context.close()
+
+
+def capture_relative(page):
+    """Capture through the app's own path; stub pointer lock only if refused."""
+    viewport = settled_box(page, "#video-viewport")
+    center_x, center_y = viewport[0] + viewport[2] / 2, viewport[1] + viewport[3] / 2
+    page.mouse.move(center_x, center_y)
+    page.mouse.click(center_x, center_y)  # first press takes control
+    page.wait_for_function("() => document.querySelector('#input-state').getAttribute('aria-pressed') === 'true'",
+                           timeout=3000)
+    page.mouse.click(center_x, center_y)  # second press asks for pointer lock
+    page.wait_for_timeout(200)
+    stubbed = False
+    if not page.evaluate("() => !!document.pointerLockElement"):
+        stubbed = True
+        page.evaluate(POINTER_LOCK_STUB)
+        page.mouse.click(center_x, center_y)
+    return center_x, center_y, viewport, stubbed
+
+
+def mouse_sum(state):
+    moves = [b for p, b in state.mouse_posts if p == "move"]
+    return sum(b.get("dx", 0) for b in moves), sum(b.get("dy", 0) for b in moves), moves
+
+
+def desktop_mouse_relative(browser, port, checks):
+    """#107: relative mode forwards movement deltas, clamped to one HID report."""
+    state, context, page = input_page(browser, port, pointer_mode="relative")
+    try:
+        # Large enough that every move below stays over the viewport: with the
+        # stubbed lock the browser still targets the element under the pointer.
+        page.set_viewport_size({"width": 1700, "height": 1100})
+        size_feed(page, 640, 360)
+        center_x, center_y, viewport, stubbed = capture_relative(page)
+        margin_x, margin_y = viewport[2] / 2, viewport[3] / 2
+        check(checks, margin_x > 340 and margin_y > 230, "relative_mouse_viewport_fits_moves", viewport)
+        locked = page.evaluate(
+            "() => document.pointerLockElement === document.querySelector('#video-viewport')")
+        check(checks, locked, "relative_mouse_captured_viewport", {"stubbed": stubbed})
+        if stubbed:
+            check(checks, page.evaluate("() => window.__lockRequests") >= 1,
+                  "relative_mouse_app_requested_lock", "stubbed lock only engages when the app asks")
+
+        # Small move: the delta arrives as-is, in one report or a few.
+        state.mouse_posts.clear()
+        page.mouse.move(center_x + 30, center_y + 20)
+        ui_harness.wait_until(page, lambda: mouse_sum(state)[:2] == (30, 20))
+        sum_x, sum_y, moves = mouse_sum(state)
+        check(checks, (sum_x, sum_y) == (30, 20), "relative_mouse_small_move", moves)
+        check(checks, all(not b.get("action") for b in moves), "relative_mouse_uses_move_endpoint", state.mouse_posts)
+
+        # A single large move is split into reports of at most ±127 per axis,
+        # and nothing is lost in the split.
+        for label, step_x, step_y in (("positive", 300, 0), ("negative", -300, 0), ("vertical", 0, 200), ("up", 0, -200)):
+            start = page.evaluate("() => { const m = window.__pointerSeen.filter((e) => e.type === 'pointermove').pop(); return [m.x, m.y]; }")
+            state.mouse_posts.clear()
+            page.mouse.move(start[0] + step_x, start[1] + step_y)
+            ui_harness.wait_until(page, lambda: mouse_sum(state)[:2] == (step_x, step_y))
+            sum_x, sum_y, moves = mouse_sum(state)
+            check(checks, (sum_x, sum_y) == (step_x, step_y), f"relative_mouse_large_{label}_keeps_total", moves)
+            values = [abs(b.get("dx", 0)) for b in moves] + [abs(b.get("dy", 0)) for b in moves]
+            check(checks, max(values) == 127, f"relative_mouse_large_{label}_clamps_to_127", moves)
+            check(checks, len(moves) >= 2, f"relative_mouse_large_{label}_splits_reports", moves)
+
+        # Buttons and wheel use the relative endpoints.
+        page.mouse.move(center_x, center_y)
+        for button, code in (("left", 1), ("right", 2), ("middle", 4)):
+            state.mouse_posts.clear()
+            page.mouse.down(button=button)
+            page.mouse.up(button=button)
+            ui_harness.wait_until(page, lambda: any(p == "click" for p, b in state.mouse_posts))
+            clicks = [b for p, b in state.mouse_posts if p == "click"]
+            check(checks, clicks == [{"button": code}], f"relative_mouse_{button}_button", state.mouse_posts)
+        for label, delta_y, wheel in (("down", 120, -3), ("up", -120, 3)):
+            state.mouse_posts.clear()
+            page.mouse.wheel(0, delta_y)
+            ui_harness.wait_until(page, lambda: any(p == "scroll" for p, b in state.mouse_posts))
+            scrolls = [b for p, b in state.mouse_posts if p == "scroll"]
+            check(checks, scrolls == [{"wheel": wheel}], f"relative_mouse_wheel_{label}", state.mouse_posts)
+    finally:
+        context.close()
+
+
+QUICK_KEY_PAYLOADS = {
+    "cad": {"key": "Delete", "ctrl": True, "alt": True, "hold_ms": 100},
+    "win": {"key": "Meta", "meta": True, "hold_ms": 60},
+    "alttab": {"key": "Tab", "alt": True, "hold_ms": 100},
+    "esc": {"key": "Escape", "hold_ms": 40},
+}
+
+
+def key_payload(post):
+    """Normalise a key post so an absent modifier compares equal to false."""
+    normal = {"key": post.get("key"), "hold_ms": post.get("hold_ms")}
+    for modifier in ("ctrl", "shift", "alt", "meta"):
+        normal[modifier] = bool(post.get(modifier))
+    return normal
+
+
+def desktop_quick_keys(browser, port, checks):
+    """#107: every quick-key button sends exactly its documented key and modifiers."""
+    state, context, page = input_page(browser, port)
+    try:
+        # The inline buttons only show on a wide console, and the console takes
+        # the video's aspect ratio, so the 1x1 mock feed needs a real size too.
+        # Below 880 px of console width they move into the "组合键" menu (see below).
+        page.set_viewport_size({"width": 1700, "height": 900})
+        size_feed(page, 640, 360)
+        settled_box(page, "#console")
+        actions = page.evaluate("() => [...document.querySelectorAll('[data-quick-key]')].map((b) => b.dataset.quickKey)")
+        check(checks, sorted(actions) == sorted(QUICK_KEY_PAYLOADS), "quick_key_buttons_all_have_expected_payloads", actions)
+        for action in actions:
+            state.key_posts.clear()
+            page.locator(f'[data-quick-key="{action}"]').click()
+            sent = ui_harness.wait_until(page, lambda: len(state.key_posts) >= 1)
+            page.wait_for_timeout(50)
+            check(checks, sent and len(state.key_posts) == 1, f"quick_key_{action}_sends_one_key", state.key_posts)
+            want = key_payload(QUICK_KEY_PAYLOADS[action])
+            check(checks, key_payload(state.key_posts[0]) == want, f"quick_key_{action}_payload",
+                  (state.key_posts[0], want))
+            # The first quick key also turned forwarding on for the ones after it.
+            pressed = page.get_attribute("#input-state", "aria-pressed")
+            check(checks, pressed == "true", f"quick_key_{action}_enables_forwarding", pressed)
+
+        # Narrow console: the same four keys from the menu, with the same payloads.
+        page.set_viewport_size({"width": 1000, "height": 900})
+        page.locator('[data-quick-key="cad"]').wait_for(state="hidden", timeout=3000)
+        labels = {"cad": "Ctrl+Alt+Del", "win": "Win", "alttab": "Alt+Tab", "esc": "Esc"}
+        for action, label in labels.items():
+            page.locator("#quick-more-toggle").click()
+            state.key_posts.clear()
+            page.locator(".quick-menu-common .quick-combo-item", has_text=label).first.click()
+            sent = ui_harness.wait_until(page, lambda: len(state.key_posts) >= 1)
+            want = key_payload(QUICK_KEY_PAYLOADS[action])
+            check(checks, sent and key_payload(state.key_posts[0]) == want, f"quick_menu_{action}_payload",
+                  (state.key_posts, want))
+    finally:
+        context.close()
+
+
+def virtual_key_press(page, state, key):
+    state.key_posts.clear()
+    page.locator(f'#virtual-keyboard button[data-key="{key}"]').first.click()
+    ui_harness.wait_until(page, lambda: len(state.key_posts) >= 1)
+    return key_payload(state.key_posts[0]) if state.key_posts else {}
+
+
+def modifier_pressed(page, key):
+    """aria-pressed of every on-screen button for `key` (each side has its own)."""
+    return page.evaluate("""(key) => [...document.querySelectorAll('#virtual-keyboard button')]
+      .filter((b) => b.dataset.key === key).map((b) => b.getAttribute('aria-pressed'))""", key)
+
+
+def desktop_virtual_modifiers(browser, port, checks):
+    """#107: on-screen modifiers stay on across keys until toggled off or released."""
+    state, context, page = input_page(browser, port)
+    try:
+        take_control(page)
+        page.locator("#keyboard-toggle").click()
+        page.wait_for_selector("#keyboard-dialog[open]", timeout=3000)
+
+        plain = virtual_key_press(page, state, "Q")
+        check(checks, plain == {"key": "Q", "hold_ms": 25, "ctrl": False, "shift": False, "alt": False, "meta": False},
+              "virtual_key_without_modifier", plain)
+
+        state.key_posts.clear()
+        page.locator('#virtual-keyboard button[data-key="Control"]').first.click()
+        check(checks, modifier_pressed(page, "Control") == ["true", "true"], "virtual_control_marks_both_sides",
+              modifier_pressed(page, "Control"))
+        page.wait_for_timeout(100)
+        check(checks, not state.key_posts, "virtual_modifier_alone_sends_nothing", state.key_posts)
+
+        first = virtual_key_press(page, state, "W")
+        check(checks, first["ctrl"] and not (first["shift"] or first["alt"] or first["meta"]),
+              "virtual_control_applies_to_key", first)
+        # Sticky: still held for the next key without another click.
+        second = virtual_key_press(page, state, "E")
+        check(checks, second["ctrl"], "virtual_control_stays_on_for_next_key", second)
+        check(checks, modifier_pressed(page, "Control") == ["true", "true"], "virtual_control_still_marked",
+              modifier_pressed(page, "Control"))
+
+        for modifier in ("Shift", "Alt", "Meta"):
+            page.locator(f'#virtual-keyboard button[data-key="{modifier}"]').first.click()
+        all_on = virtual_key_press(page, state, "R")
+        check(checks, all_on["ctrl"] and all_on["shift"] and all_on["alt"] and all_on["meta"],
+              "virtual_modifiers_combine", all_on)
+
+        # The right-hand button toggles the same state off.
+        page.locator('#virtual-keyboard button[data-key="Control"]').last.click()
+        check(checks, modifier_pressed(page, "Control") == ["false", "false"], "virtual_control_toggles_off",
+              modifier_pressed(page, "Control"))
+        fewer = virtual_key_press(page, state, "T")
+        check(checks, not fewer["ctrl"] and fewer["shift"] and fewer["alt"] and fewer["meta"],
+              "virtual_control_off_for_next_key", fewer)
+
+        # The app's release-all path clears whatever is still held.
+        page.locator("#input-release").click()
+        released = ui_harness.wait_until(page, lambda: modifier_pressed(page, "Shift") == ["false", "false"])
+        check(checks, released, "virtual_modifiers_cleared_by_release", modifier_pressed(page, "Shift"))
+        after = virtual_key_press(page, state, "Y")
+        check(checks, not (after["ctrl"] or after["shift"] or after["alt"] or after["meta"]),
+              "virtual_key_after_release_has_no_modifier", after)
+
+        # Closing the keyboard never leaves a modifier held for the next time.
+        page.locator('#virtual-keyboard button[data-key="Alt"]').first.click()
+        page.locator("#keyboard-dialog [data-close]").click()
+        page.wait_for_selector("#keyboard-dialog:not([open])", state="attached", timeout=3000)
+        page.locator("#keyboard-toggle").click()
+        page.wait_for_selector("#keyboard-dialog[open]", timeout=3000)
+        check(checks, modifier_pressed(page, "Alt") == ["false", "false"], "virtual_modifiers_cleared_by_closing",
+              modifier_pressed(page, "Alt"))
+        reopened = virtual_key_press(page, state, "U")
+        check(checks, not reopened["alt"], "virtual_key_after_reopen_has_no_modifier", reopened)
+    finally:
+        context.close()
+
+
+def harness_reports_page_errors(browser, port, checks):
+    """AUD3-32: a module that throws while evaluating reaches the report with its stack."""
+    before = len(ui_harness.PAGE_ERRORS)
+    context = browser.new_context()
+    try:
+        page = context.new_page()
+        page.route("**/assets/js/main.js", lambda route: route.fulfill(
+            status=200, content_type="text/javascript; charset=utf-8",
+            body="throw new Error('AUD3-32 injected failure');\n"))
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="load", timeout=15000)
+        ui_harness.wait_until(page, lambda: len(ui_harness.PAGE_ERRORS) > before)
+    finally:
+        context.close()
+    # Taken out again so this deliberate error does not fail the suite.
+    injected = ui_harness.PAGE_ERRORS[before:]
+    del ui_harness.PAGE_ERRORS[before:]
+    check(checks, len(injected) == 1 and "AUD3-32 injected failure" in injected[0]["message"],
+          "harness_records_page_error_message", injected)
+    check(checks, "main.js" in injected[0]["stack"], "harness_records_page_error_stack", injected)
 
 
 # Every function taking (browser, port, checks) is a scenario, run in
