@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+# WingmanKVM online upgrade helper (root-owned, installed by deploy/install.sh).
+#
+#   --start  Invoked by the unprivileged service through exactly one sudoers
+#            rule ("wingmankvm ... wingmankvm-online-upgrade --start"). It
+#            takes no input and only asks systemd to start the fixed oneshot
+#            unit wingmankvm-online-upgrade.service. Running the upgrade in its
+#            own unit keeps it alive when the installer restarts the web service.
+#   --run    ExecStart of that unit. Resolves the latest release of the fixed
+#            repository itself, downloads the archive for this CPU, verifies
+#            SHA256SUMS and runs the release's deploy/install.sh --release,
+#            whose transaction rolls back on failure.
+#
+# Nothing here reads a URL, path, version or script from the service, the
+# browser or the environment. Progress is published as key=value lines in
+# /run/wingmankvm-online-upgrade/status for the service to display.
+set -Eeuo pipefail
+umask 022
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+unset WINGMANKVM_REPO WINGMANKVM_API_URL WINGMANKVM_DOWNLOAD_BASE
+
+PROGRAM=wingmankvm-online-upgrade
+UNIT=wingmankvm-online-upgrade.service
+readonly REPO=XiNian-dada/WingmanKVM
+readonly API_URL=https://api.github.com/repos/$REPO/releases/latest
+readonly DOWNLOAD_BASE=https://github.com/$REPO/releases/download
+# Test harnesses may set DEST_ROOT/STATUS_DIR after sourcing; never from env.
+DEST_ROOT=
+STATUS_DIR=$DEST_ROOT/run/wingmankvm-online-upgrade
+WORKDIR=
+TARGET=
+VERSION=
+RUN_ID=
+PHASE=
+FINISHED=false
+
+log() {
+    printf '%s: %s\n' "$PROGRAM" "$*"
+}
+
+die() {
+    printf '%s: error: %s\n' "$PROGRAM" "$*" >&2
+    exit 1
+}
+
+# ---- shared with scripts/get.sh (kept identical; see verify_get_script.py) ----
+detect_target() {
+    local machine
+    machine=$(uname -m)
+    case $machine in
+        aarch64 | arm64)
+            TARGET=aarch64-unknown-linux-gnu
+            ;;
+        armv7l | armv7 | armhf)
+            TARGET=armv7-unknown-linux-gnueabihf
+            ;;
+        *)
+            die "unsupported architecture '$machine'; WingmanKVM releases support aarch64 and armv7l only"
+            ;;
+    esac
+}
+
+download_file() {
+    local url=$1 destination=$2
+    log "downloading $url"
+    curl -fsSL --retry 3 --connect-timeout 20 --output "$destination" "$url" \
+        || die "download failed: $url"
+}
+
+verify_archive() {
+    local archive=$1 sums=$2 name expected actual
+    name=$(basename -- "$archive")
+    [[ -f $archive && -r $archive && -s $archive ]] \
+        || die "downloaded archive is missing or empty: $archive"
+    [[ -f $sums && -r $sums ]] || die "SHA256SUMS is missing or unreadable: $sums"
+    expected=$(awk -v name="$name" '
+        {
+            file = $0
+            sub(/^[0-9a-fA-F]+[[:space:]]+[*]?/, "", file)
+            if (file == name) { print tolower($1); exit }
+        }' "$sums")
+    [[ $expected =~ ^[0-9a-f]{64}$ ]] \
+        || die "SHA256SUMS does not contain a valid checksum for $name"
+    actual=$(sha256sum -- "$archive" | awk '{ print tolower($1); exit }')
+    [[ $actual == "$expected" ]] || die "SHA256 checksum mismatch for $name"
+    log "verified SHA256 checksum for $name"
+}
+# ---- end of shared functions ----
+
+# Only plain release tags are accepted; anything else is refused.
+valid_tag() {
+    [[ $1 =~ ^v[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$ ]]
+}
+
+# Extract tag_name from a GitHub release JSON document.
+parse_latest_tag() {
+    sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+# Keep the host-root-selected maintenance mode unchanged. A legacy managed
+# rule needs an explicit host-root decision, which the web UI cannot make.
+maintenance_args() {
+    local managed=$DEST_ROOT/etc/sudoers.d/wingmankvm
+    local optional=$DEST_ROOT/etc/sudoers.d/wingmankvm-maintenance-root
+    if [[ -f $managed ]] && grep -Eq '^[[:space:]]*wingman[[:space:]]+ALL[[:space:]]*=' "$managed"; then
+        return 1
+    fi
+    if [[ -e $optional || -L $optional ]]; then
+        printf '%s\n' --maintenance-mode privileged
+    fi
+    return 0
+}
+
+write_status() {
+    local state=$1 error=${2:-} tmp
+    [[ -d $STATUS_DIR && ! -L $STATUS_DIR ]] || return 0
+    tmp=$(mktemp "$STATUS_DIR/.status.XXXXXX") || return 0
+    {
+        printf 'state=%s\n' "$state"
+        printf 'phase=%s\n' "$PHASE"
+        printf 'version=%s\n' "$VERSION"
+        printf 'error=%s\n' "$error"
+        printf 'id=%s\n' "$RUN_ID"
+        printf 'updated=%s\n' "$(date +%s)"
+    } >"$tmp" && chmod 0644 -- "$tmp" && mv -f -- "$tmp" "$STATUS_DIR/status" \
+        || rm -f -- "$tmp"
+}
+
+phase() {
+    PHASE=$1
+    write_status running
+}
+
+fail() {
+    local code=$1
+    shift
+    FINISHED=true
+    write_status failed "$code"
+    die "$*"
+}
+
+cleanup() {
+    local dir=${WORKDIR:-}
+    WORKDIR=
+    case $dir in
+        /tmp/wingmankvm-online.* | /var/tmp/wingmankvm-online.*)
+            [[ -d $dir && ! -L $dir ]] && rm -rf -- "$dir"
+            ;;
+    esac
+    if ! $FINISHED && [[ -n $RUN_ID ]]; then
+        write_status failed interrupted
+    fi
+    return 0
+}
+
+run_upgrade() {
+    local api_json archive_name archive sums base extract_dir installer status
+    local -a extra=()
+    [[ $(id -u) -eq 0 ]] || die "--run must be started by $UNIT as root"
+    [[ -d $STATUS_DIR ]] || install -d -m 0755 -- "$STATUS_DIR"
+    exec 8>"$STATUS_DIR/lock" || die "cannot open lock"
+    flock -n 8 || die "an online upgrade is already running"
+    RUN_ID="$(date +%s)-$$"
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+
+    phase resolving
+    for command in curl tar sha256sum mktemp flock; do
+        command -v "$command" >/dev/null 2>&1 || fail missing_tool "required command not found: $command"
+    done
+    ( detect_target ) >/dev/null 2>&1 || fail unsupported_arch "unsupported architecture: $(uname -m)"
+    detect_target
+    maintenance_args >/dev/null || fail legacy_policy \
+        "legacy root maintenance rule found; run deploy/install.sh with an explicit --maintenance-mode as host root"
+    mapfile -t extra < <(maintenance_args)
+    api_json=$(curl -fsSL --retry 3 --connect-timeout 20 --max-filesize 1048576 \
+        -H 'Accept: application/vnd.github+json' "$API_URL") \
+        || fail network "cannot query the latest release"
+    VERSION=$(printf '%s\n' "$api_json" | parse_latest_tag)
+    valid_tag "$VERSION" || { VERSION=; fail invalid_release "latest release has no plain vX.Y.Z tag"; }
+    write_status running
+
+    WORKDIR=$(mktemp -d /var/tmp/wingmankvm-online.XXXXXXXX) || fail io "cannot create a work directory"
+    chmod 0700 -- "$WORKDIR"
+    archive_name="wingmankvm-${VERSION}-${TARGET}.tar.gz"
+    archive=$WORKDIR/$archive_name
+    sums=$WORKDIR/SHA256SUMS
+    base=$DOWNLOAD_BASE/$VERSION
+
+    phase downloading
+    ( download_file "$base/$archive_name" "$archive" && download_file "$base/SHA256SUMS" "$sums" ) \
+        || fail network "release download failed"
+    phase verifying
+    ( verify_archive "$archive" "$sums" ) || fail checksum "SHA256SUMS verification failed"
+
+    extract_dir=$WORKDIR/release
+    mkdir -m 0700 -- "$extract_dir"
+    tar -xzf "$archive" -C "$extract_dir" --no-same-owner --no-same-permissions \
+        || fail invalid_release "cannot extract $archive_name"
+    installer=$extract_dir/deploy/install.sh
+    [[ -f $installer && ! -L $installer ]] || fail invalid_release "release lacks deploy/install.sh"
+
+    phase installing
+    log "installing WingmanKVM $VERSION for $TARGET via the transactional installer"
+    status=0
+    TMPDIR=$WORKDIR bash "$installer" --release "$archive" "${extra[@]}" || status=$?
+    FINISHED=true
+    if ((status != 0)); then
+        PHASE=done
+        write_status failed install_failed
+        die "installer exited with status $status; the transaction rolled back managed files"
+    fi
+    PHASE=done
+    write_status succeeded
+    log "online upgrade to $VERSION complete"
+}
+
+start_unit() {
+    [[ $(id -u) -eq 0 ]] || die "--start must run as root (through the fixed sudo rule)"
+    case $(systemctl show -p ActiveState --value "$UNIT" 2>/dev/null || true) in
+        activating | active | deactivating | reloading)
+            log "an online upgrade is already running"
+            exit 3
+            ;;
+    esac
+    systemctl --no-block start "$UNIT" || die "cannot start $UNIT"
+    log "requested $UNIT"
+}
+
+# Source guard: verification harnesses source only the definitions above.
+if [[ ${BASH_SOURCE[0]} != "$0" ]]; then
+    return 0
+fi
+
+case ${1:-} in
+    --start) (($# == 1)) || die "--start takes no arguments"; start_unit ;;
+    --run) (($# == 1)) || die "--run takes no arguments"; run_upgrade ;;
+    *) die "usage: $PROGRAM --start | --run" ;;
+esac

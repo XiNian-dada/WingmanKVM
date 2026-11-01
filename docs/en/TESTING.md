@@ -166,6 +166,35 @@ Never use `--privileged`, mount the Docker socket, or mount host `/etc` or
 - Virtual media: ISO/IMG attach, read-only defaults, detach cleanup.
 - Record results manually; never claim CI covered hardware.
 
+## What the latency tool measures (#94)
+
+"Latency measurement" in the diagnostics panel measures the **input round trip**, not video latency.
+
+- Each sample runs from the browser issuing a Caps Lock key request until the browser
+  reads the flipped LED through `GET /api/hid/leds`. It covers browser → service → USB
+  gadget → target OS → LED output report → service → browser, and never touches HDMI
+  capture, encoding, decoding or display. Polling is an HTTP round trip each time, so a
+  sample can read high by up to about one "LED poll time".
+- Min, median and P95 (nearest rank) count only samples where the flip was seen; "valid
+  samples" is `seen / sent`. A run has 10 samples, so P95 is close to the maximum.
+- Bitrate is context only: H.264 shows measured receive bitrate (needs the quality overlay
+  or adaptive bitrate on) and target bitrate; MJPEG exposes no byte counts, so it shows
+  unavailable. This does not show a causal link between bitrate and latency.
+- End-to-end video latency has no reliable method without software on the target, which
+  would have to display a recognisable timestamp. The UI says "Not measured" and shows no
+  estimate. On-screen Caps Lock hints vary by OS and are not a general signal. If you need
+  this number, film the local action and the browser picture with an external fast camera.
+
+Keys are sent only after the user clicks and confirms. Caps Lock is restored from the LED
+state when a run ends or is stopped. A run aborts after 2 consecutive presses with no LED
+report (some targets do not report, such as certain BIOSes; macOS may ignore very short
+Caps Lock presses). "LED back to original state" then only describes the LED reading; the
+target's real state cannot be confirmed. A run refuses to start during paste typing or
+macro playback, and stops when the page goes to the background, since timer throttling
+would skew samples.
+
+Needs a real device: Caps Lock reporting, restore behaviour, values over WebSocket and HTTP.
+
 ## Baseline provenance
 
 The scripts encode checks derived from earlier issue-specific fixes. This

@@ -172,6 +172,9 @@
       passkey_added: ['audit_event_passkey_added', '添加 Passkey'],
       passkey_removed: ['audit_event_passkey_removed', '删除 Passkey'],
       setup_completed: ['audit_event_setup_completed', '初始化完成'],
+      update_started: ['audit_event_update_started', '开始在线升级'],
+      update_succeeded: ['audit_event_update_succeeded', '在线升级成功'],
+      update_failed: ['audit_event_update_failed', '在线升级失败'],
     };
     const entry = labels[event];
     return entry ? t(entry[0], entry[1]) : event || '';

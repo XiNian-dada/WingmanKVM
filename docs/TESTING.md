@@ -38,6 +38,19 @@ contacts GitHub and never runs the real installer.
 python3 scripts/verify_get_script.py
 ```
 
+## mDNS installer helpers (no network, no root)
+
+`scripts/verify_mdns.py` sources `deploy/install.sh` against a scratch root and
+runs `deploy/wingmankvm-setup-url` with fake `id`/`systemctl`/`hostname`. It
+checks `--mdns-hostname` validation, the avahi service file, the minimal
+`avahi-daemon.conf` `host-name=` edit (backup, idempotence, other sections
+untouched) and that the `.local` URL is listed first only while avahi runs.
+The setup-url checks are skipped on bash older than 4.4 (stock macOS).
+
+```bash
+python3 scripts/verify_mdns.py
+```
+
 ## HTTP/API gates (real binary, black-box)
 
 ```bash
@@ -175,6 +188,29 @@ Never use `--privileged`, mount the Docker socket, or mount host `/etc` or
 - GPIO power: short/long press behavior against a disposable target.
 - Virtual media: ISO/IMG attach, read-only defaults, detach cleanup.
 - Record results manually; never claim CI covered hardware.
+
+## 延迟测量工具的含义（#94）
+
+诊断面板的“延迟测量”只测**键鼠回环**，不测画面延迟。
+
+- 每个样本：浏览器发出 Caps Lock 按键请求起，到浏览器通过 `GET /api/hid/leds`
+  读到 LED 翻转为止。覆盖浏览器 → 服务 → USB gadget → 被控机系统 → LED 输出报告 →
+  服务 → 浏览器，不经过 HDMI 采集、编码、解码或显示。轮询每次都是一个 HTTP 往返，
+  结果偏大最多约一次“LED 轮询耗时”。
+- 统计：最小值、中位数、P95（最近秩法）只计入看到翻转的样本；“有效样本”为
+  `看到翻转 / 已发送`。一次运行 10 个样本，样本太少时 P95 接近最大值。
+- 码率只是上下文：H.264 显示实测接收码率（需已开启质量浮层或自适应码率）和目标码率；
+  MJPEG 浏览器拿不到字节数，显示不可用。这些不代表延迟和码率有因果关系。
+- 画面端到端延迟：不在被控机安装软件时没有可靠办法——需要被控机屏幕显示可识别的
+  时间戳，所以界面明确写“未测量”，也不提供估算。Caps Lock 的屏幕提示因系统而异，
+  不能作为通用信号。需要该数字时，可用外部高速相机同时拍下本地操作和浏览器画面。
+
+仅在用户点击并确认后才发送按键。结束或停止后按 LED 状态恢复 Caps Lock；连续 2 次
+没有 LED 回报时中止（有的系统不回报，例如部分 BIOS；macOS 可能忽略很短的 Caps Lock
+按下）。此时“LED 已回到原状态”只说明 LED 读数，被控机实际状态无法确认。键入或宏回放
+期间拒绝开始；页面转入后台时停止，避免定时器节流污染样本。
+
+真机上需要验证：Caps Lock 回报、恢复行为、WebSocket/HTTP 通道下的数值。
 
 ## Baseline provenance
 

@@ -20,6 +20,7 @@ mod setup;
 mod status;
 mod stream;
 mod terminal;
+mod update;
 
 use self::assets::*;
 use self::audit_api::*;
@@ -42,6 +43,7 @@ use self::setup::*;
 use self::status::*;
 use self::stream::*;
 use self::terminal::*;
+use self::update::*;
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -132,6 +134,7 @@ pub struct AppState {
     system: Arc<crate::system::SystemMonitor>,
     metrics: Arc<RuntimeMetrics>,
     notifier: crate::notify::Notifier,
+    update: OnlineUpdate,
 }
 
 impl AppState {
@@ -141,6 +144,7 @@ impl AppState {
         let state_dir = config::state_dir();
         let auth = AuthStore::new(state_dir.join("auth.json"));
         let token_file = setup_token_file(&state_dir);
+        let update = OnlineUpdate::new(OnlineUpdateOptions::system(state_dir.clone()));
         let audit = AuditLog::new(state_dir);
         let setup_token = if auth.is_initialized()? {
             if let Err(error) = remove_setup_token_file(&token_file) {
@@ -191,6 +195,12 @@ impl AppState {
         let metrics = Arc::new(RuntimeMetrics::new());
         let notifier = crate::notify::Notifier::new(config.notifications.clone());
         audit.set_observer(audit_observer(notifier.clone()));
+        // Record the outcome of an online upgrade that restarted this service.
+        let (update_for_audit, audit_for_update) = (update.clone(), audit.clone());
+        tokio::spawn(async move {
+            let status = update_for_audit.status().await;
+            update_for_audit.audit_outcome(&audit_for_update, &status).await;
+        });
         spawn_event_sources(notifier.clone(), video.clone(), power.clone(), metrics.clone());
 
         Ok(Self {
@@ -220,6 +230,7 @@ impl AppState {
             system: Arc::new(crate::system::SystemMonitor::new()),
             metrics,
             notifier,
+            update,
         })
     }
 
@@ -268,6 +279,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sessions/revoke-others", post(revoke_other_sessions))
         .route("/api/audit", get(audit_log))
         .route("/api/notifications/test", post(test_notification))
+        .route("/api/update/status", get(update_status))
+        .route("/api/update/check", post(update_check))
+        .route("/api/update/apply", post(update_apply))
         .route("/api/key", post(key))
         .route("/api/mouse/move", post(mouse_move))
         .route("/api/mouse/absolute", post(mouse_absolute))

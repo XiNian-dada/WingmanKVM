@@ -161,6 +161,14 @@
         <button id="diagnostics-reconnect" class="secondary" type="button" data-i18n="diag_reconnect">重连视频</button>
         <button id="diagnostics-scan" class="secondary" type="button" data-i18n="diag_scan">扫描设备</button>
       </div>
+      <section id="latency-tool" class="latency-tool" aria-labelledby="latency-title">
+        <h4 id="latency-title">延迟测量</h4>
+        <p class="latency-note">键鼠回环：切换被控机 Caps Lock，计时到浏览器读到 LED 变化。只反映键鼠链路往返，不是画面延迟。</p>
+        <p class="latency-note">画面端到端延迟：不在被控机安装软件就无法测量，这里不提供估算值。</p>
+        <div class="latency-actions"><button id="latency-start" class="secondary" type="button">开始键鼠回环测量</button><button id="latency-stop" class="secondary hidden" type="button">停止</button></div>
+        <p id="latency-status" class="latency-status" role="status" aria-live="polite"></p>
+        <dl id="latency-result" class="latency-result hidden"></dl>
+      </section>
     </div>
     <div class="shell">
       <section id="workspace" class="workspace">
@@ -427,6 +435,21 @@
           </div>
           <div class="settings-group">
             <span class="settings-group-title" data-i18n="settings_group_system">系统与重置</span>
+            <div class="settings-item">
+              <div class="settings-item-copy">
+                <strong>在线升级</strong>
+                <span>从 GitHub Release 检查新版本；升级会下载并校验 SHA256，失败自动回滚。</span>
+              </div>
+              <button id="update-check-btn" class="secondary" type="button">检查更新</button>
+            </div>
+            <div id="update-panel" class="update-panel hidden" role="region" aria-label="在线升级">
+              <div id="update-current" class="hint"></div>
+              <strong id="update-title"></strong>
+              <pre id="update-notes" class="update-notes mono hidden"></pre>
+              <a id="update-link" class="hint hidden" target="_blank" rel="noopener noreferrer">在 GitHub 查看完整说明</a>
+              <div class="side-actions"><button id="update-apply-btn" class="primary hidden" type="button"></button></div>
+              <div id="update-progress" class="hint update-progress" role="status" aria-live="polite"></div>
+            </div>
             <div class="settings-item">
               <div class="settings-item-copy">
                 <strong>导出配置</strong>

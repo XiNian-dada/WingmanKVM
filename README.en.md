@@ -50,20 +50,16 @@ Browser                     <──  LAN  ────────────�
 
 ## Quick start
 
-1. Download the release package for your architecture and `SHA256SUMS` from [Releases](https://github.com/XiNian-dada/WingmanKVM/releases), and put them in the same directory:
-   - ARM64: `wingmankvm-<版本>-aarch64-unknown-linux-gnu.tar.gz`
-   - 32-bit ARM: `wingmankvm-<版本>-armv7-unknown-linux-gnueabihf.tar.gz`
-2. Verify, extract, and install:
+1. On the KVM host, run the installer (it detects the architecture, verifies the download and installs; `--install-deps` adds missing runtime packages):
 
    ```bash
-   sha256sum -c --ignore-missing SHA256SUMS
-   mkdir wingmankvm && tar -xzf wingmankvm-<版本>-<架构>.tar.gz -C wingmankvm
-   cd wingmankvm && sudo ./deploy/install.sh --release ../wingmankvm-<版本>-<架构>.tar.gz
+   curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts/get.sh | sudo bash -s -- --install-deps
    ```
 
-3. When installation finishes, the terminal prints a one-time setup link `http://<IP>:8080/#setup=...`. Open it in a browser on the same LAN, set the administrator account, and confirm the automatically detected devices to enter the console.
+2. In a browser on the same LAN, open the one-time setup link printed at the end. If you lose it, reprint it with `sudo wingmankvm-setup-url`.
+3. Follow the wizard to set the administrator account and confirm the detected devices.
 
-The installer configures the systemd services, the USB Gadget (keyboard, mouse, absolute pointer, virtual media), and permission rules; upgrades keep a rollback snapshot and roll back automatically on failure. For runtime dependencies, building from source, and troubleshooting, see the [deployment guide](docs/en/DEPLOYMENT.md).
+For pinning a version, manual downloads, a LAN name (`--mdns`) and troubleshooting, see the [deployment guide](docs/en/DEPLOYMENT.md).
 
 ## Security recommendations
 

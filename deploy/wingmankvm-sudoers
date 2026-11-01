@@ -5,6 +5,11 @@
 # sudo with empty-argument support).
 wingmankvm ALL=(root) NOPASSWD: /usr/local/sbin/wingmankvm-set-wingman-password ""
 wingmankvm ALL=(wingman) NOPASSWD: /bin/bash -l
+# Online upgrade (#91): the exact argument "--start" is the only permitted
+# argument list. The helper reads no input; it only starts the fixed root
+# oneshot unit, which itself resolves, downloads and verifies the latest
+# release of the fixed repository and runs the transactional installer.
+wingmankvm ALL=(root) NOPASSWD: /usr/local/sbin/wingmankvm-online-upgrade --start
 
 # Root maintenance for the authenticated web terminal is intentionally NOT
 # granted here.  Host root can install the separate, optional
