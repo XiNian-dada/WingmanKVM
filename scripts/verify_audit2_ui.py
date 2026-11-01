@@ -4039,6 +4039,20 @@ def desktop_mouse_drag_relative(browser, port, checks):
         page.mouse.up()
         page.wait_for_timeout(100)
         check(checks, "release" not in actions_of(state), "relative_leaving_lock_clears_client_state", actions_of(state))
+
+        # Relative mode can hold a button with no video at all, so switching to
+        # the terminal has no transport change to rely on.
+        page.evaluate("async () => (await import('/assets/js/07-video.js')).stopVideo()")
+        page.evaluate("() => document.querySelector('#video-viewport').requestPointerLock()")
+        page.wait_for_function("() => !!document.pointerLockElement", timeout=3000)
+        page.wait_for_timeout(100)
+        state.mouse_posts.clear()
+        state.release_posts = 0
+        page.mouse.down()
+        ui_harness.wait_until(page, lambda: "press" in actions_of(state))
+        page.evaluate("""() => document.querySelector('[data-workspace="terminal"]').click()""")
+        check(checks, ui_harness.wait_until(page, lambda: state.release_posts > 0), "relative_terminal_tab_releases_without_video", state.release_posts)
+        page.mouse.up()
     finally:
         context.close()
 
