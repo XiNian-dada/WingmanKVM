@@ -26,6 +26,8 @@ class State:
         self.pointer_mode = pointer_mode
         self.video = dict(BASE_VIDEO)
         self.key_posts = []
+        self.mouse_posts = []
+        self.unmocked = []
         self.release_posts = 0
         self.status_polls = 0
 
@@ -91,7 +93,31 @@ def api_route(route, state):
         return route.fulfill(status=200, headers=headers, body='{"devices":{}}')
     if path == "/api/media":
         return route.fulfill(status=200, headers=headers, body='{"items":[]}')
-    return route.fulfill(status=200, headers=headers, body="{}")
+    method = route.request.method
+    if path.startswith("/api/mouse/") and method == "POST":
+        try:
+            body = json.loads(route.request.post_data or "{}")
+        except Exception:
+            body = {}
+        state.mouse_posts.append((path.rsplit("/", 1)[1], body))
+        return route.fulfill(status=200, headers=headers, body='{"ok":true}')
+    # Real GET endpoints the console polls on its own, in the shapes the
+    # server returns (src/web/session.rs, audit_api.rs, update.rs, config_api.rs).
+    if method == "GET" and path == "/api/sessions":
+        return route.fulfill(status=200, headers=headers, body='{"sessions":[]}')
+    if method == "GET" and path == "/api/audit":
+        return route.fulfill(status=200, headers=headers, body='{"entries":[]}')
+    if method == "GET" and path == "/api/update/status":
+        return route.fulfill(status=200, headers=headers, body=json.dumps(
+            {"current_version": "0.0.0-test", "supported": False, "status": {"state": "idle"}}))
+    if method == "GET" and path == "/api/config":
+        return route.fulfill(status=200, headers=headers,
+                             body=json.dumps(bootstrap_payload(state)["config"]))
+    # Anything else is not mocked: answer like an unknown route instead of a
+    # blanket 200 so a renamed or new endpoint cannot pass unnoticed (AUD3-33).
+    state.unmocked.append(f"{method} {path}")
+    return route.fulfill(status=404, headers=headers,
+                         body=json.dumps({"error": f"unmocked endpoint {method} {path}"}))
 
 
 def new_page(browser, state, port):

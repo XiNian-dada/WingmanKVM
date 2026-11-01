@@ -130,9 +130,17 @@ def api_route(route, state):
             return route.fulfill(status=401, headers=headers,
                                  body=json.dumps({"error": "passkey session expired"}))
         return route.fulfill(status=200, headers=headers, body='{"ok":true}')
-    if path == "/api/devices/scan":
+    if path in ("/api/devices/scan", "/api/setup/devices"):
         return route.fulfill(status=200, headers=headers, body='{"devices":{}}')
-    return route.fulfill(status=200, headers=headers, body="{}")
+    if path == "/api/input/release-all":
+        return route.fulfill(status=200, headers=headers, body='{"ok":true}')
+    if path == "/api/sessions":
+        return route.fulfill(status=200, headers=headers, body='{"sessions":[]}')
+    if path == "/api/audit":
+        return route.fulfill(status=200, headers=headers, body='{"entries":[]}')
+    # Unmocked: answer like an unknown route, not a blanket 200 (AUD3-33).
+    return route.fulfill(status=404, headers=headers,
+                         body=json.dumps({"error": f"unmocked endpoint {path}"}))
 
 
 def new_page(browser, state, port, fragment=""):
