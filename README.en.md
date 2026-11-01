@@ -12,6 +12,7 @@ It deploys as a single binary and needs no separate database or frontend build t
 
 **Video**
 - Automatic transport selection: WebRTC H.264 (with RK3399 hardware encoding) first, falling back to MJPEG when unavailable
+- Optional HDMI audio: the capture card's sound is sent as Opus over WebRTC (off by default, pages start muted, not available in MJPEG mode)
 - Fit-to-window / 1:1 pixels / fill display modes; pan by dragging in 1:1 mode
 - Screenshots (PNG) and local screen recording (WebM)
 

@@ -28,7 +28,8 @@ The target KVM host needs:
 - a USB Device/OTG controller that is available or can be switched to Device mode (Linux UDC);
 - kernel support for USB Gadget/configfs, the HID function, and the Mass Storage function;
 - a USB HDMI capture card that supports V4L2 mmap;
-- for power control, libgpiod 2.x `gpioset`; this can be omitted when GPIO is not used.
+- for power control, libgpiod 2.x `gpioset`; this can be omitted when GPIO is not used;
+- for optional HDMI audio, FFmpeg with ALSA input and the `libopus` encoder (the Debian/Ubuntu `ffmpeg` package has both) and the capture card's USB sound card visible in `/proc/asound`; nothing extra is needed while audio stays disabled.
 
 Common runtime and diagnostic tools on Debian, Ubuntu, and Armbian:
 
@@ -335,6 +336,17 @@ v4l2-ctl -d /dev/video0 --list-formats-ext
 
 Choose the capture node that actually supports `MJPG`. A single capture card may expose metadata, raw video, or multiple interfaces at the same time; do not judge only by the `/dev/videoN` number. Make sure an old Python/OpenCV test program is not still occupying the device.
 
+### No sound after enabling HDMI audio
+
+```bash
+cat /proc/asound/cards          # the capture card should appear as a USB-Audio card
+cat /proc/asound/pcm            # its entry should include capture
+id wingmankvm                   # should include the audio group
+ffmpeg -hide_banner -encoders | grep libopus
+```
+
+Check, in order: the browser is in H.264 (WebRTC) mode (MJPEG carries no audio); the speaker button in the toolbar is unmuted (every page load starts muted); the "HDMI audio" state in the diagnostics panel. `no_device` means automatic selection found no sound card on the same USB device as the capture card, or several USB sound cards it cannot tell apart; pick the device under "Video → HDMI audio". `error` carries FFmpeg's last error line (for example, the device is busy in another program) and the service retries with backoff. The installer adds `wingmankvm` to the `audio` group; after upgrading an older installation, restart the service so the membership takes effect. Audio failures never disconnect or restart video.
+
 ### GPIO power control is unavailable
 
 ```bash
@@ -436,6 +448,30 @@ Recommended priority:
 3. use `transcode_jpeg` and JPEG quality only when you need to limit network bandwidth.
 
 Passthrough still copies the `bytesused` range once from the mmap buffer, because the driver reuses the buffer after the next dequeue/queue; what it eliminates is JPEG decoding and re-encoding.
+
+### HDMI audio (optional, WebRTC only)
+
+Most UVC capture cards also expose a USB Audio sound card. When enabled, the card's sound is encoded to Opus and sent with the WebRTC session; MJPEG mode does not support audio, and the speaker button on the page shows itself as unavailable with the reason. The feature is off by default. Enable it under "Video → HDMI audio", or merge this configuration fragment:
+
+```json
+{
+  "audio": {
+    "enabled": true,
+    "device": null,
+    "bitrate_kbps": 96
+  }
+}
+```
+
+- With `device` set to `null`, selection is automatic: the sound card on the same USB device as the current capture card (`video.device`) first, otherwise the only USB sound card; with several indistinguishable cards nothing is guessed. You can also enter an ALSA name such as `plughw:CARD=MS2109,DEV=0` or `hw:1,0` (only `hw`, `plughw`, `dsnoop`, `sysdefault` and `default` are accepted).
+- Detection only reads `/proc/asound/cards`, `/proc/asound/pcm` and `/sys/class/sound`; it never opens an ALSA device, so it cannot interrupt a running capture. "Detect audio devices" in the settings and the `audio` list of `POST /api/devices/scan` come from it.
+- `bitrate_kbps` ranges from 16 to 256. Audio uses the same FFmpeg as H.264 (`video.h264.ffmpeg_path`) and encodes 48 kHz stereo Opus in 20 ms frames.
+- All WebRTC sessions share one FFmpeg capture process: the first session that needs audio starts it and the last one to end stops it and reaps its whole process group. When capture fails or produces no data for 10 seconds the state becomes `error`, and it is retried with a 1–30 second backoff while viewers remain.
+- Audio and video are independent: the browser only asks for an audio track when the server has audio enabled, and the server only adds the Opus track when a device is detected; otherwise only video is negotiated, as before. Audio forwarding is not part of the session watchdog, so a failing capture, an unplugged device or a changed audio setting never disconnects, restarts or renegotiates video. Changing only the audio settings does not restart video capture either. Established sessions keep their tracks: a session with an audio track switches to the new capture device, and a session opened before audio was enabled needs to reconnect to get audio (applying the settings page reconnects the current page automatically).
+- The browser always starts muted (to satisfy autoplay policies); click the speaker button in the toolbar to unmute. If the browser refuses playback with sound, the page returns to muted and keeps showing the picture.
+- The `audio` field of `/api/status` reports `state` (`disabled`, `no_device`, `idle`, `starting`, `running`, `error`), the current device, the error message, the number of viewers and the cumulative retry count; the "HDMI audio" entry of the diagnostics panel shows the same.
+
+Permissions: ALSA device nodes `/dev/snd/*` usually belong to the `audio` group. When that group exists, the installer adds the service user `wingmankvm` to it, and systemd applies the supplementary group when it starts the service. The unit's `ProtectSystem=strict` only makes the file system read-only; it does not affect `/dev`, `/proc` or `/sys`, and the unit sets neither `PrivateDevices` nor a device allow-list, so no hardening needs to be relaxed.
 
 ## 11. HTTPS
 
