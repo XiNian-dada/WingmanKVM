@@ -14,6 +14,8 @@ pub struct DeviceDiscovery {
     pub absolute_pointer: Vec<DeviceCandidate>,
     pub gpio: Vec<DeviceCandidate>,
     pub mass_storage_luns: Vec<DeviceCandidate>,
+    /// ALSA capture PCMs for HDMI audio, the capture card's own first.
+    pub audio: Vec<super::audio::AudioCandidate>,
     /// Non-fatal scan failures. Older clients can ignore this additive field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
@@ -151,14 +153,20 @@ pub async fn scan() -> DeviceDiscovery {
         .iter()
         .map(|node| node.candidate.clone())
         .collect();
-    let ((hid_roles, hid_warnings), (mass_storage_luns, lun_warnings)) = tokio::join!(
+    let video_paths: Vec<PathBuf> = video.iter().map(|candidate| candidate.path.clone()).collect();
+    let ((hid_roles, hid_warnings), (mass_storage_luns, lun_warnings), (audio, audio_warnings)) = tokio::join!(
         scan_hid_roles(configfs_root, hid_nodes),
         scan_luns(configfs_root),
+        // procfs/sysfs only: never opens an ALSA device in use.
+        spawn_scan("音频设备", move || {
+            super::audio::discover(Path::new("/proc"), Path::new("/sys"), &video_paths)
+        }),
     );
 
     let mut warnings = video_warnings;
     warnings.extend(hid_warnings);
     warnings.extend(lun_warnings);
+    warnings.extend(audio_warnings);
 
     DeviceDiscovery {
         video,
@@ -168,6 +176,7 @@ pub async fn scan() -> DeviceDiscovery {
         absolute_pointer: hid_roles.absolute_pointer,
         gpio,
         mass_storage_luns,
+        audio,
         warnings,
     }
 }
@@ -702,6 +711,7 @@ mod tests {
             absolute_pointer: Vec::new(),
             gpio: Vec::new(),
             mass_storage_luns: Vec::new(),
+            audio: Vec::new(),
             warnings: Vec::new(),
         }
     }

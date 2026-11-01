@@ -26,7 +26,9 @@ use tokio::{
     sync::{broadcast, watch},
     task::JoinHandle,
 };
-use webrtc::{media::Sample, track::track_local::track_local_static_sample::TrackLocalStaticSample};
+use webrtc::{
+    media::Sample, track::track_local::track_local_static_sample::TrackLocalStaticSample,
+};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -172,7 +174,11 @@ fn read_cards(proc_root: &Path) -> Vec<SoundCard> {
 ///
 /// Only procfs and sysfs are read; no ALSA device is opened, so scanning
 /// never disturbs a running capture.
-pub fn discover(proc_root: &Path, sys_root: &Path, video_devices: &[PathBuf]) -> Vec<AudioCandidate> {
+pub fn discover(
+    proc_root: &Path,
+    sys_root: &Path,
+    video_devices: &[PathBuf],
+) -> Vec<AudioCandidate> {
     let cards = read_cards(proc_root);
     let pcms = std::fs::read_to_string(proc_root.join("asound/pcm"))
         .map(|text| parse_asound_pcm(&text))
@@ -187,7 +193,11 @@ pub fn discover(proc_root: &Path, sys_root: &Path, video_devices: &[PathBuf]) ->
         .filter(|pcm| pcm.capture && seen.insert((pcm.card, pcm.device)))
         .filter_map(|pcm| {
             let card = cards.iter().find(|card| card.index == pcm.card)?;
-            let parent = usb_parent(&sys_root.join("class/sound").join(format!("card{}", card.index)));
+            let parent = usb_parent(
+                &sys_root
+                    .join("class/sound")
+                    .join(format!("card{}", card.index)),
+            );
             let capture_card = parent.and_then(|parent| {
                 videos
                     .iter()
@@ -195,10 +205,17 @@ pub fn discover(proc_root: &Path, sys_root: &Path, video_devices: &[PathBuf]) ->
                     .map(|(video, _)| video.clone())
             });
             let usb = card.driver.eq_ignore_ascii_case("USB-Audio");
-            let title = if card.name.is_empty() { &card.id } else { &card.name };
+            let title = if card.name.is_empty() {
+                &card.id
+            } else {
+                &card.name
+            };
             Some(AudioCandidate {
                 device: format!("plughw:CARD={},DEV={}", card.id, pcm.device),
-                label: format!("{title} · {} (card {}, dev {})", pcm.name, card.index, pcm.device),
+                label: format!(
+                    "{title} · {} (card {}, dev {})",
+                    pcm.name, card.index, pcm.device
+                ),
                 card_index: card.index,
                 card_id: card.id.clone(),
                 pcm_device: pcm.device,
@@ -249,7 +266,10 @@ pub fn select_device(
     if let Some(device) = config.device.as_deref() {
         return explicit_device_present(device, cards).then(|| device.to_owned());
     }
-    if let Some(associated) = candidates.iter().find(|candidate| candidate.capture_card.is_some()) {
+    if let Some(associated) = candidates
+        .iter()
+        .find(|candidate| candidate.capture_card.is_some())
+    {
         return Some(associated.device.clone());
     }
     let mut usb = candidates.iter().filter(|candidate| candidate.usb);
@@ -473,7 +493,13 @@ impl Inner {
     }
 
     /// Publish worker state unless a newer worker has replaced this one.
-    fn report(&self, epoch: u64, state: AudioState, device: Option<String>, message: Option<String>) {
+    fn report(
+        &self,
+        epoch: u64,
+        state: AudioState,
+        device: Option<String>,
+        message: Option<String>,
+    ) {
         let mut runtime = self.runtime();
         if runtime.epoch != epoch || runtime.worker.is_none() {
             return;
@@ -550,7 +576,11 @@ impl AudioManager {
         Self::with_roots(settings, PathBuf::from("/proc"), PathBuf::from("/sys"))
     }
 
-    pub(crate) fn with_roots(settings: AudioSettings, proc_root: PathBuf, sys_root: PathBuf) -> Self {
+    pub(crate) fn with_roots(
+        settings: AudioSettings,
+        proc_root: PathBuf,
+        sys_root: PathBuf,
+    ) -> Self {
         let (packets, _) = broadcast::channel(AUDIO_PACKET_BUFFER);
         let state = if settings.audio.enabled {
             AudioState::Idle
@@ -652,7 +682,11 @@ impl AudioManager {
         } else if viewers == 0 {
             match self.inner.resolve(&settings) {
                 Some(device) => (AudioState::Idle, Some(device), None),
-                None => (AudioState::NoDevice, None, Some(NO_DEVICE_MESSAGE.to_owned())),
+                None => (
+                    AudioState::NoDevice,
+                    None,
+                    Some(NO_DEVICE_MESSAGE.to_owned()),
+                ),
             }
         } else {
             (state, device, message)
@@ -703,7 +737,12 @@ async fn run_worker(
             .ok()
             .flatten();
         let Some(device) = device else {
-            manager.report(epoch, AudioState::NoDevice, None, Some(NO_DEVICE_MESSAGE.to_owned()));
+            manager.report(
+                epoch,
+                AudioState::NoDevice,
+                None,
+                Some(NO_DEVICE_MESSAGE.to_owned()),
+            );
             drop(manager);
             if cancellable_sleep(&mut cancel, AUDIO_DEVICE_RETRY).await {
                 return;
@@ -812,7 +851,9 @@ async fn run_capture(
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 tracing::warn!(message = %line, "FFmpeg HDMI audio");
-                *last_error.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                *last_error
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
                     Some(line.chars().take(200).collect());
             }
         })
@@ -825,9 +866,7 @@ async fn run_capture(
         loop {
             let read = tokio::time::timeout(AUDIO_STALL_TIMEOUT, stdout.read(&mut chunk))
                 .await
-                .map_err(|_| {
-                    format!("音频采集超过 {} 秒没有数据", AUDIO_STALL_TIMEOUT.as_secs())
-                })?
+                .map_err(|_| format!("音频采集超过 {} 秒没有数据", AUDIO_STALL_TIMEOUT.as_secs()))?
                 .map_err(|error| error.to_string())?;
             if read == 0 {
                 return Ok::<(), String>(());
@@ -882,7 +921,10 @@ async fn run_capture(
 /// Copy the shared Opus feed into one session's audio track until the task
 /// is aborted. Write errors are ignored: a stalled audio track must never be
 /// able to end the session that also carries video.
-pub async fn forward_to_track(mut subscription: AudioSubscription, track: Arc<TrackLocalStaticSample>) {
+pub async fn forward_to_track(
+    mut subscription: AudioSubscription,
+    track: Arc<TrackLocalStaticSample>,
+) {
     loop {
         match subscription.receiver.recv().await {
             Ok(packet) => {
@@ -978,8 +1020,14 @@ pub(crate) mod tests {
         let pcm = parse_asound_pcm(PCM);
         assert_eq!(pcm.len(), 4);
         assert!(pcm[0].capture && pcm[1].capture && pcm[2].capture);
-        assert!(!pcm[3].capture, "playback-only HDMI output is not a capture source");
-        assert_eq!((pcm[1].card, pcm[1].device, pcm[1].name.as_str()), (1, 0, "USB Audio"));
+        assert!(
+            !pcm[3].capture,
+            "playback-only HDMI output is not a capture source"
+        );
+        assert_eq!(
+            (pcm[1].card, pcm[1].device, pcm[1].name.as_str()),
+            (1, 0, "USB Audio")
+        );
         assert!(parse_asound_pcm("garbage\n01-xx: a : capture 1\n").is_empty());
     }
 
@@ -1021,12 +1069,18 @@ pub(crate) mod tests {
                 "plughw:CARD=rockchiprk3399,DEV=0",
             ]
         );
-        assert_eq!(candidates[0].capture_card.as_deref(), Some(Path::new("/dev/video0")));
+        assert_eq!(
+            candidates[0].capture_card.as_deref(),
+            Some(Path::new("/dev/video0"))
+        );
         assert!(candidates[0].usb && candidates[1].usb && !candidates[2].usb);
         assert!(candidates[1].capture_card.is_none());
         assert!(candidates[0].label.contains("MS2109"));
 
-        let auto = AudioConfig { enabled: true, ..AudioConfig::default() };
+        let auto = AudioConfig {
+            enabled: true,
+            ..AudioConfig::default()
+        };
         let cards = parse_asound_cards(CARDS);
         assert_eq!(
             select_device(&auto, &cards, &candidates).as_deref(),
@@ -1034,7 +1088,11 @@ pub(crate) mod tests {
         );
         // Without the association two USB cards are ambiguous.
         let unassociated = discover(&proc.0, &sys.0, &[]);
-        assert!(unassociated.iter().all(|candidate| candidate.capture_card.is_none()));
+        assert!(
+            unassociated
+                .iter()
+                .all(|candidate| candidate.capture_card.is_none())
+        );
         assert_eq!(select_device(&auto, &cards, &unassociated), None);
     }
 
@@ -1043,7 +1101,10 @@ pub(crate) mod tests {
         let proc = TempTree::new("empty-proc");
         let sys = TempTree::new("empty-sys");
         assert!(discover(&proc.0, &sys.0, &[PathBuf::from("/dev/video0")]).is_empty());
-        let auto = AudioConfig { enabled: true, ..AudioConfig::default() };
+        let auto = AudioConfig {
+            enabled: true,
+            ..AudioConfig::default()
+        };
         assert_eq!(select_device(&auto, &[], &[]), None);
     }
 
@@ -1053,7 +1114,10 @@ pub(crate) mod tests {
         let sys = TempTree::new("single-sys");
         let candidates = discover(&proc.0, &sys.0, &[]);
         let cards = read_cards(&proc.0);
-        let auto = AudioConfig { enabled: true, ..AudioConfig::default() };
+        let auto = AudioConfig {
+            enabled: true,
+            ..AudioConfig::default()
+        };
         assert_eq!(
             select_device(&auto, &cards, &candidates).as_deref(),
             Some("plughw:CARD=MS2109,DEV=0")
@@ -1141,8 +1205,15 @@ pub(crate) mod tests {
         for chunk in stream.chunks(5) {
             packets.extend(parser.push(chunk).unwrap());
         }
-        let media: Vec<_> = packets.iter().filter(|packet| !is_opus_header(packet)).collect();
-        assert_eq!(packets.len(), 5, "two headers, two frames and one large packet");
+        let media: Vec<_> = packets
+            .iter()
+            .filter(|packet| !is_opus_header(packet))
+            .collect();
+        assert_eq!(
+            packets.len(),
+            5,
+            "two headers, two frames and one large packet"
+        );
         assert_eq!(media.len(), 3);
         assert_eq!(media[0].as_ref(), &[0xfc, 0x01, 0]);
         assert_eq!(media[2].len(), 600);
@@ -1154,32 +1225,63 @@ pub(crate) mod tests {
         let orphan = ogg_page(0x01, 3, &[&[1, 2, 3]]);
         assert!(parser.push(&orphan).unwrap().is_empty());
         let next = ogg_page(0, 4, &[&[0xfc, 9]]);
-        assert_eq!(parser.push(&next).unwrap(), vec![Bytes::from_static(&[0xfc, 9])]);
-        assert!(parser.push(&vec![0_u8; MAX_OGG_BUFFER + 1]).is_ok(), "noise is discarded");
+        assert_eq!(
+            parser.push(&next).unwrap(),
+            vec![Bytes::from_static(&[0xfc, 9])]
+        );
+        assert!(
+            parser.push(&vec![0_u8; MAX_OGG_BUFFER + 1]).is_ok(),
+            "noise is discarded"
+        );
     }
 
     #[test]
     fn opus_duration_follows_the_toc_byte() {
         assert_eq!(opus_packet_duration(&[0xfc]), Duration::from_millis(20));
-        assert_eq!(opus_packet_duration(&[0xf8 | 0x01]), Duration::from_millis(40));
-        assert_eq!(opus_packet_duration(&[0x08]), Duration::from_millis(20), "SILK 20 ms");
-        assert_eq!(opus_packet_duration(&[0x03 | 0x18, 0x03]), Duration::from_millis(120), "capped");
+        assert_eq!(
+            opus_packet_duration(&[0xf8 | 0x01]),
+            Duration::from_millis(40)
+        );
+        assert_eq!(
+            opus_packet_duration(&[0x08]),
+            Duration::from_millis(20),
+            "SILK 20 ms"
+        );
+        assert_eq!(
+            opus_packet_duration(&[0x03 | 0x18, 0x03]),
+            Duration::from_millis(120),
+            "capped"
+        );
         assert_eq!(opus_packet_duration(&[0x80]), Duration::from_micros(2_500));
         assert_eq!(opus_packet_duration(&[]), DEFAULT_OPUS_FRAME);
-        assert_eq!(opus_packet_duration(&[0x03]), DEFAULT_OPUS_FRAME, "missing frame count");
+        assert_eq!(
+            opus_packet_duration(&[0x03]),
+            DEFAULT_OPUS_FRAME,
+            "missing frame count"
+        );
     }
 
     #[test]
     fn capture_arguments_encode_opus_from_alsa() {
         let settings = AudioSettings::new(
-            AudioConfig { enabled: true, bitrate_kbps: 128, ..AudioConfig::default() },
+            AudioConfig {
+                enabled: true,
+                bitrate_kbps: 128,
+                ..AudioConfig::default()
+            },
             None,
             None,
         );
         let args = capture_args(&settings, "plughw:CARD=MS2109,DEV=0").join(" ");
-        assert!(args.contains("-f alsa -i plughw:CARD=MS2109,DEV=0"), "{args}");
+        assert!(
+            args.contains("-f alsa -i plughw:CARD=MS2109,DEV=0"),
+            "{args}"
+        );
         assert!(args.contains("-c:a libopus -b:a 128k"), "{args}");
-        assert!(args.ends_with("-f ogg -page_duration 20000 -flush_packets 1 pipe:1"), "{args}");
+        assert!(
+            args.ends_with("-f ogg -page_duration 20000 -flush_packets 1 pipe:1"),
+            "{args}"
+        );
         assert_eq!(settings.ffmpeg, PathBuf::from("ffmpeg"));
     }
 
@@ -1204,7 +1306,10 @@ pub(crate) mod tests {
     fn enabled_audio_reports_idle_or_no_device_without_viewers() {
         let proc = single_card_proc("idle");
         let sys = TempTree::new("idle-sys");
-        let enabled = AudioConfig { enabled: true, ..AudioConfig::default() };
+        let enabled = AudioConfig {
+            enabled: true,
+            ..AudioConfig::default()
+        };
         let manager = AudioManager::with_roots(
             AudioSettings::new(enabled.clone(), None, None),
             proc.0.clone(),
@@ -1213,7 +1318,10 @@ pub(crate) mod tests {
         let status = manager.status();
         assert_eq!(status.state, AudioState::Idle);
         assert_eq!(status.device.as_deref(), Some("plughw:CARD=MS2109,DEV=0"));
-        assert_eq!(manager.available_device().as_deref(), Some("plughw:CARD=MS2109,DEV=0"));
+        assert_eq!(
+            manager.available_device().as_deref(),
+            Some("plughw:CARD=MS2109,DEV=0")
+        );
 
         let empty = TempTree::new("idle-empty");
         let missing = AudioManager::with_roots(
@@ -1233,13 +1341,16 @@ pub(crate) mod tests {
     mod capture {
         use super::*;
         use crate::devices::webrtc::tests::{
-            FIXTURE_POLL_TIMEOUT, ProbeFixture, process_exists, serial_probe_fixture,
-            shell_quote, wait_for_fixture_exit, wait_for_fixture_pid,
+            FIXTURE_POLL_TIMEOUT, ProbeFixture, process_exists, serial_probe_fixture, shell_quote,
+            wait_for_fixture_exit, wait_for_fixture_pid,
         };
 
         fn enabled_settings(script: &Path) -> AudioSettings {
             AudioSettings::new(
-                AudioConfig { enabled: true, ..AudioConfig::default() },
+                AudioConfig {
+                    enabled: true,
+                    ..AudioConfig::default()
+                },
                 Some(script.to_path_buf()),
                 None,
             )
@@ -1335,13 +1446,22 @@ pub(crate) mod tests {
             let subscription = manager.subscribe().unwrap();
             let status = wait_for_state(&manager, AudioState::Error).await;
             assert!(
-                status.message.as_deref().unwrap_or_default().contains("Device or resource busy"),
+                status
+                    .message
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("Device or resource busy"),
                 "{status:?}"
             );
             assert!(status.restarts >= 1);
             // The backoff retries the process while the viewer stays.
             let deadline = Instant::now() + FIXTURE_POLL_TIMEOUT;
-            while std::fs::read_to_string(&runs).unwrap_or_default().lines().count() < 2 {
+            while std::fs::read_to_string(&runs)
+                .unwrap_or_default()
+                .lines()
+                .count()
+                < 2
+            {
                 assert!(Instant::now() < deadline, "capture was not retried");
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -1359,8 +1479,7 @@ pub(crate) mod tests {
             let proc = single_card_proc("disable");
             let sys = TempTree::new("disable-sys");
             let settings = enabled_settings(&script);
-            let manager =
-                AudioManager::with_roots(settings.clone(), proc.0.clone(), sys.0.clone());
+            let manager = AudioManager::with_roots(settings.clone(), proc.0.clone(), sys.0.clone());
             let mut subscription = manager.subscribe().unwrap();
             next_media(&mut subscription).await;
             let pid = wait_for_fixture_pid(&pids).await;
