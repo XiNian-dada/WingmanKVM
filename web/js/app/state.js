@@ -41,9 +41,11 @@ export const shared = {
   mouseY: 0,
   absolutePending: null,
 
-  // Long-running input jobs the latency tool must not overlap (07z, 08, 08c).
+  // Long-running input jobs that must not overlap (07z, 08, 08c): the
+  // latency tool's Caps Lock presses would flip the case of typed text.
   macroPlayback: null,
   pasteRun: null,
+  latencyRun: null,
 
   // Terminal workspace (09-terminal, 10-workspace-status).
   terminalSocket: null,

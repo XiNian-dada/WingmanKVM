@@ -612,6 +612,13 @@ function closePasteDialog() {
   } catch (_) {}
 }
 async function startPasteTyping() {
+  // The latency tool toggles Caps Lock: typed letters would change case.
+  if (shared.latencyRun) {
+    const message = tr('正在测量延迟，请结束后再发送');
+    setPasteStatus(message, 'error');
+    toast(message, true);
+    return;
+  }
   const input = $('#paste-key-text'),
     unsupportedEl = $('#paste-key-unsupported'),
     sendButton = $('#paste-key-send'),

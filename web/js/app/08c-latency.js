@@ -18,7 +18,6 @@ const LATENCY_GAP_MS = 150;
 const LATENCY_POLL_GAP_MS = 5;
 const LATENCY_RESTORE_SETTLE_MS = 300;
 const LATENCY_MAX_MISSES = 2; // consecutive: this target is not reporting LEDs
-let latencyRun = null;
 const latencyWait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function readCapsLock() {
   const leds = await request('/api/hid/leds');
@@ -132,7 +131,7 @@ function setLatencyRunning(running) {
   $('#latency-stop').classList.toggle('hidden', !running);
 }
 async function startLatencyMeasurement() {
-  if (latencyRun) return;
+  if (shared.latencyRun) return;
   // These presses would change the case of whatever is being typed.
   if (shared.pasteRun || shared.macroPlayback) {
     toast(tr('正在输入或回放宏，请结束后再测量'), true);
@@ -140,7 +139,7 @@ async function startLatencyMeasurement() {
   }
   const warning = '测量会向被控机连续切换 Caps Lock 共 ${} 次，结束后恢复原状态。被控机当前焦点所在的程序会收到这些按键。确定开始吗？';
   if (!confirm(tr(warning).replace('${}', String(LATENCY_SAMPLES)))) return;
-  const run = (latencyRun = {
+  const run = (shared.latencyRun = {
     cancelled: false,
     samples: [],
     pollMs: [],
@@ -191,7 +190,7 @@ async function startLatencyMeasurement() {
     const video = latencyVideoText();
     if (video !== run.video) run.video = `${run.video} → ${video}`;
     renderLatencyResult(run);
-    latencyRun = null;
+    shared.latencyRun = null;
     setLatencyRunning(false);
   }
 }
@@ -200,6 +199,6 @@ async function startLatencyMeasurement() {
 export function init() {
   $('#latency-start').addEventListener('click', startLatencyMeasurement);
   $('#latency-stop').addEventListener('click', () => {
-    if (latencyRun) latencyRun.cancelled = true;
+    if (shared.latencyRun) shared.latencyRun.cancelled = true;
   });
 }

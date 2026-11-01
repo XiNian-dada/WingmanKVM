@@ -665,6 +665,11 @@ function startKeyboardMacro(macro) {
     toast(tr('请先停止录制再回放'), true);
     return;
   }
+  // The latency tool toggles Caps Lock: replayed letters would change case.
+  if (shared.latencyRun) {
+    toast(tr('正在测量延迟，请结束后再回放'), true);
+    return;
+  }
   closeQuickMore();
   openMacroPlayDialog(macro);
   if (!inputEnabled()) setRemote(true);

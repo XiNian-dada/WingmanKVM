@@ -2839,6 +2839,100 @@ def input_socket_drop_does_not_replay(browser, port, checks):
         context.close()
 
 
+LATENCY_MACRO = ("localStorage.setItem('wingman_keyboard_macros', JSON.stringify([{id: 'm1', name: 'x', "
+                 "steps: [{key: 'KeyX', ctrl: false, shift: false, alt: false, meta: false, delay_ms: 0}]}]));")
+
+
+def held_caps_page(browser, port, init_scripts=()):
+    """A page whose Caps Lock presses stay unanswered until released, so a latency run stays active."""
+    state = State()
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    for script in init_scripts:
+        context.add_init_script(script)
+    page = context.new_page()
+    held = {"routes": [], "hold": True, "caps": 0}
+
+    def key_route(route):
+        body = json.loads(route.request.post_data or "{}")
+        if body.get("key") != "CapsLock":
+            return api_route(route, state)
+        held["caps"] += 1
+        if held["hold"]:
+            held["routes"].append(route)
+        else:
+            route.fulfill(status=200, content_type="application/json", body="{}")
+
+    page.route("**/api/**", lambda route: api_route(route, state))
+    page.route("**/api/key", key_route)
+    page.route("**/api/hid/leds", lambda route: route.fulfill(
+        status=200, content_type="application/json",
+        body=json.dumps({"num_lock": False, "caps_lock": False, "scroll_lock": False, "raw": 0})))
+    ui_harness.mock_video_feed(page)
+    page.on("dialog", lambda dialog: dialog.accept())
+    page.goto(f"http://127.0.0.1:{port}/", wait_until="load", timeout=15000)
+    page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+    settle_toolbar(page)
+
+    def release():
+        held["hold"] = False
+        while held["routes"]:
+            held["routes"].pop(0).fulfill(status=200, content_type="application/json", body="{}")
+    return state, context, page, held, release
+
+
+def start_held_latency_run(page, held, checks):
+    page.click("#diagnostics-toggle")
+    page.wait_for_selector("#latency-start", state="visible", timeout=3000)
+    page.click("#latency-start")
+    check(checks, ui_harness.wait_until(page, lambda: held["routes"]), "latency_run_started", held["caps"])
+
+
+def stop_latency_run(page, release):
+    release()
+    if page.get_attribute("#diagnostics-popover", "hidden") is not None:
+        page.click("#diagnostics-toggle")
+    page.click("#latency-stop")
+    page.wait_for_selector("#latency-result:not(.hidden)", timeout=10000)
+
+
+def latency_blocks_paste_and_macros(browser, port, checks):
+    """AUD3-26: paste typing and macro playback refuse to start during a latency run."""
+    state, context, page, held, release = held_caps_page(browser, port, init_scripts=(LATENCY_MACRO,))
+    try:
+        page.click("#input-state")
+        page.click("#keyboard-toggle")
+        page.click("#paste-typing-btn")
+        page.fill("#paste-key-text", "secret")
+        page.click("#paste-key-cancel")
+        start_held_latency_run(page, held, checks)
+
+        page.click("#paste-typing-btn")
+        page.fill("#paste-key-text", "secret")
+        page.click("#paste-key-send")
+        page.wait_for_timeout(300)
+        status = page.text_content("#paste-key-status") or ""
+        typed = [p.get("key") for p in state.key_posts]
+        check(checks, not typed and "测量延迟" in status, "paste_refused_during_latency_run", (typed, status))
+        page.click("#paste-key-cancel")
+
+        page.click("#quick-more-toggle")
+        page.click("#quick-more-menu [data-macro-play]")
+        page.wait_for_timeout(300)
+        toast = page.text_content("#toast") or ""
+        typed = [p.get("key") for p in state.key_posts]
+        check(checks, not typed and "测量延迟" in toast, "macro_refused_during_latency_run", (typed, toast))
+
+        stop_latency_run(page, release)
+        page.click("#quick-more-toggle")
+        page.click("#quick-more-menu [data-macro-play]")
+        ui_harness.wait_until(page, lambda: any(p.get("key") == "KeyX" for p in state.key_posts))
+        check(checks, any(p.get("key") == "KeyX" for p in state.key_posts), "macro_plays_after_latency_run",
+              state.key_posts)
+    finally:
+        release()
+        context.close()
+
+
 # Every function taking (browser, port, checks) is a scenario, run in
 # definition order; new scenarios need no list edit (and no merge conflict).
 SCENARIOS = [
