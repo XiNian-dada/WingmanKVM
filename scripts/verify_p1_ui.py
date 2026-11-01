@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Issue #1 regression: terminal teardown on logout and HTTP 401."""
-from ui_bundle import load_index_html
-import argparse, json, os, sys, threading, time, urllib.parse
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json, os, sys, time, urllib.parse
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ui_harness
+from ui_harness import mock_video_feed, static_server
 try:
     from playwright.sync_api import sync_playwright
 except Exception as exc:  # pragma: no cover - environment guard
     print(json.dumps({"status": "FAIL", "error": f"Playwright import failed: {exc}"}))
     sys.exit(2)
-GIF = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
 USER, PASSWORD = "admin", "Synthetic-Passw0rd!"
 BOOTSTRAP = {
     "setup_required": False, "token_required": False, "authenticated": True,
@@ -118,44 +118,11 @@ class State:
     def __init__(self):
         self.authenticated, self.status401_seen = True, 0
 def extract_html(repo):
-    html = load_index_html(repo)
+    html = ui_harness.extract_html(repo)
     marker = '<script src="/assets/xterm-fit.js"></script>'
     if marker not in html:
         raise RuntimeError("xterm-fit script marker not found")
     return html.replace(marker, marker + TERMINAL_WRAP, 1)
-def read_assets(repo):
-    root = os.path.join(repo, "web", "vendor", "xterm")
-    return {name: open(os.path.join(root, name), "rb").read()
-            for name in ("xterm.js", "addon-fit.js", "xterm.css")}
-def serve_static(html, assets):
-    html_bytes, icon = html.encode("utf-8"), b'<svg xmlns="http://www.w3.org/2000/svg"/>'
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
-        def _send(self, code, body, ctype):
-            self.send_response(code); self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store"); self.send_header("Connection", "close")
-            self.end_headers(); self.wfile.write(body)
-        def _route(self):
-            path = urllib.parse.urlsplit(self.path).path
-            if path in ("/", "/index.html"):
-                return self._send(200, html_bytes, "text/html; charset=utf-8")
-            if path == "/assets/xterm.js":
-                return self._send(200, assets["xterm.js"], "application/javascript")
-            if path == "/assets/xterm-fit.js":
-                return self._send(200, assets["addon-fit.js"], "application/javascript")
-            if path == "/assets/xterm.css":
-                return self._send(200, assets["xterm.css"], "text/css")
-            if path in ("/assets/icon.svg", "/favicon.ico"):
-                return self._send(200, icon, "image/svg+xml")
-            return self._send(404, b"not found", "text/plain")
-        do_GET = _route
-        do_POST = _route
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    server.daemon_threads = True
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return server, server.server_address[1]
 def snapshot(page):
     return page.evaluate("""() => {
       const terms = window.__p1 && window.__p1.terminals || [];
@@ -186,9 +153,7 @@ def socket_info(page):
       states: window.__p1.sockets.map(s => s.readyState), terminals: window.__p1.terminals.length
     })""")
 def check(checks, condition, name, evidence=""):
-    checks.append({"name": name, "ok": bool(condition), "evidence": str(evidence)[:512]})
-    if not condition:
-        raise AssertionError(f"{name}: {evidence}")
+    ui_harness.check(checks, condition, name, evidence, limit=512)
 def api_route(route, state):
     path, headers = urllib.parse.urlsplit(route.request.url).path, {"content-type": "application/json"}
     if path == "/api/bootstrap":
@@ -214,26 +179,19 @@ def api_route(route, state):
 def wait_login(page, timeout=7000):
     page.wait_for_selector("#login-form:not(.hidden)", state="visible", timeout=timeout)
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--repo", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    parser.add_argument("--output-dir", default="")
-    parser.add_argument("--browser-channel", default=None)
-    args = parser.parse_args()
-    checks = []
-    summary = {"status": "FAIL", "repo": os.path.abspath(args.repo), "checks": checks}
-    page = server = None
+    args = ui_harness.parse_args(default_channel=None)
+    summary = ui_harness.new_summary(args.repo)
+    checks = summary["checks"]
+    page = None
     try:
-        html, assets = extract_html(args.repo), read_assets(args.repo)
-        server, port = serve_static(html, assets)
         state = State()
-        with sync_playwright() as p:
+        with static_server(args.repo, extract_html(args.repo)) as port, sync_playwright() as p:
             browser = p.chromium.launch(headless=True, channel=args.browser_channel)
             try:
                 page = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
                 page.add_init_script(WS_INIT)
                 page.route("**/api/**", lambda route: api_route(route, state))
-                page.route("**/video_feed*", lambda route: route.fulfill(
-                    status=200, content_type="image/gif", body=GIF))
+                mock_video_feed(page)
                 page.goto(f"http://127.0.0.1:{port}/", wait_until="load", timeout=15000)
                 page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=7000)
                 check(checks, True, "authenticated_bootstrap")
@@ -278,30 +236,12 @@ def main():
                 check(checks, "P1_STALE_AFTER_401_1421" not in snap.get("text", "") + snap.get("host", "")
                       and "终端连接失败" not in snap.get("text", ""), "status401_stale_callbacks_silent", snap)
                 summary["status"] = "PASS"
-                if args.output_dir:
-                    os.makedirs(args.output_dir, exist_ok=True)
-                    page.screenshot(path=os.path.join(args.output_dir, "p1_ui_pass.png"))
+                ui_harness.screenshot(page, args.output_dir, "p1_ui_pass.png")
             finally:
                 browser.close()
     except Exception as exc:
         summary["error"] = f"{type(exc).__name__}: {exc}"
-        if page and args.output_dir:
-            try:
-                os.makedirs(args.output_dir, exist_ok=True)
-                page.screenshot(path=os.path.join(args.output_dir, "p1_ui_failure.png"))
-            except Exception:
-                pass
-    finally:
-        if server:
-            server.shutdown(); server.server_close()
-        if args.output_dir:
-            try:
-                os.makedirs(args.output_dir, exist_ok=True)
-                with open(os.path.join(args.output_dir, "p1_ui_report.json"), "w", encoding="utf-8") as fh:
-                    json.dump(summary, fh, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
-        print(json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
-    return 0 if summary["status"] == "PASS" else 1
+        ui_harness.screenshot(page, args.output_dir, "p1_ui_failure.png")
+    return ui_harness.finish(summary, args.output_dir, "p1_ui_report.json")
 if __name__ == "__main__":
     sys.exit(main())

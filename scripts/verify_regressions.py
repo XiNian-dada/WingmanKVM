@@ -24,6 +24,8 @@ from pathlib import Path
 
 API_TIMEOUT = 180.0
 UI_TIMEOUT = 180.0
+# The audit2 suite holds ~216 checks and takes ~150 s on a laptop.
+UI_SUITE_TIMEOUT = 600.0
 KILL_GRACE = 5.0
 ERROR_TAIL = 4000
 
@@ -46,6 +48,7 @@ CASES = (
     CaseSpec("p1_ui", "scripts/verify_p1_ui.py", "ui", timeout=UI_TIMEOUT),
     CaseSpec("p2_ui", "scripts/verify_p2_ui.py", "ui", timeout=UI_TIMEOUT),
     CaseSpec("p2b_ui", "scripts/verify_p2b_ui.py", "ui", timeout=UI_TIMEOUT),
+    CaseSpec("audit2_ui", "scripts/verify_audit2_ui.py", "ui", timeout=UI_SUITE_TIMEOUT),
     CaseSpec("p2c_cookie", "scripts/verify_p2c_cookie.py", "api", optional=True),
     CaseSpec("p2c_upgrade", "scripts/verify_p2c_upgrade.py", "repo", optional=True),
 )
