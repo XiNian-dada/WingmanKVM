@@ -3,6 +3,12 @@
 //! Audit writes must never fail a business request. Callers use [`AuditLog::record`],
 //! which moves the blocking file append to the blocking pool and downgrades every
 //! failure to a `tracing::warn!`.
+//!
+//! Failed logins can be triggered without authentication, so they go to their own
+//! pair of files (`audit-login-failures.log` and `.1`). A flood of them can then only
+//! rotate away older failed logins, never power, configuration or update records in
+//! `audit.log`. Those files are not `sync_data`'d per entry so a flood cannot queue
+//! fsyncs; every other event is still synced before `append` returns.
 
 use std::{
     fs::{self, OpenOptions},
@@ -20,6 +26,9 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 pub const AUDIT_FILE_NAME: &str = "audit.log";
 pub const AUDIT_ROTATED_FILE_NAME: &str = "audit.log.1";
+/// Separate files for unauthenticated failed logins; same rotation and mode.
+pub const AUDIT_LOGIN_FAILURES_FILE_NAME: &str = "audit-login-failures.log";
+pub const AUDIT_LOGIN_FAILURES_ROTATED_FILE_NAME: &str = "audit-login-failures.log.1";
 /// Rotate before the active file grows past this size.
 pub const AUDIT_MAX_BYTES: u64 = 1024 * 1024;
 pub const AUDIT_DEFAULT_LIMIT: usize = 100;
@@ -95,19 +104,120 @@ impl AuditEntry {
 
 type AuditObserver = Box<dyn Fn(&AuditEntry) + Send + Sync>;
 
+/// One JSON Lines file plus its single rotated predecessor, with its own lock so a
+/// burst on one file never waits behind writes to the other.
+struct AuditFile {
+    path: PathBuf,
+    rotated: PathBuf,
+    /// Whether every append is flushed to stable storage before returning.
+    sync: bool,
+    write_lock: Mutex<()>,
+}
+
+impl AuditFile {
+    fn new(directory: &Path, name: &str, rotated_name: &str, sync: bool) -> Self {
+        Self {
+            path: directory.join(name),
+            rotated: directory.join(rotated_name),
+            sync,
+            write_lock: Mutex::new(()),
+        }
+    }
+
+    fn append(&self, line: &[u8]) -> io::Result<()> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)?;
+
+        let current_len = match fs::metadata(&self.path) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+            Err(error) => return Err(error),
+        };
+        if current_len > 0 && current_len.saturating_add(line.len() as u64) > AUDIT_MAX_BYTES {
+            self.rotate()?;
+        }
+
+        let mut options = OpenOptions::new();
+        options.append(true).create(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options.open(&self.path)?;
+        #[cfg(unix)]
+        fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600))?;
+        file.write_all(line)?;
+        if self.sync {
+            file.sync_data()?;
+        }
+        Ok(())
+    }
+
+    fn rotate(&self) -> io::Result<()> {
+        match fs::remove_file(&self.rotated) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        fs::rename(&self.path, &self.rotated)
+    }
+
+    /// Up to `limit` entries in reverse append order. The rotated file is only
+    /// read when the active one holds fewer than `limit` parseable entries.
+    fn read_newest(&self, limit: usize) -> io::Result<Vec<AuditEntry>> {
+        let mut newest = Vec::new();
+        for path in [&self.path, &self.rotated] {
+            let remaining = limit.saturating_sub(newest.len());
+            if remaining == 0 {
+                break;
+            }
+            let bytes = match fs::read(path) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            // Lossy so a torn, unsynced trailing line cannot fail the whole read.
+            let contents = String::from_utf8_lossy(&bytes);
+            newest.extend(
+                contents
+                    .lines()
+                    .rev()
+                    .filter_map(|line| serde_json::from_str::<AuditEntry>(line).ok())
+                    .take(remaining),
+            );
+        }
+        Ok(newest)
+    }
+}
+
 #[derive(Clone)]
 pub struct AuditLog {
-    path: PathBuf,
-    write_lock: Arc<Mutex<()>>,
+    /// `audit.log`: every event except failed logins, synced per entry.
+    main: Arc<AuditFile>,
+    /// `audit-login-failures.log`: failed logins only, not synced per entry.
+    login_failures: Arc<AuditFile>,
     /// Optional non-blocking listener (event notifications) told about every entry.
     observer: Arc<OnceLock<AuditObserver>>,
 }
 
 impl AuditLog {
     pub fn new(state_dir: impl Into<PathBuf>) -> Self {
+        let state_dir = state_dir.into();
         Self {
-            path: state_dir.into().join(AUDIT_FILE_NAME),
-            write_lock: Arc::new(Mutex::new(())),
+            main: Arc::new(AuditFile::new(
+                &state_dir,
+                AUDIT_FILE_NAME,
+                AUDIT_ROTATED_FILE_NAME,
+                true,
+            )),
+            login_failures: Arc::new(AuditFile::new(
+                &state_dir,
+                AUDIT_LOGIN_FAILURES_FILE_NAME,
+                AUDIT_LOGIN_FAILURES_ROTATED_FILE_NAME,
+                false,
+            )),
             observer: Arc::new(OnceLock::new()),
         }
     }
@@ -119,7 +229,7 @@ impl AuditLog {
 
     #[cfg(test)]
     pub fn path(&self) -> &Path {
-        &self.path
+        &self.main.path
     }
 
     /// Record an event without ever failing the calling request.
@@ -143,88 +253,60 @@ impl AuditLog {
     }
 
     /// Append one entry synchronously. Exposed for tests and for callers that
-    /// already run on the blocking pool.
+    /// already run on the blocking pool. Failed logins go to their own files.
     pub fn append(&self, entry: &AuditEntry) -> io::Result<()> {
-        let _guard = self
-            .write_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
-        fs::create_dir_all(parent)?;
-
         let mut line = serde_json::to_vec(entry).map_err(io::Error::other)?;
         line.push(b'\n');
-
-        let current_len = match fs::metadata(&self.path) {
-            Ok(metadata) => metadata.len(),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
-            Err(error) => return Err(error),
-        };
-        if current_len > 0 && current_len.saturating_add(line.len() as u64) > AUDIT_MAX_BYTES {
-            self.rotate()?;
+        if entry.event == AuditEvent::LoginFailed.as_str() {
+            self.login_failures.append(&line)
+        } else {
+            self.main.append(&line)
         }
-
-        let mut options = OpenOptions::new();
-        options.append(true).create(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let mut file = options.open(&self.path)?;
-        #[cfg(unix)]
-        fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600))?;
-        file.write_all(&line)?;
-        file.sync_data()
     }
 
-    fn rotate(&self) -> io::Result<()> {
-        let rotated = self
-            .path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(AUDIT_ROTATED_FILE_NAME);
-        match fs::remove_file(&rotated) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
-        fs::rename(&self.path, rotated)
-    }
-
-    /// Read the newest `limit` entries, newest first. Malformed lines are
-    /// skipped rather than failing the whole endpoint.
+    /// Read the newest `limit` entries across both file pairs, newest first.
+    /// Each file keeps its append order; the two are interleaved by `ts`, and on
+    /// equal `ts` the `audit.log` entry comes first. Malformed lines are skipped
+    /// rather than failing the whole endpoint. At most `limit` entries are parsed
+    /// from each pair and every file is read at most once.
     pub fn read_latest(&self, limit: usize) -> io::Result<Vec<AuditEntry>> {
-        let rotated = self
-            .path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(AUDIT_ROTATED_FILE_NAME);
-        let mut entries = Vec::new();
-        for path in [rotated, self.path.clone()] {
-            let contents = match fs::read_to_string(&path) {
-                Ok(contents) => contents,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(error),
-            };
-            for line in contents.lines() {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                if let Ok(entry) = serde_json::from_str::<AuditEntry>(line) {
-                    entries.push(entry);
-                }
-            }
-        }
-        let start = entries.len().saturating_sub(limit);
-        let mut newest = entries.split_off(start);
-        newest.reverse();
-        Ok(newest)
+        let main = self.main.read_newest(limit)?;
+        let login_failures = self.login_failures.read_newest(limit)?;
+        Ok(merge_newest_first(main, login_failures, limit))
     }
+}
+
+/// Merge two newest-first lists into one, preferring `main` on equal `ts`.
+fn merge_newest_first(
+    main: Vec<AuditEntry>,
+    login_failures: Vec<AuditEntry>,
+    limit: usize,
+) -> Vec<AuditEntry> {
+    let mut merged = Vec::with_capacity(limit.min(main.len() + login_failures.len()));
+    let mut main = main.into_iter().peekable();
+    let mut login_failures = login_failures.into_iter().peekable();
+    while merged.len() < limit {
+        let take_main = match (main.peek(), login_failures.peek()) {
+            (Some(left), Some(right)) => left.ts >= right.ts,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => break,
+        };
+        merged.extend(if take_main {
+            main.next()
+        } else {
+            login_failures.next()
+        });
+    }
+    merged
 }
 
 impl std::fmt::Debug for AuditLog {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("AuditLog")
-            .field("path", &self.path)
+            .field("path", &self.main.path)
+            .field("login_failures_path", &self.login_failures.path)
             .finish_non_exhaustive()
     }
 }
@@ -346,7 +428,7 @@ mod tests {
     fn read_latest_skips_malformed_lines_and_returns_newest_first() {
         let directory = TestDirectory::new();
         let log = AuditLog::new(&directory.0);
-        let first = AuditEntry::new(AuditEvent::LoginFailed, None, None, Some("first".into()));
+        let first = AuditEntry::new(AuditEvent::LoginSucceeded, None, None, Some("first".into()));
         let second = AuditEntry::new(AuditEvent::Logout, None, None, Some("second".into()));
         log.append(&first).unwrap();
         fs::OpenOptions::new()
