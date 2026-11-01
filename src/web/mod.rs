@@ -106,7 +106,7 @@ use crate::{
         video::VideoManager,
         webrtc::{WebRtcError, WebRtcManager, WebRtcOfferRequest, WebRtcStatus},
     },
-    web_ui::{APP_CSS, APP_JS, ICON_SVG, INDEX_HTML},
+    web_ui::{APP_CSS, ICON_SVG, INDEX_HTML},
 };
 
 #[derive(Clone)]
@@ -335,7 +335,7 @@ pub fn router(state: AppState) -> Router {
         .route("/assets/xterm-fit.js", get(xterm_fit_js))
         .route("/assets/xterm.css", get(xterm_css))
         .route("/assets/app.css", get(app_css))
-        .route("/assets/app.js", get(app_js))
+        .route("/assets/js/{name}", get(app_js_module))
         .route("/api/bootstrap", get(bootstrap))
         .route(
             "/api/setup/devices",

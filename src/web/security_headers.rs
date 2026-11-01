@@ -178,7 +178,10 @@ mod tests {
     async fn headers_present_on_index_api_and_assets() {
         let app = Router::new()
             .route("/", get(super::super::assets::index))
-            .route("/assets/app.js", get(super::super::assets::app_js))
+            .route(
+                "/assets/js/{name}",
+                get(super::super::assets::app_js_module),
+            )
             .route("/assets/xterm.css", get(super::super::assets::xterm_css))
             .route("/healthz", get(super::super::assets::health))
             .route(
@@ -191,7 +194,7 @@ mod tests {
         let task = tokio::spawn(async move { axum::serve(listener, app).await });
         for path in [
             "/",
-            "/assets/app.js",
+            "/assets/js/main.js",
             "/assets/xterm.css",
             "/healthz",
             "/api/status",
