@@ -138,7 +138,25 @@ pub(super) fn config_changes(old: &Config, new: &Config) -> Vec<ConfigChange> {
     let new = serde_json::to_value(new).unwrap_or(serde_json::Value::Null);
     let mut changes = Vec::new();
     collect_config_changes(&old, &new, "", &mut changes);
+    for change in &mut changes {
+        if SECRET_CONFIG_PATHS.contains(&change.path.as_str()) {
+            change.old = mask_secret(&change.old);
+            change.new = mask_secret(&change.new);
+        }
+    }
     changes
+}
+
+/// Same values that GET /api/config and exports never reveal.
+const SECRET_CONFIG_PATHS: [&str; 4] = [
+    "notifications.webhook.url",
+    "notifications.ntfy.token",
+    "notifications.ntfy.topic",
+    "notifications.telegram.bot_token",
+];
+
+fn mask_secret(value: &serde_json::Value) -> serde_json::Value {
+    if value.is_null() { serde_json::Value::Null } else { json!("***") }
 }
 
 pub(super) fn listen_address_changed(previous: &Config, next: &Config) -> bool {
@@ -176,8 +194,9 @@ pub(super) async fn preview_import_config(
     State(state): State<AppState>,
     ApiJson(file): ApiJson<ConfigImportFile>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let imported = file.into_config()?;
+    let mut imported = file.into_config()?;
     let current = state.config.read().await.clone();
+    keep_device_values(&mut imported, &current);
     let changes = config_changes(&current, &imported);
     Ok(no_store(Json(json!({
         "changes": changes,
@@ -192,9 +211,13 @@ pub(super) async fn import_config(
     ApiJson(file): ApiJson<ConfigImportFile>,
 ) -> Result<Response, ApiError> {
     let imported = file.into_config()?;
-    let (response, previous, current) = import_config_with_state(state.clone(), imported).await?;
-    audit_config_change(&state, connection, &headers, &previous, &current).await;
-    Ok(response)
+    run_to_completion(async move {
+        let (response, previous, current) =
+            import_config_with_state(state.clone(), imported).await?;
+        audit_config_change(&state, connection, &headers, &previous, &current).await;
+        Ok(response)
+    })
+    .await
 }
 
 async fn import_config_with_state(
@@ -203,11 +226,7 @@ async fn import_config_with_state(
 ) -> Result<(Response, Config, Config), ApiError> {
     let _update_guard = state.config_update.lock().await;
     let previous = state.config.read().await.clone();
-    // Exports omit notification credentials; keep the device's own.
-    imported.notifications.inherit_secrets(&previous.notifications);
-    if imported.notifications.ntfy_topic().is_none() {
-        imported.notifications.ntfy.topic.clone_from(&previous.notifications.ntfy.topic);
-    }
+    keep_device_values(&mut imported, &previous);
     let changes = config_changes(&previous, &imported);
     let restart_required = listen_address_changed(&previous, &imported);
     commit_config(&state, &imported).await?;
@@ -246,25 +265,58 @@ pub(super) async fn update_config(
     ConnectInfo(connection): ConnectInfo<ClientConnection>,
     headers: HeaderMap,
     ApiJson(FullConfigUpdate(mut config)): ApiJson<FullConfigUpdate>,
-) -> Result<impl IntoResponse, ApiError> {
-    let _update_guard = state.config_update.lock().await;
-    let previous = state.config.read().await.clone();
-    // The browser never sees notification secrets, so a full update that
-    // leaves them empty keeps the stored values.
-    config.notifications.inherit_secrets(&previous.notifications);
-    validate_config(&config)?;
-    let listener_changed = previous.server.listen_address != config.server.listen_address
-        || previous.server.port != config.server.port;
-    commit_config(&state, &config).await?;
-    audit_config_change(&state, connection, &headers, &previous, &config).await;
-    let mut response = no_store(Json(config.redacted_json())).into_response();
-    if listener_changed {
-        response.headers_mut().insert(
-            "x-wingmankvm-restart-required",
-            HeaderValue::from_static("true"),
-        );
+) -> Result<Response, ApiError> {
+    run_to_completion(async move {
+        let _update_guard = state.config_update.lock().await;
+        let previous = state.config.read().await.clone();
+        // The browser never sees notification secrets, so a full update that
+        // leaves them empty keeps the stored values.
+        config.notifications.inherit_secrets(&previous.notifications);
+        reject_ffmpeg_path_change(&previous, &config)?;
+        validate_config(&config)?;
+        let listener_changed = previous.server.listen_address != config.server.listen_address
+            || previous.server.port != config.server.port;
+        commit_config(&state, &config).await?;
+        audit_config_change(&state, connection, &headers, &previous, &config).await;
+        let mut response = no_store(Json(config.redacted_json())).into_response();
+        if listener_changed {
+            response.headers_mut().insert(
+                "x-wingmankvm-restart-required",
+                HeaderValue::from_static("true"),
+            );
+        }
+        Ok(response)
+    })
+    .await
+}
+
+/// A client hanging up drops its handler. A config change that has started
+/// must still finish, or the file on disk and the live config disagree.
+pub(super) async fn run_to_completion<T: Send + 'static>(
+    work: impl Future<Output = Result<T, ApiError>> + Send + 'static,
+) -> Result<T, ApiError> {
+    tokio::spawn(work).await.map_err(ApiError::internal)?
+}
+
+/// The FFmpeg path is executed as the service user, so it is host
+/// administration: it can be set in config.json but not through the web API.
+fn reject_ffmpeg_path_change(previous: &Config, next: &Config) -> Result<(), ApiError> {
+    if previous.video.h264.ffmpeg_path == next.video.h264.ffmpeg_path {
+        return Ok(());
     }
-    Ok(response)
+    Err(ApiError::bad_request(
+        "video.h264.ffmpeg_path 只能在主机的配置文件中修改",
+    ))
+}
+
+/// Settings a backup must not carry onto this device: exports omit the
+/// notification credentials, and the FFmpeg path is host administration.
+fn keep_device_values(imported: &mut Config, previous: &Config) {
+    imported.notifications.inherit_secrets(&previous.notifications);
+    if imported.notifications.ntfy_topic().is_none() {
+        imported.notifications.ntfy.topic.clone_from(&previous.notifications.ntfy.topic);
+    }
+    imported.video.h264.ffmpeg_path.clone_from(&previous.video.h264.ffmpeg_path);
 }
 
 #[derive(Default, Deserialize)]
@@ -461,35 +513,39 @@ pub(super) async fn patch_config(
     ConnectInfo(connection): ConnectInfo<ClientConnection>,
     headers: HeaderMap,
     ApiJson(patch): ApiJson<ConfigPatch>,
-) -> Result<impl IntoResponse, ApiError> {
-    let _update_guard = state.config_update.lock().await;
-    let previous = state.config.read().await.clone();
-    let mut config = previous.clone();
-    if let Some(server) = patch.server {
-        apply_server_patch(&mut config.server, server);
-    }
-    if let Some(video) = patch.video {
-        apply_video_patch(&mut config.video, video);
-    }
-    if let Some(hid) = patch.hid {
-        apply_hid_patch(&mut config.hid, hid);
-    }
-    if let Some(power) = patch.power {
-        apply_power_patch(&mut config.power, power);
-    }
-    if let Some(media) = patch.media {
-        apply_media_patch(&mut config.media, media);
-    }
-    if let Some(notifications) = patch.notifications {
-        apply_notifications_patch(&mut config.notifications, notifications);
-    }
-    if let Some(audio) = patch.audio {
-        apply_audio_patch(&mut config.audio, audio);
-    }
-    validate_config(&config)?;
-    commit_config(&state, &config).await?;
-    audit_config_change(&state, connection, &headers, &previous, &config).await;
-    Ok(no_store(Json(config.redacted_json())))
+) -> Result<Response, ApiError> {
+    run_to_completion(async move {
+        let _update_guard = state.config_update.lock().await;
+        let previous = state.config.read().await.clone();
+        let mut config = previous.clone();
+        if let Some(server) = patch.server {
+            apply_server_patch(&mut config.server, server);
+        }
+        if let Some(video) = patch.video {
+            apply_video_patch(&mut config.video, video);
+        }
+        if let Some(hid) = patch.hid {
+            apply_hid_patch(&mut config.hid, hid);
+        }
+        if let Some(power) = patch.power {
+            apply_power_patch(&mut config.power, power);
+        }
+        if let Some(media) = patch.media {
+            apply_media_patch(&mut config.media, media);
+        }
+        if let Some(notifications) = patch.notifications {
+            apply_notifications_patch(&mut config.notifications, notifications);
+        }
+        if let Some(audio) = patch.audio {
+            apply_audio_patch(&mut config.audio, audio);
+        }
+        reject_ffmpeg_path_change(&previous, &config)?;
+        validate_config(&config)?;
+        commit_config(&state, &config).await?;
+        audit_config_change(&state, connection, &headers, &previous, &config).await;
+        Ok(no_store(Json(config.redacted_json())).into_response())
+    })
+    .await
 }
 
 /// Audit only the names of changed top-level sections; never their values.
@@ -801,11 +857,16 @@ pub(super) fn apply_notifications_patch(
         }
         if let Some(server) = ntfy.server {
             let server = server.trim();
-            config.ntfy.server = if server.is_empty() {
+            let server = if server.is_empty() {
                 config::DEFAULT_NTFY_SERVER.to_owned()
             } else {
                 server.to_owned()
             };
+            // The token belongs to one server; never present it to another.
+            if server != config.ntfy.server {
+                config.ntfy.token = None;
+            }
+            config.ntfy.server = server;
         }
         if let Some(topic) = ntfy.topic {
             config.ntfy.topic = optional_string(topic);
@@ -1211,6 +1272,82 @@ pub(super) mod tests {
             .await
             .unwrap();
         assert_eq!(state.config.read().await.notifications, config.notifications);
+    }
+
+    #[tokio::test]
+    async fn import_preview_never_reveals_stored_secrets() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("config.json");
+        let config = with_notification_secrets(Config::default());
+        config.save_atomic(&path).unwrap();
+        let state = test_state(config.clone(), path);
+
+        // A normal backup carries no secrets; nothing may look as if it changes.
+        let document = serde_json::to_value(ConfigExport::new(config.clone())).unwrap();
+        let file: ConfigImportFile = serde_json::from_value(document.clone()).unwrap();
+        let response = preview_import_config(State(state.clone()), ApiJson(file))
+            .await
+            .unwrap()
+            .into_response();
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        assert!(!String::from_utf8_lossy(&body).contains("SECRET-"));
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["changes"], json!([]));
+
+        // A file with different secrets still shows that they change, masked.
+        let mut next = config.clone();
+        next.notifications.ntfy.token = Some("SECRET-OTHER".into());
+        let changes = config_changes(&config, &next);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].old, json!("***"));
+        assert_eq!(changes[0].new, json!("***"));
+    }
+
+    #[tokio::test]
+    async fn run_to_completion_survives_a_dropped_caller() {
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let caller = tokio::spawn(run_to_completion(async move {
+            let _ = release_rx.await;
+            let _ = done_tx.send(());
+            Ok(())
+        }));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        caller.abort();
+        let _ = caller.await;
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), done_rx)
+            .await
+            .expect("the work must finish after its caller is gone")
+            .unwrap();
+    }
+
+    #[test]
+    fn ffmpeg_path_cannot_change_through_the_web_api() {
+        let previous = Config::default();
+        let mut next = previous.clone();
+        assert!(reject_ffmpeg_path_change(&previous, &next).is_ok());
+        next.video.h264.ffmpeg_path = Some(PathBuf::from("/home/wingman/run.sh"));
+        assert!(reject_ffmpeg_path_change(&previous, &next).is_err());
+
+        let mut imported = next.clone();
+        keep_device_values(&mut imported, &previous);
+        assert_eq!(imported.video.h264.ffmpeg_path, None);
+    }
+
+    #[test]
+    fn ntfy_token_is_dropped_when_the_server_changes() {
+        let mut config = with_notification_secrets(Config::default()).notifications;
+        let patch: NotificationsPatch =
+            serde_json::from_value(json!({"ntfy": {"server": "https://other.example"}})).unwrap();
+        apply_notifications_patch(&mut config, patch);
+        assert_eq!(config.ntfy.token, None);
+
+        let mut full = with_notification_secrets(Config::default()).notifications;
+        full.ntfy.token = None;
+        full.ntfy.server = "https://other.example".into();
+        full.inherit_secrets(&with_notification_secrets(Config::default()).notifications);
+        assert_eq!(full.ntfy.token, None, "a full update must not carry it over either");
     }
 
     #[test]
