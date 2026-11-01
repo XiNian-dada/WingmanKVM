@@ -92,6 +92,7 @@ use crate::{
         HidConfig, PointerMode, VideoEncoding,
     },
     devices::{
+        audio::{AudioManager, AudioSettings},
         discovery,
         hid::{
             AbsolutePointerRequest, HidError, HidManager, KeyRequest, MouseClickRequest,
@@ -171,7 +172,8 @@ impl AppState {
             Some(token)
         };
         let video = VideoManager::new(config.video.clone());
-        let webrtc = WebRtcManager::new(video.clone(), config.video.h264.clone());
+        let audio = AudioManager::new(audio_settings(&config));
+        let webrtc = WebRtcManager::new(video.clone(), config.video.h264.clone(), audio);
         let power = PowerManager::new();
         let power_led = power_led_snapshot(&config.power);
         let power_for_led = power.clone();
@@ -398,6 +400,7 @@ pub(crate) mod test_support {
             absolute_pointer: Vec::new(),
             gpio: Vec::new(),
             mass_storage_luns: Vec::new(),
+            audio: Vec::new(),
             warnings: Vec::new(),
         }
     }

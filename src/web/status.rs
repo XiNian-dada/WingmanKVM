@@ -15,11 +15,22 @@ pub(super) struct Capabilities {
     pub(super) video_passthrough: bool,
     pub(super) video_transcode: bool,
     pub(super) video_webrtc_h264: bool,
+    /// HDMI audio is enabled; it is only ever carried by WebRTC.
+    pub(super) audio: bool,
 }
 
 pub(super) async fn system_status(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let system = blocking_system_snapshot(state.system.clone()).await?;
     Ok(no_store(Json(system)))
+}
+
+/// Audio status reads procfs/sysfs to tell "idle" from "no device".
+async fn blocking_audio_status(
+    audio: AudioManager,
+) -> Result<crate::devices::audio::AudioStatus, ApiError> {
+    tokio::task::spawn_blocking(move || audio.status())
+        .await
+        .map_err(ApiError::internal)
 }
 
 async fn blocking_system_snapshot(
@@ -40,10 +51,12 @@ pub(super) async fn status(
     let webrtc = state.webrtc.status();
     let system = blocking_system_snapshot(state.system.clone()).await?;
     let hid_link = state.hid.link_status();
+    let audio = blocking_audio_status(state.webrtc.audio().clone()).await?;
     Ok(no_store(Json(json!({
         "video": state.video.status(),
         "power": state.power.status().await,
         "webrtc": webrtc,
+        "audio": audio,
         "capabilities": capabilities_with_webrtc(&config, webrtc.available),
         "hid": {
             "keyboard_leds": state.hid.leds(),
@@ -100,6 +113,7 @@ pub(super) fn capabilities_with_webrtc(config: &Config, video_webrtc_h264: bool)
         video_passthrough: true,
         video_transcode: true,
         video_webrtc_h264,
+        audio: config.audio.enabled,
     }
 }
 
@@ -147,5 +161,17 @@ mod tests {
         let gpio = capabilities(&config);
         assert!(gpio.gpio_reset);
         assert!(gpio.gpio_power_led);
+    }
+
+    #[test]
+    fn audio_capability_follows_the_audio_switch_only() {
+        let mut config = Config::default();
+        assert!(!capabilities(&config).audio, "audio is off by default");
+        config.audio.enabled = true;
+        let enabled = capabilities(&config);
+        assert!(enabled.audio);
+        // MJPEG and the other capabilities are unaffected.
+        assert!(enabled.video_passthrough && enabled.video_transcode);
+        assert!(!enabled.video_webrtc_h264);
     }
 }
