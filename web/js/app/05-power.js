@@ -99,7 +99,6 @@ function updateDiagnosticsCard() {
   const ledOn = led?.state === 'on' || led?.active === true;
   const ledOff = led?.state === 'off' || led?.active === false;
   renderAudioStatus();
-  renderAudioStatus();
   $('#diag-power-led').textContent = ledOn
     ? '已开机 (LED 亮)'
     : ledOff

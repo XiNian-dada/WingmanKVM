@@ -3606,6 +3606,37 @@ def desktop_click_after_layout_transition(browser, port, checks):
         context.close()
 
 
+def diagnostics_delivery_health(browser, port, checks):
+    """AUD3-20: failed notification delivery and audit writes show in diagnostics."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    health = {"notifications": {"dropped": 0, "channels": {"telegram": {"sent": 0, "failed": 3, "last_error": "HTTP 401", "last_error_unix": 1}}},
+              "audit": {"write_failures": 2}}
+
+    class WithHealth:
+        def __init__(self, route):
+            self.route, self.request = route, route.request
+
+        def fulfill(self, **kwargs):
+            body = {**json.loads(kwargs.get("body") or "{}"), **health}
+            return self.route.fulfill(**{**kwargs, "body": json.dumps(body)})
+
+    context, page = new_page(browser, state, port)
+    try:
+        page.unroute("**/api/**")
+        page.route("**/api/**", lambda route: api_route(
+            WithHealth(route) if route.request.url.endswith("/api/status") else route, state))
+        ok = ui_harness.wait_until(page, lambda: "401" in (page.text_content("#diag-notify") or ""), timeout=8.0)
+        text = page.text_content("#diag-notify") or ""
+        check(checks, ok and "telegram" in text and "3" in text and "2" in text, "diagnostics_show_delivery_failures", text)
+        health.update(notifications={"dropped": 0, "channels": {"telegram": {"sent": 1, "failed": 0, "last_error": None}}},
+                      audit={"write_failures": 0})
+        ok = ui_harness.wait_until(page, lambda: (page.text_content("#diag-notify") or "") == "正常", timeout=8.0)
+        check(checks, ok, "diagnostics_show_healthy_delivery", page.text_content("#diag-notify"))
+    finally:
+        context.close()
+
+
 def desktop_mouse_relative(browser, port, checks):
     """#107: relative mode forwards movement deltas, clamped to one HID report."""
     state, context, page = input_page(browser, port, pointer_mode="relative")

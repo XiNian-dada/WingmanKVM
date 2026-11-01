@@ -15,7 +15,10 @@ use std::{
     io::{self, Write},
     net::IpAddr,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -200,6 +203,8 @@ pub struct AuditLog {
     login_failures: Arc<AuditFile>,
     /// Optional non-blocking listener (event notifications) told about every entry.
     observer: Arc<OnceLock<AuditObserver>>,
+    /// Entries that could not be written; reported by /api/status.
+    write_failures: Arc<AtomicU64>,
 }
 
 impl AuditLog {
@@ -219,7 +224,12 @@ impl AuditLog {
                 false,
             )),
             observer: Arc::new(OnceLock::new()),
+            write_failures: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    pub fn write_failures(&self) -> u64 {
+        self.write_failures.load(Ordering::Relaxed)
     }
 
     /// Install the observer once; it must not block.
@@ -247,8 +257,14 @@ impl AuditLog {
         let log = self.clone();
         match tokio::task::spawn_blocking(move || log.append(&entry)).await {
             Ok(Ok(())) => {}
-            Ok(Err(error)) => tracing::warn!(%error, "audit log write failed"),
-            Err(error) => tracing::warn!(%error, "audit log task failed"),
+            Ok(Err(error)) => {
+                self.write_failures.fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(%error, "audit log write failed");
+            }
+            Err(error) => {
+                self.write_failures.fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(%error, "audit log task failed");
+            }
         }
     }
 
@@ -360,6 +376,21 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[tokio::test]
+    async fn failed_writes_are_counted() {
+        let directory = TestDirectory::new();
+        // A file where the state directory should be makes every write fail.
+        let blocked = directory.0.join("not-a-directory");
+        fs::write(&blocked, b"x").unwrap();
+        let log = AuditLog::new(&blocked);
+        log.record(AuditEvent::ConfigChanged, None, None, None).await;
+        assert_eq!(log.write_failures(), 1);
+
+        let log = AuditLog::new(&directory.0);
+        log.record(AuditEvent::ConfigChanged, None, None, None).await;
+        assert_eq!(log.write_failures(), 0);
     }
 
     #[test]
