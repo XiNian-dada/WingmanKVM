@@ -7,7 +7,7 @@ import { renderClientInfo } from './04-video-settings.js';
 import { renderPowerLed } from './05-power.js';
 import { renderVideoUi, startVideo, stopVideo } from './07-video.js';
 import { renderAudioStatus } from './07d-audio.js';
-import { inputEnabled, interactiveTarget, renderKeyboardLeds, syncInputUi } from './08-input.js';
+import { inputEnabled, interactiveTarget, releaseHeldButtons, renderKeyboardLeds, syncInputUi } from './08-input.js';
 import { scheduleTerminalFit, syncTerminalTabIndicator, terminalConnect } from './09-terminal.js';
 
 let statusTimer = 0;
@@ -16,6 +16,7 @@ function setWorkspaceMode(mode) {
   const next = mode === 'terminal' ? 'terminal' : 'video',
     terminalMode = next === 'terminal',
     changed = shared.videoWorkspace !== next;
+  if (changed) releaseHeldButtons();
   shared.videoWorkspace = next;
   syncTerminalTabIndicator();
   invalidateSurfaceBox();

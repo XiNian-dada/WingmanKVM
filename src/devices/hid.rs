@@ -26,6 +26,22 @@ const QUEUE_CAPACITY: usize = 64;
 const LINK_PROBE_INTERVAL: Duration = Duration::from_millis(500);
 const ABSOLUTE_COORDINATE_MAX: u16 = 32_767;
 const ABSOLUTE_COORDINATE_CENTER: u16 = 16_384;
+/// Shortest time a button stays down once pressed, however quickly its release
+/// arrives. Network jitter can deliver a press and its release back to back, and
+/// a firmware (BIOS/UEFI) driver polling a full-speed endpoint every 10 ms should
+/// still see the button down for more than one poll. Same value as the default
+/// key hold (`default_hold_ms`).
+const MIN_PRESS_HOLD: Duration = Duration::from_millis(25);
+/// A held button with no pointer traffic for this long is released: the bound for
+/// a client that vanished without closing anything (an HTTP client, or a socket
+/// whose network silently died). The console restates its position every 10 s
+/// while a button is held, so it survives two lost heartbeats and any pause of the
+/// user's; a scripted HTTP client only has to send something within this window.
+const BUTTON_IDLE_RELEASE: Duration = Duration::from_secs(30);
+/// A report that should have lifted a button but could not be written (host not
+/// polling, gadget rebinding) is retried: the press may still reach the target.
+const RELEASE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+const RELEASE_RETRIES: u8 = 10;
 
 #[derive(Debug, Error)]
 pub enum HidError {
@@ -98,6 +114,8 @@ pub struct MouseScrollRequest {
 pub enum AbsolutePointerRequest {
     Move { x: u16, y: u16 },
     Click { x: u16, y: u16, button: u8 },
+    Press { x: u16, y: u16, button: u8 },
+    Release { x: u16, y: u16, button: u8 },
     Scroll { x: u16, y: u16, delta: i16 },
 }
 
@@ -216,6 +234,16 @@ enum MouseCommand {
     Scroll {
         path: PathBuf,
         request: MouseScrollRequest,
+        reply: oneshot::Sender<Result<(), HidError>>,
+    },
+    Press {
+        path: PathBuf,
+        request: MouseClickRequest,
+        reply: oneshot::Sender<Result<(), HidError>>,
+    },
+    ReleaseButton {
+        path: PathBuf,
+        request: MouseClickRequest,
         reply: oneshot::Sender<Result<(), HidError>>,
     },
     Absolute {
@@ -493,6 +521,43 @@ impl HidManager {
         response.await.map_err(|_| HidError::WorkerStopped)?
     }
 
+    pub async fn mouse_press(
+        &self,
+        path: Option<PathBuf>,
+        request: MouseClickRequest,
+    ) -> Result<(), HidError> {
+        let path = path.ok_or(HidError::NotConfigured)?;
+        let (reply, response) = oneshot::channel();
+        self.mouse_tx
+            .try_send(MouseCommand::Press {
+                path,
+                request,
+                reply,
+            })
+            .map_err(map_send_error)?;
+        response.await.map_err(|_| HidError::WorkerStopped)?
+    }
+
+    /// Like every release, waits briefly for queue room instead of being dropped.
+    pub async fn mouse_release(
+        &self,
+        path: Option<PathBuf>,
+        request: MouseClickRequest,
+    ) -> Result<(), HidError> {
+        let path = path.ok_or(HidError::NotConfigured)?;
+        let (reply, response) = oneshot::channel();
+        send_release_command(
+            &self.mouse_tx,
+            MouseCommand::ReleaseButton {
+                path,
+                request,
+                reply,
+            },
+            response,
+        )
+        .await
+    }
+
     pub async fn mouse_scroll(
         &self,
         path: Option<PathBuf>,
@@ -517,6 +582,14 @@ impl HidManager {
     ) -> Result<(), HidError> {
         let path = path.ok_or(HidError::NotConfigured)?;
         let (reply, response) = oneshot::channel();
+        if matches!(request, AbsolutePointerRequest::Release { .. }) {
+            let command = MouseCommand::Absolute {
+                path,
+                request,
+                reply,
+            };
+            return send_release_command(&self.mouse_tx, command, response).await;
+        }
         self.mouse_tx
             .try_send(MouseCommand::Absolute {
                 path,
@@ -753,29 +826,240 @@ async fn keyboard_led_reader(mut path_rx: watch::Receiver<Option<PathBuf>>, leds
     }
 }
 
+/// Server-side button bookkeeping. The worker owns one bitmask per pointer
+/// device, so every report it writes (move, scroll, click) carries what is held.
+#[derive(Default)]
+struct PointerTracker {
+    absolute: HashMap<PathBuf, AbsolutePointerState>,
+    relative_buttons: HashMap<PathBuf, u8>,
+    clocks: HashMap<PathBuf, ButtonClock>,
+}
+
+/// Timers of a device that has a button down or a release still to deliver.
+#[derive(Debug, Clone, Copy)]
+struct ButtonClock {
+    last_input: Instant,
+    last_press: Instant,
+    retries_left: u8,
+    next_retry: Instant,
+}
+
+impl ButtonClock {
+    fn new(now: Instant) -> Self {
+        Self {
+            last_input: now,
+            last_press: now,
+            retries_left: 0,
+            next_retry: now,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PointerTimings {
+    min_press_hold: Duration,
+    idle_release: Duration,
+    release_retry: Duration,
+}
+
+impl Default for PointerTimings {
+    fn default() -> Self {
+        Self {
+            min_press_hold: MIN_PRESS_HOLD,
+            idle_release: BUTTON_IDLE_RELEASE,
+            release_retry: RELEASE_RETRY_INTERVAL,
+        }
+    }
+}
+
+impl PointerTracker {
+    fn buttons(&self, path: &Path) -> u8 {
+        self.absolute.get(path).map_or(0, |state| state.buttons)
+            | self.relative_buttons.get(path).copied().unwrap_or(0)
+    }
+
+    fn clear_buttons(&mut self, path: &Path) {
+        if let Some(state) = self.absolute.get_mut(path) {
+            state.buttons = 0;
+        }
+        self.relative_buttons.remove(path);
+    }
+
+    /// Any traffic from the client proves it is alive.
+    fn note_input(&mut self, path: &Path) {
+        if let Some(clock) = self.clocks.get_mut(path) {
+            clock.last_input = Instant::now();
+        }
+    }
+
+    fn note_press(&mut self, path: &Path) {
+        let now = Instant::now();
+        let clock = self
+            .clocks
+            .entry(path.to_path_buf())
+            .or_insert_with(|| ButtonClock::new(now));
+        clock.last_input = now;
+        clock.last_press = now;
+    }
+
+    /// Records the outcome of a report that lifted a button: a failure is
+    /// retried from the worker loop, a later success settles it.
+    fn note_release_result(
+        &mut self,
+        path: &Path,
+        result: &Result<(), HidError>,
+        timings: PointerTimings,
+    ) {
+        // No clock means no button was down: nothing is owed, and a routine
+        // release-all must not put a report on the wire when a node comes back.
+        if let Some(clock) = self.clocks.get_mut(path) {
+            if result.is_err() {
+                clock.retries_left = RELEASE_RETRIES;
+                clock.next_retry = Instant::now() + timings.release_retry;
+            } else {
+                clock.retries_left = 0;
+            }
+        }
+        self.forget_settled(path);
+    }
+
+    fn forget_settled(&mut self, path: &Path) {
+        if self.buttons(path) == 0
+            && self
+                .clocks
+                .get(path)
+                .is_some_and(|clock| clock.retries_left == 0)
+        {
+            self.clocks.remove(path);
+        }
+    }
+
+    async fn wait_for_min_hold(&self, path: &Path, timings: PointerTimings) {
+        if let Some(clock) = self.clocks.get(path) {
+            tokio::time::sleep_until(clock.last_press + timings.min_press_hold).await;
+        }
+    }
+
+    fn next_deadline(&self, timings: PointerTimings) -> Option<Instant> {
+        self.clocks
+            .iter()
+            .flat_map(|(path, clock)| {
+                let idle =
+                    (self.buttons(path) != 0).then_some(clock.last_input + timings.idle_release);
+                let retry = (clock.retries_left > 0).then_some(clock.next_retry);
+                [idle, retry]
+            })
+            .flatten()
+            .min()
+    }
+
+    /// Writes the current state of a device with no motion, so whatever the
+    /// bitmask says is what the target ends up seeing.
+    async fn write_current_state(
+        &self,
+        path: &Path,
+        devices: &mut HidDeviceCache,
+    ) -> Result<(), HidError> {
+        if let Some(state) = self.absolute.get(path) {
+            send_report(path, &state.report(0), devices).await
+        } else {
+            send_report(path, &relative_report(self.buttons(path), 0, 0, 0), devices).await
+        }
+    }
+
+    async fn release_idle_and_retry(
+        &mut self,
+        timings: PointerTimings,
+        devices: &mut HidDeviceCache,
+    ) {
+        let now = Instant::now();
+        let due: Vec<(PathBuf, bool)> = self
+            .clocks
+            .iter()
+            .filter_map(|(path, clock)| {
+                let idle =
+                    self.buttons(path) != 0 && clock.last_input + timings.idle_release <= now;
+                let retry = clock.retries_left > 0 && clock.next_retry <= now;
+                (idle || retry).then(|| (path.clone(), idle))
+            })
+            .collect();
+        for (path, idle) in due {
+            if idle {
+                tracing::warn!(path = %path.display(), "mouse button held with no pointer traffic; releasing it");
+                self.clear_buttons(&path);
+            }
+            let result = self.write_current_state(&path, devices).await;
+            match result {
+                Err(error) if !idle => {
+                    let Some(clock) = self.clocks.get_mut(&path) else {
+                        continue;
+                    };
+                    clock.retries_left -= 1;
+                    clock.next_retry = Instant::now() + timings.release_retry;
+                    if clock.retries_left == 0 {
+                        tracing::error!(%error, path = %path.display(), "giving up on mouse button release");
+                        self.forget_settled(&path);
+                    }
+                }
+                result => self.note_release_result(&path, &result, timings),
+            }
+        }
+    }
+}
+
+async fn sleep_until_some(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
+}
+
 async fn mouse_worker(
+    rx: mpsc::Receiver<MouseCommand>,
+    devices: HidDeviceCache,
+    closing: Arc<AtomicBool>,
+) {
+    run_mouse_worker(rx, devices, closing, PointerTimings::default()).await;
+}
+
+async fn run_mouse_worker(
     mut rx: mpsc::Receiver<MouseCommand>,
     mut devices: HidDeviceCache,
     closing: Arc<AtomicBool>,
+    timings: PointerTimings,
 ) {
-    let mut absolute_states = HashMap::<PathBuf, AbsolutePointerState>::new();
+    let mut pointers = PointerTracker::default();
     let mut probe = link_probe();
     loop {
+        let deadline = pointers.next_deadline(timings);
         let command = tokio::select! {
+            biased;
             command = rx.recv() => match command {
                 Some(command) => command,
                 None => break,
             },
+            () = sleep_until_some(deadline) => {
+                pointers.release_idle_and_retry(timings, &mut devices).await;
+                continue;
+            }
             _ = probe.tick(), if devices.link_lost() => {
                 devices.probe_lost();
                 continue;
             }
         };
-        // Dropping the command makes its caller see `WorkerStopped`.
+        // Dropping the command makes its caller see `WorkerStopped`. Anything
+        // that only lifts a button still runs: it cannot press after the last
+        // release.
         if closing.load(Ordering::Acquire)
             && !matches!(
                 command,
-                MouseCommand::Release { .. } | MouseCommand::ReleaseAbsolute { .. }
+                MouseCommand::Release { .. }
+                    | MouseCommand::ReleaseAbsolute { .. }
+                    | MouseCommand::ReleaseButton { .. }
+                    | MouseCommand::Absolute {
+                        request: AbsolutePointerRequest::Release { .. },
+                        ..
+                    }
             )
         {
             continue;
@@ -786,7 +1070,9 @@ async fn mouse_worker(
                 request,
                 reply,
             } => {
-                let result = send_mouse_move(&path, request, &mut devices).await;
+                pointers.note_input(&path);
+                let buttons = pointers.buttons(&path);
+                let result = send_mouse_move(&path, request, buttons, &mut devices).await;
                 let _ = reply.send(result);
             }
             MouseCommand::Click {
@@ -794,7 +1080,42 @@ async fn mouse_worker(
                 request,
                 reply,
             } => {
-                let result = send_mouse_click(&path, request, &mut devices).await;
+                pointers.note_input(&path);
+                let buttons = pointers.relative_buttons.entry(path.clone()).or_default();
+                let result = send_mouse_click(&path, request, buttons, &mut devices).await;
+                pointers.forget_settled(&path);
+                let _ = reply.send(result);
+            }
+            MouseCommand::Press {
+                path,
+                request,
+                reply,
+            } => {
+                let buttons = pointers.relative_buttons.entry(path.clone()).or_default();
+                let result = send_relative_press(&path, request, buttons, &mut devices).await;
+                if result.is_ok() {
+                    pointers.note_press(&path);
+                }
+                let _ = reply.send(result);
+            }
+            MouseCommand::ReleaseButton {
+                path,
+                request,
+                reply,
+            } => {
+                pointers.note_input(&path);
+                let result = match validate_mouse_button(request.button) {
+                    Ok(()) => {
+                        pointers.wait_for_min_hold(&path, timings).await;
+                        let buttons = pointers.relative_buttons.entry(path.clone()).or_default();
+                        *buttons &= !request.button;
+                        let report = relative_report(*buttons, 0, 0, 0);
+                        let result = send_report(&path, &report, &mut devices).await;
+                        pointers.note_release_result(&path, &result, timings);
+                        result
+                    }
+                    Err(error) => Err(error),
+                };
                 let _ = reply.send(result);
             }
             MouseCommand::Scroll {
@@ -802,7 +1123,9 @@ async fn mouse_worker(
                 request,
                 reply,
             } => {
-                let result = send_mouse_scroll(&path, request, &mut devices).await;
+                pointers.note_input(&path);
+                let buttons = pointers.buttons(&path);
+                let result = send_mouse_scroll(&path, request, buttons, &mut devices).await;
                 let _ = reply.send(result);
             }
             MouseCommand::Absolute {
@@ -810,18 +1133,34 @@ async fn mouse_worker(
                 request,
                 reply,
             } => {
-                let state = absolute_states.entry(path.clone()).or_default();
+                pointers.note_input(&path);
+                if matches!(request, AbsolutePointerRequest::Release { .. }) {
+                    pointers.wait_for_min_hold(&path, timings).await;
+                }
+                let state = pointers.absolute.entry(path.clone()).or_default();
                 let result = send_absolute_pointer(&path, request, state, &mut devices).await;
+                match request {
+                    AbsolutePointerRequest::Press { .. } if result.is_ok() => {
+                        pointers.note_press(&path);
+                    }
+                    AbsolutePointerRequest::Release { .. } => {
+                        pointers.note_release_result(&path, &result, timings);
+                    }
+                    _ => pointers.forget_settled(&path),
+                }
                 let _ = reply.send(result);
             }
             MouseCommand::Release { path, reply } => {
+                pointers.relative_buttons.remove(&path);
                 let result = send_report(&path, &[0; 4], &mut devices).await;
+                pointers.note_release_result(&path, &result, timings);
                 let _ = reply.send(result);
             }
             MouseCommand::ReleaseAbsolute { path, reply } => {
-                let state = absolute_states.entry(path.clone()).or_default();
+                let state = pointers.absolute.entry(path.clone()).or_default();
                 state.buttons = 0;
                 let result = send_report(&path, &state.report(0), &mut devices).await;
+                pointers.note_release_result(&path, &result, timings);
                 let _ = reply.send(result);
             }
         }
@@ -857,9 +1196,14 @@ async fn send_key(
     send_report(path, &[0; 8], devices).await
 }
 
+fn relative_report(buttons: u8, dx: i8, dy: i8, wheel: i8) -> [u8; 4] {
+    [buttons & 0x07, dx as u8, dy as u8, wheel as u8]
+}
+
 async fn send_mouse_move(
     path: &Path,
     request: MouseMoveRequest,
+    buttons: u8,
     devices: &mut HidDeviceCache,
 ) -> Result<(), HidError> {
     let mut dx = request.dx.clamp(-4096, 4096);
@@ -867,7 +1211,7 @@ async fn send_mouse_move(
     while dx != 0 || dy != 0 {
         let step_x = dx.clamp(-127, 127) as i8;
         let step_y = dy.clamp(-127, 127) as i8;
-        send_report(path, &[0, step_x as u8, step_y as u8, 0], devices).await?;
+        send_report(path, &relative_report(buttons, step_x, step_y, 0), devices).await?;
         dx -= i16::from(step_x);
         dy -= i16::from(step_y);
     }
@@ -877,25 +1221,47 @@ async fn send_mouse_move(
 async fn send_mouse_click(
     path: &Path,
     request: MouseClickRequest,
+    buttons: &mut u8,
     devices: &mut HidDeviceCache,
 ) -> Result<(), HidError> {
     validate_mouse_button(request.button)?;
-    send_report(path, &[request.button, 0, 0, 0], devices).await?;
-    send_report(path, &[0; 4], devices).await
+    *buttons &= !request.button;
+    let pressed = relative_report(*buttons | request.button, 0, 0, 0);
+    send_report(path, &pressed, devices).await?;
+    send_report(path, &relative_report(*buttons, 0, 0, 0), devices).await
+}
+
+/// The bit only stays set if the report went out: a failed press must not make
+/// later moves claim a button the target never saw.
+async fn send_relative_press(
+    path: &Path,
+    request: MouseClickRequest,
+    buttons: &mut u8,
+    devices: &mut HidDeviceCache,
+) -> Result<(), HidError> {
+    validate_mouse_button(request.button)?;
+    let was_held = *buttons & request.button != 0;
+    *buttons |= request.button;
+    let result = send_report(path, &relative_report(*buttons, 0, 0, 0), devices).await;
+    if result.is_err() && !was_held {
+        *buttons &= !request.button;
+    }
+    result
 }
 
 async fn send_mouse_scroll(
     path: &Path,
     request: MouseScrollRequest,
+    buttons: u8,
     devices: &mut HidDeviceCache,
 ) -> Result<(), HidError> {
     let mut delta = request.delta.clamp(-4096, 4096);
     while delta != 0 {
         let step = delta.clamp(-127, 127) as i8;
-        send_report(path, &[0, 0, 0, step as u8], devices).await?;
+        send_report(path, &relative_report(buttons, 0, 0, step), devices).await?;
         delta -= i16::from(step);
     }
-    send_report(path, &[0; 4], devices).await
+    send_report(path, &relative_report(buttons, 0, 0, 0), devices).await
 }
 
 async fn send_absolute_pointer(
@@ -913,6 +1279,19 @@ async fn send_absolute_pointer(
         AbsolutePointerRequest::Click { x, y, button } => {
             let reports = absolute_click_reports(state, x, y, button)?;
             send_all_reports(path, &reports, devices).await
+        }
+        AbsolutePointerRequest::Press { x, y, button } => {
+            let was_held = state.buttons & button != 0;
+            let report = absolute_press_report(state, x, y, button)?;
+            let result = send_report(path, &report, devices).await;
+            if result.is_err() && !was_held {
+                state.buttons &= !button;
+            }
+            result
+        }
+        AbsolutePointerRequest::Release { x, y, button } => {
+            let (report, position) = absolute_release_report(state, x, y, button)?;
+            send_report(path, &report, devices).await.and(position)
         }
         AbsolutePointerRequest::Scroll { x, y, delta } => {
             validate_absolute_position(x, y)?;
@@ -936,6 +1315,36 @@ fn absolute_click_reports(
     state.buttons &= !button;
     let released = state.report(0);
     Ok([pressed, released])
+}
+
+fn absolute_press_report(
+    state: &mut AbsolutePointerState,
+    x: u16,
+    y: u16,
+    button: u8,
+) -> Result<[u8; 6], HidError> {
+    validate_mouse_button(button)?;
+    validate_absolute_position(x, y)?;
+    state.set_position(x, y);
+    state.buttons |= button;
+    Ok(state.report(0))
+}
+
+/// A bad position must not keep the button down: the button is lifted where the
+/// pointer last was, and the position error is handed back to the caller.
+fn absolute_release_report(
+    state: &mut AbsolutePointerState,
+    x: u16,
+    y: u16,
+    button: u8,
+) -> Result<([u8; 6], Result<(), HidError>), HidError> {
+    validate_mouse_button(button)?;
+    let position = validate_absolute_position(x, y);
+    if position.is_ok() {
+        state.set_position(x, y);
+    }
+    state.buttons &= !button;
+    Ok((state.report(0), position))
 }
 
 async fn send_absolute_scroll(
@@ -1283,6 +1692,422 @@ pub(crate) mod tests {
         remember_first_error(&mut first_error, Err(HidError::NotConfigured));
 
         assert!(matches!(first_error, Some(HidError::InvalidButton(8))));
+    }
+
+    #[test]
+    fn absolute_press_move_release_keep_the_button_mask() {
+        let mut state = AbsolutePointerState::default();
+        assert_eq!(
+            absolute_press_report(&mut state, 0x0102, 0x0304, 1).unwrap(),
+            [1, 0x02, 0x01, 0x04, 0x03, 0],
+            "press carries the button and its position"
+        );
+        state.set_position(0x0506, 0x0708);
+        assert_eq!(
+            state.report(0),
+            [1, 0x06, 0x05, 0x08, 0x07, 0],
+            "a move keeps the held button"
+        );
+        let (report, position) = absolute_release_report(&mut state, 0x0506, 0x0708, 1).unwrap();
+        assert!(position.is_ok());
+        assert_eq!(report, [0, 0x06, 0x05, 0x08, 0x07, 0], "release keeps the position");
+    }
+
+    #[test]
+    fn absolute_multi_button_release_keeps_the_others() {
+        let mut state = AbsolutePointerState::default();
+        absolute_press_report(&mut state, 1, 1, 1).unwrap();
+        assert_eq!(absolute_press_report(&mut state, 1, 1, 2).unwrap()[0], 3);
+        assert_eq!(absolute_press_report(&mut state, 1, 1, 4).unwrap()[0], 7);
+        let (report, _) = absolute_release_report(&mut state, 1, 1, 2).unwrap();
+        assert_eq!(report[0], 5, "only the right button lifts");
+        // A click of another button during a drag keeps the drag's button.
+        let [pressed, released] = absolute_click_reports(&mut state, 1, 1, 2).unwrap();
+        assert_eq!((pressed[0], released[0]), (7, 5));
+    }
+
+    #[test]
+    fn absolute_press_and_release_reject_bad_input_without_changing_the_mask() {
+        let mut state = AbsolutePointerState::default();
+        assert!(matches!(
+            absolute_press_report(&mut state, 1, 1, 3),
+            Err(HidError::InvalidButton(3))
+        ));
+        assert!(matches!(
+            absolute_press_report(&mut state, ABSOLUTE_COORDINATE_MAX + 1, 1, 1),
+            Err(HidError::InvalidAbsoluteCoordinates { .. })
+        ));
+        assert_eq!(state.buttons, 0);
+        state.buttons = 1;
+        assert!(matches!(
+            absolute_release_report(&mut state, 1, 1, 8),
+            Err(HidError::InvalidButton(8))
+        ));
+        assert_eq!(state.buttons, 1);
+    }
+
+    #[test]
+    fn absolute_release_with_a_bad_position_still_lifts_the_button() {
+        let mut state = AbsolutePointerState::default();
+        absolute_press_report(&mut state, 5, 6, 1).unwrap();
+        let (report, position) =
+            absolute_release_report(&mut state, ABSOLUTE_COORDINATE_MAX + 1, 6, 1).unwrap();
+        assert_eq!(report, [0, 5, 0, 6, 0, 0], "lifted at the last good position");
+        assert!(matches!(position, Err(HidError::InvalidAbsoluteCoordinates { .. })));
+    }
+
+    #[test]
+    fn press_and_release_payloads_parse() {
+        let press: AbsolutePointerRequest =
+            serde_json::from_str(r#"{"action":"press","x":1,"y":2,"button":4}"#).unwrap();
+        assert_eq!(press, AbsolutePointerRequest::Press { x: 1, y: 2, button: 4 });
+        let release: AbsolutePointerRequest =
+            serde_json::from_str(r#"{"action":"release","x":1,"y":2,"button":4}"#).unwrap();
+        assert_eq!(release, AbsolutePointerRequest::Release { x: 1, y: 2, button: 4 });
+    }
+
+    /// A real mouse worker writing to a socket pair, driven through HidManager.
+    #[cfg(unix)]
+    struct WorkerFixture {
+        manager: HidManager,
+        path: PathBuf,
+        peer: std::os::unix::net::UnixStream,
+    }
+
+    #[cfg(unix)]
+    fn manager_for_mouse_queue(mouse_tx: mpsc::Sender<MouseCommand>) -> HidManager {
+        HidManager {
+            keyboard_tx: mpsc::channel(1).0,
+            mouse_tx,
+            keyboard_leds: Arc::new(AtomicU8::new(0)),
+            keyboard_path_tx: watch::channel(None).0,
+            keyboard_link_lost: Arc::default(),
+            mouse_link_lost: Arc::default(),
+            closing: Arc::default(),
+        }
+    }
+
+    #[cfg(unix)]
+    const NEVER: Duration = Duration::from_secs(600);
+
+    #[cfg(unix)]
+    impl WorkerFixture {
+        fn start(timings: PointerTimings) -> Self {
+            let path = PathBuf::from("/nonexistent/test-pointer");
+            let (devices, peer) = cached_test_device(path.clone());
+            peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let (mouse_tx, mouse_rx) = mpsc::channel(QUEUE_CAPACITY);
+            let mut manager = manager_for_mouse_queue(mouse_tx);
+            manager.closing = Arc::default();
+            tokio::spawn(run_mouse_worker(
+                mouse_rx,
+                devices,
+                Arc::clone(&manager.closing),
+                timings,
+            ));
+            Self { manager, path, peer }
+        }
+
+        fn with_idle(idle_release: Duration) -> Self {
+            Self::start(PointerTimings {
+                min_press_hold: Duration::from_millis(1),
+                idle_release,
+                release_retry: NEVER,
+            })
+        }
+
+        fn with_hold(min_press_hold: Duration) -> Self {
+            Self::start(PointerTimings {
+                min_press_hold,
+                idle_release: NEVER,
+                release_retry: NEVER,
+            })
+        }
+
+        fn fast() -> Self {
+            Self::with_idle(NEVER)
+        }
+
+        fn device(&self) -> Option<PathBuf> {
+            Some(self.path.clone())
+        }
+
+        async fn read<const N: usize>(&self) -> [u8; N] {
+            let mut peer = self.peer.try_clone().unwrap();
+            tokio::task::spawn_blocking(move || {
+                let mut report = [0; N];
+                peer.read_exact(&mut report).expect("HID report");
+                report
+            })
+            .await
+            .unwrap()
+        }
+
+        fn assert_silent(&self) {
+            self.peer.set_nonblocking(true).unwrap();
+            let mut byte = [0; 1];
+            let mut peer = &self.peer;
+            let read = peer.read(&mut byte);
+            self.peer.set_nonblocking(false).unwrap();
+            assert!(read.is_err(), "unexpected report: {read:?} {byte:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    const LEFT: MouseClickRequest = MouseClickRequest { button: 1 };
+    #[cfg(unix)]
+    const RIGHT: MouseClickRequest = MouseClickRequest { button: 2 };
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn relative_press_move_scroll_release_report_bytes() {
+        let device = WorkerFixture::fast();
+        let path = device.device();
+        let manager = &device.manager;
+        manager.mouse_press(path.clone(), LEFT).await.unwrap();
+        assert_eq!(device.read::<4>().await, [1, 0, 0, 0]);
+        let drag = MouseMoveRequest { dx: 5, dy: -3 };
+        manager.mouse_move(path.clone(), drag).await.unwrap();
+        assert_eq!(device.read::<4>().await, [1, 5, (-3i8) as u8, 0], "move holds the button");
+        manager.mouse_scroll(path.clone(), MouseScrollRequest { delta: 2 }).await.unwrap();
+        assert_eq!(device.read::<4>().await, [1, 0, 0, 2], "scroll holds the button");
+        assert_eq!(device.read::<4>().await, [1, 0, 0, 0]);
+        manager.mouse_press(path.clone(), RIGHT).await.unwrap();
+        assert_eq!(device.read::<4>().await, [3, 0, 0, 0], "second button adds to the mask");
+        manager.mouse_release(path.clone(), LEFT).await.unwrap();
+        assert_eq!(device.read::<4>().await, [2, 0, 0, 0], "releasing one keeps the other");
+        manager.mouse_release(path.clone(), RIGHT).await.unwrap();
+        assert_eq!(device.read::<4>().await, [0, 0, 0, 0]);
+        manager.mouse_move(path.clone(), MouseMoveRequest { dx: 1, dy: 1 }).await.unwrap();
+        assert_eq!(device.read::<4>().await, [0, 1, 1, 0], "moves are button-free again");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn relative_click_during_a_drag_keeps_the_held_button() {
+        let device = WorkerFixture::fast();
+        let path = device.device();
+        device.manager.mouse_press(path.clone(), LEFT).await.unwrap();
+        assert_eq!(device.read::<4>().await, [1, 0, 0, 0]);
+        device.manager.mouse_click(path.clone(), RIGHT).await.unwrap();
+        assert_eq!(device.read::<4>().await, [3, 0, 0, 0]);
+        assert_eq!(device.read::<4>().await, [1, 0, 0, 0]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn invalid_buttons_are_rejected_without_a_report() {
+        let device = WorkerFixture::fast();
+        let path = device.device();
+        let bad = MouseClickRequest { button: 3 };
+        assert!(matches!(
+            device.manager.mouse_press(path.clone(), bad).await,
+            Err(HidError::InvalidButton(3))
+        ));
+        assert!(matches!(
+            device.manager.mouse_release(path, bad).await,
+            Err(HidError::InvalidButton(3))
+        ));
+        device.assert_silent();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn absolute_worker_holds_the_button_across_moves_until_release() {
+        let device = WorkerFixture::fast();
+        let path = device.device();
+        let manager = &device.manager;
+        let press = AbsolutePointerRequest::Press { x: 10, y: 20, button: 1 };
+        manager.mouse_absolute(path.clone(), press).await.unwrap();
+        assert_eq!(device.read::<6>().await, [1, 10, 0, 20, 0, 0]);
+        let moved = AbsolutePointerRequest::Move { x: 30, y: 40 };
+        manager.mouse_absolute(path.clone(), moved).await.unwrap();
+        assert_eq!(device.read::<6>().await, [1, 30, 0, 40, 0, 0]);
+        let release = AbsolutePointerRequest::Release { x: 30, y: 40, button: 1 };
+        manager.mouse_absolute(path.clone(), release).await.unwrap();
+        assert_eq!(device.read::<6>().await, [0, 30, 0, 40, 0, 0]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn release_all_clears_the_mask_and_sends_a_zero_button_report() {
+        let device = WorkerFixture::fast();
+        let path = device.device();
+        let manager = &device.manager;
+        // Relative: the release report is zero and later moves stay button-free.
+        manager.mouse_press(path.clone(), LEFT).await.unwrap();
+        assert_eq!(device.read::<4>().await, [1, 0, 0, 0]);
+        manager.release_all(None, path.clone(), None).await.unwrap();
+        assert_eq!(device.read::<4>().await, [0, 0, 0, 0]);
+        manager.mouse_move(path.clone(), MouseMoveRequest { dx: 1, dy: 0 }).await.unwrap();
+        assert_eq!(device.read::<4>().await, [0, 1, 0, 0]);
+        // Absolute: same, staying at the last position.
+        let press = AbsolutePointerRequest::Press { x: 7, y: 8, button: 2 };
+        manager.mouse_absolute(path.clone(), press).await.unwrap();
+        assert_eq!(device.read::<6>().await, [2, 7, 0, 8, 0, 0]);
+        manager.release_all(None, None, path.clone()).await.unwrap();
+        assert_eq!(device.read::<6>().await, [0, 7, 0, 8, 0, 0]);
+        let moved = AbsolutePointerRequest::Move { x: 9, y: 9 };
+        manager.mouse_absolute(path.clone(), moved).await.unwrap();
+        assert_eq!(device.read::<6>().await, [0, 9, 0, 9, 0, 0]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_refuses_presses_but_still_lifts_buttons() {
+        let device = WorkerFixture::fast();
+        let path = device.device();
+        let manager = &device.manager;
+        manager.mouse_press(path.clone(), LEFT).await.unwrap();
+        assert_eq!(device.read::<4>().await, [1, 0, 0, 0]);
+        manager.closing.store(true, Ordering::Release);
+        assert!(matches!(
+            manager.mouse_press(path.clone(), RIGHT).await,
+            Err(HidError::WorkerStopped)
+        ));
+        device.assert_silent();
+        manager.mouse_release(path.clone(), LEFT).await.unwrap();
+        assert_eq!(device.read::<4>().await, [0, 0, 0, 0]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_quick_release_waits_for_the_minimum_hold() {
+        assert_eq!(MIN_PRESS_HOLD, Duration::from_millis(default_hold_ms()));
+        let hold = Duration::from_millis(120);
+        let device = WorkerFixture::with_hold(hold);
+        let path = device.device();
+        let manager = &device.manager;
+        let press = AbsolutePointerRequest::Press { x: 1, y: 2, button: 1 };
+        let release = AbsolutePointerRequest::Release { x: 1, y: 2, button: 1 };
+        let before_press = std::time::Instant::now();
+        manager.mouse_absolute(path.clone(), press).await.unwrap();
+        assert_eq!(device.read::<6>().await[0], 1);
+        manager.mouse_absolute(path.clone(), release).await.unwrap();
+        assert_eq!(device.read::<6>().await[0], 0);
+        assert!(before_press.elapsed() >= hold, "{:?}", before_press.elapsed());
+
+        let before_press = std::time::Instant::now();
+        manager.mouse_press(path.clone(), LEFT).await.unwrap();
+        assert_eq!(device.read::<4>().await[0], 1);
+        manager.mouse_release(path.clone(), LEFT).await.unwrap();
+        assert_eq!(device.read::<4>().await[0], 0);
+        assert!(before_press.elapsed() >= hold, "{:?}", before_press.elapsed());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn release_all_does_not_wait_for_the_minimum_hold() {
+        let device = WorkerFixture::with_hold(Duration::from_secs(60));
+        let path = device.device();
+        device.manager.mouse_press(path.clone(), LEFT).await.unwrap();
+        assert_eq!(device.read::<4>().await, [1, 0, 0, 0]);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            device.manager.release_all(None, path, None),
+        )
+        .await
+        .expect("an emergency release is immediate")
+        .unwrap();
+        assert_eq!(device.read::<4>().await, [0, 0, 0, 0]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn idle_button_is_released_but_pointer_traffic_keeps_it_held() {
+        let idle = Duration::from_millis(400);
+        let device = WorkerFixture::with_idle(idle);
+        let path = device.device();
+        let manager = &device.manager;
+        let press = AbsolutePointerRequest::Press { x: 3, y: 4, button: 1 };
+        manager.mouse_absolute(path.clone(), press).await.unwrap();
+        assert_eq!(device.read::<6>().await[0], 1);
+        // A slow drag: each move arrives well inside the bound.
+        for step in 0u16..4 {
+            tokio::time::sleep(idle / 2).await;
+            let moved = AbsolutePointerRequest::Move { x: 5 + step, y: 4 };
+            manager.mouse_absolute(path.clone(), moved).await.unwrap();
+            assert_eq!(device.read::<6>().await[0], 1, "still dragging at step {step}");
+        }
+        let last_input = std::time::Instant::now();
+        assert_eq!(device.read::<6>().await, [0, 8, 0, 4, 0, 0], "released in place");
+        assert!(last_input.elapsed() >= idle - Duration::from_millis(50), "{:?}", last_input.elapsed());
+        // The mask really is clear: the next move carries no button.
+        let moved = AbsolutePointerRequest::Move { x: 9, y: 9 };
+        manager.mouse_absolute(path.clone(), moved).await.unwrap();
+        assert_eq!(device.read::<6>().await, [0, 9, 0, 9, 0, 0]);
+        // Nothing further fires once nothing is held.
+        tokio::time::sleep(idle + idle / 2).await;
+        device.assert_silent();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn relative_idle_release_and_zero_move_as_heartbeat() {
+        let idle = Duration::from_millis(400);
+        let device = WorkerFixture::with_idle(idle);
+        let path = device.device();
+        let manager = &device.manager;
+        manager.mouse_press(path.clone(), LEFT).await.unwrap();
+        assert_eq!(device.read::<4>().await, [1, 0, 0, 0]);
+        // The console's heartbeat in relative mode: no report, but it counts.
+        for _ in 0..3 {
+            tokio::time::sleep(idle / 2).await;
+            manager.mouse_move(path.clone(), MouseMoveRequest { dx: 0, dy: 0 }).await.unwrap();
+            device.assert_silent();
+        }
+        assert_eq!(device.read::<4>().await, [0, 0, 0, 0]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_release_is_retried_until_the_target_takes_it() {
+        let dir = std::env::temp_dir().join(format!("wingman-hid-retry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pointer");
+        let c_path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        // SAFETY: c_path is a valid NUL-terminated string for the call's duration.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let open_reader = || {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&path)
+                .unwrap()
+        };
+        let (mouse_tx, mouse_rx) = mpsc::channel(QUEUE_CAPACITY);
+        let manager = manager_for_mouse_queue(mouse_tx);
+        tokio::spawn(run_mouse_worker(
+            mouse_rx,
+            HidDeviceCache::default(),
+            Arc::default(),
+            PointerTimings {
+                min_press_hold: Duration::from_millis(1),
+                idle_release: NEVER,
+                release_retry: Duration::from_millis(50),
+            },
+        ));
+        let reader = open_reader();
+        manager.mouse_press(Some(path.clone()), LEFT).await.unwrap();
+        drop(reader);
+        // Nobody is reading: the release fails with the button believed down.
+        assert!(manager.release_all(None, Some(path.clone()), None).await.is_err());
+        // The reader returns: the owed report lands without another request.
+        let mut reader = open_reader();
+        let mut report = [0xffu8; 4];
+        let mut got = 0;
+        for _ in 0..200 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            if let Ok(read) = reader.read(&mut report[got..]) {
+                got += read;
+            }
+            if got == 4 {
+                break;
+            }
+        }
+        assert_eq!((got, report), (4, [0; 4]));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

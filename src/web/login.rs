@@ -145,7 +145,9 @@ pub(super) async fn logout(
     let mut revoked_session = None;
     if let Some(token) = session_token(&headers) {
         revoked_session = state.sessions.session_id(token);
-        state.sessions.revoke(token);
+        if state.sessions.revoke(token) {
+            release_after_session_end(&state);
+        }
     }
     if let Some(session_id) = revoked_session {
         state

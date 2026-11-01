@@ -329,6 +329,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mouse/move", post(mouse_move))
         .route("/api/mouse/absolute", post(mouse_absolute))
         .route("/api/mouse/click", post(mouse_click))
+        .route("/api/mouse/press", post(mouse_press))
+        .route("/api/mouse/release", post(mouse_release))
         .route("/api/mouse/scroll", post(mouse_scroll))
         .route("/api/input/release-all", post(release_all))
         .route("/api/input/ws", get(input_ws))

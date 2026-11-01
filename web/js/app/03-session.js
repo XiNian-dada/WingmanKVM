@@ -131,7 +131,12 @@ async function request(url, options = {}) {
   const socketRoute =
     (options.method || 'GET') === 'POST' && !options.keepalive && !options.viaHttp && HID_SOCKET_ROUTES[url];
   if (socketRoute && inputSocketReady())
-    return sendOverInputSocket(socketRoute, options.body, () => request(url, { ...options, viaHttp: true }));
+    return sendOverInputSocket(
+      socketRoute,
+      options.body,
+      () => request(url, { ...options, viaHttp: true }),
+      options.reliable,
+    );
   const headers = new Headers(options.headers || {});
   if (options.body && !(options.body instanceof FormData) && !headers.has('content-type'))
     headers.set('content-type', 'application/json');

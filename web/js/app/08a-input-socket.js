@@ -14,6 +14,8 @@ const HID_SOCKET_ROUTES = {
   '/api/mouse/move': 'move',
   '/api/mouse/absolute': 'absolute',
   '/api/mouse/click': 'click',
+  '/api/mouse/press': 'press',
+  '/api/mouse/release': 'release',
   '/api/mouse/scroll': 'scroll',
   '/api/input/release-all': 'release_all',
 };
@@ -24,6 +26,12 @@ let inputSocket = null,
   inputSocketDelay = 500,
   inputSocketNextId = 1;
 const inputSocketPending = new Map();
+// Told when an open socket drops: the server has released everything by then,
+// so the input code has to stop believing a button is down.
+let onInputSocketLost = () => {};
+function setInputSocketLostHandler(handler) {
+  onInputSocketLost = handler;
+}
 
 function inputSocketReady() {
   return inputSocket?.readyState === WebSocket.OPEN;
@@ -33,14 +41,20 @@ function inputSocketReady() {
 // belong to a key press or click that did reach the target. Replaying those
 // over HTTP could type a key twice (an Enter on a confirmation prompt), so
 // only idempotent requests are retried: an absolute move just restates the
-// position and release_all releases what is already released. Everything
-// else is rejected as possibly undelivered, with one toast per drop however
+// position, and a button release or release_all releases what is already
+// released. A mouse press is not: replayed after the server released on socket
+// end, it would hold a button nobody is holding. Everything else is
+// rejected as possibly undelivered, with one toast per drop however
 // many requests were pending; `reported` tells callers not to toast again.
 // (Requests the socket never accepted fall back to HTTP in
 // sendOverInputSocket, see below.)
 const UNDELIVERED_MESSAGE = '键鼠连接中断，刚才的操作可能未送达被控机，请确认后再重试';
 function idempotentInput(type, payload) {
-  return type === 'release_all' || (type === 'absolute' && payload.action === 'move');
+  return (
+    type === 'release_all' ||
+    type === 'release' ||
+    (type === 'absolute' && (payload.action === 'move' || payload.action === 'release'))
+  );
 }
 function settlePendingAfterClose() {
   const pending = [...inputSocketPending.values()];
@@ -67,8 +81,10 @@ function connectInputSocket() {
   if (inputSocket || typeof WebSocket !== 'function') return;
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws',
     socket = new WebSocket(`${scheme}://${location.host}/api/input/ws`);
+  let opened = false;
   inputSocket = socket;
   socket.onopen = () => {
+    opened = true;
     inputSocketDelay = 500;
     updateDiagnosticsCard();
   };
@@ -94,6 +110,7 @@ function connectInputSocket() {
     if (inputSocket !== socket) return;
     inputSocket = null;
     settlePendingAfterClose();
+    if (opened) onInputSocketLost();
     updateDiagnosticsCard();
     // Reconnect with backoff while the console is open; meanwhile request()
     // transparently uses HTTP, which also surfaces 401 after a logout.
@@ -112,9 +129,10 @@ function disconnectInputSocket() {
   socket?.close();
 }
 // Pure pointer motion is disposable: when the socket is backed up, a newer
-// position supersedes it. Keys, clicks, scrolls and releases always go out.
+// position supersedes it. Keys, clicks, scrolls and releases always go out, and
+// so does motion marked `reliable` (the last position before a release).
 const INPUT_SOCKET_BACKLOG_BYTES = 16 * 1024;
-function sendOverInputSocket(type, body, fallback) {
+function sendOverInputSocket(type, body, fallback, reliable = false) {
   let payload = {};
   if (body) {
     try {
@@ -124,7 +142,7 @@ function sendOverInputSocket(type, body, fallback) {
     }
   }
   const motion = type === 'move' || (type === 'absolute' && payload.action === 'move');
-  if (motion && inputSocket.bufferedAmount > INPUT_SOCKET_BACKLOG_BYTES) return Promise.resolve({ ok: true });
+  if (motion && !reliable && inputSocket.bufferedAmount > INPUT_SOCKET_BACKLOG_BYTES) return Promise.resolve({ ok: true });
   const id = inputSocketNextId++;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -148,4 +166,5 @@ function sendOverInputSocket(type, body, fallback) {
 
 export {
   connectInputSocket, disconnectInputSocket, HID_SOCKET_ROUTES, inputSocketReady, sendOverInputSocket,
+  setInputSocketLostHandler,
 };

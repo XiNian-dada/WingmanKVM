@@ -20,7 +20,8 @@ It deploys as a single binary and needs no separate database or frontend build t
 
 **Keyboard and mouse**
 - Emulated USB keyboard, relative mouse, and absolute pointer, usable in BIOS / UEFI
-- Keyboard and mouse events use a persistent WebSocket connection and fall back to HTTP when it disconnects; the server releases all keys when the connection drops
+- Mouse drag (moving windows, selecting text, dragging scrollbars) and multiple buttons at once, in both absolute and relative pointer modes
+- Keyboard and mouse events use a persistent WebSocket connection and fall back to HTTP when it disconnects; the server releases all keys and mouse buttons when the connection drops
 - Paste as typing: types clipboard text from your machine into the target machine character by character, with US / UK / DE / FR / JP layouts
 - Shortcut menu (Ctrl+Alt+Del, Ctrl+Alt+F1–F7, etc.) and custom combinations
 - Virtual keyboard, keyboard LED synchronization, and phone touch gestures (tap, long-press for right click, two-finger scroll)
