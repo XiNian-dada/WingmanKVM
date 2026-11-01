@@ -221,7 +221,7 @@ Do not point `WINGMANKVM_GADGET_NAME` at a third-party Gadget that you do not in
 After a normal installation, open the one-time setup address shown at the end of the installer output. If the terminal output has been lost, obtain the address or token that is valid only before the administrator is created from the logs:
 
 ```bash
-sudo journalctl -u wingmankvm -b --no-pager
+sudo wingmankvm-setup-url
 ```
 
 Open `http://KVM-host-address:8080/`, then complete setup with the two-step wizard:
@@ -465,7 +465,7 @@ Most UVC capture cards also expose a USB Audio sound card. When enabled, the car
 
 - With `device` set to `null`, selection is automatic: the sound card on the same USB device as the current capture card (`video.device`) first, otherwise the only USB sound card; with several indistinguishable cards nothing is guessed. You can also enter an ALSA name such as `plughw:CARD=MS2109,DEV=0` or `hw:1,0` (only `hw`, `plughw`, `dsnoop`, `sysdefault` and `default` are accepted).
 - Detection only reads `/proc/asound/cards`, `/proc/asound/pcm` and `/sys/class/sound`; it never opens an ALSA device, so it cannot interrupt a running capture. "Detect audio devices" in the settings and the `audio` list of `POST /api/devices/scan` come from it.
-- `bitrate_kbps` ranges from 16 to 256. Audio uses the same FFmpeg as H.264 (`video.h264.ffmpeg_path`) and encodes 48 kHz stereo Opus in 20 ms frames.
+- `bitrate_kbps` ranges from 16 to 256. Audio uses the same FFmpeg as H.264 (`video.h264.ffmpeg_path`, which can only be changed in the config file on the host; the web API rejects it) and encodes 48 kHz stereo Opus in 20 ms frames.
 - All WebRTC sessions share one FFmpeg capture process: the first session that needs audio starts it and the last one to end stops it and reaps its whole process group. When capture fails or produces no data for 10 seconds the state becomes `error`, and it is retried with a 1–30 second backoff while viewers remain.
 - Audio and video are independent: the browser only asks for an audio track when the server has audio enabled, and the server only adds the Opus track when a device is detected; otherwise only video is negotiated, as before. Audio forwarding is not part of the session watchdog, so a failing capture, an unplugged device or a changed audio setting never disconnects, restarts or renegotiates video. Changing only the audio settings does not restart video capture either. Established sessions keep their tracks: a session with an audio track switches to the new capture device, and a session opened before audio was enabled needs to reconnect to get audio (applying the settings page reconnects the current page automatically).
 - The browser always starts muted (to satisfy autoplay policies); click the speaker button in the toolbar to unmute. If the browser refuses playback with sound, the page returns to muted and keeps showing the picture.

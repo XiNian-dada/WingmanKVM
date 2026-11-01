@@ -530,7 +530,7 @@ done
 
 - `device` 为 `null` 时自动选择：优先使用与当前采集卡（`video.device`）属于同一 USB 设备的声卡，其次是唯一的 USB 声卡；存在多个无法区分的声卡时不会自行猜测。也可以填写 ALSA 设备名，例如 `plughw:CARD=MS2109,DEV=0` 或 `hw:1,0`（只接受 `hw`、`plughw`、`dsnoop`、`sysdefault`、`default`）。
 - 设备检测只读取 `/proc/asound/cards`、`/proc/asound/pcm` 和 `/sys/class/sound`，不会打开 ALSA 设备，因此不会打断正在进行的采集；设置页的「检测音频设备」与 `POST /api/devices/scan` 返回的 `audio` 列表来自这里。
-- `bitrate_kbps` 范围为 16–256；音频使用与 H.264 相同的 FFmpeg（`video.h264.ffmpeg_path`），编码为 48 kHz 立体声 Opus、20 ms 帧。
+- `bitrate_kbps` 范围为 16–256；音频使用与 H.264 相同的 FFmpeg（`video.h264.ffmpeg_path`，该路径只能在主机的配置文件中修改，网页接口会拒绝），编码为 48 kHz 立体声 Opus、20 ms 帧。
 - 所有 WebRTC 会话共用一个 FFmpeg 采集进程：第一个需要音频的会话启动它，最后一个会话结束时停止并回收整个进程组。采集失败或 10 秒没有数据时，状态变为 `error`，在仍有观看者时以 1–30 秒退避重试。
 - 音频与视频互相独立：浏览器只在服务端启用音频时请求音频轨道；服务端只有在检测到设备时才添加 Opus 轨道，否则照常只协商视频。音频转发不参与会话看门狗，采集失败、设备拔出或修改音频设置都不会断开、重启或重新协商视频。只修改音频设置也不会重启视频采集。已建立的会话保留原有轨道：带音频轨道的会话会切换到新的采集设备，开启音频前建立的会话需重新连接才能获得音频（在设置页点击「应用」会让当前页面自动重连）。
 - 浏览器始终以静音开始（满足自动播放策略），点击工具栏扬声器按钮取消静音；若浏览器拒绝带声音播放，会自动回到静音并继续播放画面。
@@ -643,4 +643,4 @@ FFmpeg 编码器探测使用独立进程组和有界监督：启动或重新配�
 
 `server.listen_address` 接受不带方括号的 IPv4 或 IPv6 字面地址，`server.port` 范围为 1–65535；加载与保存使用相同校验。通过完整配置 PUT 修改监听地址或端口后，需要重启服务才会重新绑定；这类成功响应带有 `X-WingmanKVM-Restart-Required: true`。响应头表示本次提交更改了监听设置，不是当前进程监听状态的查询。
 
-HID 的 `write_timeout_ms` 和 `retry_interval_ms` 已弃用：旧配置文件兼容加载并提示，HTTP 配置更新会明确拒绝这两个字段。实际仍使用每份报告 500 ms 的固定期限和就绪等待，详见 [HID 配置迁移](docs/HID_CONFIGURATION.md)。
+HID 的 `write_timeout_ms` 和 `retry_interval_ms` 已弃用：旧配置文件兼容加载并提示，HTTP 配置更新会明确拒绝这两个字段。实际仍使用每份报告 500 ms 的固定期限和就绪等待，详见 [HID 配置迁移](HID_CONFIGURATION.md)。
