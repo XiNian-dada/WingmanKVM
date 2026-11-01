@@ -8,6 +8,7 @@ import { updateDiagnosticsCard } from './05-power.js';
 import { shouldVideoRun, startVideo, stopVideo } from './07-video.js';
 import { isPipActive } from './07a-pip.js';
 import { recordMacroKey, renderKeyboardMacroMenu } from './07z-keyboard-macros.js';
+import { setInputSocketLostHandler } from './08a-input-socket.js';
 import { refreshStatus } from './10-workspace-status.js';
 
 let panStartX = 0;
@@ -18,6 +19,30 @@ let remoteWanted = false;
 let mouseBusy = false;
 let mouseTimer = 0;
 let lastMouseSend = 0;
+
+// Mouse buttons. The server owns the real bitmask; this is what the console
+// believes it asked for, so it knows what to release. Buttons are lifted either
+// by a normal release or by releaseHeldButtons() on anything that could lose
+// sight of the physical button (blur, capture loss, socket drop, ...).
+const HID_BUTTON_BITS = [1, 2, 4];
+// event.button 0/1/2 is left/middle/right; event.buttons and HID both use
+// 1/4/2 for those, so event.buttons can be compared with the mask directly.
+const HID_BUTTON_FOR_EVENT = [1, 4, 2];
+// Well inside the server's BUTTON_IDLE_RELEASE (30 s, src/devices/hid.rs): a
+// button held still is not a client that vanished.
+const POINTER_HEARTBEAT_MS = 10000;
+const CONTEXT_MENU_GUARD_MS = 500;
+let heldButtons = 0;
+let capturedPointer = null;
+let lastPoint = null;
+let heartbeatTimer = 0;
+let rightReleasedAt = -Infinity;
+// Press, move and release leave strictly one at a time: HTTP requests on
+// separate connections could otherwise overtake each other.
+let pointerTail = Promise.resolve();
+let pointerEpoch = 0;
+let pressesInFlight = 0;
+let releaseAfterPresses = false;
 
 let lastHidToast = 0;
 // Only a write timeout (HTTP 504, e.g. target powered off) is noisy enough to
@@ -1034,15 +1059,45 @@ function normalizeKey(event) {
     return code;
   return null;
 }
+function postReleaseAll() {
+  if (app.classList.contains('hidden') || shared.bootstrap.authenticated === false) return Promise.resolve();
+  return request('/api/input/release-all', { method: 'POST', keepalive: true });
+}
+function endPointerDrag() {
+  clearInterval(heartbeatTimer);
+  heartbeatTimer = 0;
+  const pointer = capturedPointer;
+  capturedPointer = null;
+  if (pointer === null) return;
+  try {
+    viewport.releasePointerCapture?.(pointer);
+  } catch (_) {}
+}
+// Forgets every held button and whatever pointer traffic has not left yet. The
+// caller sends the release-all, on its own connection and so ahead of a press
+// already on its way; that press is followed by a second release once it lands.
+function forgetPointerButtons() {
+  pointerEpoch += 1;
+  heldButtons = 0;
+  shared.mouseX = shared.mouseY = 0;
+  shared.absolutePending = null;
+  if (pressesInFlight) releaseAfterPresses = true;
+  endPointerDrag();
+}
 // Background releases (blur, logout, pause) are best effort; the explicit
 // "release keys" button passes `strict` so the user learns if it failed.
 function releaseAll({ strict = false } = {}) {
-  shared.mouseX = shared.mouseY = 0;
-  shared.absolutePending = null;
+  forgetPointerButtons();
   resetVirtualModifiers();
-  if (app.classList.contains('hidden') || shared.bootstrap.authenticated === false) return Promise.resolve();
-  const released = request('/api/input/release-all', { method: 'POST', keepalive: true });
+  const released = postReleaseAll();
   return strict ? released : released.catch(() => {});
+}
+// The physical button may stay down after this; nothing presses it again until
+// the user lifts it and presses anew.
+function releaseHeldButtons() {
+  if (!heldButtons && !pressesInFlight) return;
+  forgetPointerButtons();
+  postReleaseAll().catch(() => {});
 }
 function stopInput() {
   shared.pageActive = false;
@@ -1076,7 +1131,8 @@ function absoluteMode() {
 function activeVideoSurface() {
   return shared.activeVideoTransport === 'webrtc_h264' ? webrtcFeed : feed;
 }
-function mapAbsolute(clientX, clientY) {
+// `clamp` keeps a captured drag on the picture's edge when the pointer leaves it.
+function mapAbsolute(clientX, clientY, clamp = false) {
   const surface = activeVideoSurface(),
     sourceWidth = surface instanceof HTMLVideoElement ? surface.videoWidth : surface.naturalWidth,
     sourceHeight = surface instanceof HTMLVideoElement ? surface.videoHeight : surface.naturalHeight;
@@ -1095,9 +1151,12 @@ function mapAbsolute(clientX, clientY) {
     left = box.left + (box.width - width) / 2;
     top = box.top + (box.height - height) / 2;
   }
-  const nx = (clientX - left) / width,
+  let nx = (clientX - left) / width,
     ny = (clientY - top) / height;
-  if (nx < 0 || nx >= 1 || ny < 0 || ny >= 1) return null;
+  if (clamp) {
+    nx = Math.max(0, Math.min(1, nx));
+    ny = Math.max(0, Math.min(1, ny));
+  } else if (nx < 0 || nx >= 1 || ny < 0 || ny >= 1) return null;
   return {
     x: Math.max(0, Math.min(32767, Math.round(nx * 32767))),
     y: Math.max(0, Math.min(32767, Math.round(ny * 32767))),
@@ -1119,6 +1178,113 @@ function scheduleMouse() {
   const wait = Math.max(0, 16 - (performance.now() - lastMouseSend));
   mouseTimer = setTimeout(flushMouse, wait);
 }
+function sendPointer(url, body, { press = false, reliable = false } = {}) {
+  const epoch = pointerEpoch,
+    send = () => request(url, { method: 'POST', body: JSON.stringify(body), reliable }),
+    run = async () => {
+      if (epoch !== pointerEpoch) return undefined;
+      if (!press) return send();
+      pressesInFlight += 1;
+      try {
+        return await send();
+      } finally {
+        pressesInFlight -= 1;
+        if (!pressesInFlight && releaseAfterPresses) {
+          releaseAfterPresses = false;
+          postReleaseAll().catch(() => {});
+        }
+      }
+    },
+    result = pointerTail.then(run);
+  pointerTail = result.catch(() => {});
+  return result;
+}
+function sendAbsoluteMove(point, options) {
+  lastPoint = point;
+  return sendPointer('/api/mouse/absolute', { action: 'move', ...point }, options);
+}
+// Sends the position the throttle is still sitting on, ahead of a button change.
+function flushPointerPosition(event) {
+  clearTimeout(mouseTimer);
+  mouseTimer = 0;
+  if (absoluteMode()) {
+    const point = (event && mapAbsolute(event.clientX, event.clientY, true)) || shared.absolutePending;
+    shared.absolutePending = null;
+    if (point && (point.x !== lastPoint?.x || point.y !== lastPoint?.y))
+      sendAbsoluteMove(point, { reliable: true }).catch(handleHidError);
+  } else if (shared.mouseX || shared.mouseY) {
+    const dx = shared.mouseX,
+      dy = shared.mouseY;
+    shared.mouseX = shared.mouseY = 0;
+    sendPointer('/api/mouse/move', { dx, dy }, { reliable: true }).catch(handleHidError);
+  }
+}
+function pointerHeartbeat() {
+  if (!inputEnabled()) {
+    releaseHeldButtons();
+    return;
+  }
+  if (absoluteMode()) {
+    if (lastPoint) sendAbsoluteMove(lastPoint).catch(handleHidError);
+  } else sendPointer('/api/mouse/move', { dx: 0, dy: 0 }).catch(handleHidError);
+}
+function buttonRequest(action, bit) {
+  return absoluteMode()
+    ? ['/api/mouse/absolute', { action, ...lastPoint, button: bit }]
+    : [`/api/mouse/${action}`, { button: bit }];
+}
+function pressButton(bit, event) {
+  if (heldButtons & bit) return;
+  if (absoluteMode()) {
+    // A second button during a drag may be pressed off the picture; a first
+    // press there is a press on nothing.
+    const point = mapAbsolute(event.clientX, event.clientY, heldButtons !== 0);
+    if (!point) return;
+    clearTimeout(mouseTimer);
+    mouseTimer = 0;
+    shared.absolutePending = null;
+    lastPoint = point;
+  } else flushPointerPosition();
+  heldButtons |= bit;
+  if (capturedPointer === null && !relativeCaptured()) {
+    // So the release is seen wherever the pointer goes. Pointer lock already
+    // sends everything to the viewport and refuses capture.
+    try {
+      viewport.setPointerCapture?.(event.pointerId);
+      capturedPointer = event.pointerId;
+    } catch (_) {}
+  }
+  if (!heartbeatTimer) heartbeatTimer = setInterval(pointerHeartbeat, POINTER_HEARTBEAT_MS);
+  const epoch = pointerEpoch,
+    [url, body] = buttonRequest('press', bit);
+  sendPointer(url, body, { press: true }).catch((error) => {
+    handleHidError(error);
+    if (epoch !== pointerEpoch) return;
+    heldButtons &= ~bit;
+    if (!heldButtons) endPointerDrag();
+    // The press may still have reached the target (a lost reply or a timeout).
+    const [releaseUrl, releaseBody] = buttonRequest('release', bit);
+    sendPointer(releaseUrl, releaseBody).catch(() => {});
+  });
+}
+function releaseButton(bit, event) {
+  flushPointerPosition(event);
+  heldButtons &= ~bit;
+  if (bit === 2) rightReleasedAt = performance.now();
+  if (!heldButtons) endPointerDrag();
+  const [url, body] = buttonRequest('release', bit);
+  sendPointer(url, body).catch((error) => {
+    handleHidError(error);
+    postReleaseAll().catch(() => {});
+  });
+}
+// event.buttons is the physical state; event.button names a change. A press
+// with another button already down arrives as a pointermove, not a pointerdown.
+function syncPointerButtons(event) {
+  for (const bit of HID_BUTTON_BITS) if (heldButtons & bit & ~event.buttons) releaseButton(bit, event);
+  const bit = HID_BUTTON_FOR_EVENT[event.button];
+  if (bit && event.buttons & bit) pressButton(bit, event);
+}
 async function flushMouse() {
   mouseTimer = 0;
   if (mouseBusy || !inputEnabled()) return;
@@ -1127,6 +1293,7 @@ async function flushMouse() {
     if (!shared.absolutePending) return;
     const point = shared.absolutePending;
     shared.absolutePending = null;
+    lastPoint = point;
     url = '/api/mouse/absolute';
     body = { action: 'move', ...point };
   } else {
@@ -1141,7 +1308,7 @@ async function flushMouse() {
   mouseBusy = true;
   lastMouseSend = performance.now();
   try {
-    await request(url, { method: 'POST', body: JSON.stringify(body) });
+    await sendPointer(url, body);
   } catch (e) {
     handleHidError(e);
   } finally {
@@ -1312,7 +1479,10 @@ export function init() {
     handleVideoVisibility();
   });
   document.addEventListener('pointerlockchange', () => {
-    if (!relativeCaptured()) shared.mouseX = shared.mouseY = 0;
+    if (!relativeCaptured()) {
+      shared.mouseX = shared.mouseY = 0;
+      releaseHeldButtons();
+    }
     syncInputUi();
   });
   document.addEventListener('pointerlockerror', () => toast('浏览器未允许捕获鼠标', true));
@@ -1329,14 +1499,14 @@ export function init() {
     }
     if (!inputEnabled()) return;
     if (absoluteMode()) {
-      const point = mapAbsolute(event.clientX, event.clientY);
-      shared.absolutePending = point;
-      if (!point) return;
+      const point = mapAbsolute(event.clientX, event.clientY, heldButtons !== 0);
+      if (point || !heldButtons) shared.absolutePending = point;
     } else {
       if (!relativeCaptured()) return;
       shared.mouseX += event.movementX;
       shared.mouseY += event.movementY;
     }
+    syncPointerButtons(event);
     scheduleMouse();
   });
   viewport.addEventListener('pointerdown', (event) => {
@@ -1371,22 +1541,47 @@ export function init() {
       pulseViewport();
       return;
     }
-    const button = event.button === 0 ? 1 : event.button === 2 ? 2 : 4;
-    if (absoluteMode()) {
-      const point = mapAbsolute(event.clientX, event.clientY);
-      shared.absolutePending = point;
-      if (!point) return;
-      request('/api/mouse/absolute', {
-        method: 'POST',
-        body: JSON.stringify({ action: 'click', ...point, button }),
-      }).catch(handleHidError);
-    } else
-      request('/api/mouse/click', { method: 'POST', body: JSON.stringify({ button }) }).catch(handleHidError);
+    syncPointerButtons(event);
   });
   viewport.addEventListener('pointerup', stopPanning);
   viewport.addEventListener('pointercancel', stopPanning);
+  // On window, not the viewport: if capture could not be taken the release may
+  // happen over something else. Touch never holds a button.
+  window.addEventListener('pointerup', (event) => {
+    if (heldButtons && event.pointerType !== 'touch') syncPointerButtons(event);
+  });
+  viewport.addEventListener('pointercancel', (event) => {
+    if (event.pointerType !== 'touch') releaseHeldButtons();
+  });
+  viewport.addEventListener('lostpointercapture', (event) => {
+    if (event.pointerId !== capturedPointer) return;
+    capturedPointer = null;
+    releaseHeldButtons();
+  });
   viewport.addEventListener('contextmenu', (event) => {
     if (inputEnabled() || shared.isPanActive) event.preventDefault();
+  });
+  // A right drag can end over something other than the viewport, where the
+  // context menu that follows the release would otherwise open locally.
+  document.addEventListener(
+    'contextmenu',
+    (event) => {
+      if (heldButtons & 2 || performance.now() - rightReleasedAt < CONTEXT_MENU_GUARD_MS) event.preventDefault();
+    },
+    true,
+  );
+  setInputSocketLostHandler(releaseHeldButtons);
+  // Every video transport change passes here, however it was caused: the surface
+  // a drag was mapped onto is going away, so the drag ends with it.
+  let videoTransport = shared.activeVideoTransport;
+  Object.defineProperty(shared, 'activeVideoTransport', {
+    enumerable: true,
+    get: () => videoTransport,
+    set(next) {
+      if (next === videoTransport) return;
+      videoTransport = next;
+      releaseHeldButtons();
+    },
   });
   viewport.addEventListener(
     'wheel',
@@ -1445,7 +1640,7 @@ export function init() {
 
 export {
   absoluteMode, activeModifiers, activeVideoSurface, closeQuickMore, handleHidError, inputEnabled,
-  interactiveTarget, mapAbsolute, relativeCaptured, renderKeyboardLeds, renderQuickCombos,
+  interactiveTarget, mapAbsolute, relativeCaptured, releaseHeldButtons, renderKeyboardLeds, renderQuickCombos,
   resetVirtualModifiers, scheduleMouse, sendKey, setRemote, stopInput, syncInputUi, targetLayout,
   updatePasteLayoutLabel,
 };
