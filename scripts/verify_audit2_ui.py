@@ -3008,6 +3008,39 @@ def latency_expired_session_not_restored(browser, port, checks):
         context.close()
 
 
+def reset_preferences_covers_all(browser, port, checks):
+    """AUD3-29: "reset preferences" also restores adaptive bitrate and the quality overlay, live."""
+    state = State()
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_init_script("localStorage.setItem('wingman_setting_adaptive_bitrate', 'false');"
+                            "localStorage.setItem('wingman_setting_quality_overlay', 'true');")
+    page = context.new_page()
+    page.route("**/api/**", lambda route: api_route(route, state))
+    ui_harness.mock_video_feed(page)
+    page.on("dialog", lambda dialog: dialog.accept())
+    try:
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="load", timeout=15000)
+        page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+        settle_toolbar(page)
+        page.click("#settings-toggle")
+        page.wait_for_selector("#settings-dialog[open]", timeout=3000)
+        before = (page.is_checked("#setting-adaptive-bitrate"), page.get_attribute("#quality-toggle", "aria-pressed"))
+        check(checks, before == (False, "true"), "reset_test_starts_from_changed_preferences", before)
+        page.click("#setting-reset-btn")
+        ui_harness.wait_until(page, lambda: page.is_checked("#setting-adaptive-bitrate"))
+        after = page.evaluate("""() => ({
+          adaptive: window.__wingmanTest.adaptiveBitrate().enabled,
+          overlay: document.querySelector('#quality-toggle').getAttribute('aria-pressed'),
+          stored: [localStorage.getItem('wingman_setting_adaptive_bitrate'),
+                   localStorage.getItem('wingman_setting_quality_overlay')],
+        })""")
+        check(checks, after["adaptive"] is True and after["overlay"] == "false"
+              and after["stored"][0] != "false" and after["stored"][1] != "true",
+              "reset_restores_adaptive_bitrate_and_quality_overlay", after)
+    finally:
+        context.close()
+
+
 # Every function taking (browser, port, checks) is a scenario, run in
 # definition order; new scenarios need no list edit (and no merge conflict).
 SCENARIOS = [
