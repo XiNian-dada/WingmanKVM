@@ -89,6 +89,28 @@ as `"ok": null, "skipped": true`; the orchestrator counts them as explicit
 non-failure skips, never as true passes. `--skip-ui` exists for local debugging
 only and is recorded as skipped; CI always runs the UI gates.
 
+## README 截图与演示动图（#96）
+
+界面改动后，一条命令重新生成 `docs/images/` 下全部截图和 README 顶部的中英文演示动图
+（`demo-zh.webp`、`demo-en.webp`）：
+
+```bash
+python3 scripts/capture_screenshots.py --browser-channel chrome
+# 只生成截图 / 只生成动图：加 --skip-demo / --demo-only
+# 单独调试动图并保留逐帧 PNG：
+python3 scripts/capture_demo.py --lang en --output-dir "$SCRATCH/demo" --keep-frames "$SCRATCH/demo/frames"
+```
+
+- 与 UI 门禁一样用 `scripts/ui_harness.py` 提供真实界面，所有 `/api/**`、键鼠 WebSocket 和
+  `/video_feed` 都由 `scripts/capture_fixtures.py` 模拟，画面是合成的终端帧，不连接任何设备。
+- 动图流程：控制台 → 粘贴为键入 → 虚拟介质面板 → 诊断弹层；不展示也不点击电源/复位按钮。
+  每一步是固定时长的静态截图（不录屏），再用 `img2webp`（libwebp，`brew install webp` /
+  `apt install webp`）合成循环 WebP；单个文件超过 2 MB 时脚本报错。不依赖 ffmpeg：未编入 libwebp 的 ffmpeg 无法输出动画 WebP。
+- 视口、缩放、语言、时区、浏览器时钟和渲染参数都已固定，同一台机器重跑通常只在界面变化时
+  改变图片（个别帧可能有少量抗锯齿差异）。字体取自本机：请在 macOS 上生成要提交的图片，
+  中文界面才会使用 PingFang SC。
+- 提交前请逐张打开生成的图片检查：界面语言正确、没有错误提示、样式完整。
+
 ## Sequential orchestrator
 
 The full orchestrator is a Linux gate and requires kernel/Python pidfd support

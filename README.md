@@ -2,6 +2,8 @@
 
 # WingmanKVM
 
+![WingmanKVM 操作演示：在浏览器控制台中用“粘贴为键入”把命令输入被控机，打开虚拟介质面板查看已挂载的 ISO，再打开连接与设备诊断](docs/images/demo-zh.webp)
+
 WingmanKVM 是一个运行在 ARM 开发板上的网页 KVM。把被控机的 HDMI 输出接到采集卡、USB 接到开发板的 OTG 口，就可以在浏览器里远程看画面、操作键鼠（包括 BIOS 阶段）、挂载 ISO 镜像，并可选地通过 GPIO 继电器控制电源。
 
 单个二进制部署，不需要额外的数据库或前端构建工具。

@@ -66,6 +66,33 @@ as `"ok": null, "skipped": true`; the orchestrator counts them as explicit
 non-failure skips, never as true passes. `--skip-ui` exists for local debugging
 only and is recorded as skipped; CI always runs the UI gates.
 
+## README screenshots and demo animation (#96)
+
+After a UI change, one command regenerates every screenshot in `docs/images/` and the
+Chinese/English demo animations at the top of the READMEs (`demo-zh.webp`, `demo-en.webp`):
+
+```bash
+python3 scripts/capture_screenshots.py --browser-channel chrome
+# screenshots only / animation only: add --skip-demo / --demo-only
+# debug the animation alone and keep the PNG frames:
+python3 scripts/capture_demo.py --lang en --output-dir "$SCRATCH/demo" --keep-frames "$SCRATCH/demo/frames"
+```
+
+- Like the UI gates, it serves the real UI through `scripts/ui_harness.py`; every `/api/**`
+  call, the input WebSocket and `/video_feed` are mocked by `scripts/capture_fixtures.py`, and
+  the picture is a synthetic terminal frame. No device is contacted.
+- Demo flow: console → paste as typing → virtual media panel → diagnostics popover. Power and
+  reset controls are never shown or clicked. Each step is a still screenshot with a fixed
+  duration (no screen recording), assembled into a looping WebP with `img2webp` (libwebp:
+  `brew install webp` / `apt install webp`). The script fails if a file exceeds 2 MB. ffmpeg is not
+  needed: builds without libwebp cannot write animated WebP.
+- Viewport, scale, language, time zone, browser clock and raster flags are fixed, so reruns on
+  the same machine normally change images only when the UI changes (a few frames may differ by
+  some anti-aliased pixels). Fonts come from the host: generate committed images on macOS so
+  the Chinese UI uses PingFang SC.
+- Before committing, open every generated image and check the language, that no error toast
+  is visible, and that styles are intact.
+
 ## Sequential orchestrator
 
 The full orchestrator is a Linux gate and requires kernel/Python pidfd support
