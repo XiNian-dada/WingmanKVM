@@ -8,3 +8,4 @@ wingmankvm-state/
 /output/playwright/
 __pycache__/
 *.pyc
+/node_modules/

@@ -1,0 +1,14 @@
+{
+  "name": "wingmankvm-web",
+  "private": true,
+  "description": "Lint tooling for the WingmanKVM browser UI (web/js/app). Not a build step: the modules ship as-is.",
+  "type": "module",
+  "scripts": {
+    "lint": "eslint"
+  },
+  "devDependencies": {
+    "eslint": "10.14.0",
+    "espree": "11.2.0",
+    "globals": "17.13.0"
+  }
+}
