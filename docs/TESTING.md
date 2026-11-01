@@ -39,13 +39,22 @@ cargo build --locked
   可变状态放在 `state.js` 的 `shared` 对象里（导入的绑定在导入方是只读的），只在一个
   模块内使用的状态留作该模块的局部变量；不使用 `window` 全局变量
   （测试钩子 `window.__wingmanTest` 除外）。
-- 模块求值时只声明函数和模块内状态，不调用其他模块：存在循环依赖时，模块的求值顺序
-  不是文件名顺序。DOM 事件绑定写在各模块导出的 `init()` 中，由 `main.js` 按原片段
-  顺序调用，最后执行启动序列。`00-settings.js`（本地偏好）不导入任何模块，因此可在
-  求值期间读取。
+- DOM 事件绑定写在各模块导出的 `init()` 中，由 `main.js` 按原片段顺序调用，最后执行
+  启动序列；模块求值时基本只声明函数和模块内状态。存在循环依赖时，模块的求值顺序不是
+  文件名顺序，所以求值期间跨模块只能做两类事：
+  - 读取不导入任何模块的 `00-core.js`、`00-settings.js`、`state.js` 的绑定：它们不在
+    任何循环里，总是先于导入方求值。
+  - 调用其他模块用 `function` 声明的函数（链接阶段已初始化，与求值顺序无关），且该函数
+    不读取尚未求值的模块状态。例如 `06`、`11`、`12*` 在顶层调用 `latestOnly()`。
+
+  其余 `const`/`let`/`class` 绑定此时可能还在暂时性死区，读取会抛 `ReferenceError` 并
+  白屏：把 `latestOnly` 改成 `const` 箭头函数就会启动崩溃，UI 套件会报出错误和堆栈。
 - 新增模块：在 `web/js/app/` 建文件、从使用方 `import`，并加入 `APP_JS_MODULES`。
   Rust 测试会检查：目录下每个文件都已内嵌、每个 `import` 都指向已内嵌的同级模块、
   所有模块都能从 `main.js` 到达。
+- 新增样式片段：在 `web/css/app/` 建文件，并按文件名顺序加入 `src/web_ui.rs` 的
+  `APP_CSS_PARTS`。`scripts/ui_bundle.py` 的 `css_parts()` 会比对两者，不一致时所有 UI
+  套件直接失败，否则测试里样式正常而发布的二进制缺样式。
 
 ESLint（flat config：`eslint.config.js`）只检查非风格问题：`no-undef`、
 `no-unused-vars`、`no-import-assign`、`no-const-assign`、`no-func-assign`、
@@ -78,11 +87,27 @@ runs `deploy/wingmankvm-setup-url` with fake `id`/`systemctl`/`hostname`. It
 checks `--mdns-hostname` validation, the avahi service file, the minimal
 `avahi-daemon.conf` `host-name=` edit (backup, idempotence, other sections
 untouched) and that the `.local` URL is listed first only while avahi runs.
-The setup-url checks are skipped on bash older than 4.4 (stock macOS).
+The setup-url checks are skipped on bash older than 4.4 outside Linux (stock
+macOS); on Linux an old bash fails them instead of skipping.
 
 ```bash
 python3 scripts/verify_mdns.py
 ```
+
+## Doctor gate (no root, no hardware)
+
+`scripts/verify_doctor.py` fabricates sysfs/dev trees in a temporary directory,
+puts command stubs on `PATH` and runs `deploy/wingmankvm-doctor` with
+`WINGMANKVM_*` path overrides. It checks the JSON and human output, exit codes
+and repair hints for healthy and broken systems, and `--preflight`. It never
+touches real `/sys`, `/dev`, systemd, network ports or capture hardware.
+
+```bash
+python3 scripts/verify_doctor.py
+```
+
+CI runs `verify_get_script.py`, `verify_mdns.py` and `verify_doctor.py` as their
+own steps in `regression.yml`, before any toolchain is installed.
 
 ## HTTP/API gates (real binary, black-box)
 
@@ -113,16 +138,31 @@ python3 scripts/verify_ui_suite.py --output-dir "$SCRATCH/ui" --browser-channel 
 ```
 
 All suites share `scripts/ui_harness.py` (static server, xterm assets, video
-feed mock, `check()` and the JSON report). 页面来自 `scripts/ui_bundle.py`：它把样式表
+feed mock, `check()`, uncaught-error tracking and the JSON report). 页面来自 `scripts/ui_bundle.py`：它把样式表
 内联进 `index.html`，`web/js/app/` 下的模块则按生产路径 `/assets/js/<name>` 提供，
 所以浏览器执行的就是线上那份模块图。 A new suite only defines its API
 mock and scenarios; add it to `SUITES` in `verify_ui_suite.py` and to `CASES`
 in `verify_regressions.py` so CI runs it.
 
-Headless Chromium may refuse pointer lock/fullscreen. Those cases are recorded
-as `"ok": null, "skipped": true`; the orchestrator counts them as explicit
+Headless Chromium may refuse pointer lock/fullscreen. p2b spies on
+`requestPointerLock`/`requestFullscreen`: if the app never called them the suite
+fails (`pointerlock_requested_by_app`, `fullscreen_requested_by_app`). Only when
+the app asked and the browser refused is the follow-up recorded as
+`"ok": null, "skipped": true`; the orchestrator counts those as explicit
 non-failure skips, never as true passes. `--skip-ui` exists for local debugging
 only and is recorded as skipped; CI always runs the UI gates.
+
+- 未捕获的页面错误：套件用 `ui_harness.launch_browser()` 启动浏览器，任何页面的未捕获
+  异常或未处理的 Promise 拒绝都会让套件失败，报告的 `error`/`page_errors` 带消息和堆栈，
+  并增加检查项 `no_uncaught_page_errors`。上下文级 init 脚本也会在初始 `about:blank` 上
+  运行，在那里访问 `localStorage` 会抛错，需先判断 `location.protocol`。
+- 接口模拟：各套件的默认 API 模拟对未知路径返回 404，不再是一律 200，所以接口改名或新增
+  接口不会被悄悄放过。新增页面请求时要在模拟里按服务端的返回结构补上。
+- 桌面输入（`verify_audit2_ui.py` 的 `desktop_*` 场景）：用真实的 `page.mouse` 和点击
+  断言发往 HID 接口的载荷：fit 模式已知点的绝对坐标（±1，含黑边）、左右中键、滚轮符号与
+  ±127 钳位、相对移动拆包、每个 `[data-quick-key]`、虚拟键盘粘滞修饰键。无头浏览器拒绝
+  指针锁定时桩接 `requestPointerLock`，且只有应用自己发起请求才会“锁定”；真实指针锁定
+  仍需有界面的浏览器或真机验证。场景不涉及电源和复位控件。
 
 ## README 截图与演示动图（#96）
 
@@ -198,6 +238,7 @@ python3 scripts/verify_regressions.py ... \
 | --- | --- | --- |
 | ESLint | 前端模块的未定义/未使用名字、import 解析 | 运行时行为（由 UI 套件覆盖） |
 | `cargo test` | Native unit/integration behavior | Real hardware |
+| Installer/doctor scripts | `get.sh`, mDNS helpers, setup URL and `wingmankvm-doctor` against fixtures and fake commands | Real install, real avahi, real hardware |
 | API scripts | Real binary over loopback, stubbed host tools | Real capture/HID/GPIO |
 | UI scripts | Real Chrome DOM/JS with mocked API | Real backend, real devices |
 | Cookie/upgrade gates | Session-cookie and upgrade boundaries | Host deployment |
