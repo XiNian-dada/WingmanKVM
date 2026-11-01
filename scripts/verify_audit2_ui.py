@@ -1410,6 +1410,119 @@ def pip_webrtc(browser, port, checks):
         context.close()
 
 
+H264_LIVE = ("() => { const t = document.querySelector('#video-transport-label').textContent;"
+             " return /H.264/.test(t) && /LIVE/.test(t); }")
+MJPEG_SHOWN = "() => /MJPEG/.test(document.querySelector('#video-transport-label').textContent)"
+SERVER_CLOSE = """() => {
+  const peer = window.__peers.at(-1);
+  peer.connectionState = 'closed';
+  peer.onconnectionstatechange();
+}"""
+
+
+def h264_retry_page(browser, state, port, offers, fail):
+    """An H.264-capable page whose offer endpoint records the time of every
+    POST and answers 503 while fail[0] is true."""
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    for stub in (PIP_STUB, FAKE_PEER):
+        page.add_init_script(stub)
+    page.route("**/api/**", lambda route: api_route(route, state))
+    page.route("**/video_feed*", lambda route: route.fulfill(
+        status=200, content_type="image/gif", body=GIF))
+
+    def bootstrap(route):
+        body = bootstrap_payload(state)
+        body["capabilities"]["video_webrtc_h264"] = True
+        body["webrtc"] = {"available": True}
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+    def offer(route):
+        offers.append(time.monotonic())
+        if fail[0]:
+            route.fulfill(status=503, content_type="application/json",
+                          body=json.dumps({"error": "H.264 编码器正在后台探测"}))
+        else:
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(
+                {"type": "answer", "session_id": f"s{len(offers)}", "sdp": "a=rtpmap:96 H264/90000"}))
+
+    page.route("**/api/bootstrap", bootstrap)
+    page.route("**/api/webrtc/offer", offer)
+    page.route("**/api/webrtc/close", lambda route: route.fulfill(
+        status=200, content_type="application/json", body="{}"))
+    page.goto(f"http://127.0.0.1:{port}/", wait_until="load", timeout=15000)
+    page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+    page.bring_to_front()
+    return context, page
+
+
+def label(page):
+    return page.text_content("#video-transport-label")
+
+
+def h264_returns_after_server_close(browser, port, checks):
+    """AUD3-21: the server closed the H.264 session (settings saved in another
+    tab): MJPEG keeps the picture, then H.264 comes back by itself."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    offers, fail = [], [False]
+    context, page = h264_retry_page(browser, state, port, offers, fail)
+    try:
+        page.wait_for_function(H264_LIVE, timeout=8000)
+        closed_at = time.monotonic()
+        page.evaluate(SERVER_CLOSE)
+        page.wait_for_function(MJPEG_SHOWN, timeout=3000)
+        check(checks, len(offers) == 1, "h264_server_close_falls_back_to_mjpeg_first", label(page))
+        page.wait_for_function(f"() => ({H264_LIVE})()", timeout=10000)
+        gap = offers[-1] - closed_at
+        check(checks, len(offers) == 2 and gap >= 2.5, "h264_retried_once_after_a_pause",
+              f"offers={len(offers)} gap={gap:.2f}s")
+        check(checks, "H.264" in label(page), "h264_recovers_after_server_close", label(page))
+    finally:
+        context.close()
+
+
+def h264_retry_backs_off(browser, port, checks):
+    """AUD3-21: while H.264 keeps failing, retries slow down instead of
+    storming the server, and the MJPEG picture stays up meanwhile."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    offers, fail = [], [True]
+    context, page = h264_retry_page(browser, state, port, offers, fail)
+    try:
+        page.wait_for_function(MJPEG_SHOWN, timeout=8000)
+        page.wait_for_timeout(10_500 - int((time.monotonic() - offers[0]) * 1000))
+        gaps = [later - earlier for earlier, later in zip(offers, offers[1:])]
+        check(checks, len(offers) == 3, "h264_failed_retries_are_bounded",
+              f"offers={len(offers)} gaps={[round(g, 2) for g in gaps]}")
+        check(checks, 2.5 <= gaps[0] <= 5 and gaps[1] >= 1.6 * gaps[0], "h264_retry_delay_doubles",
+              [round(g, 2) for g in gaps])
+        check(checks, "MJPEG" in label(page) and page.is_visible("#video-feed"),
+              "mjpeg_kept_while_h264_retries", label(page))
+    finally:
+        context.close()
+
+
+def h264_retry_respects_mjpeg_choice(browser, port, checks):
+    """AUD3-21: choosing MJPEG cancels a pending H.264 retry for good."""
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    offers, fail = [], [False]
+    context, page = h264_retry_page(browser, state, port, offers, fail)
+    try:
+        page.wait_for_function(H264_LIVE, timeout=8000)
+        page.locator('[data-panel-target="video"]').click()
+        page.evaluate(SERVER_CLOSE)
+        page.wait_for_function(MJPEG_SHOWN, timeout=3000)
+        # A retry is now pending; the user picks the MJPEG preset before it fires.
+        page.click('[data-video-preset="bios"]')
+        page.wait_for_timeout(6000)
+        check(checks, len(offers) == 1 and "MJPEG" in label(page), "h264_not_retried_after_mjpeg_choice",
+              f"offers={len(offers)} label={label(page)}")
+    finally:
+        context.close()
+
+
 def stats_report(at, scale=1, frames=None):
     """One getStats() result; counters grow linearly with `scale`."""
     return [

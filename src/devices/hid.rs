@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{self, Read, Write},
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
@@ -21,6 +21,9 @@ use tokio::{
 const WRITE_TIMEOUT: Duration = Duration::from_millis(500);
 const RELEASE_TIMEOUT: Duration = Duration::from_millis(500);
 const QUEUE_CAPACITY: usize = 64;
+/// While a channel is marked as re-enumerating, how often its nodes are
+/// checked for having come back.
+const LINK_PROBE_INTERVAL: Duration = Duration::from_millis(500);
 const ABSOLUTE_COORDINATE_MAX: u16 = 32_767;
 const ABSOLUTE_COORDINATE_CENTER: u16 = 16_384;
 
@@ -176,6 +179,9 @@ pub struct HidManager {
     keyboard_path_tx: watch::Sender<Option<PathBuf>>,
     keyboard_link_lost: Arc<AtomicBool>,
     mouse_link_lost: Arc<AtomicBool>,
+    /// Set for good once the process starts shutting down: the workers then
+    /// only execute releases, so nothing can be pressed after the last one.
+    closing: Arc<AtomicBool>,
 }
 
 impl Default for HidManager {
@@ -227,15 +233,35 @@ enum MouseCommand {
     },
 }
 
+/// Tells whether the USB host has the gadget behind a node configured,
+/// without writing to it; `None` when that cannot be told.
+type LinkReady = Box<dyn Fn(&Path) -> Option<bool> + Send>;
+
 /// Worker-local handle cache. HID reports are tiny and frequent, so reopening
 /// the gadget node for every report adds latency and widens the rebind race.
-#[derive(Default)]
 struct HidDeviceCache {
     devices: HashMap<PathBuf, AsyncFd<std::fs::File>>,
-    /// Set while the gadget node is gone; cleared by the next successful write.
+    /// Set while a gadget node is gone; cleared by the next successful write,
+    /// or once every lost node opens again with its USB link up.
     link_lost: Arc<AtomicBool>,
+    lost: HashSet<PathBuf>,
+    link_ready: LinkReady,
     #[cfg(test)]
     opens: usize,
+}
+
+impl Default for HidDeviceCache {
+    fn default() -> Self {
+        let roots = super::discovery::GadgetRoots::default();
+        Self {
+            devices: HashMap::new(),
+            link_lost: Arc::default(),
+            lost: HashSet::new(),
+            link_ready: Box::new(move |path| super::discovery::hid_link_ready(&roots, path)),
+            #[cfg(test)]
+            opens: 0,
+        }
+    }
 }
 
 /// Errors meaning the gadget node itself disappeared or was unbound (UDC
@@ -262,6 +288,7 @@ impl HidDeviceCache {
     fn record(&mut self, path: &Path, result: &Result<(), HidError>) {
         match result {
             Ok(()) => {
+                self.lost.clear();
                 if self.link_lost.swap(false, Ordering::AcqRel) {
                     tracing::info!(path = %path.display(), "HID gadget channel recovered");
                 }
@@ -270,6 +297,7 @@ impl HidDeviceCache {
                 // Never keep a descriptor for a node that no longer exists:
                 // the next write must reopen the re-enumerated device.
                 self.invalidate(path);
+                self.lost.insert(path.to_path_buf());
                 if !self.link_lost.swap(true, Ordering::AcqRel) {
                     tracing::warn!(%error, path = %path.display(), "HID gadget node gone; waiting for re-enumeration");
                 }
@@ -310,6 +338,32 @@ impl HidDeviceCache {
         self.devices.remove(path);
     }
 
+    fn link_lost(&self) -> bool {
+        !self.lost.is_empty()
+    }
+
+    /// Clears the re-enumerating mark once every lost node opens again and
+    /// its USB link is up, so the badge does not wait for the user to type.
+    /// Nothing is written: a probe report would reach the target as input.
+    fn probe_lost(&mut self) {
+        let lost: Vec<PathBuf> = self.lost.iter().cloned().collect();
+        for path in lost {
+            // ENOENT/ENODEV while the gadget is still being rebuilt.
+            if self.get_or_open(&path).is_err() {
+                continue;
+            }
+            // The node of an unplugged cable or a powered-off target stays
+            // and opens fine; only the UDC state says the host is back.
+            if (self.link_ready)(&path) == Some(false) {
+                continue;
+            }
+            self.lost.remove(&path);
+        }
+        if self.lost.is_empty() && self.link_lost.swap(false, Ordering::AcqRel) {
+            tracing::info!("HID gadget channel recovered: device node is back");
+        }
+    }
+
     #[cfg(test)]
     fn open_count(&self) -> usize {
         self.opens
@@ -322,25 +376,41 @@ impl HidManager {
     }
 
     pub fn with_keyboard_device(keyboard_device: Option<PathBuf>) -> Self {
+        Self::build(keyboard_device, true)
+    }
+
+    /// Tests that read a fake keyboard node must not race the LED reader for
+    /// its bytes.
+    #[cfg(test)]
+    fn without_led_reader() -> Self {
+        Self::build(None, false)
+    }
+
+    fn build(keyboard_device: Option<PathBuf>, led_reader: bool) -> Self {
         let (keyboard_tx, keyboard_rx) = mpsc::channel(QUEUE_CAPACITY);
         let (mouse_tx, mouse_rx) = mpsc::channel(QUEUE_CAPACITY);
         let (keyboard_path_tx, keyboard_path_rx) = watch::channel(keyboard_device);
         let keyboard_leds = Arc::new(AtomicU8::new(0));
         let keyboard_link_lost = Arc::new(AtomicBool::new(false));
         let mouse_link_lost = Arc::new(AtomicBool::new(false));
+        let closing = Arc::new(AtomicBool::new(false));
 
         tokio::spawn(keyboard_worker(
             keyboard_rx,
             HidDeviceCache::with_link(Arc::clone(&keyboard_link_lost)),
+            Arc::clone(&closing),
         ));
         tokio::spawn(mouse_worker(
             mouse_rx,
             HidDeviceCache::with_link(Arc::clone(&mouse_link_lost)),
+            Arc::clone(&closing),
         ));
-        tokio::spawn(keyboard_led_reader(
-            keyboard_path_rx,
-            Arc::clone(&keyboard_leds),
-        ));
+        if led_reader {
+            tokio::spawn(keyboard_led_reader(
+                keyboard_path_rx,
+                Arc::clone(&keyboard_leds),
+            ));
+        }
 
         Self {
             keyboard_tx,
@@ -349,6 +419,7 @@ impl HidManager {
             keyboard_path_tx,
             keyboard_link_lost,
             mouse_link_lost,
+            closing,
         }
     }
 
@@ -495,6 +566,21 @@ impl HidManager {
         }
         first_error.map_or(Ok(()), Err)
     }
+
+    /// Final release before the process exits. Presses still queued are
+    /// dropped and later ones refused, because a press that reached the target
+    /// after this release would stay down with nobody left to release it. A
+    /// key already being held finishes with its own release first.
+    pub async fn release_for_shutdown(
+        &self,
+        keyboard_path: Option<PathBuf>,
+        relative_mouse_path: Option<PathBuf>,
+        absolute_pointer_path: Option<PathBuf>,
+    ) -> Result<(), HidError> {
+        self.closing.store(true, Ordering::Release);
+        self.release_all(keyboard_path, relative_mouse_path, absolute_pointer_path)
+            .await
+    }
 }
 
 /// Emergency releases must not be dropped just because the queue is briefly
@@ -527,8 +613,33 @@ fn map_send_error<T>(error: mpsc::error::TrySendError<T>) -> HidError {
     }
 }
 
-async fn keyboard_worker(mut rx: mpsc::Receiver<KeyboardCommand>, mut devices: HidDeviceCache) {
-    while let Some(command) = rx.recv().await {
+fn link_probe() -> tokio::time::Interval {
+    let mut probe = tokio::time::interval(LINK_PROBE_INTERVAL);
+    probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    probe
+}
+
+async fn keyboard_worker(
+    mut rx: mpsc::Receiver<KeyboardCommand>,
+    mut devices: HidDeviceCache,
+    closing: Arc<AtomicBool>,
+) {
+    let mut probe = link_probe();
+    loop {
+        let command = tokio::select! {
+            command = rx.recv() => match command {
+                Some(command) => command,
+                None => break,
+            },
+            _ = probe.tick(), if devices.link_lost() => {
+                devices.probe_lost();
+                continue;
+            }
+        };
+        // Dropping the command makes its caller see `WorkerStopped`.
+        if closing.load(Ordering::Acquire) && !matches!(command, KeyboardCommand::Release { .. }) {
+            continue;
+        }
         match command {
             KeyboardCommand::Key {
                 path,
@@ -642,9 +753,33 @@ async fn keyboard_led_reader(mut path_rx: watch::Receiver<Option<PathBuf>>, leds
     }
 }
 
-async fn mouse_worker(mut rx: mpsc::Receiver<MouseCommand>, mut devices: HidDeviceCache) {
+async fn mouse_worker(
+    mut rx: mpsc::Receiver<MouseCommand>,
+    mut devices: HidDeviceCache,
+    closing: Arc<AtomicBool>,
+) {
     let mut absolute_states = HashMap::<PathBuf, AbsolutePointerState>::new();
-    while let Some(command) = rx.recv().await {
+    let mut probe = link_probe();
+    loop {
+        let command = tokio::select! {
+            command = rx.recv() => match command {
+                Some(command) => command,
+                None => break,
+            },
+            _ = probe.tick(), if devices.link_lost() => {
+                devices.probe_lost();
+                continue;
+            }
+        };
+        // Dropping the command makes its caller see `WorkerStopped`.
+        if closing.load(Ordering::Acquire)
+            && !matches!(
+                command,
+                MouseCommand::Release { .. } | MouseCommand::ReleaseAbsolute { .. }
+            )
+        {
+            continue;
+        }
         match command {
             MouseCommand::Move {
                 path,
@@ -1050,7 +1185,7 @@ pub fn keycode(code: &str) -> Option<u8> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1163,6 +1298,7 @@ mod tests {
             keyboard_path_tx,
             keyboard_link_lost: Arc::default(),
             mouse_link_lost: Arc::default(),
+            closing: Arc::default(),
         };
         let mouse_releases = tokio::spawn(async move {
             let mut relative = false;
@@ -1207,6 +1343,7 @@ mod tests {
             keyboard_path_tx,
             keyboard_link_lost: Arc::default(),
             mouse_link_lost: Arc::default(),
+            closing: Arc::default(),
         };
         let (dummy_reply, _dummy_response) = oneshot::channel();
         manager
@@ -1319,6 +1456,91 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reenumerating_mark_clears_when_the_node_returns_without_any_write() {
+        let root = crate::devices::hotplug::tests::temp_root("hidg-return");
+        let path = root.join("hidg1");
+        let manager = HidManager::without_led_reader();
+
+        // The node is gone: the release fails and marks the channel.
+        assert!(manager.release_all(None, Some(path.clone()), None).await.is_err());
+        assert!(manager.link_status().mouse_reenumerating);
+        assert!(!manager.link_status().keyboard_reenumerating);
+        tokio::time::sleep(LINK_PROBE_INTERVAL * 2).await;
+        assert!(manager.link_status().mouse_reenumerating, "still gone");
+
+        // It comes back, and the user does not type anything.
+        let reader = fake_hidg(&path);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while manager.link_status().mouse_reenumerating {
+            assert!(Instant::now() < deadline, "mark never cleared");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(drain(&reader).is_empty(), "the probe must not send a report");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn present_node_with_the_usb_link_down_stays_reenumerating() {
+        let root = crate::devices::hotplug::tests::temp_root("hidg-link-down");
+        let path = root.join("hidg0");
+        let link = Arc::new(AtomicBool::new(false));
+        let host_ready = Arc::new(AtomicU8::new(0));
+        let mut devices = HidDeviceCache::with_link(Arc::clone(&link));
+        let ready = Arc::clone(&host_ready);
+        devices.link_ready = Box::new(move |_| match ready.load(Ordering::Acquire) {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        });
+
+        let error = send_report(&path, &[0; 8], &mut devices).await.unwrap_err();
+        assert!(is_device_gone(&error));
+        let reader = fake_hidg(&path);
+
+        // Cable out: the node is there and opens, but the host is gone.
+        devices.probe_lost();
+        assert!(link.load(Ordering::Acquire));
+        host_ready.store(1, Ordering::Release);
+        devices.probe_lost();
+        assert!(!link.load(Ordering::Acquire));
+        assert!(drain(&reader).is_empty());
+
+        // Without configfs to ask, a node that opens is taken as back.
+        devices.invalidate(&path);
+        devices.record(&path, &Err(HidError::Io {
+            path: path.clone(),
+            source: io::Error::from_raw_os_error(libc::ESHUTDOWN),
+        }));
+        assert!(link.load(Ordering::Acquire));
+        host_ready.store(2, Ordering::Release);
+        devices.probe_lost();
+        assert!(!link.load(Ordering::Acquire));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn every_lost_node_must_return_before_the_mark_clears() {
+        let root = crate::devices::hotplug::tests::temp_root("hidg-two-lost");
+        let (relative, absolute) = (root.join("hidg1"), root.join("hidg2"));
+        let link = Arc::new(AtomicBool::new(false));
+        let mut devices = HidDeviceCache::with_link(Arc::clone(&link));
+        devices.link_ready = Box::new(|_| None);
+        assert!(send_report(&relative, &[0; 4], &mut devices).await.is_err());
+        assert!(send_report(&absolute, &[0; 6], &mut devices).await.is_err());
+
+        let _relative_reader = fake_hidg(&relative);
+        devices.probe_lost();
+        assert!(link.load(Ordering::Acquire), "the absolute node is still gone");
+        let _absolute_reader = fake_hidg(&absolute);
+        devices.probe_lost();
+        assert!(!link.load(Ordering::Acquire));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn enodev_on_cached_fd_invalidates_and_flags_link() {
         let link = Arc::new(AtomicBool::new(false));
@@ -1340,6 +1562,132 @@ mod tests {
             source: io::Error::from_raw_os_error(libc::EIO),
         };
         assert!(!is_device_gone(&eio));
+    }
+
+    /// A fake hidg node: a FIFO whose read end the test holds, so a report
+    /// written by the workers can be inspected byte for byte.
+    #[cfg(unix)]
+    pub(crate) fn fake_hidg(path: &Path) -> std::fs::File {
+        use std::os::unix::ffi::OsStrExt;
+
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `name` is a valid NUL-terminated path for the whole call.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0, "{path:?}");
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    fn drain(mut reader: &std::fs::File) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut chunk = [0_u8; 64];
+        while let Ok(count) = reader.read(&mut chunk) {
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..count]);
+        }
+        bytes
+    }
+
+    fn key(name: &str, hold_ms: u64) -> KeyRequest {
+        KeyRequest {
+            key: name.to_owned(),
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
+            hold_ms,
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn release_writes_an_idle_report_to_every_fake_hidg_node() {
+        let root = crate::devices::hotplug::tests::temp_root("hidg-release");
+        let (keyboard, mouse, absolute) =
+            (root.join("hidg0"), root.join("hidg1"), root.join("hidg2"));
+        let readers = [fake_hidg(&keyboard), fake_hidg(&mouse), fake_hidg(&absolute)];
+
+        let manager = HidManager::without_led_reader();
+        manager
+            .release_all(Some(keyboard), Some(mouse), Some(absolute))
+            .await
+            .unwrap();
+
+        assert_eq!(drain(&readers[0]), [0_u8; 8]);
+        assert_eq!(drain(&readers[1]), [0_u8; 4]);
+        // Not all zero on purpose: X/Y are absolute, and 0,0 would throw the
+        // pointer into the top-left (hot) corner. The button byte is what
+        // releases.
+        let absolute_report = AbsolutePointerState::default().report(0);
+        assert_eq!(absolute_report[0], 0);
+        assert_eq!(drain(&readers[2]), absolute_report);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_release_lets_the_held_key_finish_and_drops_queued_presses() {
+        let root = crate::devices::hotplug::tests::temp_root("hidg-shutdown");
+        let path = root.join("hidg0");
+        let reader = fake_hidg(&path);
+        let manager = HidManager::without_led_reader();
+
+        // Being held when the shutdown starts.
+        let held = {
+            let (manager, path) = (manager.clone(), path.clone());
+            tokio::spawn(async move { manager.key(Some(path), key("KeyA", 150)).await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(drain(&reader), [0, 0, 0x04, 0, 0, 0, 0, 0], "KeyA is down");
+        // Queued behind it, so it would press after the final release.
+        let queued = {
+            let (manager, path) = (manager.clone(), path.clone());
+            tokio::spawn(async move { manager.key(Some(path), key("KeyB", 10)).await })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        manager
+            .release_for_shutdown(Some(path.clone()), None, None)
+            .await
+            .unwrap();
+
+        assert!(held.await.unwrap().is_ok());
+        assert!(matches!(queued.await.unwrap(), Err(HidError::WorkerStopped)));
+        let late = manager.key(Some(path.clone()), key("KeyC", 10)).await;
+        assert!(matches!(late, Err(HidError::WorkerStopped)));
+        // KeyA's own release and the final release; never a KeyB or KeyC press.
+        assert_eq!(drain(&reader), [0_u8; 16]);
+
+        // Anything racing the exit can still only release.
+        manager.release_all(Some(path), None, None).await.unwrap();
+        assert_eq!(drain(&reader), [0_u8; 8]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_release_refuses_queued_pointer_input() {
+        let root = crate::devices::hotplug::tests::temp_root("hidg-shutdown-mouse");
+        let path = root.join("hidg1");
+        let reader = fake_hidg(&path);
+        let manager = HidManager::new();
+
+        manager
+            .release_for_shutdown(None, Some(path.clone()), None)
+            .await
+            .unwrap();
+        assert_eq!(drain(&reader), [0_u8; 4]);
+        let click = manager
+            .mouse_click(Some(path), MouseClickRequest { button: 1 })
+            .await;
+        assert!(matches!(click, Err(HidError::WorkerStopped)));
+        assert!(drain(&reader).is_empty());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

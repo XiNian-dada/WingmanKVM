@@ -928,19 +928,27 @@ pub(super) async fn persist_config(path: &Path, config: &Config) -> Result<(), A
 pub(super) async fn commit_config(state: &AppState, config: &Config) -> Result<(), ApiError> {
     validate_config(config)?;
     let previous = state.config.read().await.clone();
-    let video_changed = previous.video != config.video;
+    // Saving the video form sends every field. Only what really changed may
+    // disturb viewers: a JPEG quality tweak must not reopen the capture card
+    // or drop everybody's H.264 session to MJPEG.
+    let capture = capture_change(&previous.video, &config.video);
+    let sessions = session_impact(&previous.video, &config.video);
     persist_config(state.config_path.as_ref(), config).await?;
-    if video_changed {
-        if let Err(error) = state.video.reconfigure(config.video.clone()) {
-            tracing::error!(%error, "failed to reconfigure video after saving configuration");
-            if let Err(restore_error) = persist_config(state.config_path.as_ref(), &previous).await {
-                tracing::error!(message = %restore_error.message, "failed to restore previous configuration");
-            }
-            return Err(ApiError::internal(error));
+    if capture != CaptureChange::Unchanged
+        && let Err(error) = state.video.reconfigure(config.video.clone())
+    {
+        tracing::error!(%error, "failed to reconfigure video after saving configuration");
+        if let Err(restore_error) = persist_config(state.config_path.as_ref(), &previous).await {
+            tracing::error!(message = %restore_error.message, "failed to restore previous configuration");
         }
-
-        // Capture changes also invalidate the H.264 source feeding WebRTC.
-        state.webrtc.reconfigure(config.video.h264.clone()).await;
+        return Err(ApiError::internal(error));
+    }
+    match sessions {
+        SessionImpact::Reconnect => state.webrtc.reconfigure(config.video.h264.clone()).await,
+        SessionImpact::LimitOnly => {
+            state.webrtc.set_session_limit(config.video.h264.clone()).await;
+        }
+        SessionImpact::Unaffected => {}
     }
     // Audio is applied on its own: an audio-only change never reaches the
     // video pipeline above, and an unchanged setting is a no-op here.
@@ -1414,6 +1422,81 @@ pub(super) mod tests {
         invalid.audio.device = Some("file:/tmp/x".to_owned());
         assert!(commit_config(&state, &invalid).await.is_err());
         assert_eq!(Config::load(&path).unwrap().audio, next.audio);
+    }
+
+    /// A state whose H.264 probe can never find a real FFmpeg.
+    fn video_test_state(directory: &TestDirectory) -> (AppState, Config) {
+        let path = directory.0.join("config.json");
+        let mut config = Config::default();
+        config.video.device = Some(PathBuf::from("/dev/video-test"));
+        config.video.h264.ffmpeg_path = Some(directory.0.join("no-ffmpeg"));
+        config.save_atomic(&path).unwrap();
+        (test_state(config.clone(), path), config)
+    }
+
+    fn viewer(state: &AppState) -> watch::Receiver<bool> {
+        let token = state.sessions.create().unwrap();
+        let owner = state.sessions.validate_guard(&token).unwrap();
+        state.webrtc.insert_supervised_test_session("viewer", owner)
+    }
+
+    #[tokio::test]
+    async fn jpeg_settings_keep_h264_viewers_and_the_capture_open() {
+        let directory = TestDirectory::new();
+        let (state, config) = video_test_state(&directory);
+        let shutdown = viewer(&state);
+
+        // The form always sends every field; only the quality differs.
+        let mut next = config.clone();
+        next.video.jpeg_quality = 55;
+        commit_config(&state, &next).await.unwrap();
+        assert!(!*shutdown.borrow(), "H.264 viewer must stay connected");
+        assert_eq!(state.webrtc.status().sessions, 1);
+        // Handed to the capture as a live change (it does not reopen for it).
+        assert_eq!(state.video.take_test_reconfigures(), [next.video.clone()]);
+
+        next.video.encoding = config::VideoEncoding::TranscodeJpeg;
+        commit_config(&state, &next).await.unwrap();
+        assert!(!*shutdown.borrow());
+        assert_eq!(state.video.take_test_reconfigures(), [next.video.clone()]);
+
+        // Saving unchanged settings, or only the session limit, sends nothing.
+        commit_config(&state, &next).await.unwrap();
+        next.video.h264.max_sessions = 3;
+        commit_config(&state, &next).await.unwrap();
+        assert!(state.video.take_test_reconfigures().is_empty());
+        assert!(!*shutdown.borrow());
+        assert_eq!(state.webrtc.status().max_sessions, 3);
+        assert_eq!(Config::load(directory.0.join("config.json")).unwrap().video, next.video);
+    }
+
+    #[tokio::test]
+    async fn capture_and_encoder_changes_close_h264_sessions() {
+        for edit in [
+            (|c: &mut Config| c.video.width = Some(1280)) as fn(&mut Config),
+            |c| c.video.frames_per_second = Some(60),
+            |c| c.video.device = Some(PathBuf::from("/dev/video-other")),
+        ] {
+            let directory = TestDirectory::new();
+            let (state, config) = video_test_state(&directory);
+            let shutdown = viewer(&state);
+            let mut next = config.clone();
+            edit(&mut next);
+            commit_config(&state, &next).await.unwrap();
+            assert!(*shutdown.borrow(), "capture reopened: {:?}", next.video);
+            assert_eq!(state.video.take_test_reconfigures(), [next.video.clone()]);
+            assert_eq!(state.webrtc.status().sessions, 0);
+        }
+
+        let directory = TestDirectory::new();
+        let (state, config) = video_test_state(&directory);
+        let shutdown = viewer(&state);
+        let mut next = config.clone();
+        next.video.h264.bitrate_kbps = 2_000;
+        commit_config(&state, &next).await.unwrap();
+        assert!(*shutdown.borrow(), "bitrate change reconnects");
+        assert!(state.video.take_test_reconfigures().is_empty(), "capture untouched");
+        assert_eq!(state.webrtc.status().bitrate_kbps, 2_000);
     }
 
     #[test]
