@@ -164,9 +164,12 @@ class Harness:
 
     def check_setup_url(self) -> None:
         if not self.bash_supports_empty_arrays():
+            # Only stock macOS is excused: the KVM hosts and CI are Linux, where
+            # a skip here would silently drop these two checks.
+            status = "fail" if sys.platform.startswith("linux") else "skip"
             for name in ("setup_url_prefers_mdns", "setup_url_without_avahi"):
-                print(f"SKIP {name}: {self.bash} is older than 4.4")
-                self.checks.append({"name": name, "status": "skip", "detail": "bash < 4.4"})
+                print(f"{status.upper()} {name}: {self.bash} is older than 4.4")
+                self.checks.append({"name": name, "status": status, "detail": "bash < 4.4"})
             return
         r = self.run_setup_url("setup-on", avahi_active=True)
         urls = [line.strip() for line in r.stdout.splitlines() if line.strip().startswith("http://")]
