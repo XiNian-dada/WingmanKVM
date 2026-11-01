@@ -37,6 +37,7 @@ pub static APP_JS_PARTS: &[&str] = &[
     include_str!("../web/js/app/07b-quality.js"),
     include_str!("../web/js/app/07z-keyboard-macros.js"),
     include_str!("../web/js/app/07c-adaptive-bitrate.js"),
+    include_str!("../web/js/app/07d-audio.js"),
     include_str!("../web/js/app/08-input.js"),
     include_str!("../web/js/app/08a-input-socket.js"),
     include_str!("../web/js/app/08b-touch.js"),
@@ -248,6 +249,22 @@ mod tests {
         assert!(INDEX_HTML.contains("renderKeyboardLeds"));
                 assert!(INDEX_HTML.contains("led-badge"));
         assert!(INDEX_HTML.contains("led-dot"));
+    }
+
+    #[test]
+    fn hdmi_audio_control_and_settings_present() {
+        // The control is hidden until audio is enabled, then explains itself.
+        assert!(INDEX_HTML.contains("id=\"audio-toggle\""));
+        assert!(INDEX_HTML.contains("aria-disabled=\"true\""));
+        assert!(INDEX_HTML.contains("name=\"audio_enabled\""));
+        assert!(INDEX_HTML.contains("name=\"audio_device\""));
+        assert!(INDEX_HTML.contains("id=\"audio-scan\""));
+        assert!(INDEX_HTML.contains("id=\"diag-audio\""));
+        assert!(INDEX_HTML.contains("MJPEG 模式不支持音频"));
+        assert!(INDEX_HTML.contains("peer.addTransceiver('audio', { direction: 'recvonly' })"));
+        assert!(INDEX_HTML.contains("webrtcFeed.muted = !active || audioMuted"));
+        // The <video> element starts muted for autoplay.
+        assert!(INDEX_HTML.contains("autoplay muted playsinline"));
     }
 
     #[test]

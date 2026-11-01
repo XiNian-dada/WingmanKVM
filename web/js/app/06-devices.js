@@ -188,6 +188,7 @@
     setIfEmpty(device.elements.absolute_pointer_device, detected.absolute);
     setIfEmpty(media.elements.lun_path, detected.lun);
     setIfEmpty(media.elements.image_directory, '/var/lib/wingmankvm/images');
+    if (Array.isArray(root.audio)) populateAudioDevices(root.audio);
     updateSetupCapabilities();
   }
   function populateGpioOptions(candidates) {
@@ -273,7 +274,11 @@
         groups.video.length === 1 ? firstLabel(groups.video[0]) : `${groups.video.length} 个可用设备`,
       inputFound = groups.keyboard.length > 0 && (groups.mouse.length > 0 || groups.absolute.length > 0),
       mediaFound = groups.luns.length > 0,
-      powerFound = groups.gpio.length > 0;
+      powerFound = groups.gpio.length > 0,
+      audioCards = asCandidates(root.audio).filter((candidate) => !!candidate.device),
+      audioFound = audioCards.length > 0,
+      audioLabel =
+        audioCards.length === 1 ? audioCards[0].label || audioCards[0].device : `${audioCards.length} 个可用设备`;
     box.append(
       detectionCard(
         '视频',
@@ -314,6 +319,11 @@
           : powerFound
             ? '线路待确认'
             : '未配置',
+      ),
+      detectionCard(
+        'HDMI 音频',
+        caps.audio ? (audioFound ? 'online' : 'warning') : '',
+        caps.audio ? (audioFound ? audioLabel : '已启用，当前未检测到') : audioFound ? '可启用' : '未启用',
       ),
     );
   }

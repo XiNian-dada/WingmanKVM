@@ -131,6 +131,8 @@
       if (status.client) renderClientInfo(status.client);
       if (latestSystemStatus) renderSystemMetrics(latestSystemStatus);
       if (status.runtime) renderRuntimeMetrics(status.runtime, status.webrtc);
+      latestAudioStatus = status.audio || null;
+      renderAudioStatus();
       renderVideoUi();
     } catch {
       // A failed status poll says nothing about the video stream itself: keep

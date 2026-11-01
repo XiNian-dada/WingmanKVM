@@ -873,3 +873,27 @@
   gap: 8px;
   padding: 12px 20px 18px;
 }
+/* HDMI audio control: one speaker icon, marks switched per state. */
+#audio-toggle .audio-waves,
+#audio-toggle .audio-muted-mark,
+#audio-toggle .audio-off-mark {
+  display: none;
+}
+#audio-toggle[data-audio-state="unmuted"] .audio-waves,
+#audio-toggle[data-audio-state="muted"] .audio-muted-mark,
+#audio-toggle[data-audio-state="unavailable"] .audio-off-mark,
+#audio-toggle[data-audio-state="connecting"] .audio-off-mark {
+  display: inline;
+}
+#audio-toggle[data-audio-state="unmuted"] {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+#audio-toggle[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: help;
+}
+#audio-toggle.audio-error {
+  border-color: var(--amber);
+  color: var(--amber);
+}
