@@ -62,7 +62,6 @@ function renderVideoUi() {
   syncQualityOverlay();
   syncAudioUi();
   const dot = $('#status-dot'),
-    label = $('#status-label'),
     meta = $('#video-transport-label'),
     mode =
       shared.activeVideoTransport === 'webrtc_h264'
