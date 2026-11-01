@@ -3380,7 +3380,7 @@ POINTER_PROBE = """
   const seen = (window.__pointerSeen = []);
   for (const type of ['pointermove', 'pointerdown', 'wheel'])
     window.addEventListener(type, (e) => seen.push({type, button: e.button, x: e.clientX, y: e.clientY,
-      dx: e.movementX, dy: e.movementY, deltaY: e.deltaY}), true);
+      dx: e.movementX, dy: e.movementY, deltaY: e.deltaY, pointerId: e.pointerId}), true);
 })();
 """
 
@@ -3515,14 +3515,17 @@ def desktop_mouse_absolute(browser, port, checks):
         for button, code in (("left", 1), ("right", 2), ("middle", 4)):
             state.mouse_posts.clear()
             page.mouse.click(center_x, center_y, button=button)
-            clicked = ui_harness.wait_until(page, lambda: any(b.get("action") == "click" for p, b in state.mouse_posts))
-            clicks = [b for p, b in state.mouse_posts if b.get("action") == "click"]
-            check(checks, clicked and len(clicks) == 1 and clicks[0].get("button") == code,
+            # #124: a desktop click is a press and a release, not one `click`.
+            clicked = ui_harness.wait_until(page, lambda: any(b.get("action") == "release" for p, b in state.mouse_posts))
+            presses = [b for p, b in state.mouse_posts if b.get("action") == "press"]
+            releases = [b for p, b in state.mouse_posts if b.get("action") == "release"]
+            check(checks, clicked and len(presses) == 1 and len(releases) == 1
+                  and presses[0].get("button") == code and releases[0].get("button") == code,
                   f"mouse_absolute_{button}_button", state.mouse_posts)
             event = seen_event(page, "pointerdown")
             want_x, want_y = expected_hid(event, geometry)
-            check(checks, abs(clicks[0]["x"] - want_x) <= 1 and abs(clicks[0]["y"] - want_y) <= 1,
-                  f"mouse_absolute_{button}_position", (clicks[0], want_x, want_y))
+            check(checks, abs(presses[0]["x"] - want_x) <= 1 and abs(presses[0]["y"] - want_y) <= 1,
+                  f"mouse_absolute_{button}_position", (presses[0], want_x, want_y))
 
         # Wheel: scrolling down is negative, up is positive, and small
         # high-resolution deltas still produce a step.
@@ -3598,8 +3601,8 @@ def desktop_click_after_layout_transition(browser, port, checks):
         left, top, width, height = geometry
         state.mouse_posts.clear()
         page.mouse.click(left + width / 2, top + height / 2)
-        clicked = ui_harness.wait_until(page, lambda: any(b.get("action") == "click" for p, b in state.mouse_posts))
-        clicks = [b for p, b in state.mouse_posts if b.get("action") == "click"]
+        clicked = ui_harness.wait_until(page, lambda: any(b.get("action") == "press" for p, b in state.mouse_posts))
+        clicks = [b for p, b in state.mouse_posts if b.get("action") == "press"]
         check(checks, clicked and abs(clicks[0]["x"] - HID_MAX / 2) <= 60 and abs(clicks[0]["y"] - HID_MAX / 2) <= 100,
               "mouse_click_centered_after_layout_transition", clicks)
     finally:
@@ -3682,15 +3685,460 @@ def desktop_mouse_relative(browser, port, checks):
             state.mouse_posts.clear()
             page.mouse.down(button=button)
             page.mouse.up(button=button)
-            ui_harness.wait_until(page, lambda: any(p == "click" for p, b in state.mouse_posts))
-            clicks = [b for p, b in state.mouse_posts if p == "click"]
-            check(checks, clicks == [{"button": code}], f"relative_mouse_{button}_button", state.mouse_posts)
+            # #124: a press and a release, not one `click`.
+            ui_harness.wait_until(page, lambda: any(p == "release" for p, b in state.mouse_posts))
+            presses = [b for p, b in state.mouse_posts if p == "press"]
+            releases = [b for p, b in state.mouse_posts if p == "release"]
+            check(checks, presses == [{"button": code}] and releases == [{"button": code}],
+                  f"relative_mouse_{button}_button", state.mouse_posts)
         for label, delta_y, wheel in (("down", 120, -3), ("up", -120, 3)):
             state.mouse_posts.clear()
             page.mouse.wheel(0, delta_y)
             ui_harness.wait_until(page, lambda: any(p == "scroll" for p, b in state.mouse_posts))
             scrolls = [b for p, b in state.mouse_posts if p == "scroll"]
             check(checks, scrolls == [{"wheel": wheel}], f"relative_mouse_wheel_{label}", state.mouse_posts)
+    finally:
+        context.close()
+
+
+def mouse_seq(state):
+    """Pointer posts as (action, body), in the order the server received them."""
+    return [(body.get("action") or endpoint, body) for endpoint, body in state.mouse_posts]
+
+
+def actions_of(state):
+    return [action for action, _ in mouse_seq(state)]
+
+
+# Holds mouse requests back in the page, so anything not explicitly ordered would
+# overtake (press longest), and the throttle is busy when the pointer stops.
+SLOW_MOUSE_FETCH = """() => {
+  const original = window.fetch;
+  window.fetch = async (url, options = {}) => {
+    if (String(url).includes('/api/mouse/')) {
+      const body = String(options.body || '');
+      await new Promise((done) => setTimeout(done, body.includes('press') || String(url).endsWith('/press') ? 180 : 40));
+    }
+    return original(url, options);
+  };
+}"""
+
+
+def drag_page(browser, port, pointer_mode="absolute"):
+    state, context, page = input_page(browser, port, pointer_mode=pointer_mode)
+    size_feed(page, 800, 360)
+    settled_box(page)
+    take_control(page)
+    box = settled_box(page)
+    return state, context, page, box, fit_geometry(box)
+
+
+def hid_at(geometry, fx, fy):
+    left, top, width, height = geometry
+    return left + fx * width, top + fy * height
+
+
+def close_to(body, want, tolerance=60):
+    return abs(body["x"] - want[0]) <= tolerance and abs(body["y"] - want[1]) <= tolerance
+
+
+def desktop_mouse_drag(browser, port, checks):
+    """#124: a real drag is press, moves in order, the final position, release."""
+    state, context, page, box, geometry = drag_page(browser, port)
+    try:
+        page.evaluate(SLOW_MOUSE_FETCH)
+        start, end = hid_at(geometry, 0.2, 0.5), hid_at(geometry, 0.8, 0.5)
+        page.mouse.move(*start)
+        ui_harness.wait_until(page, lambda: "move" in actions_of(state))
+        page.wait_for_timeout(120)
+        state.mouse_posts.clear()
+        page.mouse.down()
+        for step in range(1, 10):
+            page.mouse.move(start[0] + (end[0] - start[0]) * step / 10, start[1])
+            page.wait_for_timeout(10)
+        # Stops and lifts at once: the throttle is still sitting on this one.
+        page.mouse.move(*end)
+        page.mouse.up()
+        ui_harness.wait_until(page, lambda: "release" in actions_of(state), timeout=5)
+        page.wait_for_timeout(150)
+        seq = mouse_seq(state)
+        actions = [action for action, _ in seq]
+        check(checks, actions[0] == "press" and actions[-1] == "release" and actions.count("press") == 1
+              and actions.count("release") == 1 and set(actions) == {"press", "move", "release"} and "click" not in actions,
+              "mouse_drag_is_press_moves_release", actions)
+        check(checks, seq[0][1]["button"] == 1 and close_to(seq[0][1], (0.2 * HID_MAX, 0.5 * HID_MAX)),
+              "mouse_drag_press_at_start", seq[0])
+        xs = [body["x"] for action, body in seq if action == "move"]
+        check(checks, len(xs) >= 2 and xs == sorted(xs), "mouse_drag_moves_in_order", xs)
+        check(checks, close_to(seq[-2][1], (0.8 * HID_MAX, 0.5 * HID_MAX)) and seq[-2][0] == "move",
+              "mouse_drag_final_position_flushed_before_release", seq[-3:])
+        check(checks, seq[-1][1]["x"] == seq[-2][1]["x"] and seq[-1][1]["y"] == seq[-2][1]["y"] and seq[-1][1]["button"] == 1,
+              "mouse_drag_release_at_final_position", seq[-2:])
+    finally:
+        context.close()
+
+
+def desktop_mouse_plain_click(browser, port, checks):
+    """#124: a plain click is one press and one release at the same position."""
+    state, context, page, box, geometry = drag_page(browser, port)
+    try:
+        target = hid_at(geometry, 0.3, 0.6)
+        page.mouse.move(*target)
+        page.wait_for_timeout(150)
+        state.mouse_posts.clear()
+        page.mouse.down()
+        page.mouse.up()
+        ui_harness.wait_until(page, lambda: "release" in actions_of(state))
+        page.wait_for_timeout(100)
+        seq = mouse_seq(state)
+        check(checks, [action for action, _ in seq] == ["press", "release"], "mouse_plain_click_press_release", seq)
+        check(checks, (seq[0][1]["x"], seq[0][1]["y"]) == (seq[1][1]["x"], seq[1][1]["y"])
+              and close_to(seq[0][1], (0.3 * HID_MAX, 0.6 * HID_MAX)), "mouse_plain_click_same_position", seq)
+        check(checks, state.release_posts == 0, "mouse_plain_click_no_emergency_release", state.release_posts)
+    finally:
+        context.close()
+
+
+def desktop_mouse_release_outside_video(browser, port, checks):
+    """#124: pointer capture keeps a drag alive off the picture, down to its release."""
+    state, context, page, box, geometry = drag_page(browser, port)
+    try:
+        center = hid_at(geometry, 0.5, 0.5)
+        page.mouse.move(*center)
+        page.wait_for_timeout(120)
+        state.mouse_posts.clear()
+        page.mouse.down()
+        ui_harness.wait_until(page, lambda: "press" in actions_of(state))
+        pointer_id = seen_event(page, "pointerdown")["pointerId"]
+        captured = page.evaluate("(id) => document.querySelector('#video-viewport').hasPointerCapture(id)", pointer_id)
+        check(checks, captured, "mouse_drag_has_pointer_capture", pointer_id)
+        # Well above the console: over the page chrome, off the viewport.
+        page.mouse.move(geometry[0] - 60, 2)
+        ui_harness.wait_until(page, lambda: any(a == "move" and b["y"] == 0 for a, b in mouse_seq(state)))
+        moves = [body for action, body in mouse_seq(state) if action == "move"]
+        check(checks, moves and moves[-1]["x"] == 0 and moves[-1]["y"] == 0, "mouse_drag_outside_clamps_to_edge", moves)
+        page.mouse.up()
+        released = ui_harness.wait_until(page, lambda: "release" in actions_of(state))
+        seq = mouse_seq(state)
+        check(checks, released and seq[-1][1]["x"] == 0 and seq[-1][1]["y"] == 0, "mouse_release_outside_seen", seq[-2:])
+        page.wait_for_timeout(100)
+        check(checks, state.release_posts == 0, "mouse_release_outside_is_a_normal_release", state.release_posts)
+    finally:
+        context.close()
+
+
+def desktop_mouse_multi_button(browser, port, checks):
+    """#124: a second button during a drag is its own press and its own release."""
+    state, context, page, box, geometry = drag_page(browser, port)
+    try:
+        page.mouse.move(*hid_at(geometry, 0.5, 0.5))
+        page.wait_for_timeout(120)
+        state.mouse_posts.clear()
+        page.mouse.down(button="left")
+        page.mouse.down(button="right")
+        page.mouse.up(button="left")
+        ui_harness.wait_until(page, lambda: "release" in actions_of(state))
+        page.wait_for_timeout(50)
+        buttons = [(a, b["button"]) for a, b in mouse_seq(state) if a in ("press", "release")]
+        check(checks, buttons == [("press", 1), ("press", 2), ("release", 1)], "mouse_second_button_presses_and_keeps_first", buttons)
+        page.mouse.up(button="right")
+        ui_harness.wait_until(page, lambda: actions_of(state).count("release") == 2)
+        buttons = [(a, b["button"]) for a, b in mouse_seq(state) if a in ("press", "release")]
+        check(checks, buttons[-1] == ("release", 2) and len(buttons) == 4, "mouse_last_button_releases", buttons)
+    finally:
+        context.close()
+
+
+def desktop_mouse_context_menu(browser, port, checks):
+    """#124: the local menu stays away, also after a right drag ended off the viewport."""
+    state, context, page, box, geometry = drag_page(browser, port)
+    try:
+        menu = """(selector) => document.querySelector(selector).dispatchEvent(
+          new MouseEvent('contextmenu', {bubbles: true, cancelable: true}))"""
+        check(checks, page.evaluate(menu, "#video-viewport") is False, "context_menu_suppressed_on_viewport", "")
+        page.mouse.move(*hid_at(geometry, 0.5, 0.5))
+        page.mouse.down(button="right")
+        page.mouse.move(geometry[0] - 60, 2)
+        check(checks, page.evaluate(menu, "body") is False, "context_menu_suppressed_during_right_drag", "")
+        page.mouse.up(button="right")
+        check(checks, page.evaluate(menu, "body") is False, "context_menu_suppressed_after_right_release_outside", "")
+        ui_harness.wait_until(page, lambda: "release" in actions_of(state))
+        page.wait_for_timeout(600)
+        check(checks, page.evaluate(menu, "body") is True, "context_menu_elsewhere_works_again", "")
+    finally:
+        context.close()
+
+
+# Records whether each release-all asked for keepalive delivery.
+RELEASE_KEEPALIVE_PROBE = """() => {
+  window.__releaseKeepalive = [];
+  const original = window.fetch;
+  window.fetch = (url, options = {}) => {
+    if (String(url).endsWith('/api/input/release-all')) window.__releaseKeepalive.push(!!options.keepalive);
+    return original(url, options);
+  };
+}"""
+
+STUCK_BUTTON_PATHS = {
+    "window_blur": "() => window.dispatchEvent(new Event('blur'))",
+    "tab_hidden": """() => {
+      Object.defineProperty(document, 'hidden', {configurable: true, get: () => true});
+      document.dispatchEvent(new Event('visibilitychange'));
+    }""",
+    "pagehide": "() => window.dispatchEvent(new PageTransitionEvent('pagehide'))",
+    "pointercancel": """(id) => document.querySelector('#video-viewport').dispatchEvent(
+      new PointerEvent('pointercancel', {pointerId: id, pointerType: 'mouse', bubbles: true}))""",
+    "lostpointercapture": "(id) => document.querySelector('#video-viewport').releasePointerCapture(id)",
+    "leave_input_capture": "() => document.querySelector('#input-state').click()",
+    "terminal_tab": """() => document.querySelector('[data-workspace="terminal"]').click()""",
+    "video_transport": "async () => (await import('/assets/js/07-video.js')).restartVideo()",
+    "release_keys_button": "() => document.querySelector('#input-release').click()",
+}
+
+
+def desktop_mouse_stuck_button_paths(browser, port, checks):
+    """#124: everything that loses sight of the button sends a release, and the
+    button still physically down does not press again afterwards."""
+    for name, trigger in [*STUCK_BUTTON_PATHS.items(), ("exit_shortcut", None)]:
+        state, context, page, box, geometry = drag_page(browser, port)
+        try:
+            page.evaluate(RELEASE_KEEPALIVE_PROBE)
+            center = hid_at(geometry, 0.5, 0.5)
+            page.mouse.move(*center)
+            page.mouse.down()
+            pressed = ui_harness.wait_until(page, lambda: "press" in actions_of(state))
+            check(checks, pressed and state.release_posts == 0, f"stuck_{name}_drag_started", state.mouse_posts)
+            pointer_id = seen_event(page, "pointerdown")["pointerId"]
+            if name == "lostpointercapture":
+                # Capture changes take effect on the next pointer event, so one
+                # before (capture active) and one after (the loss is delivered).
+                page.mouse.move(center[0] + 1, center[1])
+            if trigger is None:
+                page.keyboard.press("Control+Alt+Backquote")
+            elif "id" in trigger.split("=>")[0]:
+                page.evaluate(trigger, pointer_id)
+            else:
+                page.evaluate(trigger)
+            if name == "lostpointercapture":
+                page.mouse.move(center[0] + 2, center[1])
+            released = ui_harness.wait_until(page, lambda: state.release_posts > 0)
+            check(checks, released, f"stuck_{name}_sends_release", state.release_posts)
+            check(checks, all(page.evaluate("() => window.__releaseKeepalive")), f"stuck_{name}_release_is_keepalive",
+                  page.evaluate("() => window.__releaseKeepalive"))
+            # The physical button is still down: moving must not press again, and
+            # lifting it has nothing left to release.
+            sent = state.release_posts
+            page.mouse.move(center[0] + 30, center[1])
+            page.wait_for_timeout(60)
+            page.mouse.up()
+            page.wait_for_timeout(120)
+            actions = actions_of(state)
+            check(checks, actions.count("press") == 1, f"stuck_{name}_no_second_press", actions)
+            check(checks, "release" not in actions and state.release_posts == sent, f"stuck_{name}_client_state_cleared",
+                  (actions, state.release_posts, sent))
+        finally:
+            context.close()
+
+
+def desktop_mouse_press_refused(browser, port, checks):
+    """#124: a refused press leaves nothing held and tells the user."""
+    state, context, page, box, geometry = drag_page(browser, port)
+    try:
+        page.route("**/api/mouse/absolute", lambda route: (
+            route.fulfill(status=409, content_type="application/json", body='{"error":"当前配置未启用绝对指针模式"}')
+            if '"press"' in (route.request.post_data or "") else route.fallback()))
+        page.mouse.move(*hid_at(geometry, 0.5, 0.5))
+        page.wait_for_timeout(120)
+        state.mouse_posts.clear()
+        page.mouse.down()
+        toasted = page.locator("#toast.show").wait_for(timeout=3000) is None
+        check(checks, toasted, "refused_press_shows_error", "")
+        ui_harness.wait_until(page, lambda: "release" in actions_of(state))
+        check(checks, "release" in actions_of(state), "refused_press_is_still_released", actions_of(state))
+        before = len(state.mouse_posts)
+        page.mouse.up()
+        page.wait_for_timeout(120)
+        check(checks, "release" not in actions_of(state)[before:], "refused_press_needs_no_second_release", actions_of(state))
+    finally:
+        context.close()
+
+
+def desktop_mouse_heartbeat(browser, port, checks):
+    """#124: a button held still keeps telling the server the client is alive, so
+    the idle release only ever hits a client that is really gone."""
+    for mode in ("absolute", "relative"):
+        state, context, page, box, geometry = drag_page(browser, port, pointer_mode=mode)
+        try:
+            if mode == "absolute":
+                page.mouse.move(*hid_at(geometry, 0.5, 0.5))
+            else:
+                page.evaluate(POINTER_LOCK_STUB)
+                page.evaluate("() => document.querySelector('#video-viewport').requestPointerLock()")
+                page.mouse.move(*hid_at(geometry, 0.5, 0.5))
+            page.clock.install()
+            page.mouse.down()
+            ui_harness.wait_until(page, lambda: "press" in actions_of(state))
+            page.wait_for_timeout(100)
+            state.mouse_posts.clear()
+            page.clock.fast_forward(9000)
+            page.wait_for_timeout(100)
+            check(checks, not state.mouse_posts, f"heartbeat_{mode}_quiet_before_interval", state.mouse_posts)
+            for beat in (1, 2, 3):
+                page.clock.fast_forward(10000)
+                ui_harness.wait_until(page, lambda: len(state.mouse_posts) >= beat)
+            seq = mouse_seq(state)
+            check(checks, len(seq) >= 3 and all(action == "move" for action, _ in seq), f"heartbeat_{mode}_restates_position", seq)
+            if mode == "relative":
+                check(checks, all(body == {"dx": 0, "dy": 0} for _, body in seq), "heartbeat_relative_has_no_motion", seq)
+            check(checks, state.release_posts == 0, f"heartbeat_{mode}_keeps_button_held", state.release_posts)
+            state.mouse_posts.clear()
+            page.mouse.up()
+            ui_harness.wait_until(page, lambda: "release" in actions_of(state))
+            page.clock.fast_forward(30000)
+            page.wait_for_timeout(100)
+            check(checks, actions_of(state) == ["release"], f"heartbeat_{mode}_stops_after_release", actions_of(state))
+        finally:
+            context.close()
+
+
+def desktop_mouse_drag_relative(browser, port, checks):
+    """#124: relative mode: press, moves with every delta delivered, release; and
+    leaving pointer lock releases."""
+    state, context, page = input_page(browser, port, pointer_mode="relative")
+    try:
+        page.set_viewport_size({"width": 1700, "height": 1100})
+        size_feed(page, 640, 360)
+        center_x, center_y, viewport, stubbed = capture_relative(page)
+        page.evaluate(SLOW_MOUSE_FETCH)
+        page.wait_for_timeout(200)
+        state.mouse_posts.clear()
+        page.mouse.down()
+        seen_before = page.evaluate("() => window.__pointerSeen.length")
+        for step in range(1, 11):
+            page.mouse.move(center_x + 20 * step, center_y + 10 * step)
+        # Lifted with deltas still queued behind the busy throttle.
+        page.mouse.up()
+        ui_harness.wait_until(page, lambda: "release" in actions_of(state), timeout=5)
+        page.wait_for_timeout(100)
+        seq = mouse_seq(state)
+        actions = [action for action, _ in seq]
+        check(checks, actions[0] == "press" and actions[-1] == "release" and set(actions) == {"press", "move", "release"},
+              "relative_drag_is_press_moves_release", actions)
+        check(checks, seq[0][1] == {"button": 1} and seq[-1][1] == {"button": 1}, "relative_drag_button_bodies", (seq[0], seq[-1]))
+        moved = page.evaluate("""(from) => window.__pointerSeen.slice(from).filter((e) => e.type === 'pointermove')
+          .reduce((sum, e) => [sum[0] + e.dx, sum[1] + e.dy], [0, 0])""", seen_before)
+        total = (sum(b.get("dx", 0) for a, b in seq if a == "move"), sum(b.get("dy", 0) for a, b in seq if a == "move"))
+        check(checks, list(total) == moved, "relative_drag_delivers_every_delta_before_release", (total, moved))
+        check(checks, state.release_posts == 0, "relative_drag_normal_release", state.release_posts)
+
+        state.mouse_posts.clear()
+        page.mouse.down()
+        ui_harness.wait_until(page, lambda: "press" in actions_of(state))
+        page.evaluate("() => document.exitPointerLock()")
+        check(checks, ui_harness.wait_until(page, lambda: state.release_posts > 0), "relative_leaving_lock_releases", state.release_posts)
+        page.mouse.up()
+        page.wait_for_timeout(100)
+        check(checks, "release" not in actions_of(state), "relative_leaving_lock_clears_client_state", actions_of(state))
+    finally:
+        context.close()
+
+
+def input_socket_page(browser, port, hold_replies):
+    """The console over a mocked input socket. Frames of a type in `hold_replies`
+    get no answer, so they are in flight when the socket drops."""
+    from verify_p2b_ui import api_route, GIF
+    state = State()
+    state.video.update(state="ready", message="", last_frame_age_ms=10)
+    frames, sockets = [], []
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+
+    def on_socket(ws):
+        sockets.append(ws)
+
+        def reply(message):
+            body = json.loads(message)
+            frames.append(body)
+            if body.get("action", body["type"]) not in hold_replies:
+                ws.send(json.dumps({"id": body["id"], "ok": True}))
+        ws.on_message(reply)
+    page.add_init_script(POINTER_PROBE)
+    page.route_web_socket("**/api/input/ws", on_socket)
+    page.route("**/api/**", lambda route: api_route(route, state))
+    page.route("**/video_feed*", lambda route: route.fulfill(status=200, content_type="image/gif", body=GIF))
+    page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
+    page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
+    size_feed(page, 800, 360)
+    settled_box(page)
+    take_control(page)
+    box = settled_box(page)
+    ui_harness.wait_until(page, lambda: bool(sockets))
+    page.wait_for_timeout(100)
+    return state, context, page, frames, sockets, fit_geometry(box)
+
+
+def desktop_mouse_socket_drag(browser, port, checks):
+    """#124: over the input socket a drag is frames in order; a drop mid-drag
+    leaves the client believing nothing is held; a press is never replayed, a
+    release is."""
+    state, context, page, frames, sockets, geometry = input_socket_page(browser, port, ())
+    try:
+        page.mouse.move(*hid_at(geometry, 0.2, 0.5))
+        page.wait_for_timeout(100)
+        frames.clear()
+        page.mouse.down()
+        page.mouse.move(*hid_at(geometry, 0.5, 0.5))
+        page.mouse.move(*hid_at(geometry, 0.8, 0.5))
+        page.mouse.up()
+        ui_harness.wait_until(page, lambda: any(f.get("action") == "release" for f in frames))
+        actions = [f.get("action") for f in frames]
+        check(checks, actions[0] == "press" and actions[-1] == "release" and set(actions) == {"press", "move", "release"}
+              and all(f["type"] == "absolute" for f in frames) and not state.mouse_posts,
+              "socket_drag_frames_in_order", frames)
+        check(checks, close_to(frames[-1], (0.8 * HID_MAX, 0.5 * HID_MAX)), "socket_drag_release_at_final_position", frames[-1])
+
+        # The socket dies mid-drag: the server released on its end, so the client
+        # has nothing held any more, and says so once more over HTTP.
+        frames.clear()
+        page.mouse.down()
+        ui_harness.wait_until(page, lambda: any(f.get("action") == "press" for f in frames))
+        page.wait_for_timeout(50)
+        sockets[-1].close()
+        check(checks, ui_harness.wait_until(page, lambda: state.release_posts > 0), "socket_drop_mid_drag_releases", state.release_posts)
+        page.mouse.up()
+        page.wait_for_timeout(150)
+        check(checks, "release" not in actions_of(state), "socket_drop_mid_drag_clears_client_state", state.mouse_posts)
+    finally:
+        context.close()
+
+    # A press whose reply was lost must not run again: the server has released.
+    state, context, page, frames, sockets, geometry = input_socket_page(browser, port, ("press",))
+    try:
+        page.mouse.move(*hid_at(geometry, 0.5, 0.5))
+        page.wait_for_timeout(100)
+        page.mouse.down()
+        ui_harness.wait_until(page, lambda: any(f.get("action") == "press" for f in frames))
+        sockets[-1].close()
+        ui_harness.wait_until(page, lambda: state.release_posts > 0)
+        page.wait_for_timeout(200)
+        check(checks, "press" not in actions_of(state), "socket_drop_press_not_replayed", state.mouse_posts)
+        toast = page.text_content("#toast") or ""
+        check(checks, "可能未送达" in toast, "socket_drop_press_reports_undelivered", toast)
+        page.mouse.up()
+    finally:
+        context.close()
+
+    # A release whose reply was lost is simply sent again over HTTP.
+    state, context, page, frames, sockets, geometry = input_socket_page(browser, port, ("release",))
+    try:
+        page.mouse.move(*hid_at(geometry, 0.5, 0.5))
+        page.wait_for_timeout(100)
+        page.mouse.down()
+        page.mouse.up()
+        ui_harness.wait_until(page, lambda: any(f.get("action") == "release" for f in frames))
+        sockets[-1].close()
+        retried = ui_harness.wait_until(page, lambda: "release" in actions_of(state))
+        check(checks, retried, "socket_drop_release_retried_over_http", state.mouse_posts)
     finally:
         context.close()
 
