@@ -167,7 +167,7 @@ CAPTURE_SPY = """
 """
 
 
-def capture_calls(page, kind, engaged_js, timeout=2.0):
+def capture_calls(page, kind, engaged_js, timeout=5.0):
     """Spy records of `kind` and the id of the engaged element ('' if none),
     waiting until the last request is engaged, granted or refused."""
     deadline = time.monotonic() + timeout

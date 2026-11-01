@@ -2779,18 +2779,30 @@ def size_feed(page, width, height):
     }""", [width, height, SOURCE_WIDTH, SOURCE_HEIGHT])
 
 
-def settled_box(page, selector="#video-feed", timeout=4.0):
-    """The element's box once two samples 100 ms apart agree (layout has settled)."""
-    measure = "(s) => { const r = document.querySelector(s).getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; }"
-    deadline = time.monotonic() + timeout
-    box = page.evaluate(measure, selector)
-    while time.monotonic() < deadline:
-        page.wait_for_timeout(100)
-        latest = page.evaluate(measure, selector)
-        if latest == box and box[2] > 0:
-            break
-        box = latest
-    return box
+def settled_box(page, selector="#video-feed", timeout_ms=6000):
+    """The element's box once the layout has settled: the console animates its
+    size for 140 ms and a loaded machine can stall that mid-way, so two samples in
+    a row are not enough. Wait for no running animation on the element or its
+    ancestors and several frames with an identical box."""
+    return page.evaluate("""async ([selector, timeoutMs]) => {
+      const element = document.querySelector(selector);
+      const frame = () => new Promise(requestAnimationFrame);
+      const animating = () => document.getAnimations().some((animation) =>
+        animation.playState === 'running' && animation.effect?.target?.contains?.(element));
+      const measure = () => {
+        const r = element.getBoundingClientRect();
+        return [r.x, r.y, r.width, r.height];
+      };
+      const deadline = performance.now() + timeoutMs;
+      let box = measure(), steady = 0;
+      while (performance.now() < deadline && steady < 5) {
+        await frame();
+        const latest = measure();
+        steady = !animating() && latest.every((value, index) => value === box[index]) ? steady + 1 : 0;
+        box = latest;
+      }
+      return box;
+    }""", [selector, timeout_ms])
 
 
 def take_control(page):
