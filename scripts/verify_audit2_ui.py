@@ -3256,6 +3256,7 @@ def i18n_keys_complete(browser, port, checks):
         context.close()
 
 
+SOURCE_WIDTH, SOURCE_HEIGHT = 1280, 720
 HID_MAX = 32767
 
 
@@ -3454,6 +3455,40 @@ def capture_relative(page):
 def mouse_sum(state):
     moves = [b for p, b in state.mouse_posts if p == "move"]
     return sum(b.get("dx", 0) for b in moves), sum(b.get("dy", 0) for b in moves), moves
+
+
+def desktop_click_after_layout_transition(browser, port, checks):
+    """A pointer move during the console's resize animation must not leave a
+    stale surface box behind: later clicks would land off target."""
+    state, context, page = input_page(browser, port)
+    try:
+        size_feed(page, 800, 360)
+        settled_box(page)
+        take_control(page)
+        settled_box(page)
+        # Long enough that the move below lands inside the animation.
+        page.add_style_tag(content="#console { transition-duration: 900ms !important; }")
+        page.evaluate("() => document.querySelector('#inspector-toggle').click()")
+        page.wait_for_function(
+            "() => document.getAnimations().some((a) => a.effect?.target?.id === 'console')",
+            timeout=3000,
+        )
+        moving = page.evaluate("""() => {
+          const r = document.querySelector('#video-feed').getBoundingClientRect();
+          return [r.x + r.width / 2, r.y + r.height / 2];
+        }""")
+        page.mouse.move(*moving)
+        box = settled_box(page)
+        geometry = fit_geometry(box)
+        left, top, width, height = geometry
+        state.mouse_posts.clear()
+        page.mouse.click(left + width / 2, top + height / 2)
+        clicked = ui_harness.wait_until(page, lambda: any(b.get("action") == "click" for p, b in state.mouse_posts))
+        clicks = [b for p, b in state.mouse_posts if b.get("action") == "click"]
+        check(checks, clicked and abs(clicks[0]["x"] - HID_MAX / 2) <= 60 and abs(clicks[0]["y"] - HID_MAX / 2) <= 100,
+              "mouse_click_centered_after_layout_transition", clicks)
+    finally:
+        context.close()
 
 
 def desktop_mouse_relative(browser, port, checks):
