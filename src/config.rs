@@ -1399,11 +1399,13 @@ mod tests {
 
     #[test]
     fn audio_configuration_roundtrips_and_validates_device_names() {
-        let mut config = Config::default();
-        config.audio = AudioConfig {
-            enabled: true,
-            device: Some("plughw:CARD=MS2109,DEV=0".to_owned()),
-            bitrate_kbps: 128,
+        let config = Config {
+            audio: AudioConfig {
+                enabled: true,
+                device: Some("plughw:CARD=MS2109,DEV=0".to_owned()),
+                bitrate_kbps: 128,
+            },
+            ..Config::default()
         };
         let text = serde_json::to_string(&config).unwrap();
         let back: Config = serde_json::from_str(&text).unwrap();
