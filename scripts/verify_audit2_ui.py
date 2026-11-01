@@ -457,7 +457,7 @@ def paste_as_typing(browser, port, checks):
 def target_keyboard_layouts(browser, port, checks):
     """#63: paste-as-typing honors the selected target keyboard layout."""
     state = State()
-    context, page = new_page(browser, state, port)
+    context, page = media_page(browser, state, port, stubs=(ui_harness.TEST_HOOKS,))
     try:
         page.click("#input-state")
 
@@ -2162,7 +2162,7 @@ ADAPTIVE_DECISION_SCRIPT = """() => {
 def adaptive_bitrate_decision(browser, port, checks):
     """#82: the pure decision function's thresholds, cooldown and hysteresis."""
     state = State()
-    context, page = new_page(browser, state, port)
+    context, page = media_page(browser, state, port, stubs=(ui_harness.TEST_HOOKS,))
     try:
         r = page.evaluate(ADAPTIVE_DECISION_SCRIPT)
         check(checks, r["pure"], "adaptive_decision_is_pure", r["pure"])
@@ -2184,6 +2184,30 @@ def adaptive_bitrate_decision(browser, port, checks):
         context.close()
 
 
+def gated_test_hooks(browser, port, checks):
+    """AUD3-37: window.__wingmanTest exists only when the harness asked for it."""
+    probe = """() => ({
+      present: '__wingmanTest' in window,
+      flag: '__wingmanTestHooks' in window,
+      hooks: Object.keys(window.__wingmanTest || {}).sort(),
+    })"""
+    context, page = new_page(browser, State(), port)
+    try:
+        normal = page.evaluate(probe)
+        check(checks, normal == {"present": False, "flag": False, "hooks": []},
+              "test_hooks_absent_on_normal_page", normal)
+    finally:
+        context.close()
+    context, page = media_page(browser, State(), port, stubs=(ui_harness.TEST_HOOKS,))
+    try:
+        hooked = page.evaluate(probe)
+        wanted = {"adaptivePolicy", "decideAdaptiveBitrate", "textToKeystrokes", "validateMacroFile"}
+        check(checks, hooked["present"] and wanted <= set(hooked["hooks"]),
+              "test_hooks_present_when_requested", hooked)
+    finally:
+        context.close()
+
+
 def adaptive_stats(at, scale, lost_per_1000):
     report = stats_report(at, scale)
     video = report[-1]
@@ -2196,7 +2220,7 @@ def adaptive_bitrate_webrtc(browser, port, checks):
     """#82: stubbed stats drive POST /api/webrtc/bitrate with cooldown and hysteresis."""
     state = State()
     state.video.update(state="ready", message="", last_frame_age_ms=10)
-    context, page = media_page(browser, state, port, h264=True, stubs=(FAKE_PEER,))
+    context, page = media_page(browser, state, port, h264=True, stubs=(FAKE_PEER, ui_harness.TEST_HOOKS))
     sent = []
 
     def bitrate(route):

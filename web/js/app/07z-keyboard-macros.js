@@ -768,15 +768,17 @@ export function init() {
   updateMacroSpeedButtons();
   updateMacroRecordingIndicator();
   // Pure helpers used by the UI verification harness: no network or DOM.
-  window.__wingmanTest = Object.assign(window.__wingmanTest || {}, {
-    macroKeyNameValid,
-    validateMacroFile,
-    exportMacroDocument,
-    macroStepFromStored,
-    macroMaxCount: MACRO_MAX_COUNT,
-    macroMaxSteps: MACRO_MAX_STEPS,
-    macroMaxDelayMs: MACRO_MAX_DELAY_MS,
-  });
+  // Only exposed when the harness set window.__wingmanTestHooks before load.
+  if (window.__wingmanTestHooks === true)
+    window.__wingmanTest = Object.assign(window.__wingmanTest || {}, {
+      macroKeyNameValid,
+      validateMacroFile,
+      exportMacroDocument,
+      macroStepFromStored,
+      macroMaxCount: MACRO_MAX_COUNT,
+      macroMaxSteps: MACRO_MAX_STEPS,
+      macroMaxDelayMs: MACRO_MAX_DELAY_MS,
+    });
 }
 
 export { recordMacroKey, renderKeyboardMacroMenu };

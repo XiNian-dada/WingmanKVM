@@ -209,13 +209,16 @@ function setAdaptiveBitrateEnabled(enabled) {
 
 // DOM wiring; main.js calls this once, in the original fragment order.
 export function init() {
-  // The Playwright suite drives the pure decision function directly.
-  window.__wingmanTest = Object.assign(window.__wingmanTest || {}, {
-    decideAdaptiveBitrate,
-    newAdaptiveState,
-    adaptivePolicy: ADAPTIVE_POLICY,
-    adaptiveBitrate: () => (adaptive.state ? { ...adaptive.state, enabled: adaptive.enabled } : { enabled: adaptive.enabled }),
-  });
+  // The Playwright suite drives the pure decision function directly. The live
+  // policy is only exposed when the harness set window.__wingmanTestHooks
+  // before the page loaded, never on a normal page.
+  if (window.__wingmanTestHooks === true)
+    window.__wingmanTest = Object.assign(window.__wingmanTest || {}, {
+      decideAdaptiveBitrate,
+      newAdaptiveState,
+      adaptivePolicy: ADAPTIVE_POLICY,
+      adaptiveBitrate: () => (adaptive.state ? { ...adaptive.state, enabled: adaptive.enabled } : { enabled: adaptive.enabled }),
+    });
 }
 
 export {

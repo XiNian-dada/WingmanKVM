@@ -43,7 +43,9 @@ bundler and no build step:
   `import { … } from './<name>.js'`. Mutable state that two or more modules read
   or write lives on the `shared` object in `state.js` (an imported binding is
   read-only in the importer); state used by one module stays local to it. No
-  `window` globals (apart from the `window.__wingmanTest` test hooks).
+  `window` globals (apart from the `window.__wingmanTest` test hooks, which
+  exist only when a test set `window.__wingmanTestHooks = true` before the page
+  loaded, see `ui_harness.TEST_HOOKS`; a normal page has none).
 - Evaluating a module only declares its functions and module state and never
   calls into another module: with import cycles, modules are not evaluated in
   file-name order. DOM wiring lives in each module's exported `init()`, which

@@ -1180,12 +1180,14 @@ export function init() {
     button.addEventListener('click', () => sendQuickKey(button.dataset.quickKey)),
   );
   // The verification harness calls the pure mapper directly to assert every
-  // layout table without a network round-trip.
-  window.__wingmanTest = Object.assign(window.__wingmanTest || {}, {
-    textToKeystrokes,
-    targetLayout,
-    targetLayouts: TARGET_LAYOUTS.slice(),
-  });
+  // layout table without a network round-trip. Only exposed when the harness
+  // set window.__wingmanTestHooks before the page loaded.
+  if (window.__wingmanTestHooks === true)
+    window.__wingmanTest = Object.assign(window.__wingmanTest || {}, {
+      textToKeystrokes,
+      targetLayout,
+      targetLayouts: TARGET_LAYOUTS.slice(),
+    });
   $('#paste-typing-btn')?.addEventListener('click', openPasteDialog);
   $$('[data-paste-close]').forEach((button) => button.addEventListener('click', closePasteDialog));
   $('#paste-key-send')?.addEventListener('click', startPasteTyping);

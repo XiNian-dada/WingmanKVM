@@ -38,7 +38,8 @@ cargo build --locked
 - 模块只用静态 `import { … } from './<name>.js'` 引用同级模块。被两个以上模块读写的
   可变状态放在 `state.js` 的 `shared` 对象里（导入的绑定在导入方是只读的），只在一个
   模块内使用的状态留作该模块的局部变量；不使用 `window` 全局变量
-  （测试钩子 `window.__wingmanTest` 除外）。
+  （测试钩子 `window.__wingmanTest` 除外：只有测试在页面加载前设置了
+  `window.__wingmanTestHooks = true`（`ui_harness.TEST_HOOKS`）时才会出现，正常页面上不存在）。
 - 模块求值时只声明函数和模块内状态，不调用其他模块：存在循环依赖时，模块的求值顺序
   不是文件名顺序。DOM 事件绑定写在各模块导出的 `init()` 中，由 `main.js` 按原片段
   顺序调用，最后执行启动序列。`00-settings.js`（本地偏好）不导入任何模块，因此可在
