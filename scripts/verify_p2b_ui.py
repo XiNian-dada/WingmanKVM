@@ -120,15 +120,85 @@ def api_route(route, state):
                          body=json.dumps({"error": f"unmocked endpoint {method} {path}"}))
 
 
-def new_page(browser, state, port):
+def new_page(browser, state, port, init_scripts=()):
     context = browser.new_context(viewport={"width": 1280, "height": 900})
     page = context.new_page()
+    for script in init_scripts:
+        page.add_init_script(script)
     page.route("**/api/**", lambda route: api_route(route, state))
     mock_video_feed(page)
     page.goto(f"http://127.0.0.1:{port}/", wait_until="load", timeout=15000)
     page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
     page.bring_to_front()
     return context, page
+
+
+# Records every requestPointerLock/requestFullscreen call and how the browser
+# answered it, without changing what the browser does. A check may only be
+# skipped when the app asked and the browser refused (AUD3-11).
+CAPTURE_SPY = """
+(() => {
+  const calls = (window.__captureCalls = []);
+  const settle = (call, outcome) => { if (call.outcome === 'pending') call.outcome = outcome; };
+  const wrap = (name, kind) => {
+    const original = Element.prototype[name];
+    if (typeof original !== 'function') return;
+    Element.prototype[name] = function (...args) {
+      const call = {kind, target: this.id || this.tagName, outcome: 'pending'};
+      calls.push(call);
+      let result;
+      try {
+        result = original.apply(this, args);
+      } catch (error) {
+        settle(call, 'refused: ' + error.name);
+        throw error;
+      }
+      if (result && typeof result.then === 'function')
+        result.then(() => settle(call, 'granted'), (error) => settle(call, 'refused: ' + (error && error.name)));
+      return result;
+    };
+  };
+  wrap('requestPointerLock', 'pointerlock');
+  wrap('requestFullscreen', 'fullscreen');
+  const refuse = (kind, why) => () => calls.forEach((call) => call.kind === kind && settle(call, why));
+  document.addEventListener('pointerlockerror', refuse('pointerlock', 'refused: pointerlockerror'));
+  document.addEventListener('fullscreenerror', refuse('fullscreen', 'refused: fullscreenerror'));
+  document.addEventListener('pointerlockchange', () => {
+    if (document.pointerLockElement) calls.forEach((call) => call.kind === 'pointerlock' && settle(call, 'granted'));
+  });
+})();
+"""
+
+
+def capture_calls(page, kind, engaged_js, timeout=2.0):
+    """Spy records of `kind` and the id of the engaged element ('' if none),
+    waiting until the last request is engaged, granted or refused."""
+    deadline = time.monotonic() + timeout
+    while True:
+        calls = page.evaluate("(kind) => (window.__captureCalls || []).filter((c) => c.kind === kind)", kind)
+        engaged = page.evaluate(engaged_js)
+        if engaged or (calls and calls[-1]["outcome"] != "pending") or time.monotonic() > deadline:
+            return calls, engaged
+        page.wait_for_timeout(50)
+
+
+def capture_outcome(checks, kind, engaged_name, calls, engaged, target):
+    """Fail unless the app asked for `target`; skip only when the browser refused."""
+    check(checks, bool(calls) and calls[-1]["target"] == target,
+          f"{kind}_requested_by_app", calls or "the app never called the API")
+    if engaged:
+        check(checks, engaged == target, engaged_name, {"engaged": engaged, "calls": calls})
+        return True
+    outcome = calls[-1]["outcome"]
+    if outcome.startswith("refused"):
+        checks.append({"name": engaged_name, "ok": None, "skipped": True, "supported": False,
+                       "evidence": f"the app asked; the browser refused ({outcome}); not claimed"})
+        return False
+    check(checks, False, engaged_name, f"requested but neither engaged nor refused: {calls}")
+    return False
+    check(checks, False, f"{name}_real_engaged",
+          f"requested but neither engaged nor refused: {calls}")
+    return False
 
 
 def force_video_playing(page):
@@ -314,7 +384,7 @@ def keyboard_exit(browser, port, checks, output_dir):
 
 def relative_pointerlock(browser, port, checks, summary, output_dir):
     state = State(pointer_mode="relative")
-    context, page = new_page(browser, state, port)
+    context, page = new_page(browser, state, port, init_scripts=(CAPTURE_SPY,))
     try:
         force_video_playing(page)
         page.wait_for_timeout(200)
@@ -322,25 +392,21 @@ def relative_pointerlock(browser, port, checks, summary, output_dir):
         state.key_posts.clear()
         page.focus("#video-viewport")
         page.keyboard.press("Enter")
-        page.wait_for_timeout(400)
-        locked = page.evaluate(
-            "() => document.pointerLockElement === document.querySelector('#video-viewport')")
+        calls, engaged = capture_calls(
+            page, "pointerlock", "() => (document.pointerLockElement || {}).id || ''")
         check(checks, not any(str(post.get("key", "")).lower() == "enter"
                               for post in state.key_posts),
               "relative_capture_enter_not_forwarded", state.key_posts)
+        locked = capture_outcome(checks, "pointerlock", "pointerlock_real_engaged",
+                                 calls, engaged, "video-viewport")
         summary["browser_features"]["pointer_lock"] = (
-            "real" if locked else "unsupported (not claimed)")
-        summary["browser_features"]["pointer_lock_supported"] = bool(locked)
+            "real" if locked else "refused by the browser (not claimed)")
+        summary["browser_features"]["pointer_lock_supported"] = locked
         if locked:
-            check(checks, locked, "pointerlock_real_engaged")
             state.key_posts.clear()
             page.keyboard.press("Enter")
             check(checks, wait_key(page, state, "Enter"), "locked_enter_forwarded",
                   state.key_posts)
-        else:
-            checks.append({"name": "pointerlock_real_engaged", "ok": None, "skipped": True,
-                           "supported": False,
-                           "evidence": "browser did not grant pointer lock; not claimed"})
 
         release_before = state.release_posts
         page.keyboard.press("Control+Alt+Backquote")
@@ -354,7 +420,7 @@ def relative_pointerlock(browser, port, checks, summary, output_dir):
         else:
             checks.append({"name": "pointerlock_released_by_shortcut", "ok": None, "skipped": True,
                            "supported": False,
-                           "evidence": "pointer lock unsupported; release not claimed"})
+                           "evidence": "browser refused pointer lock; release not claimed"})
     except Exception:
         save(page, output_dir, "p2b_ui_failure_pointerlock.png")
         raise
@@ -364,24 +430,20 @@ def relative_pointerlock(browser, port, checks, summary, output_dir):
 
 def fullscreen_exit(browser, port, checks, summary, output_dir):
     state = State()
-    context, page = new_page(browser, state, port)
+    context, page = new_page(browser, state, port, init_scripts=(CAPTURE_SPY,))
     try:
         force_video_playing(page)
         page.wait_for_timeout(200)
         enable_remote_by_keyboard(page)
         page.focus("#fullscreen")
         page.keyboard.press("Space")
-        page.wait_for_timeout(500)
-        fullscreen = page.evaluate("() => !!document.fullscreenElement")
+        calls, engaged = capture_calls(
+            page, "fullscreen", "() => (document.fullscreenElement || {}).id || ''")
+        fullscreen = capture_outcome(checks, "fullscreen", "fullscreen_real_entered",
+                                     calls, engaged, "console")
         summary["browser_features"]["fullscreen"] = (
-            "real" if fullscreen else "unsupported (not claimed)")
-        summary["browser_features"]["fullscreen_supported"] = bool(fullscreen)
-        if fullscreen:
-            check(checks, fullscreen, "fullscreen_real_entered")
-        else:
-            checks.append({"name": "fullscreen_real_entered", "ok": None, "skipped": True,
-                           "supported": False,
-                           "evidence": "browser did not enter fullscreen; not claimed"})
+            "real" if fullscreen else "refused by the browser (not claimed)")
+        summary["browser_features"]["fullscreen_supported"] = fullscreen
 
         release_before = state.release_posts
         page.keyboard.press("Control+Alt+Backquote")
@@ -397,7 +459,7 @@ def fullscreen_exit(browser, port, checks, summary, output_dir):
         else:
             checks.append({"name": "fullscreen_exited_before_focus", "ok": None, "skipped": True,
                            "supported": False,
-                           "evidence": "fullscreen unsupported; exit not claimed"})
+                           "evidence": "browser refused fullscreen; exit not claimed"})
     except Exception:
         save(page, output_dir, "p2b_ui_failure_fullscreen.png")
         raise
