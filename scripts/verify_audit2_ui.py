@@ -3121,6 +3121,27 @@ def desktop_virtual_modifiers(browser, port, checks):
         context.close()
 
 
+def harness_reports_page_errors(browser, port, checks):
+    """AUD3-32: a module that throws while evaluating reaches the report with its stack."""
+    before = len(ui_harness.PAGE_ERRORS)
+    context = browser.new_context()
+    try:
+        page = context.new_page()
+        page.route("**/assets/js/main.js", lambda route: route.fulfill(
+            status=200, content_type="text/javascript; charset=utf-8",
+            body="throw new Error('AUD3-32 injected failure');\n"))
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="load", timeout=15000)
+        ui_harness.wait_until(page, lambda: len(ui_harness.PAGE_ERRORS) > before)
+    finally:
+        context.close()
+    # Taken out again so this deliberate error does not fail the suite.
+    injected = ui_harness.PAGE_ERRORS[before:]
+    del ui_harness.PAGE_ERRORS[before:]
+    check(checks, len(injected) == 1 and "AUD3-32 injected failure" in injected[0]["message"],
+          "harness_records_page_error_message", injected)
+    check(checks, "main.js" in injected[0]["stack"], "harness_records_page_error_stack", injected)
+
+
 # Every function taking (browser, port, checks) is a scenario, run in
 # definition order; new scenarios need no list edit (and no merge conflict).
 SCENARIOS = [
