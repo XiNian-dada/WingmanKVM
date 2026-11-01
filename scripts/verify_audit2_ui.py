@@ -2086,22 +2086,28 @@ def online_update(browser, port, checks):
     finally:
         context.close()
 
-    state = State()
-    context, page = new_page(browser, state, port)
-    failed = {**status, "status": {"state": "failed", "phase": "verifying", "version": "v0.2.0",
-                                   "error": "checksum", "updated": 3}}
-    page.route("**/api/update/status", lambda route: route.fulfill(
-        status=200, content_type="application/json", body=json.dumps(failed)))
-    try:
-        page.click("#settings-toggle")
-        page.wait_for_function(
-            "() => /升级失败/.test(document.querySelector('#update-progress').textContent)", timeout=5000)
-        text = page.text_content("#update-progress") or ""
-        classes = page.get_attribute("#update-progress", "class") or ""
-        check(checks, "SHA256 校验失败" in text and "回滚" in text and "error" in classes,
-              "update_failure_reports_rollback", text)
-    finally:
-        context.close()
+    # AUD3-28: only a failed install rolls back; earlier failures change nothing.
+    for error, phase, reason, rolled_back in (("checksum", "verifying", "SHA256 校验失败", False),
+                                              ("network", "downloading", "网络错误", False),
+                                              ("interrupted", "installing", "升级任务被中断", False),
+                                              ("install_failed", "done", "安装失败", True)):
+        state = State()
+        context, page = new_page(browser, state, port)
+        failed = {**status, "status": {"state": "failed", "phase": phase, "version": "v0.2.0",
+                                       "error": error, "updated": 3}}
+        body = json.dumps(failed)
+        page.route("**/api/update/status", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=body))
+        try:
+            page.click("#settings-toggle")
+            page.wait_for_function(
+                "() => /升级失败/.test(document.querySelector('#update-progress').textContent)", timeout=5000)
+            text = page.text_content("#update-progress") or ""
+            classes = page.get_attribute("#update-progress", "class") or ""
+            check(checks, reason in text and ("回滚" in text) == rolled_back and "error" in classes,
+                  f"update_failure_{error}_rollback_text", text)
+        finally:
+            context.close()
 
 
 ADAPTIVE_OFF = "localStorage.setItem('wingman_setting_adaptive_bitrate', 'false');"
