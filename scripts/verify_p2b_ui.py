@@ -392,7 +392,7 @@ def main():
 
     try:
         with ui_harness.static_server(args.repo) as port, sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, channel=args.browser_channel)
+            browser = ui_harness.launch_browser(p, args.browser_channel)
             try:
                 video_freshness(browser, port, checks, args.output_dir)
                 keyboard_exit(browser, port, checks, args.output_dir)

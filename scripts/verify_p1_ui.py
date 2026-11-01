@@ -186,7 +186,7 @@ def main():
     try:
         state = State()
         with static_server(args.repo, extract_html(args.repo)) as port, sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, channel=args.browser_channel)
+            browser = ui_harness.launch_browser(p, args.browser_channel)
             try:
                 page = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
                 page.add_init_script(WS_INIT)

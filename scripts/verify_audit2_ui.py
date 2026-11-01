@@ -123,7 +123,7 @@ def main():
     checks = summary["checks"]
     try:
         with ui_harness.static_server(args.repo) as port, sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, channel=args.browser_channel)
+            browser = ui_harness.launch_browser(p, args.browser_channel)
             try:
                 for scenario in SCENARIOS:
                     scenario(browser, port, checks)
@@ -267,7 +267,8 @@ def low_risk_ui(browser, port, checks):
     state = State()
     context = browser.new_context(viewport={"width": 1400, "height": 900})
     try:
-        context.add_init_script(
+        context.add_init_script(  # not on the initial about:blank (SecurityError)
+            "if (location.protocol !== 'about:') "
             "localStorage.setItem('wingman_setting_auto_expand_inspector','false')")
         page = context.new_page()
         from verify_p2b_ui import api_route, GIF, bootstrap_payload
@@ -1229,9 +1230,11 @@ def csp_no_violations(browser, port, checks):
     server, csp_port = serve_with_csp(repo)
     state = p2.State(authenticated=False, mass_storage=False)
     context = browser.new_context(viewport={"width": 1280, "height": 900})
+    # Context init scripts also run on the initial about:blank, where
+    # localStorage throws SecurityError; only seed it on the served page.
     context.add_init_script("""
       window.__csp = [];
-      localStorage.setItem('wingman_theme', 'dark');
+      if (location.protocol !== 'about:') localStorage.setItem('wingman_theme', 'dark');
       document.addEventListener('securitypolicyviolation', e =>
         window.__csp.push(e.violatedDirective + ' ' + (e.blockedURI || 'inline')));
     """)

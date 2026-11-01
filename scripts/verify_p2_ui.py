@@ -454,7 +454,7 @@ def main():
     current = media_page = None
     try:
         with ui_harness.static_server(args.repo) as port, sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, channel=args.browser_channel)
+            browser = ui_harness.launch_browser(p, args.browser_channel)
             try:
                 current = media_page = media_default_true(browser, port, checks)
                 current = media_mounted(browser, port, checks)
