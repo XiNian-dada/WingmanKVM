@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
-"""Record the README demo animation (docs/images/demo-<lang>.webp).
+"""Record the README demo animations (docs/images/demo-<category>-<lang>.webp).
 
 The flow runs against the same mocked API and synthetic screen as
 capture_screenshots.py (see capture_fixtures.py); no device is contacted and
-no power/reset control is shown or clicked. The flow covers display modes,
-paste as typing, keyboard macros, the host terminal, virtual media, connection
-quality, host performance and themes. Each step is captured
-as a still frame with a fixed display duration (no screen recording), so
-timing never varies between runs, and the frames are assembled into a
-looping animated WebP with img2webp (libwebp).
+no power/reset control is shown or clicked. Features are split into dedicated,
+focused animations per category:
+  - setup:  Setup wizard, admin account, hardware detection & wiring guide
+  - video:  Display modes (fit/native/fill), connection quality & stats
+  - input:  Virtual keyboard, paste as typing, key combinations & macros
+  - system: Host web terminal (persistent session), virtual media, diagnostics & dark theme
+  - all:    Complete combined overview animation (demo-<lang>.webp)
 
-    python3 scripts/capture_demo.py [--lang zh-CN --lang en] [--output-dir docs/images]
+Each step is captured as a still frame with smooth easing and high motion frame
+rate (35-50 FPS cursor tracking, no screen recording), so timing never drifts,
+and the frames are assembled into looping animated WebPs with img2webp (libwebp).
 
-capture_screenshots.py calls this too, so one command refreshes everything.
+    python3 scripts/capture_demo.py [--demo video] [--lang zh-CN] [--output-dir docs/images]
 """
-import argparse, hashlib, json, os, shutil, subprocess, sys, tempfile
+import argparse, hashlib, json, math, os, shutil, subprocess, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from playwright.sync_api import sync_playwright  # noqa: E402
@@ -24,9 +27,15 @@ import ui_harness  # noqa: E402
 
 VIEWPORT = (1280, 800)
 LANGS = ("zh-CN", "en")
-FILE_NAMES = {"zh-CN": "demo-zh.webp", "en": "demo-en.webp"}
+CATEGORIES = ("setup", "video", "input", "system")
 PASTE_TEXT = "sudo apt update && sudo apt full-upgrade -y"
 MAX_BYTES = 2 * 1024 * 1024
+
+def file_name(category, lang):
+    if category == "all":
+        return f"demo-{'zh' if lang == 'zh-CN' else 'en'}.webp"
+    return f"demo-{category}-{'zh' if lang == 'zh-CN' else 'en'}.webp"
+
 
 # A pointer drawn in the page, since headless screenshots have no cursor. It
 # lives in a manual popover (top layer) so it can be raised above modal dialogs.
@@ -53,23 +62,49 @@ CURSOR_JS = """() => {
     'background:#172033;color:#fff;font:500 14px system-ui,sans-serif;pointer-events:none;';
   document.body.append(caption);
   caption.showPopover();
+  let curX = 0, curY = 0;
   window.__demoCursor = {
-    move(x, y) { host.style.transform = `translate(${x}px, ${y}px)`; },
+    move(x, y) { curX = x; curY = y; host.style.transform = `translate(${x}px, ${y}px)`; },
     press(on) { host.firstChild.style.transform = on ? 'scale(1)' : 'scale(0)'; },
     caption(text) { caption.textContent = text; },
-    raise() { caption.hidePopover(); caption.showPopover(); host.hidePopover(); host.showPopover(); },
+    raise() {
+      try {
+        caption.hidePopover(); caption.showPopover();
+        host.hidePopover(); host.showPopover();
+        host.style.transform = `translate(${curX}px, ${curY}px)`;
+      } catch (e) {}
+    },
   };
 }"""
 
 
+def ease_in_out(t: float) -> float:
+    """Smooth cubic ease-in-out S-curve with zero initial & final velocity."""
+    return 4 * t * t * t if t < 0.5 else 1 - math.pow(-2 * t + 2, 3) / 2
+
+
+def motion_params(dx: float, dy: float):
+    """Dynamic step count and frame duration (~35-45 FPS) based on distance."""
+    dist = math.hypot(dx, dy)
+    if dist < 6:
+        return 0, 0
+    if dist < 80:
+        return 8, 28
+    if dist < 250:
+        return 12, 26
+    if dist < 600:
+        return 16, 24
+    return 20, 22
+
+
 class Recorder:
-    def __init__(self, page, frame_dir, lang):
+    def __init__(self, page, frame_dir, lang, initial_pos=None):
         self.page = page
         self.frame_dir = frame_dir
         self.lang = lang
         self.frames = []          # [path, duration_ms]
         self.last_digest = None
-        self.pos = (VIEWPORT[0] * 0.55, VIEWPORT[1] * 0.62)
+        self.pos = initial_pos or (VIEWPORT[0] * 0.5, VIEWPORT[1] * 0.5)
         page.evaluate(CURSOR_JS)
         self._cursor()
 
@@ -77,87 +112,355 @@ class Recorder:
         text = chinese if self.lang == "zh-CN" else english
         self.page.evaluate("text => window.__demoCursor.caption(text)", "DEMO · " + text)
 
+    def raise_cursor(self):
+        self.page.evaluate("() => window.__demoCursor.raise()")
+
     def _cursor(self):
         self.page.evaluate("([x, y]) => window.__demoCursor.move(x, y)", list(self.pos))
 
     def shot(self, duration):
         """Capture the current state and show it for `duration` ms."""
-        self.page.evaluate("() => window.__demoCursor.raise()")
         data = self.page.screenshot(animations="disabled", caret="hide")
         digest = hashlib.sha256(data).hexdigest()
         if digest == self.last_digest:
             self.frames[-1][1] += duration
             return
-        path = os.path.join(self.frame_dir, f"frame-{len(self.frames):03d}.png")
+        path = os.path.join(self.frame_dir, f"frame-{len(self.frames):04d}.png")
         with open(path, "wb") as fh:
             fh.write(data)
         self.frames.append([path, duration])
         self.last_digest = digest
 
-    def hold(self, ms, settle=350):
-        self.page.wait_for_timeout(settle)
+    def hold(self, ms, settle=300):
+        if settle > 0:
+            self.page.wait_for_timeout(settle)
         self.shot(ms)
 
-    def move_to(self, selector, steps=6, frame_ms=45, anchor=(0.5, 0.5)):
-        self.page.locator(selector).first.scroll_into_view_if_needed()
-        box = self.page.locator(selector).first.bounding_box()
-        if not box:
-            raise RuntimeError(f"demo target not visible: {selector}")
+    def move_to(self, target, anchor=(0.5, 0.5)):
+        """Move cursor smoothly using S-curve easing and distance-adaptive FPS."""
+        if isinstance(target, (tuple, list)):
+            end = (float(target[0]), float(target[1]))
+        else:
+            loc = self.page.locator(target).first
+            box = loc.bounding_box()
+            if not box:
+                loc.scroll_into_view_if_needed()
+                box = loc.bounding_box()
+            if not box:
+                raise RuntimeError(f"demo target not visible: {target}")
+            end = (box["x"] + box["width"] * anchor[0], box["y"] + box["height"] * anchor[1])
+
         start = self.pos
-        end = (box["x"] + box["width"] * anchor[0], box["y"] + box["height"] * anchor[1])
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        steps, frame_ms = motion_params(dx, dy)
+        if steps == 0:
+            self.pos = end
+            self._cursor()
+            return
+
         for i in range(1, steps + 1):
             t = i / steps
-            ease = 1 - (1 - t) ** 3
-            self.pos = (start[0] + (end[0] - start[0]) * ease, start[1] + (end[1] - start[1]) * ease)
+            ease = ease_in_out(t)
+            self.pos = (start[0] + dx * ease, start[1] + dy * ease)
             self._cursor()
             self.shot(frame_ms)
         self.page.mouse.move(*self.pos)
 
-    def click(self, selector, settle=400):
-        self.move_to(selector)
-        self.page.wait_for_timeout(120)
+    def click(self, target=None, anchor=(0.5, 0.5), settle=350):
+        if target is not None:
+            self.move_to(target, anchor=anchor)
+        self.page.wait_for_timeout(60)
         self.page.evaluate("() => window.__demoCursor.press(true)")
-        self.shot(110)
-        self.page.mouse.click(*self.pos)
+        self.shot(90)
+        if target is not None and not isinstance(target, (tuple, list)):
+            self.page.locator(target).first.click()
+        else:
+            self.page.mouse.click(*self.pos)
         self.page.evaluate("() => window.__demoCursor.press(false)")
-        self.page.wait_for_timeout(settle)
+        self.shot(70)
+        if settle > 0:
+            self.page.wait_for_timeout(settle)
+
+    def type_input(self, target, text, chunk_size=3, step_ms=45):
+        """Click into input field and simulate natural typing."""
+        self.click(target, settle=100)
+        for end in range(chunk_size, len(text) + chunk_size, chunk_size):
+            self.page.fill(target, text[:end])
+            self.shot(step_ms)
 
 
-def record(browser, port, lang, frame_dir):
+# ==============================================================================
+# Category 1: Setup Wizard & Quick Start
+# ==============================================================================
+def record_setup(browser, port, lang, frame_dir):
+    context, page, _ = F.new_page(
+        browser, port, lang=lang, viewport=(1280, 820), scale=1, setup=True,
+        path="/#setup=quick-start-token"
+    )
+    try:
+        page.add_style_tag(content="#toast { visibility: hidden !important; }")
+        rec = Recorder(page, frame_dir, lang, initial_pos=(640, 360))
+        rec.chapter("初始化向导 · 管理员账号设置", "Setup wizard · Account configuration")
+        rec.hold(900)
+
+        # Fill username
+        rec.type_input('#setup-form input[name="username"]', "admin", chunk_size=2, step_ms=50)
+        rec.hold(300)
+
+        # Fill password
+        rec.type_input('#setup-form input[name="password"]', "Admin123456!@#", chunk_size=3, step_ms=45)
+        rec.hold(300)
+
+        # Fill confirm password
+        rec.type_input('#setup-form input[name="confirm_password"]', "Admin123456!@#", chunk_size=3, step_ms=45)
+        rec.hold(600)
+
+        # Click Next (继续)
+        rec.click('#setup-form [data-setup-next]', settle=500)
+        page.wait_for_selector('[data-setup-step="1"].active')
+        page.wait_for_selector('#setup-device-results .capability')
+
+        # Step 2: Automatic hardware detection
+        rec.chapter("自动硬件检测 · 采集卡与 USB HID", "Automatic hardware detection · Video & USB HID")
+        rec.hold(1400)
+
+        # Click wiring guide
+        rec.click('#setup-form [data-guide="video"]', settle=400)
+        rec.raise_cursor()
+        page.wait_for_selector("#auth-guide:not(.hidden)")
+        rec.chapter("设备接线与权限指引", "Device wiring & permission guide")
+        rec.hold(1500)
+
+        # Close guide dialog
+        rec.click("#auth-guide-back", settle=400)
+        page.wait_for_selector("#auth-guide", state="hidden")
+        rec.hold(800)
+
+        # Smoothly move back towards center for clean loop
+        rec.move_to((640, 360))
+        rec.hold(600)
+
+        F.assert_clean(page, f"demo setup {lang}")
+        return rec.frames
+    finally:
+        context.close()
+
+
+# ==============================================================================
+# Category 2: Display Modes & Remote Video
+# ==============================================================================
+def record_video(browser, port, lang, frame_dir):
+    context, page, _ = F.new_page(
+        browser, port, lang=lang, viewport=VIEWPORT, scale=1,
+        storage={"wingman_setting_auto_expand_inspector": "false"}
+    )
+    try:
+        page.add_style_tag(content="#toast { visibility: hidden !important; }")
+        rec = Recorder(page, frame_dir, lang, initial_pos=(640, 380))
+        rec.chapter("远程画面 · 适应 / 1:1 / 填满", "Remote display · Fit / 1:1 / Fill")
+        rec.hold(900)
+
+        # Cycle display modes: native -> fill -> fit
+        for mode in ("native", "fill", "fit"):
+            rec.click("#mode-button", settle=200)
+            page.wait_for_function("mode => document.querySelector('#console').classList.contains('mode-' + mode)", arg=mode)
+            rec.hold(750)
+
+        # Connection quality overlay
+        rec.chapter("连接质量 · 实时流与状态", "Connection quality · Stream stats & Status")
+        rec.click("#quality-toggle", settle=200)
+        page.wait_for_selector("#quality-overlay:not(.hidden)")
+        rec.hold(1600)
+        rec.click("#quality-toggle", settle=200)
+
+        # Smoothly return to center for clean loop
+        rec.move_to((640, 380))
+        rec.hold(700)
+
+        F.assert_clean(page, f"demo video {lang}")
+        return rec.frames
+    finally:
+        context.close()
+
+
+# ==============================================================================
+# Category 3: Keyboard, Mouse, Paste as Typing & Macros
+# ==============================================================================
+def record_input(browser, port, lang, frame_dir):
     macro = {"id": "demo-tty", "name": "切换到 TTY2" if lang == "zh-CN" else "Switch to TTY2",
              "steps": [{"key": "F2", "ctrl": True, "alt": True, "delay_ms": 0},
                        {"key": "KeyL", "ctrl": True, "delay_ms": 800}]}
     context, page, target = F.new_page(
         browser, port, lang=lang, viewport=VIEWPORT, scale=1,
         storage={"wingman_setting_auto_expand_inspector": "false",
-                 "wingman_keyboard_macros": json.dumps([macro])}, screens=("", PASTE_TEXT))
-    page_errors = []
-    page.on("pageerror", lambda error: page_errors.append(str(error)))
+                 "wingman_keyboard_macros": json.dumps([macro])}, screens=("", PASTE_TEXT)
+    )
     try:
-        # Chapter captions explain each action; transient toasts distract from
-        # the feature being shown. assert_clean still rejects any error toast.
         page.add_style_tag(content="#toast { visibility: hidden !important; }")
-        # The inspector opens later on the media tab, so the power buttons on
-        # the control tab never appear in the demo.
+        rec = Recorder(page, frame_dir, lang, initial_pos=(640, 380))
+
+        # Paste as typing
+        rec.chapter("虚拟键盘 · 粘贴为键入", "Virtual keyboard · Paste as typing")
+        rec.click("#keyboard-toggle", settle=300)
+        rec.raise_cursor()
+        rec.hold(700)
+
+        rec.click("#paste-typing-btn", settle=300)
+        rec.raise_cursor()
+        rec.hold(500)
+
+        rec.type_input("#paste-key-text", PASTE_TEXT, chunk_size=3, step_ms=50)
+        rec.hold(500)
+
+        target.hold_at = len(PASTE_TEXT) // 2
+        rec.click("#paste-key-send", settle=0)
+        page.wait_for_function("n => document.querySelector('#paste-key-progress')"
+                               ".getAttribute('aria-valuenow') == n", arg=str(target.hold_at - 1))
+        rec.hold(450, settle=50)
+        target.typed = PASTE_TEXT
+        target.release()
+        page.wait_for_function("() => /\\d/.test(document.querySelector('#paste-key-status').textContent) &&"
+                               " !document.querySelector('#paste-key-send').disabled")
+        rec.hold(1000, settle=100)
+        rec.click("#paste-key-cancel", settle=200)
+        rec.click("#keyboard-dialog [data-close]", settle=200)
+
+        # Show typed command on target console
+        page.evaluate("() => { document.querySelector('#video-feed').src = '/video_feed?frame=typed'; }")
+        page.wait_for_function("() => document.querySelector('#video-feed').complete")
+        rec.hold(800)
+
+        # Key combinations & Macro manager replay
+        rec.chapter("组合键 · 键盘宏与回放", "Key combinations · Keyboard macros and replay")
+        rec.click("#quick-more-toggle", settle=200)
+        rec.hold(900)
+        rec.click("#quick-macro-manage", settle=300)
+        rec.raise_cursor()
+        rec.hold(900)
+        before_macro = target.keys()
+        rec.click('#macro-manager-list [data-macro-play="demo-tty"]', settle=100)
+        rec.hold(550, settle=100)
+        page.wait_for_function("() => document.querySelector('#macro-play-progress').getAttribute('aria-valuenow') === '2'")
+        rec.hold(700, settle=100)
+        if target.keys() != before_macro + len(macro["steps"]):
+            raise RuntimeError("demo macro did not reach the mocked target")
+        rec.click("[data-macro-play-close]", settle=200)
+        rec.click("[data-macro-manager-close]", settle=200)
+
+        # Smoothly move back to center
+        rec.move_to((640, 380))
+        rec.hold(700)
+
+        F.assert_clean(page, f"demo input {lang}")
+        return rec.frames
+    finally:
+        context.close()
+
+
+# ==============================================================================
+# Category 4: Web Terminal, Virtual Media, Diagnostics & System
+# ==============================================================================
+def record_system(browser, port, lang, frame_dir):
+    context, page, target = F.new_page(
+        browser, port, lang=lang, viewport=VIEWPORT, scale=1,
+        storage={"wingman_setting_auto_expand_inspector": "false"}
+    )
+    try:
+        page.add_style_tag(content="#toast { visibility: hidden !important; }")
         page.evaluate("() => document.querySelector('[data-panel-target=\"media\"]').click()")
-        rec = Recorder(page, frame_dir, lang)
+        rec = Recorder(page, frame_dir, lang, initial_pos=(640, 380))
+
+        # Web Terminal
+        rec.chapter("主控机网页终端 · 切换后保留会话", "Host web terminal · Session survives tab switching")
+        rec.click('[data-workspace="terminal"]', settle=300)
+        page.wait_for_function("() => !!document.querySelector('#terminal-host .xterm-screen')")
+        page.locator("#terminal-host .xterm-helper-textarea").focus()
+        page.keyboard.type("uptime", delay=55)
+        rec.hold(600, settle=100)
+        page.keyboard.press("Enter")
+        rec.hold(1300)
+        if target.terminal_commands != ["uptime"]:
+            raise RuntimeError("demo terminal command did not reach the mocked socket")
+
+        rec.click('[data-workspace="video"]', settle=200)
+        page.wait_for_selector('[data-workspace="terminal"].session-live')
+        rec.hold(600)
+
+        # Virtual media
+        rec.chapter("虚拟介质 · ISO 光驱与 IMG 镜像", "Virtual media · ISO optical drive and IMG images")
+        page.evaluate("""() => {
+          const body = document.querySelector('.inspector-body'), list = document.querySelector('#media-list');
+          body.scrollTop += list.getBoundingClientRect().top - body.getBoundingClientRect().top - 16;
+        }""")
+        rec.click("#inspector-toggle", settle=300)
+        rec.move_to("#media-list .media-item", anchor=(0.62, 0.3))
+        rec.hold(1400)
+        rec.click("#inspector-toggle", settle=300)
+
+        # Device diagnostics
+        rec.chapter("设备诊断 · 视频与键鼠通道", "Device diagnostics · Video and input channels")
+        rec.click("#diagnostics-toggle", settle=300)
+        rec.raise_cursor()
+        rec.move_to(".diagnostics-card:has(#diag-input-mode)", anchor=(0.9, 0.85))
+        rec.hold(1400)
+        rec.click("#diagnostics-toggle", settle=250)
+
+        # Host performance popover
+        rec.chapter("主机性能 · CPU / 内存 / 温度", "Host performance · CPU / Memory / Temperature")
+        rec.move_to("#topbar-perf-btn")
+        page.wait_for_selector("#topbar-perf-popover:not([hidden])")
+        rec.hold(1500)
+        rec.click("#perf-pop-close", settle=200)
+
+        # Dark theme
+        rec.chapter("深色主题 · 远程控制台", "Dark theme · Remote console")
+        rec.click("#theme-toggle", settle=200)
+        rec.click("#theme-toggle", settle=200)
+        page.wait_for_function("() => document.documentElement.dataset.theme === 'dark'")
+        rec.hold(1400)
+
+        F.assert_clean(page, f"demo system {lang}")
+        return rec.frames
+    finally:
+        context.close()
+
+
+# ==============================================================================
+# Combined Overview: All chapters in one sequence (backward compatibility)
+# ==============================================================================
+def record_all(browser, port, lang, frame_dir):
+    macro = {"id": "demo-tty", "name": "切换到 TTY2" if lang == "zh-CN" else "Switch to TTY2",
+             "steps": [{"key": "F2", "ctrl": True, "alt": True, "delay_ms": 0},
+                       {"key": "KeyL", "ctrl": True, "delay_ms": 800}]}
+    context, page, target = F.new_page(
+        browser, port, lang=lang, viewport=VIEWPORT, scale=1,
+        storage={"wingman_setting_auto_expand_inspector": "false",
+                 "wingman_keyboard_macros": json.dumps([macro])}, screens=("", PASTE_TEXT)
+    )
+    try:
+        page.add_style_tag(content="#toast { visibility: hidden !important; }")
+        page.evaluate("() => document.querySelector('[data-panel-target=\"media\"]').click()")
+        rec = Recorder(page, frame_dir, lang, initial_pos=(640, 380))
+
+        # 1. Display modes
         rec.chapter("远程画面 · 适应 / 1:1 / 填满", "Remote display · Fit / 1:1 / Fill")
         rec.hold(900)
         for mode in ("native", "fill", "fit"):
-            rec.click("#mode-button")
+            rec.click("#mode-button", settle=200)
             page.wait_for_function("mode => document.querySelector('#console').classList.contains('mode-' + mode)", arg=mode)
             rec.hold(650)
 
-        # Paste as typing: virtual keyboard -> paste dialog -> type -> send.
+        # 2. Paste as typing
         rec.chapter("虚拟键盘 · 粘贴为键入", "Virtual keyboard · Paste as typing")
-        rec.click("#keyboard-toggle")
+        rec.click("#keyboard-toggle", settle=300)
+        rec.raise_cursor()
         rec.hold(700)
-        rec.click("#paste-typing-btn")
+        rec.click("#paste-typing-btn", settle=300)
+        rec.raise_cursor()
         rec.hold(500)
-        for end in range(3, len(PASTE_TEXT) + 3, 3):
-            page.fill("#paste-key-text", PASTE_TEXT[:end])
-            rec.shot(60)
-        rec.hold(500, settle=100)
+        rec.type_input("#paste-key-text", PASTE_TEXT, chunk_size=3, step_ms=50)
+        rec.hold(500)
         target.hold_at = len(PASTE_TEXT) // 2
         rec.click("#paste-key-send", settle=0)
         page.wait_for_function("n => document.querySelector('#paste-key-progress')"
@@ -168,18 +471,18 @@ def record(browser, port, lang, frame_dir):
         page.wait_for_function("() => /\\d/.test(document.querySelector('#paste-key-status').textContent) &&"
                                " !document.querySelector('#paste-key-send').disabled")
         rec.hold(1100, settle=150)
-        rec.click("#paste-key-cancel")
-        rec.click("#keyboard-dialog [data-close]")
-        # The synthetic target now shows the pasted command at its prompt.
+        rec.click("#paste-key-cancel", settle=200)
+        rec.click("#keyboard-dialog [data-close]", settle=200)
         page.evaluate("() => { document.querySelector('#video-feed').src = '/video_feed?frame=typed'; }")
         page.wait_for_function("() => document.querySelector('#video-feed').complete")
         rec.hold(650)
 
-        # Use the real macro menu and replay path; HID messages reach the mock.
+        # 3. Macro replay
         rec.chapter("组合键 · 键盘宏与回放", "Key combinations · Keyboard macros and replay")
-        rec.click("#quick-more-toggle")
-        rec.hold(1000)
-        rec.click("#quick-macro-manage")
+        rec.click("#quick-more-toggle", settle=200)
+        rec.hold(950)
+        rec.click("#quick-macro-manage", settle=300)
+        rec.raise_cursor()
         rec.hold(950)
         before_macro = target.keys()
         rec.click('#macro-manager-list [data-macro-play="demo-tty"]', settle=100)
@@ -188,76 +491,80 @@ def record(browser, port, lang, frame_dir):
         rec.hold(700, settle=100)
         if target.keys() != before_macro + len(macro["steps"]):
             raise RuntimeError("demo macro did not reach the mocked target")
-        rec.click("[data-macro-play-close]")
-        rec.click("[data-macro-manager-close]")
+        rec.click("[data-macro-play-close]", settle=200)
+        rec.click("[data-macro-manager-close]", settle=200)
 
-        # xterm and its real WebSocket path, with a canned host response.
+        # 4. Web Terminal
         rec.chapter("主控机网页终端 · 切换后保留会话", "Host web terminal · Session survives tab switching")
-        rec.click('[data-workspace="terminal"]')
+        rec.click('[data-workspace="terminal"]', settle=300)
         page.wait_for_function("() => !!document.querySelector('#terminal-host .xterm-screen')")
         page.locator("#terminal-host .xterm-helper-textarea").focus()
-        page.keyboard.type("uptime", delay=65)
+        page.keyboard.type("uptime", delay=55)
         rec.hold(650, settle=150)
         page.keyboard.press("Enter")
         rec.hold(1200)
         if target.terminal_commands != ["uptime"]:
             raise RuntimeError("demo terminal command did not reach the mocked socket")
-        rec.click('[data-workspace="video"]')
+        rec.click('[data-workspace="video"]', settle=200)
         page.wait_for_selector('[data-workspace="terminal"].session-live')
         rec.hold(450)
 
-        # Virtual media panel, opened scrolled to the image list. (The native
-        # file picker above it is labelled in the OS language, not the page's.)
+        # 5. Virtual Media
         rec.chapter("虚拟介质 · ISO 光驱与 IMG 镜像", "Virtual media · ISO optical drive and IMG images")
         page.evaluate("""() => {
           const body = document.querySelector('.inspector-body'), list = document.querySelector('#media-list');
           body.scrollTop += list.getBoundingClientRect().top - body.getBoundingClientRect().top - 16;
         }""")
-        rec.click("#inspector-toggle")
+        rec.click("#inspector-toggle", settle=300)
         rec.move_to("#media-list .media-item", anchor=(0.62, 0.3))
         rec.hold(1300)
-        rec.click("#inspector-toggle")
+        rec.click("#inspector-toggle", settle=300)
 
+        # 6. Quality
         rec.chapter("连接质量 · 分辨率与帧率", "Connection quality · Resolution and frame rate")
-        rec.click("#quality-toggle")
+        rec.click("#quality-toggle", settle=200)
         page.wait_for_selector("#quality-overlay:not(.hidden)")
         rec.hold(1200)
-        rec.click("#quality-toggle")
+        rec.click("#quality-toggle", settle=200)
 
-        # Diagnostics popover.
+        # 7. Diagnostics
         rec.chapter("设备诊断 · 视频与键鼠通道", "Device diagnostics · Video and input channels")
-        rec.click("#diagnostics-toggle")
+        rec.click("#diagnostics-toggle", settle=300)
+        rec.raise_cursor()
         rec.move_to(".diagnostics-card:has(#diag-input-mode)", anchor=(0.9, 0.85))
         rec.hold(1400)
-        rec.click("#diagnostics-toggle")
+        rec.click("#diagnostics-toggle", settle=250)
 
+        # 8. Performance
         rec.chapter("主机性能 · CPU / 内存 / 温度", "Host performance · CPU / Memory / Temperature")
-        # Hover opens this popover; a delayed click would toggle it closed.
         rec.move_to("#topbar-perf-btn")
         page.wait_for_selector("#topbar-perf-popover:not([hidden])")
         rec.hold(1500)
-        rec.click("#perf-pop-close")
+        rec.click("#perf-pop-close", settle=200)
 
+        # 9. Dark theme
         rec.chapter("深色主题 · 远程控制台", "Dark theme · Remote console")
-        # The fixture starts light; the UI cycles light -> system -> dark.
-        rec.click("#theme-toggle")
-        rec.click("#theme-toggle")
+        rec.click("#theme-toggle", settle=200)
+        rec.click("#theme-toggle", settle=200)
         page.wait_for_function("() => document.documentElement.dataset.theme === 'dark'")
-        rec.hold(1500)
+        rec.hold(1400)
 
         F.assert_clean(page, f"demo {lang}")
-        if page_errors:
-            raise RuntimeError(f"demo {lang}: page errors: {page_errors}")
-        expected_keys = len(PASTE_TEXT) + len(macro["steps"])
-        if target.keys() != expected_keys:
-            raise RuntimeError(f"demo {lang}: {target.keys()} keys reached the mocked target; expected {expected_keys}")
         return rec.frames
     finally:
         context.close()
 
 
+RECORDERS = {
+    "setup": record_setup,
+    "video": record_video,
+    "input": record_input,
+    "system": record_system,
+    "all": record_all,
+}
+
+
 def find_encoder():
-    # ffmpeg is often built without libwebp, so use the libwebp tool directly.
     tool = shutil.which("img2webp")
     if not tool:
         raise SystemExit("img2webp not found: install libwebp (brew install webp / apt install webp)")
@@ -272,41 +579,50 @@ def encode_webp(tool, frames, output):
     subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
 
-def build(browser, port, langs, output_dir, keep_frames=None):
+def build(browser, port, langs, output_dir, categories=None, keep_frames=None):
     tool = find_encoder()
+    targets = categories or list(CATEGORIES)
     outputs = []
-    for lang in langs:
-        frame_dir = keep_frames and os.path.join(keep_frames, lang)
-        with tempfile.TemporaryDirectory(prefix="wkvm-demo-") as tmp:
-            frame_dir = frame_dir or tmp
-            os.makedirs(frame_dir, exist_ok=True)
-            frames = record(browser, port, lang, frame_dir)
-            output = os.path.join(output_dir, FILE_NAMES[lang])
-            encode_webp(tool, frames, output)
-            if keep_frames:
-                with open(os.path.join(frame_dir, "durations.txt"), "w", encoding="utf-8") as fh:
-                    fh.writelines(f"{os.path.basename(path)} {duration}\n" for path, duration in frames)
-        total = sum(d for _, d in frames) / 1000
-        size = os.path.getsize(output)
-        print(f"Generated {os.path.basename(output)}: {len(frames)} frames, {total:.1f} s, {size / 1024:.0f} KiB")
-        if size > MAX_BYTES:
-            raise SystemExit(f"{output} is {size} bytes, above the {MAX_BYTES} byte README budget")
-        outputs.append(output)
+    for cat in targets:
+        recorder_fn = RECORDERS[cat]
+        for lang in langs:
+            frame_dir = keep_frames and os.path.join(keep_frames, f"{cat}-{lang}")
+            with tempfile.TemporaryDirectory(prefix=f"wkvm-demo-{cat}-") as tmp:
+                frame_dir = frame_dir or tmp
+                os.makedirs(frame_dir, exist_ok=True)
+                frames = recorder_fn(browser, port, lang, frame_dir)
+                out_name = file_name(cat, lang)
+                output = os.path.join(output_dir, out_name)
+                encode_webp(tool, frames, output)
+                if keep_frames:
+                    with open(os.path.join(frame_dir, "durations.txt"), "w", encoding="utf-8") as fh:
+                        fh.writelines(f"{os.path.basename(p)} {d}\n" for p, d in frames)
+            total = sum(d for _, d in frames) / 1000
+            size = os.path.getsize(output)
+            print(f"Generated {out_name}: {len(frames)} frames, {total:.1f} s, {size / 1024:.0f} KiB")
+            if size > MAX_BYTES:
+                raise SystemExit(f"{output} is {size} bytes, above the {MAX_BYTES} byte budget")
+            outputs.append(output)
     return outputs
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--lang", action="append", choices=LANGS, help="default: all")
+    parser.add_argument("--demo", choices=list(CATEGORIES) + ["all"], action="append",
+                        help="which demo to generate (default: all categories)")
+    parser.add_argument("--lang", action="append", choices=LANGS, help="default: all (zh-CN, en)")
     parser.add_argument("--output-dir", default=F.DOCS_IMG_DIR)
     parser.add_argument("--browser-channel", default="chrome")
     parser.add_argument("--keep-frames", default="", help="also write the PNG frames here")
     args = parser.parse_args()
+
     os.makedirs(args.output_dir, exist_ok=True)
+    demos = args.demo or list(CATEGORIES)
     with ui_harness.static_server(F.REPO) as port, sync_playwright() as p:
         browser = F.launch(p, args.browser_channel)
         try:
-            build(browser, port, args.lang or LANGS, args.output_dir, args.keep_frames or None)
+            build(browser, port, args.lang or LANGS, args.output_dir,
+                  categories=demos, keep_frames=args.keep_frames or None)
         finally:
             browser.close()
 

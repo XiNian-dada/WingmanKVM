@@ -167,26 +167,29 @@ only and is recorded as skipped; CI always runs the UI gates.
   指针锁定时桩接 `requestPointerLock`，且只有应用自己发起请求才会“锁定”；真实指针锁定
   仍需有界面的浏览器或真机验证。场景不涉及电源和复位控件。
 
-## README 截图与演示动图（#96）
+## README 截图与分类演示动图（#96）
 
-界面改动后，一条命令重新生成 `docs/images/` 下全部截图和 README 顶部的中英文演示动图
-（`demo-zh.webp`、`demo-en.webp`）：
+界面改动后，一条命令重新生成 `docs/images/` 下全部截图和 README 中的中英文分类演示动图
+（`demo-setup-<lang>.webp`、`demo-video-<lang>.webp`、`demo-input-<lang>.webp`、`demo-system-<lang>.webp`）：
 
 ```bash
 python3 scripts/capture_screenshots.py --browser-channel chrome
 # 只生成截图 / 只生成动图：加 --skip-demo / --demo-only
-# 单独调试动图并保留逐帧 PNG：
-python3 scripts/capture_demo.py --lang en --output-dir "$SCRATCH/demo" --keep-frames "$SCRATCH/demo/frames"
+# 单独调试某一分类动图并保留逐帧 PNG：
+python3 scripts/capture_demo.py --demo video --lang en --output-dir "$SCRATCH/demo" --keep-frames "$SCRATCH/demo/frames"
 ```
 
 - 与 UI 门禁一样用 `scripts/ui_harness.py` 提供真实界面，所有 `/api/**`、键鼠 WebSocket 和
   `/video_feed` 都由 `scripts/capture_fixtures.py` 模拟，画面是合成的终端帧，不连接任何设备。
-- 动图流程：画面比例（适应 / 1:1 / 填满）→ 虚拟键盘与粘贴为键入 → 组合键菜单、宏管理与回放
-  → 主控机网页终端（切回视频后保留会话）→ 虚拟介质 → 连接质量 → 设备诊断 → 主机性能 → 深色主题。
+- 动图按功能模块拆分为独立的高帧率平滑演示：
+  - **安装向导 (`setup`)**：管理员账号设置 → 自动检测采集卡与 USB HID 设备 → 硬件接线与权限指引。
+  - **画面控制 (`video`)**：显示比例（适应 / 1:1 / 填满）循环切换 → 展开连接质量面板（分辨率与帧率）。
+  - **键盘与输入 (`input`)**：虚拟键盘与粘贴为键入（命令输入与进度条）→ 组合键菜单、宏管理器与按键回放。
+  - **终端与运维 (`system`)**：内置网页终端（执行 uptime，切回视频保留会话）→ 虚拟介质 ISO 挂载 → 设备诊断卡片 → 主机性能监控浮层 → 深色主题。
   中英文分别显示对应语言的章节提示；宏与终端均走真实前端 WebSocket 路径，终端回复为固定夹具，不执行命令。
   不展示也不点击电源/复位按钮。
-  每一步是固定时长的静态截图（不录屏），再用 `img2webp`（libwebp，`brew install webp` /
-  `apt install webp`）合成循环 WebP；单个文件超过 2 MB 时脚本报错。不依赖 ffmpeg：未编入 libwebp 的 ffmpeg 无法输出动画 WebP。
+  采用 S 曲线平滑缓动与动态高帧率追踪鼠标（35-50 FPS，消除指针跳动与卡顿），每一步是静态定格截图（不录屏），再用 `img2webp`（libwebp，`brew install webp` /
+  `apt install webp`）合成无损循环 WebP；单个文件严格控制在预算内。不依赖 ffmpeg：未编入 libwebp 的 ffmpeg 无法输出动画 WebP。
 - 视口、缩放、语言、时区、浏览器时钟和渲染参数都已固定，同一台机器重跑通常只在界面变化时
   改变图片（个别帧可能有少量抗锯齿差异）。字体取自本机：请在 macOS 上生成要提交的图片，
   中文界面才会使用 PingFang SC。

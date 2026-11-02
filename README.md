@@ -2,13 +2,11 @@
 
 # WingmanKVM
 
-![WingmanKVM 功能演示：画面比例、虚拟键盘与粘贴为键入、组合键与键盘宏、网页终端、虚拟介质、连接质量、设备诊断、主机性能和深色主题](docs/images/demo-zh.webp)
+![WingmanKVM 控制台](docs/images/console-desktop.png)
 
 WingmanKVM 是一个运行在 ARM 开发板上的网页 KVM。把被控机的 HDMI 输出接到采集卡、USB 接到开发板的 OTG 口，就可以在浏览器里远程看画面、操作键鼠（包括 BIOS 阶段）、挂载 ISO 镜像，并可选地通过 GPIO 继电器控制电源。
 
 单个二进制部署，不需要额外的数据库或前端构建工具。
-
-![WingmanKVM 控制台](docs/images/console-desktop.png)
 
 ## 功能
 
@@ -18,6 +16,8 @@ WingmanKVM 是一个运行在 ARM 开发板上的网页 KVM。把被控机的 HD
 - 适应窗口 / 1:1 像素 / 填满三种显示方式，1:1 下可拖动平移
 - 画面截图（PNG）与本地录屏（WebM）
 
+![WingmanKVM 画面显示模式与连接质量演示](docs/images/demo-video-zh.webp)
+
 **键盘与鼠标**
 - 模拟 USB 键盘、相对鼠标和绝对指针，BIOS / UEFI 中可用
 - 鼠标支持按住拖拽（拖动窗口、框选文本、拖动滚动条）和多键同按，绝对与相对指针模式均可
@@ -25,6 +25,8 @@ WingmanKVM 是一个运行在 ARM 开发板上的网页 KVM。把被控机的 HD
 - 粘贴为键入：把本机剪贴板文字逐字输入被控机，支持 US / UK / DE / FR / JP 布局
 - 组合键菜单（Ctrl+Alt+Del、Ctrl+Alt+F1–F7 等）与自定义组合
 - 虚拟键盘、键盘指示灯同步、手机触屏手势（点按、长按右键、双指滚动）
+
+![WingmanKVM 虚拟键盘与粘贴为键入、组合键宏回放演示](docs/images/demo-input-zh.webp)
 
 **虚拟介质与电源**
 - 网页上传 ISO / IMG，以光驱或 U 盘方式挂载给被控机
@@ -35,6 +37,8 @@ WingmanKVM 是一个运行在 ARM 开发板上的网页 KVM。把被控机的 HD
 - 诊断面板：视频与编码状态、键鼠写入成功/失败、主控机 CPU / 内存 / 温度
 - 内置网页终端（受限账户），切到视频页时会话保留
 - 界面支持简体中文、繁體中文、English，浅色 / 深色主题
+
+![WingmanKVM 网页终端、虚拟介质挂载与系统监控运维演示](docs/images/demo-system-zh.webp)
 
 ## 硬件要求
 
@@ -55,6 +59,8 @@ WingmanKVM 是一个运行在 ARM 开发板上的网页 KVM。把被控机的 HD
 ## 快速开始
 
 > 目前只有预发布版本 `v2.0.0-rc.1`，正式版发布前请在第 1 步的命令末尾加上 `--version v2.0.0-rc.1`。
+
+![WingmanKVM 初始化安装与设备检测向导演示](docs/images/demo-setup-zh.webp)
 
 1. 在 KVM 主机上运行安装命令（自动识别架构、校验并安装，`--install-deps` 会补齐缺少的运行依赖）：
 
