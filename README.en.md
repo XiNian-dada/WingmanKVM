@@ -2,13 +2,11 @@
 
 # WingmanKVM
 
-![WingmanKVM feature demo: display modes, virtual keyboard and paste as typing, key combinations and keyboard macros, web terminal, virtual media, connection quality, device diagnostics, host performance, and dark theme](docs/images/demo-en.webp)
+![WingmanKVM console](docs/images/console-desktop-en.png)
 
 WingmanKVM is a web-based KVM that runs on an ARM development board. Connect the target machine's HDMI output to a capture card and its USB to the development board's OTG port, and you can view the screen and operate the keyboard and mouse (including during BIOS) from a browser, mount ISO images, and optionally control power through GPIO relays.
 
 It deploys as a single binary and needs no separate database or frontend build tooling.
-
-![WingmanKVM console](docs/images/console-desktop-en.png)
 
 ## Features
 
@@ -18,6 +16,8 @@ It deploys as a single binary and needs no separate database or frontend build t
 - Fit-to-window / 1:1 pixels / fill display modes; pan by dragging in 1:1 mode
 - Screenshots (PNG) and local screen recording (WebM)
 
+![WingmanKVM display modes and connection quality demo](docs/images/demo-video-en.webp)
+
 **Keyboard and mouse**
 - Emulated USB keyboard, relative mouse, and absolute pointer, usable in BIOS / UEFI
 - Mouse drag (moving windows, selecting text, dragging scrollbars) and multiple buttons at once, in both absolute and relative pointer modes
@@ -25,6 +25,8 @@ It deploys as a single binary and needs no separate database or frontend build t
 - Paste as typing: types clipboard text from your machine into the target machine character by character, with US / UK / DE / FR / JP layouts
 - Shortcut menu (Ctrl+Alt+Del, Ctrl+Alt+F1–F7, etc.) and custom combinations
 - Virtual keyboard, keyboard LED synchronization, and phone touch gestures (tap, long-press for right click, two-finger scroll)
+
+![WingmanKVM virtual keyboard, paste as typing, and keyboard macros demo](docs/images/demo-input-en.webp)
 
 **Virtual media and power**
 - Upload ISO / IMG files in the web UI and mount them to the target machine as a CD-ROM or USB drive
@@ -35,6 +37,8 @@ It deploys as a single binary and needs no separate database or frontend build t
 - Diagnostics panel: video and encoding status, keyboard/mouse write successes/failures, KVM host CPU / memory / temperature
 - Built-in web terminal (restricted account); the session is preserved when switching to the video page
 - UI available in Simplified Chinese, Traditional Chinese, and English, with light / dark themes
+
+![WingmanKVM web terminal, virtual media, and host diagnostics demo](docs/images/demo-system-en.webp)
 
 ## Hardware requirements
 
@@ -55,6 +59,8 @@ Browser                     <──  LAN  ────────────�
 ## Quick start
 
 > Only the `v2.0.0-rc.1` pre-release exists for now. Until the stable release, append `--version v2.0.0-rc.1` to the command in step 1.
+
+![WingmanKVM setup wizard and device detection demo](docs/images/demo-setup-en.webp)
 
 1. On the KVM host, run the installer (it detects the architecture, verifies the download and installs; `--install-deps` adds missing runtime packages):
 

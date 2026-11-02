@@ -190,27 +190,30 @@ only and is recorded as skipped; CI always runs the UI gates.
   only "locks" when the app itself asks; real pointer lock still needs a headed
   browser or real hardware. No power or reset control is involved.
 
-## README screenshots and demo animation (#96)
+## README screenshots and category demo animations (#96)
 
 After a UI change, one command regenerates every screenshot in `docs/images/` and the
-Chinese/English demo animations at the top of the READMEs (`demo-zh.webp`, `demo-en.webp`):
+Chinese/English category demo animations in the READMEs
+(`demo-setup-<lang>.webp`, `demo-video-<lang>.webp`, `demo-input-<lang>.webp`, `demo-system-<lang>.webp`):
 
 ```bash
 python3 scripts/capture_screenshots.py --browser-channel chrome
 # screenshots only / animation only: add --skip-demo / --demo-only
-# debug the animation alone and keep the PNG frames:
-python3 scripts/capture_demo.py --lang en --output-dir "$SCRATCH/demo" --keep-frames "$SCRATCH/demo/frames"
+# debug a specific category animation and keep the PNG frames:
+python3 scripts/capture_demo.py --demo video --lang en --output-dir "$SCRATCH/demo" --keep-frames "$SCRATCH/demo/frames"
 ```
 
 - Like the UI gates, it serves the real UI through `scripts/ui_harness.py`; every `/api/**`
   call, the input WebSocket and `/video_feed` are mocked by `scripts/capture_fixtures.py`, and
   the picture is a synthetic terminal frame. No device is contacted.
-- Demo flow: display modes (fit / 1:1 / fill) → virtual keyboard and paste as typing → key combinations,
-  macro management and replay → host web terminal (session survives switching back to video) → virtual
-  media → connection quality → device diagnostics → host performance → dark theme. Chapter captions
-  match the Chinese/English UI. Macros and the terminal use the real frontend WebSocket paths; terminal
-  replies are canned fixtures and execute no commands. Power and reset controls are never shown or
-  clicked. Each step is a still screenshot with a fixed
+- Animations are split into modular, high-FPS focused categories:
+  - **Setup wizard (`setup`)**: Admin account configuration → Automatic detection of video and USB HID devices → Wiring and permission guide.
+  - **Display modes (`video`)**: Fit / 1:1 / Fill cycle → Quality overlay (resolution, 60fps & WebRTC/MJPEG stats).
+  - **Keyboard and input (`input`)**: Virtual keyboard & paste as typing (with typing progress) → Key combinations, macro management & replay.
+  - **Terminal and operations (`system`)**: Web terminal (uptime execution, persistent session on tab switch) → Virtual media ISO list → Device diagnostics → Host performance popover → Dark theme.
+  Chapter captions match the Chinese/English UI. Macros and the terminal use the real frontend WebSocket paths; terminal
+  replies are canned fixtures and execute no commands. Power and reset controls are never shown or clicked.
+  Smooth cubic ease-in-out S-curve and dynamic high-framerate cursor tracking (35-50 FPS) eliminate cursor jumping and stuttering. Each step is a still screenshot with a fixed
   duration (no screen recording), assembled into a looping WebP with `img2webp` (libwebp:
   `brew install webp` / `apt install webp`). The script fails if a file exceeds 2 MB. ffmpeg is not
   needed: builds without libwebp cannot write animated WebP.
