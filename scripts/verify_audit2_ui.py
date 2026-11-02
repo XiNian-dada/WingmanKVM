@@ -3663,7 +3663,8 @@ def desktop_mouse_relative(browser, port, checks):
 
         # Small move: the delta arrives as-is, in one report or a few.
         state.mouse_posts.clear()
-        page.mouse.move(center_x + 30, center_y + 20)
+        mouse_x, mouse_y = center_x + 30, center_y + 20
+        page.mouse.move(mouse_x, mouse_y)
         ui_harness.wait_until(page, lambda: mouse_sum(state)[:2] == (30, 20))
         sum_x, sum_y, moves = mouse_sum(state)
         check(checks, (sum_x, sum_y) == (30, 20), "relative_mouse_small_move", moves)
@@ -3672,9 +3673,12 @@ def desktop_mouse_relative(browser, port, checks):
         # A single large move is split into reports of at most ±127 per axis,
         # and nothing is lost in the split.
         for label, step_x, step_y in (("positive", 300, 0), ("negative", -300, 0), ("vertical", 0, 200), ("up", 0, -200)):
-            start = page.evaluate("() => { const m = window.__pointerSeen.filter((e) => e.type === 'pointermove').pop(); return [m.x, m.y]; }")
+            # Pointer Lock freezes clientX/clientY. Track Playwright's input
+            # coordinates so both native and stubbed lock get the same delta.
+            mouse_x += step_x
+            mouse_y += step_y
             state.mouse_posts.clear()
-            page.mouse.move(start[0] + step_x, start[1] + step_y)
+            page.mouse.move(mouse_x, mouse_y)
             ui_harness.wait_until(page, lambda: mouse_sum(state)[:2] == (step_x, step_y))
             sum_x, sum_y, moves = mouse_sum(state)
             check(checks, (sum_x, sum_y) == (step_x, step_y), f"relative_mouse_large_{label}_keeps_total", moves)
