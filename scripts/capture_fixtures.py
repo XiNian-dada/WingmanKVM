@@ -185,11 +185,35 @@ class Target:
         self.messages = []
         self.hold_at = None
         self.held = None
+        self.terminal_commands = []
 
     def attach(self, page):
         page.route("**/video_feed*", lambda route: route.fulfill(
             status=200, content_type="image/png", body=self.frames[self.typed]))
         page.route_web_socket("**/api/input/ws", self._connect)
+        page.route_web_socket("**/api/terminal/ws", self._terminal_connect)
+
+    def _terminal_connect(self, ws):
+        # Canned output only: never start a shell or execute the typed command.
+        prompt = "\x1b[32mwingmankvm@rk3399\x1b[0m:\x1b[34m~\x1b[0m$ "
+        ws.send("Debian GNU/Linux 12 (bookworm) · Linux aarch64\r\n\r\n" + prompt)
+        pending = ""
+
+        def on_message(raw):
+            nonlocal pending
+            if isinstance(raw, str):  # JSON terminal resize messages
+                return
+            text = raw.decode("utf-8", errors="replace")
+            for char in text:
+                if char == "\r":
+                    self.terminal_commands.append(pending)
+                    output = " 20:45:12 up 3 days,  4:00,  1 user,  load average: 0.62, 0.58, 0.45"
+                    ws.send("\r\n" + (output if pending == "uptime" else "") + "\r\n" + prompt)
+                    pending = ""
+                else:
+                    pending += char
+                    ws.send(char)
+        ws.on_message(on_message)
 
     def _connect(self, ws):
         def on_message(raw):

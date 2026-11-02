@@ -181,7 +181,10 @@ python3 scripts/capture_demo.py --lang en --output-dir "$SCRATCH/demo" --keep-fr
 
 - 与 UI 门禁一样用 `scripts/ui_harness.py` 提供真实界面，所有 `/api/**`、键鼠 WebSocket 和
   `/video_feed` 都由 `scripts/capture_fixtures.py` 模拟，画面是合成的终端帧，不连接任何设备。
-- 动图流程：控制台 → 粘贴为键入 → 虚拟介质面板 → 诊断弹层；不展示也不点击电源/复位按钮。
+- 动图流程：画面比例（适应 / 1:1 / 填满）→ 虚拟键盘与粘贴为键入 → 组合键菜单、宏管理与回放
+  → 主控机网页终端（切回视频后保留会话）→ 虚拟介质 → 连接质量 → 设备诊断 → 主机性能 → 深色主题。
+  中英文分别显示对应语言的章节提示；宏与终端均走真实前端 WebSocket 路径，终端回复为固定夹具，不执行命令。
+  不展示也不点击电源/复位按钮。
   每一步是固定时长的静态截图（不录屏），再用 `img2webp`（libwebp，`brew install webp` /
   `apt install webp`）合成循环 WebP；单个文件超过 2 MB 时脚本报错。不依赖 ffmpeg：未编入 libwebp 的 ffmpeg 无法输出动画 WebP。
 - 视口、缩放、语言、时区、浏览器时钟和渲染参数都已固定，同一台机器重跑通常只在界面变化时
