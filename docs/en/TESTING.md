@@ -205,8 +205,12 @@ python3 scripts/capture_demo.py --lang en --output-dir "$SCRATCH/demo" --keep-fr
 - Like the UI gates, it serves the real UI through `scripts/ui_harness.py`; every `/api/**`
   call, the input WebSocket and `/video_feed` are mocked by `scripts/capture_fixtures.py`, and
   the picture is a synthetic terminal frame. No device is contacted.
-- Demo flow: console → paste as typing → virtual media panel → diagnostics popover. Power and
-  reset controls are never shown or clicked. Each step is a still screenshot with a fixed
+- Demo flow: display modes (fit / 1:1 / fill) → virtual keyboard and paste as typing → key combinations,
+  macro management and replay → host web terminal (session survives switching back to video) → virtual
+  media → connection quality → device diagnostics → host performance → dark theme. Chapter captions
+  match the Chinese/English UI. Macros and the terminal use the real frontend WebSocket paths; terminal
+  replies are canned fixtures and execute no commands. Power and reset controls are never shown or
+  clicked. Each step is a still screenshot with a fixed
   duration (no screen recording), assembled into a looping WebP with `img2webp` (libwebp:
   `brew install webp` / `apt install webp`). The script fails if a file exceeds 2 MB. ffmpeg is not
   needed: builds without libwebp cannot write animated WebP.

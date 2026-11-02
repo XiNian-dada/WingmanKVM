@@ -2,7 +2,7 @@
 
 # WingmanKVM
 
-![WingmanKVM demo: in the browser console, paste-as-typing sends a command to the target machine, the virtual media panel shows the mounted ISO, and the connection and device diagnostics open](docs/images/demo-en.webp)
+![WingmanKVM feature demo: display modes, virtual keyboard and paste as typing, key combinations and keyboard macros, web terminal, virtual media, connection quality, device diagnostics, host performance, and dark theme](docs/images/demo-en.webp)
 
 WingmanKVM is a web-based KVM that runs on an ARM development board. Connect the target machine's HDMI output to a capture card and its USB to the development board's OTG port, and you can view the screen and operate the keyboard and mouse (including during BIOS) from a browser, mount ISO images, and optionally control power through GPIO relays.
 

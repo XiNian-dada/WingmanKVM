@@ -3,8 +3,9 @@
 
 The flow runs against the same mocked API and synthetic screen as
 capture_screenshots.py (see capture_fixtures.py); no device is contacted and
-no power/reset control is shown or clicked. The flow is console -> paste as
-typing -> virtual media panel -> diagnostics popover. Each step is captured
+no power/reset control is shown or clicked. The flow covers display modes,
+paste as typing, keyboard macros, the host terminal, virtual media, connection
+quality, host performance and themes. Each step is captured
 as a still frame with a fixed display duration (no screen recording), so
 timing never varies between runs, and the frames are assembled into a
 looping animated WebP with img2webp (libwebp).
@@ -13,7 +14,7 @@ looping animated WebP with img2webp (libwebp).
 
 capture_screenshots.py calls this too, so one command refreshes everything.
 """
-import argparse, hashlib, os, shutil, subprocess, sys, tempfile
+import argparse, hashlib, json, os, shutil, subprocess, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from playwright.sync_api import sync_playwright  # noqa: E402
@@ -44,23 +45,37 @@ CURSOR_JS = """() => {
     'stroke-width="1.6" stroke-linejoin="round"/></svg>';
   document.body.append(host);
   host.showPopover();
+  const caption = document.createElement('div');
+  caption.setAttribute('popover', 'manual');
+  caption.dataset.noI18n = '';
+  caption.style.cssText = 'position:fixed;inset:auto;left:20px;bottom:20px;margin:0;' +
+    'padding:10px 16px;border:1px solid #ffffff26;border-radius:12px;' +
+    'background:#172033;color:#fff;font:500 14px system-ui,sans-serif;pointer-events:none;';
+  document.body.append(caption);
+  caption.showPopover();
   window.__demoCursor = {
     move(x, y) { host.style.transform = `translate(${x}px, ${y}px)`; },
     press(on) { host.firstChild.style.transform = on ? 'scale(1)' : 'scale(0)'; },
-    raise() { host.hidePopover(); host.showPopover(); },
+    caption(text) { caption.textContent = text; },
+    raise() { caption.hidePopover(); caption.showPopover(); host.hidePopover(); host.showPopover(); },
   };
 }"""
 
 
 class Recorder:
-    def __init__(self, page, frame_dir):
+    def __init__(self, page, frame_dir, lang):
         self.page = page
         self.frame_dir = frame_dir
+        self.lang = lang
         self.frames = []          # [path, duration_ms]
         self.last_digest = None
         self.pos = (VIEWPORT[0] * 0.55, VIEWPORT[1] * 0.62)
         page.evaluate(CURSOR_JS)
         self._cursor()
+
+    def chapter(self, chinese, english):
+        text = chinese if self.lang == "zh-CN" else english
+        self.page.evaluate("text => window.__demoCursor.caption(text)", "DEMO · " + text)
 
     def _cursor(self):
         self.page.evaluate("([x, y]) => window.__demoCursor.move(x, y)", list(self.pos))
@@ -84,6 +99,7 @@ class Recorder:
         self.shot(ms)
 
     def move_to(self, selector, steps=6, frame_ms=45, anchor=(0.5, 0.5)):
+        self.page.locator(selector).first.scroll_into_view_if_needed()
         box = self.page.locator(selector).first.bounding_box()
         if not box:
             raise RuntimeError(f"demo target not visible: {selector}")
@@ -108,17 +124,32 @@ class Recorder:
 
 
 def record(browser, port, lang, frame_dir):
+    macro = {"id": "demo-tty", "name": "切换到 TTY2" if lang == "zh-CN" else "Switch to TTY2",
+             "steps": [{"key": "F2", "ctrl": True, "alt": True, "delay_ms": 0},
+                       {"key": "KeyL", "ctrl": True, "delay_ms": 800}]}
     context, page, target = F.new_page(
         browser, port, lang=lang, viewport=VIEWPORT, scale=1,
-        storage={"wingman_setting_auto_expand_inspector": "false"}, screens=("", PASTE_TEXT))
+        storage={"wingman_setting_auto_expand_inspector": "false",
+                 "wingman_keyboard_macros": json.dumps([macro])}, screens=("", PASTE_TEXT))
+    page_errors = []
+    page.on("pageerror", lambda error: page_errors.append(str(error)))
     try:
+        # Chapter captions explain each action; transient toasts distract from
+        # the feature being shown. assert_clean still rejects any error toast.
+        page.add_style_tag(content="#toast { visibility: hidden !important; }")
         # The inspector opens later on the media tab, so the power buttons on
         # the control tab never appear in the demo.
         page.evaluate("() => document.querySelector('[data-panel-target=\"media\"]').click()")
-        rec = Recorder(page, frame_dir)
-        rec.hold(1100)
+        rec = Recorder(page, frame_dir, lang)
+        rec.chapter("远程画面 · 适应 / 1:1 / 填满", "Remote display · Fit / 1:1 / Fill")
+        rec.hold(900)
+        for mode in ("native", "fill", "fit"):
+            rec.click("#mode-button")
+            page.wait_for_function("mode => document.querySelector('#console').classList.contains('mode-' + mode)", arg=mode)
+            rec.hold(650)
 
         # Paste as typing: virtual keyboard -> paste dialog -> type -> send.
+        rec.chapter("虚拟键盘 · 粘贴为键入", "Virtual keyboard · Paste as typing")
         rec.click("#keyboard-toggle")
         rec.hold(700)
         rec.click("#paste-typing-btn")
@@ -142,10 +173,42 @@ def record(browser, port, lang, frame_dir):
         # The synthetic target now shows the pasted command at its prompt.
         page.evaluate("() => { document.querySelector('#video-feed').src = '/video_feed?frame=typed'; }")
         page.wait_for_function("() => document.querySelector('#video-feed').complete")
-        rec.hold(900)
+        rec.hold(650)
+
+        # Use the real macro menu and replay path; HID messages reach the mock.
+        rec.chapter("组合键 · 键盘宏与回放", "Key combinations · Keyboard macros and replay")
+        rec.click("#quick-more-toggle")
+        rec.hold(1000)
+        rec.click("#quick-macro-manage")
+        rec.hold(950)
+        before_macro = target.keys()
+        rec.click('#macro-manager-list [data-macro-play="demo-tty"]', settle=100)
+        rec.hold(550, settle=100)
+        page.wait_for_function("() => document.querySelector('#macro-play-progress').getAttribute('aria-valuenow') === '2'")
+        rec.hold(700, settle=100)
+        if target.keys() != before_macro + len(macro["steps"]):
+            raise RuntimeError("demo macro did not reach the mocked target")
+        rec.click("[data-macro-play-close]")
+        rec.click("[data-macro-manager-close]")
+
+        # xterm and its real WebSocket path, with a canned host response.
+        rec.chapter("主控机网页终端 · 切换后保留会话", "Host web terminal · Session survives tab switching")
+        rec.click('[data-workspace="terminal"]')
+        page.wait_for_function("() => !!document.querySelector('#terminal-host .xterm-screen')")
+        page.locator("#terminal-host .xterm-helper-textarea").focus()
+        page.keyboard.type("uptime", delay=65)
+        rec.hold(650, settle=150)
+        page.keyboard.press("Enter")
+        rec.hold(1200)
+        if target.terminal_commands != ["uptime"]:
+            raise RuntimeError("demo terminal command did not reach the mocked socket")
+        rec.click('[data-workspace="video"]')
+        page.wait_for_selector('[data-workspace="terminal"].session-live')
+        rec.hold(450)
 
         # Virtual media panel, opened scrolled to the image list. (The native
         # file picker above it is labelled in the OS language, not the page's.)
+        rec.chapter("虚拟介质 · ISO 光驱与 IMG 镜像", "Virtual media · ISO optical drive and IMG images")
         page.evaluate("""() => {
           const body = document.querySelector('.inspector-body'), list = document.querySelector('#media-list');
           body.scrollTop += list.getBoundingClientRect().top - body.getBoundingClientRect().top - 16;
@@ -153,15 +216,41 @@ def record(browser, port, lang, frame_dir):
         rec.click("#inspector-toggle")
         rec.move_to("#media-list .media-item", anchor=(0.62, 0.3))
         rec.hold(1300)
+        rec.click("#inspector-toggle")
+
+        rec.chapter("连接质量 · 分辨率与帧率", "Connection quality · Resolution and frame rate")
+        rec.click("#quality-toggle")
+        page.wait_for_selector("#quality-overlay:not(.hidden)")
+        rec.hold(1200)
+        rec.click("#quality-toggle")
 
         # Diagnostics popover.
+        rec.chapter("设备诊断 · 视频与键鼠通道", "Device diagnostics · Video and input channels")
         rec.click("#diagnostics-toggle")
         rec.move_to(".diagnostics-card:has(#diag-input-mode)", anchor=(0.9, 0.85))
-        rec.hold(2000)
+        rec.hold(1400)
+        rec.click("#diagnostics-toggle")
+
+        rec.chapter("主机性能 · CPU / 内存 / 温度", "Host performance · CPU / Memory / Temperature")
+        # Hover opens this popover; a delayed click would toggle it closed.
+        rec.move_to("#topbar-perf-btn")
+        page.wait_for_selector("#topbar-perf-popover:not([hidden])")
+        rec.hold(1500)
+        rec.click("#perf-pop-close")
+
+        rec.chapter("深色主题 · 远程控制台", "Dark theme · Remote console")
+        # The fixture starts light; the UI cycles light -> system -> dark.
+        rec.click("#theme-toggle")
+        rec.click("#theme-toggle")
+        page.wait_for_function("() => document.documentElement.dataset.theme === 'dark'")
+        rec.hold(1500)
 
         F.assert_clean(page, f"demo {lang}")
-        if target.keys() < len(PASTE_TEXT):
-            raise RuntimeError(f"demo {lang}: only {target.keys()} keys reached the mocked target")
+        if page_errors:
+            raise RuntimeError(f"demo {lang}: page errors: {page_errors}")
+        expected_keys = len(PASTE_TEXT) + len(macro["steps"])
+        if target.keys() != expected_keys:
+            raise RuntimeError(f"demo {lang}: {target.keys()} keys reached the mocked target; expected {expected_keys}")
         return rec.frames
     finally:
         context.close()
