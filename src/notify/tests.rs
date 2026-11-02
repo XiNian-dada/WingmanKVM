@@ -206,6 +206,109 @@ async fn client_errors_are_not_retried_and_never_leak_the_token() {
     assert!(!error.contains("leakme"), "{error}");
 }
 
+/// Polls until `done` holds for the notifier's delivery health.
+async fn wait_for_health(notifier: &Notifier, done: impl Fn(&DeliveryHealth) -> bool) -> DeliveryHealth {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let health = notifier.health();
+        if done(&health) {
+            return health;
+        }
+        assert!(Instant::now() < deadline, "{health:?}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn rejected_event_delivery_is_counted_with_a_secret_free_error() {
+    let (server, base) = Server::start(&[401]).await;
+    let config = webhook_config(&base);
+    let notifier = Notifier::with_options(config, options(&base));
+    notifier.start();
+    assert_eq!(notifier.health(), DeliveryHealth::default());
+
+    notifier.emit(EventKind::LoginFailed, "来源 IP：203.0.113.9");
+    let health = wait_for_health(&notifier, |health| health.webhook.failed == 1).await;
+
+    assert_eq!(server.requests().len(), 1, "401 is not retried");
+    let webhook = &health.webhook;
+    assert_eq!(webhook.sent, 0);
+    let error = webhook.last_error.as_deref().unwrap();
+    assert!(error.contains("HTTP 401"), "{error}");
+    assert!(!error.contains("secret-path") && !error.contains("127.0.0.1"), "{error}");
+    assert!(webhook.last_error_unix.is_some() && webhook.last_success_unix.is_none());
+    // Other channels are not touched.
+    assert_eq!(health.ntfy, ChannelHealth::default());
+    assert_eq!(health.telegram, ChannelHealth::default());
+
+    // The next delivery succeeds: counted, and the error stays for reference.
+    notifier.emit(EventKind::LoginSucceeded, "");
+    let health = wait_for_health(&notifier, |health| health.webhook.sent == 1).await;
+    assert_eq!(health.webhook.failed, 1);
+    assert!(health.webhook.last_success_unix.is_some());
+    assert!(health.webhook.last_error.as_deref().unwrap().contains("HTTP 401"));
+}
+
+#[tokio::test]
+async fn test_messages_and_network_errors_count_without_leaking_the_token() {
+    let mut config = NotificationsConfig {
+        telegram: TelegramChannelConfig {
+            enabled: true,
+            bot_token: Some("999:leakme".to_owned()),
+            chat_id: Some("1".to_owned()),
+        },
+        ..NotificationsConfig::default()
+    };
+    let notifier = Notifier::with_options(config.clone(), options("http://127.0.0.1:9"));
+    assert!(notifier.send_test(Channel::Telegram).await.is_err());
+    let telegram = notifier.health().telegram;
+    assert_eq!((telegram.sent, telegram.failed), (0, 1));
+    let error = telegram.last_error.unwrap();
+    assert!(!error.contains("leakme") && !error.contains("http"), "{error}");
+
+    let (_server, base) = Server::start(&[]).await;
+    config.telegram.bot_token = Some("999:leakme".to_owned());
+    let notifier = Notifier::with_options(config, options(&base));
+    notifier.send_test(Channel::Telegram).await.unwrap();
+    let telegram = notifier.health().telegram;
+    assert_eq!((telegram.sent, telegram.failed, telegram.last_error), (1, 0, None));
+}
+
+#[test]
+fn delivery_errors_are_scrubbed_of_urls_and_credentials() {
+    let config = NotificationsConfig {
+        webhook: WebhookChannelConfig {
+            enabled: true,
+            url: Some("https://hooks.example/abc/s3cr3t".to_owned()),
+        },
+        ntfy: NtfyChannelConfig {
+            enabled: true,
+            server: "https://ntfy.internal".to_owned(),
+            topic: Some("private-topic".to_owned()),
+            token: Some("tk_secret".to_owned()),
+        },
+        telegram: TelegramChannelConfig {
+            enabled: true,
+            bot_token: Some("12345:AAsecret".to_owned()),
+            chat_id: Some("-100".to_owned()),
+        },
+        ..NotificationsConfig::default()
+    };
+    let raw = "error sending request for url (https://api.telegram.org/bot12345:AAsecret/sendMessage): \
+               dns error for https://hooks.example/abc/s3cr3t, token 12345:AAsecret, tk_secret, \
+               topic private-topic at ntfy.internal and http://10.0.0.1:8080/x?y=z";
+    let cleaned = redact_delivery_error(raw, &config);
+    for leaked in ["AAsecret", "s3cr3t", "tk_secret", "private-topic", "http", "10.0.0.1", "hooks.example"] {
+        assert!(!cleaned.contains(leaked), "{leaked} in {cleaned}");
+    }
+    assert!(cleaned.contains("[URL]") && cleaned.contains("dns error"), "{cleaned}");
+    assert_eq!(redact_delivery_error("服务返回 HTTP 401", &config), "服务返回 HTTP 401");
+
+    let mut health = DeliveryHealth::default();
+    health.record(Channel::Ntfy, &Err("x".repeat(500)));
+    assert_eq!(health.ntfy.last_error.unwrap().chars().count(), MAX_ERROR_CHARS);
+}
+
 #[tokio::test]
 async fn test_message_requires_a_configured_channel() {
     let notifier = Notifier::with_options(NotificationsConfig::default(), options("http://127.0.0.1:9"));

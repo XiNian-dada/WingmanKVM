@@ -174,8 +174,10 @@ def api_route(route, state):
         route.fulfill(status=200, headers=headers, body='{"passkeys":[]}')
     elif path == "/api/devices/scan":
         route.fulfill(status=200, headers=headers, body='{"devices":{}}')
-    else:
-        route.fulfill(status=200, headers=headers, body="{}")
+    elif path == "/api/input/release-all":
+        route.fulfill(status=200, headers=headers, body='{"ok":true}')
+    else:  # unmocked: an unknown route, and a suite failure (AUD3-33)
+        ui_harness.answer_unmocked(route, path)
 def wait_login(page, timeout=7000):
     page.wait_for_selector("#login-form:not(.hidden)", state="visible", timeout=timeout)
 def main():
@@ -186,7 +188,7 @@ def main():
     try:
         state = State()
         with static_server(args.repo, extract_html(args.repo)) as port, sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, channel=args.browser_channel)
+            browser = ui_harness.launch_browser(p, args.browser_channel)
             try:
                 page = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
                 page.add_init_script(WS_INIT)

@@ -72,7 +72,7 @@ function terminalConnect() {
   ensureTerminal();
   if (shared.bootstrap.terminal_ready === false) {
     shared.terminal.writeln(
-      `\r\n\x1b[31m${shared.bootstrap.terminal_message || '终端当前不可用；请退出后重新登录以重试。KVM 画面与输入不受影响。'}\x1b[0m`,
+      `\r\n\x1b[31m${tr(shared.bootstrap.terminal_message || '终端当前不可用；请退出后重新登录以重试。KVM 画面与输入不受影响。')}\x1b[0m`,
     );
     $('#terminal-reconnect')?.classList.remove('hidden');
     return;
@@ -99,7 +99,8 @@ function terminalConnect() {
   };
   socket.onerror = () => {
     if (shared.terminalSocket !== socket) return;
-    shared.terminal.writeln('\r\n\x1b[31m终端连接失败\x1b[0m');
+    // xterm output is never phrase-translated, so translate before writing.
+    shared.terminal.writeln(`\r\n\x1b[31m${tr('终端连接失败')}\x1b[0m`);
   };
   socket.onclose = () => {
     if (shared.terminalSocket !== socket) return;

@@ -18,7 +18,7 @@ pub(super) async fn terminal_ws(
     if !is_authenticated(&state, &headers) {
         return ApiError::new(StatusCode::UNAUTHORIZED, "需要登录").into_response();
     }
-    if !terminal_is_ready(&state) {
+    if !terminal_is_ready(&state).await {
         return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, TERMINAL_DEGRADED_MESSAGE)
             .into_response();
     }
@@ -32,10 +32,17 @@ pub(super) async fn terminal_ws(
     .await
 }
 
-pub(super) fn terminal_is_ready(state: &AppState) -> bool {
+const TERMINAL_PING_INTERVAL: Duration = if cfg!(test) {
+    Duration::from_millis(100)
+} else {
+    Duration::from_secs(25)
+};
+
+pub(super) async fn terminal_is_ready(state: &AppState) -> bool {
     state
         .auth
-        .load()
+        .load_async()
+        .await
         .ok()
         .flatten()
         .is_some_and(|record| record.system_password_synced)
@@ -254,11 +261,24 @@ pub(super) async fn handle_terminal(mut socket: WebSocket, guard: SessionGuard, 
             return;
         }
     };
+    // Reverse proxies close idle sockets, and a closed socket ends the shell.
+    let mut keepalive = tokio::time::interval(TERMINAL_PING_INTERVAL);
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    keepalive.tick().await;
     loop {
         tokio::select! {
             biased;
             _ = guard.wait_for_end() => break,
             _ = session.writer_tx.closed() => break,
+            _ = keepalive.tick() => {
+                let send = socket.send(Message::Ping(Vec::new().into()));
+                tokio::pin!(send);
+                tokio::select! {
+                    biased;
+                    _ = guard.wait_for_end() => break,
+                    result = &mut send => if result.is_err() { break },
+                }
+            }
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Text(text))) => {
                     if let Ok(TerminalClientMessage::Resize { cols, rows }) =
@@ -614,6 +634,27 @@ mod tests {
             Err(error) => panic!("unexpected revoked upgrade error: {error}"),
             Ok(_) => panic!("revoked session must not receive a terminal upgrade"),
         }
+    }
+
+    #[tokio::test]
+    async fn idle_terminal_receives_keepalive_pings() {
+        use futures_util::StreamExt as _;
+        let sessions = SessionStore::new(Duration::from_secs(60));
+        let token = sessions.create().unwrap();
+        let server = spawn_terminal_test_server(sessions.clone(), None).await;
+        let (mut socket, _) = tokio_tungstenite::connect_async(terminal_request(server.address, &token))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(message) = socket.next().await {
+                if message.unwrap().is_ping() {
+                    return;
+                }
+            }
+            panic!("socket ended without a ping");
+        })
+        .await
+        .expect("an idle terminal must be pinged");
     }
 
     #[tokio::test]

@@ -224,6 +224,10 @@ export function init() {
     fitConsoleToVideo();
     invalidateSurfaceBox();
   });
+  // fitConsoleToVideo invalidates when the console's 140 ms transition starts;
+  // a pointer move during it caches a mid-animation box, so drop it at the end.
+  consoleBox.addEventListener('transitionend', invalidateSurfaceBox, { passive: true });
+  consoleBox.addEventListener('transitioncancel', invalidateSurfaceBox, { passive: true });
   if (wsTarget) wsResizeObserver.observe(wsTarget);
   viewport.addEventListener('scroll', invalidateSurfaceBox, { passive: true, capture: true });
 }

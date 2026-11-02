@@ -903,12 +903,15 @@ impl NotificationsConfig {
     pub fn inherit_secrets(&mut self, previous: &Self) {
         for (current, previous) in [
             (&mut self.webhook.url, &previous.webhook.url),
-            (&mut self.ntfy.token, &previous.ntfy.token),
             (&mut self.telegram.bot_token, &previous.telegram.bot_token),
         ] {
             if non_empty(current).is_none() {
                 current.clone_from(previous);
             }
+        }
+        // The token belongs to one server; never present it to another.
+        if non_empty(&self.ntfy.token).is_none() && self.ntfy.server == previous.ntfy.server {
+            self.ntfy.token.clone_from(&previous.ntfy.token);
         }
     }
 

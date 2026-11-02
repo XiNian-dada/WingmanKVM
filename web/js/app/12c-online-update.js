@@ -80,8 +80,13 @@ function renderUpdateOutcome(data) {
     return 'succeeded';
   }
   if (status.state === 'failed') {
+    // Only the installer rolls back; every other failure happens before it
+    // runs (or, when interrupted, at a point this status cannot tell).
+    const reason = updateErrorText(status.error);
     updateProgress(
-      tr(`升级失败：${updateErrorText(status.error)}（已自动回滚，详见 journalctl -u wingmankvm-online-upgrade）`),
+      status.error === 'install_failed'
+        ? tr(`升级失败：${reason}（已自动回滚，详见 journalctl -u wingmankvm-online-upgrade）`)
+        : tr(`升级失败：${reason}（详见 journalctl -u wingmankvm-online-upgrade）`),
       'error',
     );
     return 'failed';

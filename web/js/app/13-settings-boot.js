@@ -4,6 +4,7 @@ import { getSetting, setSetting, SETTING_DEFAULTS } from './00-settings.js';
 import { t } from './01-i18n.js';
 import { request, toast } from './03-session.js';
 import { setVideoRendering, unwrapConfig } from './04-video-settings.js';
+import { setQualityOverlayEnabled } from './07b-quality.js';
 import { setAdaptiveBitrateEnabled } from './07c-adaptive-bitrate.js';
 import { targetLayout, updatePasteLayoutLabel } from './08-input.js';
 import { refreshPasskeys } from './12-passkey.js';
@@ -356,8 +357,10 @@ export function init() {
         localStorage.removeItem(`wingman_setting_${key}`);
       } catch (_) {}
     });
-    syncSettingsDialogUi();
     applyRenderPixelated(SETTING_DEFAULTS.render_pixelated);
+    setAdaptiveBitrateEnabled(SETTING_DEFAULTS.adaptive_bitrate);
+    setQualityOverlayEnabled(SETTING_DEFAULTS.quality_overlay);
+    syncSettingsDialogUi();
     updatePasteLayoutLabel();
     toast(t('settings_reset_done', '已恢复默认设置'));
   });

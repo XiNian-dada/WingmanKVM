@@ -75,7 +75,7 @@ less /tmp/wingmankvm-release/wingmankvm-review.*/deploy/install.sh
 
 ### 手动下载发布包（备选）
 
-发布包由 GitHub Actions 在推送 `v*` tag 时构建，命名格式为 `wingmankvm-<版本>-<target>.tar.gz`，包含二进制、完整的 `deploy/` 目录、`LICENSE`、`README.md` 和 `CHANGELOG.md`。ARM64 主机选择 `aarch64-unknown-linux-gnu`，32 位 ARM 主机选择 `armv7-unknown-linux-gnueabihf`。
+发布包由 GitHub Actions 在推送 `v*` tag 时构建，命名格式为 `wingmankvm-v<版本>-<target>.tar.gz`（例如 `wingmankvm-v2.0.0-aarch64-unknown-linux-gnu.tar.gz`），包含二进制、完整的 `deploy/` 目录、`LICENSE`、`README.md` 和 `CHANGELOG.md`。ARM64 主机选择 `aarch64-unknown-linux-gnu`，32 位 ARM 主机选择 `armv7-unknown-linux-gnueabihf`。
 
 1. 从 [Releases](https://github.com/XiNian-dada/WingmanKVM/releases) 下载对应架构的 `.tar.gz` 和同一 Release 的 `SHA256SUMS`，放在同一目录。
 2. 校验并解压：
@@ -83,7 +83,7 @@ less /tmp/wingmankvm-release/wingmankvm-review.*/deploy/install.sh
    ```bash
    sha256sum -c --ignore-missing SHA256SUMS
    mkdir -p wingmankvm-release
-   tar -xzf wingmankvm-<版本>-<target>.tar.gz -C wingmankvm-release
+   tar -xzf wingmankvm-v<版本>-<target>.tar.gz -C wingmankvm-release
    ```
 
    `--ignore-missing` 允许只下载当前架构的发布包；校验失败时不要继续。
@@ -91,7 +91,7 @@ less /tmp/wingmankvm-release/wingmankvm-review.*/deploy/install.sh
 
    ```bash
    cd wingmankvm-release
-   sudo ./deploy/install.sh --release ../wingmankvm-<版本>-<target>.tar.gz
+   sudo ./deploy/install.sh --release ../wingmankvm-v<版本>-<target>.tar.gz
    ```
 
 安装器发现发布包同目录存在 `SHA256SUMS` 时会再次核对校验和，然后解包到安全创建的临时目录，并复用 `--binary` 的文件安装、健康检查、失败回滚和升级恢复流程。临时目录在成功、失败和回滚路径都会清理。
@@ -109,7 +109,7 @@ cd WingmanKVM
 cargo build --release --locked
 ```
 
-需要近期的 stable Rust。`v4l2-sys-mit` 会通过 bindgen 使用 `linux/videodev2.h`、clang 和 libclang；如果构建时报找不到该头文件，请确认 Linux UAPI headers 已安装。
+需要 Rust 1.88 或更新的 stable 版本（`Cargo.toml` 中的 `rust-version`；发布包用 1.93.1 构建）。`v4l2-sys-mit` 会通过 bindgen 使用 `linux/videodev2.h`、clang 和 libclang；如果构建时报找不到该头文件，请确认 Linux UAPI headers 已安装。
 
 #### 在 Apple Silicon Mac 上构建 Linux ARM64 版本
 
@@ -152,7 +152,7 @@ sudo ./deploy/install.sh --binary ./target/release/wingmankvm
 如果使用第 2 节的发布包，则改用 `--release`，无需手工解出二进制：
 
 ```bash
-sudo ./deploy/install.sh --release /path/to/wingmankvm-<版本>-<target>.tar.gz
+sudo ./deploy/install.sh --release /path/to/wingmankvm-v<版本>-<target>.tar.gz
 ```
 
 安装器会在发布包同目录存在 `SHA256SUMS` 时校验其内容；`--binary` 与 `--release` 只能选择一个。
@@ -160,7 +160,7 @@ sudo ./deploy/install.sh --release /path/to/wingmankvm-<版本>-<target>.tar.gz
 Debian、Ubuntu、Armbian 上可以追加 `--install-deps`，让安装器用 `apt-get install -y --no-install-recommends` 补齐缺失的运行包：
 
 ```bash
-sudo ./deploy/install.sh --install-deps --release /path/to/wingmankvm-<版本>-<target>.tar.gz
+sudo ./deploy/install.sh --install-deps --release /path/to/wingmankvm-v<版本>-<target>.tar.gz
 ```
 
 该选项默认关闭，安装器不会静默修改系统包；非 Debian 系发行版请按缺失命令提示手工安装。
@@ -171,9 +171,9 @@ sudo ./deploy/install.sh --install-deps --release /path/to/wingmankvm-<版本>-<
 
 ```bash
 # 与 --install-deps 一起使用时会自动安装 avahi-daemon
-sudo ./deploy/install.sh --install-deps --mdns --release /path/to/wingmankvm-<版本>-<target>.tar.gz
+sudo ./deploy/install.sh --install-deps --mdns --release /path/to/wingmankvm-v<版本>-<target>.tar.gz
 # 自定义名称（1-63 位小写字母、数字或连字符），广播为 kvm-rack1.local
-sudo ./deploy/install.sh --mdns --mdns-hostname kvm-rack1 --release /path/to/wingmankvm-<版本>-<target>.tar.gz
+sudo ./deploy/install.sh --mdns --mdns-hostname kvm-rack1 --release /path/to/wingmankvm-v<版本>-<target>.tar.gz
 ```
 
 说明：
@@ -456,6 +456,14 @@ sudo systemctl restart wingmankvm.service
 
 最后再把网页中的镜像目录改为 `/srv/wingmankvm-images`。仅修改网页路径或文件所有者还不够；`ProtectSystem=strict` 会阻止未列入 `ReadWritePaths=` 的上传和写入。
 
+### 从 URL 下载镜像被拒绝
+
+“从 URL 下载”只接受 http/https 地址，并拒绝指向下列地址的目标：本机环回（`127.0.0.0/8`、`::1`）、链路本地（`169.254.0.0/16`，包括云元数据地址 `169.254.169.254`，以及 `fe80::/10`）、未指定地址（`0.0.0.0/8`、`::`）、组播（`224.0.0.0/4`、`ff00::/8`）和广播（`255.255.255.255`）。`::ffff:127.0.0.1` 这类 IPv4 映射的 IPv6 地址按对应的 IPv4 地址判断。私有局域网（`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`）、IPv6 唯一本地地址（`fc00::/7`）和公网地址不受影响，可以照常从 NAS 下载。
+
+检查在建立连接时进行：域名解析结果中被拒绝的地址会被丢弃，全部被拒时下载失败；IP 字面量和每一次重定向的目标也会单独检查。因此指向 `localhost` 的域名、或重定向到 `127.0.0.1` 的地址同样会失败，网页显示“下载地址指向本机、链路本地、组播或广播地址，已拒绝”（HTTP `422`）。该限制没有配置开关，也不能通过网页 API 关闭。
+
+如果服务环境设置了 `HTTP_PROXY`、`HTTPS_PROXY` 或 `ALL_PROXY`，下载会经由代理发出，域名由代理解析，此时上述检查只作用于 IP 字面量地址和重定向中的 IP 字面量，域名目标需要由代理自行限制。官方 systemd 服务默认不设置这些变量。
+
 ## 9. 高级：自定义 Gadget 检查
 
 本节仅适用于已经有板厂 Gadget、需要自定义 USB VID/PID/descriptor，或正在排查内核兼容性的人。默认安装请使用 `wingmankvm-gadget.service`，不要手工重复创建同名 function。
@@ -530,7 +538,7 @@ done
 
 - `device` 为 `null` 时自动选择：优先使用与当前采集卡（`video.device`）属于同一 USB 设备的声卡，其次是唯一的 USB 声卡；存在多个无法区分的声卡时不会自行猜测。也可以填写 ALSA 设备名，例如 `plughw:CARD=MS2109,DEV=0` 或 `hw:1,0`（只接受 `hw`、`plughw`、`dsnoop`、`sysdefault`、`default`）。
 - 设备检测只读取 `/proc/asound/cards`、`/proc/asound/pcm` 和 `/sys/class/sound`，不会打开 ALSA 设备，因此不会打断正在进行的采集；设置页的「检测音频设备」与 `POST /api/devices/scan` 返回的 `audio` 列表来自这里。
-- `bitrate_kbps` 范围为 16–256；音频使用与 H.264 相同的 FFmpeg（`video.h264.ffmpeg_path`），编码为 48 kHz 立体声 Opus、20 ms 帧。
+- `bitrate_kbps` 范围为 16–256；音频使用与 H.264 相同的 FFmpeg（`video.h264.ffmpeg_path`，该路径只能在主机的配置文件中修改，网页接口会拒绝），编码为 48 kHz 立体声 Opus、20 ms 帧。
 - 所有 WebRTC 会话共用一个 FFmpeg 采集进程：第一个需要音频的会话启动它，最后一个会话结束时停止并回收整个进程组。采集失败或 10 秒没有数据时，状态变为 `error`，在仍有观看者时以 1–30 秒退避重试。
 - 音频与视频互相独立：浏览器只在服务端启用音频时请求音频轨道；服务端只有在检测到设备时才添加 Opus 轨道，否则照常只协商视频。音频转发不参与会话看门狗，采集失败、设备拔出或修改音频设置都不会断开、重启或重新协商视频。只修改音频设置也不会重启视频采集。已建立的会话保留原有轨道：带音频轨道的会话会切换到新的采集设备，开启音频前建立的会话需重新连接才能获得音频（在设置页点击「应用」会让当前页面自动重连）。
 - 浏览器始终以静音开始（满足自动播放策略），点击工具栏扬声器按钮取消静音；若浏览器拒绝带声音播放，会自动回到静音并继续播放画面。
@@ -643,4 +651,4 @@ FFmpeg 编码器探测使用独立进程组和有界监督：启动或重新配�
 
 `server.listen_address` 接受不带方括号的 IPv4 或 IPv6 字面地址，`server.port` 范围为 1–65535；加载与保存使用相同校验。通过完整配置 PUT 修改监听地址或端口后，需要重启服务才会重新绑定；这类成功响应带有 `X-WingmanKVM-Restart-Required: true`。响应头表示本次提交更改了监听设置，不是当前进程监听状态的查询。
 
-HID 的 `write_timeout_ms` 和 `retry_interval_ms` 已弃用：旧配置文件兼容加载并提示，HTTP 配置更新会明确拒绝这两个字段。实际仍使用每份报告 500 ms 的固定期限和就绪等待，详见 [HID 配置迁移](docs/HID_CONFIGURATION.md)。
+HID 的 `write_timeout_ms` 和 `retry_interval_ms` 已弃用：旧配置文件兼容加载并提示，HTTP 配置更新会明确拒绝这两个字段。实际仍使用每份报告 500 ms 的固定期限和就绪等待，详见 [HID 配置迁移](HID_CONFIGURATION.md)。

@@ -18,7 +18,7 @@ use std::{
 };
 
 use base64::Engine as _;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
 
 use crate::config::NotificationsConfig;
@@ -26,6 +26,8 @@ use crate::config::NotificationsConfig;
 pub const QUEUE_CAPACITY: usize = 64;
 pub const TELEGRAM_API_BASE: &str = "https://api.telegram.org";
 const MAX_DETAIL_CHARS: usize = 600;
+/// Delivery errors kept for `/api/status` are cut to this length.
+const MAX_ERROR_CHARS: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventKind {
@@ -149,6 +151,91 @@ impl Channel {
     }
 }
 
+/// Delivery outcome of one channel since the service started, for
+/// `/api/status`. Counts messages (after retries), not HTTP attempts.
+/// `last_error` never contains a URL or a credential.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ChannelHealth {
+    pub sent: u64,
+    pub failed: u64,
+    pub last_error: Option<String>,
+    pub last_error_unix: Option<u64>,
+    pub last_success_unix: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct DeliveryHealth {
+    pub webhook: ChannelHealth,
+    pub ntfy: ChannelHealth,
+    pub telegram: ChannelHealth,
+}
+
+impl DeliveryHealth {
+    fn channel(&mut self, channel: Channel) -> &mut ChannelHealth {
+        match channel {
+            Channel::Webhook => &mut self.webhook,
+            Channel::Ntfy => &mut self.ntfy,
+            Channel::Telegram => &mut self.telegram,
+        }
+    }
+
+    fn record(&mut self, channel: Channel, result: &Result<(), String>) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        let health = self.channel(channel);
+        match result {
+            Ok(()) => {
+                health.sent = health.sent.saturating_add(1);
+                health.last_success_unix = Some(now);
+            }
+            Err(error) => {
+                health.failed = health.failed.saturating_add(1);
+                health.last_error = Some(error.chars().take(MAX_ERROR_CHARS).collect());
+                health.last_error_unix = Some(now);
+            }
+        }
+    }
+}
+
+/// Last line of defence for delivery errors shown to users: they are built
+/// without URLs, but a transport error could still echo one, and a URL or a
+/// token can carry a credential (Telegram's bot token, a webhook path, an
+/// ntfy topic on a public server).
+fn redact_delivery_error(message: &str, config: &NotificationsConfig) -> String {
+    let mut text = message.to_owned();
+    for secret in [
+        config.webhook_url(),
+        config.ntfy_token(),
+        config.ntfy_topic(),
+        config.telegram_bot_token(),
+        Some(config.ntfy.server.trim()),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|secret| secret.len() >= 4)
+    {
+        text = text.replace(secret, "***");
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(start) = ["http://", "https://"]
+        .iter()
+        .filter_map(|scheme| rest.find(scheme))
+        .min()
+    {
+        out.push_str(&rest[..start]);
+        out.push_str("[URL]");
+        rest = &rest[start..];
+        let end = rest
+            .find(|character: char| character.is_whitespace() || "\"'<>()".contains(character))
+            .unwrap_or(rest.len());
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// A message ready for delivery: one event, possibly summarising repeats.
 #[derive(Debug, Clone)]
 pub struct Message {
@@ -233,6 +320,7 @@ impl Notifier {
                 config: watch::channel(config).0,
                 sender: Sender {
                     client,
+                    health: Arc::default(),
                     host: options.host,
                     telegram_api_base: options.telegram_api_base.trim_end_matches('/').to_owned(),
                     policy: options.policy,
@@ -282,6 +370,16 @@ impl Notifier {
 
     pub fn dropped(&self) -> u64 {
         self.inner.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Per-channel delivery counters and the last (secret-free) error.
+    pub fn health(&self) -> DeliveryHealth {
+        self.inner
+            .sender
+            .health
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// Send a test message to one channel using the saved configuration,
@@ -451,6 +549,8 @@ struct SendError {
 #[derive(Clone)]
 struct Sender {
     client: reqwest::Client,
+    /// Shared by every clone, including the one-attempt test sender.
+    health: Arc<Mutex<DeliveryHealth>>,
     host: String,
     telegram_api_base: String,
     policy: DeliveryPolicy,
@@ -478,7 +578,25 @@ impl Sender {
         }
     }
 
+    /// Delivers with retries and records the outcome for `/api/status`.
     async fn deliver(
+        &self,
+        channel: Channel,
+        config: &NotificationsConfig,
+        message: &Message,
+    ) -> Result<(), String> {
+        let result = self
+            .deliver_with_retries(channel, config, message)
+            .await
+            .map_err(|error| redact_delivery_error(&error, config));
+        self.health
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .record(channel, &result);
+        result
+    }
+
+    async fn deliver_with_retries(
         &self,
         channel: Channel,
         config: &NotificationsConfig,

@@ -20,6 +20,8 @@ pub(super) enum InputCommand {
     Move(MouseMoveRequest),
     Absolute(AbsolutePointerRequest),
     Click(MouseClickRequest),
+    Press(MouseClickRequest),
+    Release(MouseClickRequest),
     Scroll(MouseScrollRequest),
     ReleaseAll,
 }
@@ -152,6 +154,8 @@ pub(super) async fn input_reply(state: &AppState, text: &str) -> serde_json::Val
         InputCommand::Move(request) => send_mouse_move(state, request).await.map(|()| json!({})),
         InputCommand::Absolute(request) => send_mouse_absolute(state, request).await.map(|()| json!({})),
         InputCommand::Click(request) => send_mouse_click(state, request).await.map(|()| json!({})),
+        InputCommand::Press(request) => send_mouse_press(state, request).await.map(|()| json!({})),
+        InputCommand::Release(request) => send_mouse_release(state, request).await.map(|()| json!({})),
         InputCommand::Scroll(request) => send_mouse_scroll(state, request).await.map(|()| json!({})),
         InputCommand::ReleaseAll => send_release_all(state).await.map(|()| json!({})),
     };
@@ -183,6 +187,10 @@ mod tests {
             (r#"{"id":4,"type":"click","button":2}"#, "Click"),
             (r#"{"id":5,"type":"scroll","wheel":-1}"#, "Scroll"),
             (r#"{"id":6,"type":"release_all"}"#, "ReleaseAll"),
+            (r#"{"id":7,"type":"press","button":1}"#, "Press"),
+            (r#"{"id":8,"type":"release","button":1}"#, "Release"),
+            (r#"{"id":9,"type":"absolute","action":"press","x":1,"y":2,"button":2}"#, "Absolute"),
+            (r#"{"id":10,"type":"absolute","action":"release","x":1,"y":2,"button":2}"#, "Absolute"),
         ];
         for (index, (text, kind)) in cases.into_iter().enumerate() {
             let message: InputMessage = serde_json::from_str(text).expect(text);
@@ -300,6 +308,153 @@ mod tests {
         let own = format!("http://{}", server.address);
         let anonymous = tokio_tungstenite::connect_async(input_request(server.address, "bogus", &own)).await;
         assert!(anonymous.is_err(), "upgrade without a live session must be refused");
+    }
+
+    /// The real route and a real mouse worker, with a FIFO as the pointer device.
+    struct PointerDeviceServer {
+        state: AppState,
+        token: String,
+        reader: std::fs::File,
+        address: SocketAddr,
+        task: tokio::task::JoinHandle<()>,
+        dir: PathBuf,
+    }
+
+    impl Drop for PointerDeviceServer {
+        fn drop(&mut self) {
+            self.task.abort();
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    type ClientSocket =
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+    impl PointerDeviceServer {
+        async fn start(name: &str, mode: PointerMode) -> Option<Self> {
+            use std::os::unix::fs::OpenOptionsExt;
+            let dir = std::env::temp_dir().join(format!("wingman-input-ws-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let device = dir.join("pointer");
+            let c_path = std::ffi::CString::new(device.to_str().unwrap()).unwrap();
+            // SAFETY: c_path is a valid NUL-terminated string for the call's duration.
+            assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+            let reader = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&device)
+                .unwrap();
+            let mut config = Config::default();
+            config.hid.pointer_mode = mode;
+            if mode == PointerMode::Absolute {
+                config.hid.absolute_pointer_device = Some(device);
+            } else {
+                config.hid.mouse_device = Some(device);
+            }
+            let state = crate::web::config_api::tests::test_state(config, dir.join("config.toml"));
+            let token = state.sessions.create().unwrap();
+            let app = Router::new().route("/input", get(input_ws)).with_state(state.clone());
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.ok()?;
+            let address = listener.local_addr().ok()?;
+            let task = tokio::spawn(async move {
+                let _ = axum::serve(listener, app).await;
+            });
+            Some(Self { state, token, reader, address, task, dir })
+        }
+
+        async fn connect(&self) -> ClientSocket {
+            let origin = format!("http://{}", self.address);
+            let request = input_request(self.address, &self.token, &origin);
+            tokio_tungstenite::connect_async(request).await.expect("authorized upgrade").0
+        }
+
+        /// Reads exactly one report, waiting a bounded time for it.
+        async fn report<const N: usize>(&mut self) -> [u8; N] {
+            use std::io::Read;
+            let mut report = [0; N];
+            let mut got = 0;
+            for _ in 0..500 {
+                if let Ok(read) = self.reader.read(&mut report[got..]) {
+                    got += read;
+                }
+                if got == N {
+                    return report;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("no HID report after {got} bytes");
+        }
+    }
+
+    async fn send_and_wait_reply(socket: &mut ClientSocket, text: &str) {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message as Client;
+        socket.send(Client::Text(text.to_owned().into())).await.unwrap();
+        let reply = socket.next().await.unwrap().unwrap();
+        let value: serde_json::Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
+        assert_eq!(value["ok"], true, "{value}");
+    }
+
+    #[tokio::test]
+    async fn absolute_drag_over_the_socket_is_released_when_the_socket_ends() {
+        let Some(mut server) = PointerDeviceServer::start("absolute-end", PointerMode::Absolute).await else {
+            eprintln!("Skipping network test: bind not permitted");
+            return;
+        };
+        let mut socket = server.connect().await;
+        send_and_wait_reply(&mut socket, r#"{"id":1,"type":"absolute","action":"press","x":10,"y":20,"button":1}"#).await;
+        assert_eq!(server.report::<6>().await, [1, 10, 0, 20, 0, 0]);
+        send_and_wait_reply(&mut socket, r#"{"id":2,"type":"absolute","action":"move","x":30,"y":40}"#).await;
+        assert_eq!(server.report::<6>().await, [1, 30, 0, 40, 0, 0], "the move holds the button");
+        socket.close(None).await.unwrap();
+        assert_eq!(server.report::<6>().await, [0, 30, 0, 40, 0, 0], "socket end sends a zero-button report");
+        // The server's mask is clear too: a later HTTP move carries no button.
+        send_mouse_absolute(&server.state, AbsolutePointerRequest::Move { x: 50, y: 60 }).await.unwrap();
+        assert_eq!(server.report::<6>().await, [0, 50, 0, 60, 0, 0]);
+    }
+
+    #[tokio::test]
+    async fn relative_drag_is_released_when_the_session_is_revoked() {
+        let Some(mut server) = PointerDeviceServer::start("relative-revoke", PointerMode::Relative).await else {
+            eprintln!("Skipping network test: bind not permitted");
+            return;
+        };
+        let mut socket = server.connect().await;
+        send_and_wait_reply(&mut socket, r#"{"id":1,"type":"press","button":2}"#).await;
+        assert_eq!(server.report::<4>().await, [2, 0, 0, 0]);
+        send_and_wait_reply(&mut socket, r#"{"id":2,"type":"move","dx":3,"dy":4}"#).await;
+        assert_eq!(server.report::<4>().await, [2, 3, 4, 0]);
+        assert!(server.state.sessions.revoke(&server.token));
+        assert_eq!(server.report::<4>().await, [0, 0, 0, 0], "revocation ends the socket, which releases");
+        send_mouse_move(&server.state, MouseMoveRequest { dx: 1, dy: 1 }).await.unwrap();
+        assert_eq!(server.report::<4>().await, [0, 1, 1, 0]);
+    }
+
+    #[tokio::test]
+    async fn http_press_is_released_when_its_session_ends() {
+        let Some(mut server) = PointerDeviceServer::start("http-revoke", PointerMode::Absolute).await else {
+            eprintln!("Skipping network test: bind not permitted");
+            return;
+        };
+        // No socket at all: what the logout and revoke handlers do.
+        let press = AbsolutePointerRequest::Press { x: 1, y: 2, button: 4 };
+        send_mouse_absolute(&server.state, press).await.unwrap();
+        assert_eq!(server.report::<6>().await, [4, 1, 0, 2, 0, 0]);
+        release_after_session_end(&server.state);
+        assert_eq!(server.report::<6>().await, [0, 1, 0, 2, 0, 0]);
+    }
+
+    #[tokio::test]
+    async fn press_in_the_wrong_pointer_mode_is_refused() {
+        let Some(server) = PointerDeviceServer::start("wrong-mode", PointerMode::Absolute).await else {
+            eprintln!("Skipping network test: bind not permitted");
+            return;
+        };
+        let refused = send_mouse_press(&server.state, MouseClickRequest { button: 1 }).await.unwrap_err();
+        assert_eq!(refused.status, StatusCode::CONFLICT);
+        let refused = send_mouse_release(&server.state, MouseClickRequest { button: 1 }).await.unwrap_err();
+        assert_eq!(refused.status, StatusCode::CONFLICT);
     }
 
     #[test]

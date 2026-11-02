@@ -508,6 +508,57 @@ fn hid_role(subclass: u8, protocol: u8, report_length: u16) -> Option<HidRole> {
     }
 }
 
+/// Where [`hid_link_ready`] looks; tests point it at a temporary tree.
+pub struct GadgetRoots {
+    pub configfs: PathBuf,
+    pub udc_class: PathBuf,
+}
+
+impl Default for GadgetRoots {
+    fn default() -> Self {
+        Self {
+            configfs: PathBuf::from("/sys/kernel/config/usb_gadget"),
+            udc_class: PathBuf::from("/sys/class/udc"),
+        }
+    }
+}
+
+/// Whether the USB host has configured the gadget behind the hidg node at
+/// `node`. Reads configfs and the UDC state only; nothing is written to the
+/// node, so asking never sends a report to the target. `None` when it cannot
+/// be told (no configfs, or not a gadget character device).
+pub fn hid_link_ready(roots: &GadgetRoots, node: &Path) -> Option<bool> {
+    let device = device_number_from_metadata(&std::fs::metadata(node).ok()?)?;
+    hid_link_ready_for(roots, device)
+}
+
+fn hid_link_ready_for(roots: &GadgetRoots, device: DeviceNumber) -> Option<bool> {
+    for gadget_path in sorted_directories(&roots.configfs) {
+        for function_path in sorted_directories(&gadget_path.join("functions")) {
+            if !file_name(&function_path).starts_with("hid.")
+                || read_trimmed(&function_path.join("dev"))
+                    .as_deref()
+                    .and_then(parse_device_number)
+                    != Some(device)
+            {
+                continue;
+            }
+            let Some(udc) = read_trimmed(&gadget_path.join("UDC")).filter(|udc| !udc.is_empty())
+            else {
+                return Some(false);
+            };
+            if !function_is_linked(&gadget_path, &function_path) {
+                return Some(false);
+            }
+            // A suspended host is attached and configured; it is asleep, not
+            // re-enumerating.
+            let state = read_trimmed(&roots.udc_class.join(udc).join("state"))?;
+            return Some(matches!(state.as_str(), "configured" | "suspended"));
+        }
+    }
+    None
+}
+
 fn parse_device_number(value: &str) -> Option<DeviceNumber> {
     let (major, minor) = value.trim().split_once(':')?;
     Some(DeviceNumber {
@@ -971,6 +1022,52 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("removable"))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hid_link_state_follows_binding_link_and_udc_state() {
+        use std::os::unix::fs::symlink;
+
+        let tree = TestTree::new();
+        let roots = GadgetRoots {
+            configfs: tree.path().join("usb_gadget"),
+            udc_class: tree.path().join("udc"),
+        };
+        let gadget = roots.configfs.join("wingman");
+        let function = gadget.join("functions/hid.keyboard");
+        let device = DeviceNumber { major: 240, minor: 0 };
+        write_hid_function(&function, 1, 1, 8, device);
+        let other = DeviceNumber { major: 240, minor: 7 };
+        let state = roots.udc_class.join("fe800000.usb/state");
+        fs::create_dir_all(state.parent().unwrap()).unwrap();
+        fs::create_dir_all(gadget.join("configs/c.1")).unwrap();
+
+        // Not bound to a UDC: the host cannot see it.
+        fs::write(gadget.join("UDC"), "\n").unwrap();
+        fs::write(&state, "configured\n").unwrap();
+        assert_eq!(hid_link_ready_for(&roots, device), Some(false));
+
+        // Bound, but the function is not part of any configuration.
+        fs::write(gadget.join("UDC"), "fe800000.usb\n").unwrap();
+        assert_eq!(hid_link_ready_for(&roots, device), Some(false));
+
+        symlink(&function, gadget.join("configs/c.1/hid.keyboard")).unwrap();
+        assert_eq!(hid_link_ready_for(&roots, device), Some(true));
+        fs::write(&state, "suspended\n").unwrap();
+        assert_eq!(hid_link_ready_for(&roots, device), Some(true));
+        // Cable out / target off: the node exists and opens, writes fail.
+        fs::write(&state, "not attached\n").unwrap();
+        assert_eq!(hid_link_ready_for(&roots, device), Some(false));
+        fs::write(&state, "default\n").unwrap();
+        assert_eq!(hid_link_ready_for(&roots, device), Some(false));
+
+        // Unknown node, or no readable UDC state: cannot tell.
+        assert_eq!(hid_link_ready_for(&roots, other), None);
+        fs::remove_file(&state).unwrap();
+        assert_eq!(hid_link_ready_for(&roots, device), None);
+        // A FIFO or regular file is not a gadget node at all.
+        assert_eq!(hid_link_ready(&roots, &gadget.join("UDC")), None);
     }
 
     #[test]

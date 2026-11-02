@@ -130,9 +130,22 @@ def api_route(route, state):
             return route.fulfill(status=401, headers=headers,
                                  body=json.dumps({"error": "passkey session expired"}))
         return route.fulfill(status=200, headers=headers, body='{"ok":true}')
-    if path == "/api/devices/scan":
+    if path in ("/api/devices/scan", "/api/setup/devices"):
         return route.fulfill(status=200, headers=headers, body='{"devices":{}}')
-    return route.fulfill(status=200, headers=headers, body="{}")
+    if path == "/api/input/release-all":
+        return route.fulfill(status=200, headers=headers, body='{"ok":true}')
+    if path == "/api/sessions":
+        return route.fulfill(status=200, headers=headers, body='{"sessions":[]}')
+    if path == "/api/audit":
+        return route.fulfill(status=200, headers=headers, body='{"entries":[]}')
+    if path == "/api/update/status":
+        return route.fulfill(status=200, headers=headers, body=json.dumps(
+            {"current_version": "0.0.0-test", "supported": False, "status": {"state": "idle"}}))
+    if path == "/api/config" and route.request.method == "GET":
+        return route.fulfill(status=200, headers=headers,
+                             body=json.dumps(bootstrap_payload(state)["config"]))
+    # Unmocked: answer like an unknown route and fail the suite (AUD3-33).
+    return ui_harness.answer_unmocked(route, path)
 
 
 def new_page(browser, state, port, fragment=""):
@@ -454,7 +467,7 @@ def main():
     current = media_page = None
     try:
         with ui_harness.static_server(args.repo) as port, sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, channel=args.browser_channel)
+            browser = ui_harness.launch_browser(p, args.browser_channel)
             try:
                 current = media_page = media_default_true(browser, port, checks)
                 current = media_mounted(browser, port, checks)

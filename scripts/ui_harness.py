@@ -16,6 +16,10 @@ from ui_bundle import MODULE_TYPE, REPO, load_index_html, module_assets
 GIF = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
 ICON = b'<svg xmlns="http://www.w3.org/2000/svg"/>'
 XTERM_ASSETS = ("xterm.js", "addon-fit.js", "xterm.css")
+# Init script for scenarios that call window.__wingmanTest: the app modules
+# only publish those hooks when this flag is set before they are evaluated, so
+# add it with add_init_script before the first navigation (or reload after).
+TEST_HOOKS = "window.__wingmanTestHooks = true;"
 
 
 def extract_html(repo):
@@ -96,6 +100,95 @@ def check(checks, condition, name, evidence="", limit=256):
         raise AssertionError(f"{name}: {evidence}")
 
 
+# Uncaught errors (exceptions and unhandled rejections) from every page of a
+# browser opened through launch_browser(). finish() fails the suite when any
+# were seen and reports each message with its stack, so a crash at module
+# evaluation shows up as the error itself instead of an 8-second selector
+# timeout (AUD3-32).
+PAGE_ERRORS = []
+_tracking = {"enabled": False}
+
+
+def _record_page_error(page, error):
+    try:
+        url = page.url if page else ""
+    except Exception:
+        url = ""
+    PAGE_ERRORS.append({
+        "message": getattr(error, "message", "") or str(error),
+        "name": getattr(error, "name", "") or "",
+        "stack": getattr(error, "stack", "") or "",
+        "url": url,
+    })
+
+
+def track_page_errors(browser):
+    """Record uncaught errors of every page `browser` opens from now on."""
+    _tracking["enabled"] = True
+    new_context, new_page = browser.new_context, browser.new_page
+
+    def tracked_context(*args, **kwargs):
+        context = new_context(*args, **kwargs)
+        context.on("weberror", lambda web_error: _record_page_error(web_error.page, web_error.error))
+        return context
+
+    def tracked_page(*args, **kwargs):
+        page = new_page(*args, **kwargs)
+        page.on("pageerror", lambda error: _record_page_error(page, error))
+        return page
+
+    browser.new_context, browser.new_page = tracked_context, tracked_page
+    return browser
+
+
+def launch_browser(playwright, channel, **kwargs):
+    """Headless Chromium whose pages are watched for uncaught errors."""
+    kwargs.setdefault("headless", True)
+    return track_page_errors(playwright.chromium.launch(channel=channel, **kwargs))
+
+
+def page_errors_check(summary):
+    """Fail `summary` when a tracked page threw; otherwise record a passing check."""
+    if not _tracking["enabled"]:
+        return
+    if not PAGE_ERRORS:
+        summary["checks"].append({"name": "no_uncaught_page_errors", "ok": True, "evidence": "none"})
+        return
+    summary["page_errors"] = list(PAGE_ERRORS)
+    first = PAGE_ERRORS[0]
+    detail = f"{len(PAGE_ERRORS)} uncaught page error(s); first: {first['message']} @ {first['url']}\n{first['stack']}"
+    summary["checks"].append({"name": "no_uncaught_page_errors", "ok": False, "evidence": detail[:2000]})
+    summary["status"] = "FAIL"
+    summary["error"] = (summary.get("error", "") + "\n" if summary.get("error") else "") + detail[:4000]
+
+
+# API paths the page asked for that no mock knows. They are answered like an
+# unknown route, and because the app may swallow that 404, finish() also fails
+# the suite: a renamed or new endpoint cannot pass unnoticed (AUD3-33).
+UNMOCKED_REQUESTS = []
+
+
+def answer_unmocked(route, path):
+    entry = f"{route.request.method} {path}"
+    if entry not in UNMOCKED_REQUESTS:
+        UNMOCKED_REQUESTS.append(entry)
+    return route.fulfill(status=404, headers={"content-type": "application/json"},
+                         body=json.dumps({"error": f"unmocked endpoint {entry}"}))
+
+
+def unmocked_requests_check(summary):
+    """Fail `summary` when the page called an endpoint no mock answers."""
+    if not _tracking["enabled"]:
+        return
+    if not UNMOCKED_REQUESTS:
+        summary["checks"].append({"name": "no_unmocked_api_requests", "ok": True, "evidence": "none"})
+        return
+    detail = "page called endpoints no mock answers: " + ", ".join(UNMOCKED_REQUESTS)
+    summary["checks"].append({"name": "no_unmocked_api_requests", "ok": False, "evidence": detail[:2000]})
+    summary["status"] = "FAIL"
+    summary["error"] = (summary.get("error", "") + "\n" if summary.get("error") else "") + detail[:2000]
+
+
 def wait_until(page, predicate, timeout=3.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -132,6 +225,8 @@ def new_summary(repo, **extra):
 
 def finish(summary, output_dir, report_name):
     """Write the optional report file, print the JSON line, return the exit code."""
+    page_errors_check(summary)
+    unmocked_requests_check(summary)
     if output_dir:
         try:
             os.makedirs(output_dir, exist_ok=True)

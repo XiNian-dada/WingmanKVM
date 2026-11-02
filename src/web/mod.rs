@@ -103,8 +103,11 @@ use crate::{
             GpioPulseConfigSnapshot, PowerConfigSnapshot, PowerError, PowerLedConfigSnapshot,
             PowerManager, PowerPress,
         },
-        video::VideoManager,
-        webrtc::{WebRtcError, WebRtcManager, WebRtcOfferRequest, WebRtcStatus},
+        video::{CaptureChange, VideoManager, capture_change},
+        webrtc::{
+            SessionImpact, WebRtcError, WebRtcManager, WebRtcOfferRequest, WebRtcStatus,
+            session_impact,
+        },
     },
     web_ui::{APP_CSS, ICON_SVG, INDEX_HTML},
 };
@@ -142,6 +145,14 @@ impl AppState {
     pub fn load() -> anyhow::Result<Self> {
         let config_path = config::default_config_path();
         let config = Config::load_or_default(&config_path)?;
+        // validate_config otherwise only runs on writes. A KVM should still
+        // come up with a hand-edited file, so report it rather than refuse.
+        if let Err(error) = validate_config(&config) {
+            tracing::error!(path = %config_path.display(), message = %error.message, "配置文件包含无效的值");
+        }
+        if let Some(image_dir) = &config.media.image_directory {
+            sweep_partial_uploads(image_dir);
+        }
         let state_dir = config::state_dir();
         let auth = AuthStore::new(state_dir.join("auth.json"));
         let token_file = setup_token_file(&state_dir);
@@ -194,6 +205,23 @@ impl AppState {
         });
 
         let hid = HidManager::with_keyboard_device(config.hid.keyboard_device.clone());
+        // A previous process may have died with a key or button down, and
+        // nobody else will ever release it. Not awaited: a host that has
+        // stopped reading must not delay the web interface. The absolute
+        // pointer is left alone: every report carries a position, the last one
+        // is unknown here, so releasing it would move the target's cursor on
+        // each restart (and all zeros would throw it into the top-left corner).
+        // Its clicks press and release back to back, so nothing stays held.
+        let startup_hid = hid.clone();
+        let startup_paths = config.hid.clone();
+        tokio::spawn(async move {
+            if let Err(error) = startup_hid
+                .release_all(startup_paths.keyboard_device, startup_paths.mouse_device, None)
+                .await
+            {
+                tracing::warn!(%error, "HID release at startup failed");
+            }
+        });
         let metrics = Arc::new(RuntimeMetrics::new());
         let notifier = crate::notify::Notifier::new(config.notifications.clone());
         audit.set_observer(audit_observer(notifier.clone()));
@@ -250,6 +278,19 @@ impl AppState {
         self.proxy_protocol_updates.subscribe()
     }
 
+    /// Release all input on the target before the process exits. The caller
+    /// bounds this: a wedged host must not hold up the stop.
+    pub async fn release_input_for_shutdown(&self) {
+        let hid = self.config.read().await.hid.clone();
+        if let Err(error) = self
+            .hid
+            .release_for_shutdown(hid.keyboard_device, hid.mouse_device, hid.absolute_pointer_device)
+            .await
+        {
+            tracing::warn!(%error, "HID release at shutdown failed");
+        }
+    }
+
     async fn client_address(&self, connection: ClientConnection, headers: &HeaderMap) -> ClientAddress {
         let config = self.config.read().await;
         client_ip::resolve(connection, headers, &config.server.trusted_http_proxies)
@@ -288,6 +329,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mouse/move", post(mouse_move))
         .route("/api/mouse/absolute", post(mouse_absolute))
         .route("/api/mouse/click", post(mouse_click))
+        .route("/api/mouse/press", post(mouse_press))
+        .route("/api/mouse/release", post(mouse_release))
         .route("/api/mouse/scroll", post(mouse_scroll))
         .route("/api/input/release-all", post(release_all))
         .route("/api/input/ws", get(input_ws))

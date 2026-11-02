@@ -43,17 +43,33 @@ bundler and no build step:
   `import { … } from './<name>.js'`. Mutable state that two or more modules read
   or write lives on the `shared` object in `state.js` (an imported binding is
   read-only in the importer); state used by one module stays local to it. No
-  `window` globals (apart from the `window.__wingmanTest` test hooks).
-- Evaluating a module only declares its functions and module state and never
-  calls into another module: with import cycles, modules are not evaluated in
-  file-name order. DOM wiring lives in each module's exported `init()`, which
-  `main.js` calls in the old fragment order before running the boot sequence.
-  `00-settings.js` (browser-local preferences) imports nothing, so it is safe to
-  read during evaluation.
+  `window` globals (apart from the `window.__wingmanTest` test hooks, which
+  exist only when a test set `window.__wingmanTestHooks = true` before the page
+  loaded, see `ui_harness.TEST_HOOKS`; a normal page has none).
+- DOM wiring lives in each module's exported `init()`, which `main.js` calls in
+  the old fragment order before running the boot sequence; evaluating a module
+  mostly just declares its functions and module state. With import cycles, modules
+  are not evaluated in file-name order, so during evaluation a module may only do
+  two things across modules:
+  - Read bindings of modules that import nothing (`00-core.js`, `00-settings.js`,
+    `state.js`): they are in no cycle and always evaluate before their importers.
+  - Call another module's `function` declarations (initialized at link time,
+    whatever the evaluation order), as long as the function reads no module state
+    that may not be evaluated yet. For example `06`, `11` and `12*` call
+    `latestOnly()` at the top level.
+
+  Any other `const`/`let`/`class` binding may still be in its temporal dead zone;
+  reading it throws `ReferenceError` and leaves a blank page. Turning `latestOnly`
+  into a `const` arrow function crashes startup, and the UI suites report that
+  error with its stack.
 - To add a module: create the file in `web/js/app/`, `import` it where used,
   and add it to `APP_JS_MODULES`. Rust tests check that every file there is
   embedded, that every `import` names an embedded sibling module, and that
   every module is reachable from `main.js`.
+- To add a stylesheet fragment: create the file in `web/css/app/` and add it to
+  `APP_CSS_PARTS` in `src/web_ui.rs` in file-name order. `css_parts()` in
+  `scripts/ui_bundle.py` compares the two and fails every UI suite when they
+  disagree; otherwise tests look right while the release binary lacks the styles.
 
 ESLint (flat config, `eslint.config.js`) only checks non-stylistic problems:
 `no-undef`, `no-unused-vars`, `no-import-assign`, `no-const-assign`,
@@ -68,6 +84,47 @@ Versions are pinned in `package.json` and `package-lock.json`; Node.js
 npm ci
 npx eslint --max-warnings 0
 ```
+
+## One-line installer gate (no network, no root)
+
+`scripts/verify_get_script.py` builds a fake release, serves it from a loopback
+HTTP server, and also exercises a `file://` base. It checks latest-version
+discovery, explicit `--version`, SHA256 verification, `--download-only`,
+unsupported-architecture handling, and temporary-directory cleanup. It never
+contacts GitHub and never runs the real installer.
+
+```bash
+python3 scripts/verify_get_script.py
+```
+
+## mDNS installer helpers (no network, no root)
+
+`scripts/verify_mdns.py` sources `deploy/install.sh` against a scratch root and
+runs `deploy/wingmankvm-setup-url` with fake `id`/`systemctl`/`hostname`. It
+checks `--mdns-hostname` validation, the avahi service file, the minimal
+`avahi-daemon.conf` `host-name=` edit (backup, idempotence, other sections
+untouched) and that the `.local` URL is listed first only while avahi runs.
+The setup-url checks are skipped on bash older than 4.4 outside Linux (stock
+macOS); on Linux an old bash fails them instead of skipping.
+
+```bash
+python3 scripts/verify_mdns.py
+```
+
+## Doctor gate (no root, no hardware)
+
+`scripts/verify_doctor.py` fabricates sysfs/dev trees in a temporary directory,
+puts command stubs on `PATH` and runs `deploy/wingmankvm-doctor` with
+`WINGMANKVM_*` path overrides. It checks the JSON and human output, exit codes
+and repair hints for healthy and broken systems, and `--preflight`. It never
+touches real `/sys`, `/dev`, systemd, network ports or capture hardware.
+
+```bash
+python3 scripts/verify_doctor.py
+```
+
+CI runs `verify_get_script.py`, `verify_mdns.py` and `verify_doctor.py` as their
+own steps in `regression.yml`, before any toolchain is installed.
 
 ## HTTP/API gates (real binary, black-box)
 
@@ -98,17 +155,40 @@ python3 scripts/verify_ui_suite.py --output-dir "$SCRATCH/ui" --browser-channel 
 ```
 
 All suites share `scripts/ui_harness.py` (static server, xterm assets, video
-feed mock, `check()` and the JSON report). The page comes from `scripts/ui_bundle.py`: it inlines
+feed mock, `check()`, uncaught-error tracking and the JSON report). The page comes from `scripts/ui_bundle.py`: it inlines
 the stylesheet into `index.html` and serves the `web/js/app/` modules at their
 production paths `/assets/js/<name>`, so the browser runs the same module
 graph as production. A new suite only defines its API
 mock and scenarios; add it to `SUITES` in `verify_ui_suite.py` and to `CASES`
 in `verify_regressions.py` so CI runs it.
 
-Headless Chromium may refuse pointer lock/fullscreen. Those cases are recorded
-as `"ok": null, "skipped": true`; the orchestrator counts them as explicit
+Headless Chromium may refuse pointer lock/fullscreen. p2b spies on
+`requestPointerLock`/`requestFullscreen`: if the app never called them the suite
+fails (`pointerlock_requested_by_app`, `fullscreen_requested_by_app`). Only when
+the app asked and the browser refused is the follow-up recorded as
+`"ok": null, "skipped": true`; the orchestrator counts those as explicit
 non-failure skips, never as true passes. `--skip-ui` exists for local debugging
 only and is recorded as skipped; CI always runs the UI gates.
+
+- Uncaught page errors: suites start the browser with
+  `ui_harness.launch_browser()`. An uncaught exception or unhandled promise
+  rejection on any page fails the suite, with message and stack in the report's
+  `error`/`page_errors` and a `no_uncaught_page_errors` check. Context-level init
+  scripts also run on the initial `about:blank`, where touching `localStorage`
+  throws, so check `location.protocol` first.
+- API mocks: each suite's default API mock answers unknown paths with 404 rather
+  than a blanket 200. The app may swallow that 404, so
+  `ui_harness.answer_unmocked()` also records the path and fails the suite
+  (`no_unmocked_api_requests`): a renamed or new endpoint cannot pass unnoticed. When
+  the page starts a new request, add it to the mock in the shape the server returns.
+- Desktop input (the `desktop_*` scenarios in `verify_audit2_ui.py`): real
+  `page.mouse` input and clicks, asserted on the payloads sent to the HID
+  endpoints: absolute coordinates at known points in fit mode (±1, with
+  letterboxing), left/right/middle buttons, wheel sign and the ±127 clamp, relative
+  movement splitting, every `[data-quick-key]`, and sticky virtual-keyboard
+  modifiers. When headless refuses pointer lock, `requestPointerLock` is stubbed and
+  only "locks" when the app itself asks; real pointer lock still needs a headed
+  browser or real hardware. No power or reset control is involved.
 
 ## README screenshots and demo animation (#96)
 
@@ -189,6 +269,7 @@ python3 scripts/verify_regressions.py ... \
 | --- | --- | --- |
 | ESLint | Undefined/unused names and import resolution in the frontend modules | Runtime behavior (UI suites) |
 | `cargo test` | Native unit/integration behavior | Real hardware |
+| Installer/doctor scripts | `get.sh`, mDNS helpers, setup URL and `wingmankvm-doctor` against fixtures and fake commands | Real install, real avahi, real hardware |
 | API scripts | Real binary over loopback, stubbed host tools | Real capture/HID/GPIO |
 | UI scripts | Real Chrome DOM/JS with mocked API | Real backend, real devices |
 | Cookie/upgrade gates | Session-cookie and upgrade boundaries | Host deployment |

@@ -18,18 +18,18 @@ const LATENCY_GAP_MS = 150;
 const LATENCY_POLL_GAP_MS = 5;
 const LATENCY_RESTORE_SETTLE_MS = 300;
 const LATENCY_MAX_MISSES = 2; // consecutive: this target is not reporting LEDs
-let latencyRun = null;
 const latencyWait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function readCapsLock() {
   const leds = await request('/api/hid/leds');
   renderKeyboardLeds(leds);
   return !!leds?.caps_lock;
 }
-async function tapCapsLock() {
-  const res = await request('/api/key', {
-    method: 'POST',
-    body: JSON.stringify({ key: 'CapsLock', ctrl: false, shift: false, alt: false, meta: false, hold_ms: 25 }),
-  });
+const CAPS_LOCK_TAP = JSON.stringify({ key: 'CapsLock', ctrl: false, shift: false, alt: false, meta: false, hold_ms: 25 });
+// Every press is counted as soon as it is sent: if the page goes away, the
+// parity of the count is all that says whether Caps Lock is left flipped.
+async function tapCapsLock(run) {
+  run.taps += 1;
+  const res = await request('/api/key', { method: 'POST', body: CAPS_LOCK_TAP });
   if (res?.keyboard_leds) renderKeyboardLeds(res.keyboard_leds);
   return res?.keyboard_leds ? !!res.keyboard_leds.caps_lock : null;
 }
@@ -40,7 +40,7 @@ async function latencySample(run, before) {
   const started = performance.now();
   let seen = null,
     tapFailed = null;
-  const tap = tapCapsLock().then(
+  const tap = tapCapsLock(run).then(
     (caps) => {
       if (caps === !before && seen === null) seen = performance.now() - started;
     },
@@ -132,7 +132,7 @@ function setLatencyRunning(running) {
   $('#latency-stop').classList.toggle('hidden', !running);
 }
 async function startLatencyMeasurement() {
-  if (latencyRun) return;
+  if (shared.latencyRun) return;
   // These presses would change the case of whatever is being typed.
   if (shared.pasteRun || shared.macroPlayback) {
     toast(tr('正在输入或回放宏，请结束后再测量'), true);
@@ -140,11 +140,13 @@ async function startLatencyMeasurement() {
   }
   const warning = '测量会向被控机连续切换 Caps Lock 共 ${} 次，结束后恢复原状态。被控机当前焦点所在的程序会收到这些按键。确定开始吗？';
   if (!confirm(tr(warning).replace('${}', String(LATENCY_SAMPLES)))) return;
-  const run = (latencyRun = {
+  const run = (shared.latencyRun = {
     cancelled: false,
     samples: [],
     pollMs: [],
     restored: null,
+    taps: 0,
+    expired: false,
     channel: inputSocketReady() ? 'WebSocket' : 'HTTP',
     video: latencyVideoText(),
     bitrate: '—',
@@ -174,14 +176,17 @@ async function startLatencyMeasurement() {
     else status.textContent = run.cancelled ? '测量已停止' : '测量完成';
   } catch (err) {
     status.textContent = '测量中断';
+    // An expired session cannot restore anything; say so instead of trying.
+    if (err?.status === 401) run.expired = true;
     handleHidError(err);
   } finally {
     // Whatever happened, put Caps Lock back the way the user left it.
-    if (initial !== null) {
+    if (initial !== null && run.expired) run.restored = false;
+    else if (initial !== null) {
       try {
         // A late report must not trigger a press that undoes the restore.
         await latencyWait(LATENCY_RESTORE_SETTLE_MS);
-        if ((await readCapsLock()) !== initial) await tapCapsLock();
+        if ((await readCapsLock()) !== initial) await tapCapsLock(run);
         run.restored = await waitForCapsLock(initial);
       } catch (_) {
         run.restored = false;
@@ -191,7 +196,7 @@ async function startLatencyMeasurement() {
     const video = latencyVideoText();
     if (video !== run.video) run.video = `${run.video} → ${video}`;
     renderLatencyResult(run);
-    latencyRun = null;
+    shared.latencyRun = null;
     setLatencyRunning(false);
   }
 }
@@ -200,6 +205,17 @@ async function startLatencyMeasurement() {
 export function init() {
   $('#latency-start').addEventListener('click', startLatencyMeasurement);
   $('#latency-stop').addEventListener('click', () => {
-    if (latencyRun) latencyRun.cancelled = true;
+    if (shared.latencyRun) shared.latencyRun.cancelled = true;
+  });
+  // Closing the tab mid-run skips the restore in the finally above. After an
+  // odd number of presses one more keepalive press (HTTP: the browser only
+  // guarantees delivery for those) leaves Caps Lock as the user had it.
+  window.addEventListener('pagehide', () => {
+    const run = shared.latencyRun;
+    if (!run) return;
+    run.cancelled = true;
+    if (run.taps % 2 === 0 || run.expired || shared.bootstrap.authenticated === false) return;
+    run.taps += 1;
+    request('/api/key', { method: 'POST', body: CAPS_LOCK_TAP, keepalive: true }).catch(() => {});
   });
 }

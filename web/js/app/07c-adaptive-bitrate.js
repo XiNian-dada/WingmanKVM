@@ -35,6 +35,16 @@ const ADAPTIVE_POLICY = {
   receivedHeadroom: 1.1,
   cooldownMs: 10000, //     min spacing of changes; the server enforces it too
   raiseAfterBadMs: 30000, // no raise within 30 s of the last bad sample
+  // Probing at capacity: a raise followed by a decrease within
+  // probeFailWindowMs is a failed probe. Each consecutive failure doubles the
+  // wait after the last bad sample (raiseAfterBadMs × 2^failures, at most
+  // maxRaiseAfterBadMs), so a link that sits between two steps restarts the
+  // encoder every ~4 min instead of every ~40 s. probeResetMs without any bad
+  // sample clears the count; it must exceed maxRaiseAfterBadMs, otherwise the
+  // count would clear before the longest wait has passed.
+  probeFailWindowMs: 20000,
+  maxRaiseAfterBadMs: 240000,
+  probeResetMs: 300000,
   stepKbps: 50,
   snapToMaxRatio: 0.95, //  a raise this close to the maximum goes all the way
 };
@@ -49,6 +59,8 @@ function newAdaptiveState(maxKbps, minKbps = 256) {
     lastChangeAt: null,
     lastBadAt: null,
     rttBaselineMs: null,
+    lastRaiseAt: null,
+    probeFailures: 0,
   };
 }
 const known = (value) => typeof value === 'number' && Number.isFinite(value);
@@ -88,6 +100,13 @@ function decideAdaptiveBitrate(previous, sample, now, policy = ADAPTIVE_POLICY) 
     state.badStreak = 0;
     state.goodStreak = 0;
   }
+  // Failed probes stretch the post-congestion hold (see probeFailWindowMs).
+  if (state.probeFailures > 0 && state.lastBadAt !== null && now - state.lastBadAt >= policy.probeResetMs)
+    state.probeFailures = 0;
+  const raiseHoldMs = Math.min(
+    policy.raiseAfterBadMs * 2 ** (state.probeFailures || 0),
+    Math.max(policy.raiseAfterBadMs, policy.maxRaiseAfterBadMs),
+  );
   const cooled = state.lastChangeAt === null || now - state.lastChangeAt >= policy.cooldownMs,
     round = (kbps) =>
       Math.min(state.maxKbps, Math.max(state.minKbps, Math.round(kbps / policy.stepKbps) * policy.stepKbps));
@@ -104,13 +123,21 @@ function decideAdaptiveBitrate(previous, sample, now, policy = ADAPTIVE_POLICY) 
     state.goodStreak >= policy.goodSamples &&
     cooled &&
     state.currentKbps < state.maxKbps &&
-    (state.lastBadAt === null || now - state.lastBadAt >= policy.raiseAfterBadMs)
+    (state.lastBadAt === null || now - state.lastBadAt >= raiseHoldMs)
   ) {
     target = round(state.currentKbps * policy.increaseFactor);
     if (target >= state.maxKbps * policy.snapToMaxRatio) target = state.maxKbps;
     if (target <= state.currentKbps) target = null;
   }
   if (target === null || target === state.currentKbps) return { state, targetKbps: null, verdict };
+  if (target > state.currentKbps) {
+    state.lastRaiseAt = now;
+  } else {
+    // Lowering soon after a raise means the probe found the capacity limit.
+    if (state.lastRaiseAt !== null && now - state.lastRaiseAt <= policy.probeFailWindowMs)
+      state.probeFailures = Math.min((state.probeFailures || 0) + 1, 16);
+    state.lastRaiseAt = null;
+  }
   state.currentKbps = target;
   state.lastChangeAt = now;
   state.badStreak = 0;
@@ -157,6 +184,8 @@ async function sendAdaptiveBitrate(kbps, previousKbps) {
     // Not applied: undo the optimistic value but keep lastChangeAt, which
     // backs off for a full cooldown before the next attempt.
     if (adaptive.state.currentKbps === kbps) adaptive.state.currentKbps = previousKbps;
+    // A raise that never reached the encoder is not a probe.
+    if (kbps > previousKbps) adaptive.state.lastRaiseAt = null;
     if (error?.status === 404 || error?.status === 401) adaptive.sessionId = null;
     return false;
   } finally {
@@ -209,13 +238,16 @@ function setAdaptiveBitrateEnabled(enabled) {
 
 // DOM wiring; main.js calls this once, in the original fragment order.
 export function init() {
-  // The Playwright suite drives the pure decision function directly.
-  window.__wingmanTest = Object.assign(window.__wingmanTest || {}, {
-    decideAdaptiveBitrate,
-    newAdaptiveState,
-    adaptivePolicy: ADAPTIVE_POLICY,
-    adaptiveBitrate: () => (adaptive.state ? { ...adaptive.state, enabled: adaptive.enabled } : { enabled: adaptive.enabled }),
-  });
+  // The Playwright suite drives the pure decision function directly. The live
+  // policy is only exposed when the harness set window.__wingmanTestHooks
+  // before the page loaded, never on a normal page.
+  if (window.__wingmanTestHooks === true)
+    window.__wingmanTest = Object.assign(window.__wingmanTest || {}, {
+      decideAdaptiveBitrate,
+      newAdaptiveState,
+      adaptivePolicy: ADAPTIVE_POLICY,
+      adaptiveBitrate: () => (adaptive.state ? { ...adaptive.state, enabled: adaptive.enabled } : { enabled: adaptive.enabled }),
+    });
 }
 
 export {

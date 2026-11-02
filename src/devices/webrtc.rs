@@ -50,10 +50,10 @@ use std::os::unix::{io::AsRawFd, process::CommandExt};
 
 use crate::{
     auth::SessionGuard,
-    config::{H264Config, H264Encoder},
+    config::{H264Config, H264Encoder, VideoConfig},
     devices::{
         audio::{self, AudioManager},
-        video::VideoManager,
+        video::{CaptureChange, VideoManager, capture_change},
     },
 };
 
@@ -254,6 +254,34 @@ impl Drop for Inner {
 #[derive(Clone)]
 pub struct WebRtcManager {
     inner: Arc<Inner>,
+}
+
+/// What a video settings change means for running H.264 sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionImpact {
+    /// Sessions keep running. JPEG quality and encoding only change the
+    /// frames fed to FFmpeg, whose input decoder follows quality and chroma
+    /// changes mid-stream; with MJPEG passthrough the quality is unused.
+    Unaffected,
+    /// Only the session limit changed: it applies to new sessions.
+    LimitOnly,
+    /// The capture is reopened (its size or rate may change under a running
+    /// encoder) or the encoder, its bitrate or the ICE transport changed.
+    Reconnect,
+}
+
+pub fn session_impact(previous: &VideoConfig, next: &VideoConfig) -> SessionImpact {
+    let same_except_limit = H264Config {
+        max_sessions: previous.h264.max_sessions,
+        ..next.h264.clone()
+    } == previous.h264;
+    if capture_change(previous, next) == CaptureChange::Restart || !same_except_limit {
+        SessionImpact::Reconnect
+    } else if previous.h264.max_sessions != next.h264.max_sessions {
+        SessionImpact::LimitOnly
+    } else {
+        SessionImpact::Unaffected
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -485,6 +513,19 @@ impl WebRtcManager {
         }
     }
 
+    /// Applies a new session limit without touching running sessions. Lowering
+    /// it below the current count only stops new sessions.
+    pub async fn set_session_limit(&self, config: H264Config) {
+        let _offer_guard = self.inner.offer_lock.lock().await;
+        *self
+            .inner
+            .config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = config;
+    }
+
+    /// Re-probes the encoder and closes every session so it reconnects with
+    /// the new settings. Only for a [`SessionImpact::Reconnect`] change.
     pub async fn reconfigure(&self, config: H264Config) {
         let _offer_guard = self.inner.offer_lock.lock().await;
         // Invalidate any startup probe that may still be running.
@@ -885,6 +926,45 @@ impl WebRtcManager {
     }
 
     /// Register a session map entry without a peer or encoder.
+    /// A session map entry with a stand-in supervisor: it ends the session
+    /// like the real one does when told to shut down. The receiver reports
+    /// whether that happened.
+    pub(crate) fn insert_supervised_test_session(
+        &self,
+        session_id: &str,
+        owner: SessionGuard,
+    ) -> watch::Receiver<bool> {
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let (closed_tx, closed_rx) = watch::channel(false);
+        let observed = shutdown_tx.subscribe();
+        self.inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                session_id.to_owned(),
+                Session {
+                    shutdown: shutdown_tx,
+                    bitrate: watch::channel(4_000).0,
+                    max_bitrate_kbps: 4_000,
+                    last_bitrate_change: None,
+                    owner,
+                    state: watch::channel(ConnectionPhase::Connected).0,
+                    closed: closed_rx,
+                },
+            );
+        let inner = Arc::downgrade(&self.inner);
+        let session_id = session_id.to_owned();
+        tokio::spawn(async move {
+            wait_for_cancel(&mut shutdown_rx).await;
+            if let Some(inner) = inner.upgrade() {
+                inner.sessions.lock().unwrap().remove(&session_id);
+            }
+            let _ = closed_tx.send_replace(true);
+        });
+        observed
+    }
+
     pub(crate) fn insert_test_session(
         &self,
         session_id: &str,
@@ -2643,6 +2723,67 @@ pub(crate) mod tests {
         assert!(inner.sessions.lock().unwrap().is_empty());
         manager.reconfigure(config).await;
         assert!(inner.sessions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn only_h264_relevant_changes_reconnect_sessions() {
+        let base = VideoConfig {
+            device: Some(PathBuf::from("/dev/video0")),
+            width: Some(1920),
+            height: Some(1080),
+            frames_per_second: Some(30),
+            ..VideoConfig::default()
+        };
+        let impact = |edit: fn(&mut VideoConfig)| {
+            let mut next = base.clone();
+            edit(&mut next);
+            session_impact(&base, &next)
+        };
+        use SessionImpact::*;
+        assert_eq!(session_impact(&base, &base), Unaffected);
+        // Per-frame JPEG settings never reach the encoder's configuration.
+        assert_eq!(impact(|c| c.jpeg_quality = 30), Unaffected);
+        assert_eq!(impact(|c| c.encoding = crate::config::VideoEncoding::TranscodeJpeg), Unaffected);
+        assert_eq!(impact(|c| c.auto_detect = !c.auto_detect), Unaffected);
+        assert_eq!(impact(|c| c.h264.max_sessions = 3), LimitOnly);
+        // The capture is reopened: size or rate may change under the encoder.
+        assert_eq!(impact(|c| c.device = Some(PathBuf::from("/dev/video1"))), Reconnect);
+        assert_eq!(impact(|c| c.width = Some(1280)), Reconnect);
+        assert_eq!(impact(|c| c.height = Some(720)), Reconnect);
+        assert_eq!(impact(|c| c.frames_per_second = Some(60)), Reconnect);
+        // The encoder, its bitrate or the ICE transport.
+        assert_eq!(impact(|c| c.h264.bitrate_kbps = 2_000), Reconnect);
+        assert_eq!(impact(|c| c.h264.encoder = H264Encoder::Software), Reconnect);
+        assert_eq!(impact(|c| c.h264.allow_software = true), Reconnect);
+        assert_eq!(impact(|c| c.h264.ffmpeg_path = Some(PathBuf::from("/opt/ffmpeg"))), Reconnect);
+        assert_eq!(
+            impact(|c| c.h264.udp_bind_address = Some("0.0.0.0:3478".parse().unwrap())),
+            Reconnect
+        );
+        assert_eq!(impact(|c| c.h264.public_udp_endpoint = Some("kvm.example:3478".into())), Reconnect);
+        assert_eq!(
+            impact(|c| {
+                c.h264.max_sessions = 2;
+                c.h264.bitrate_kbps = 1_000;
+            }),
+            Reconnect
+        );
+    }
+
+    #[tokio::test]
+    async fn session_limit_change_keeps_running_sessions() {
+        let inner = test_inner();
+        insert_fake_session(&inner, "session-a");
+        let manager = WebRtcManager {
+            inner: inner.clone(),
+        };
+        let config = H264Config {
+            max_sessions: 4,
+            ..H264Config::default()
+        };
+        manager.set_session_limit(config).await;
+        assert_eq!(manager.status().max_sessions, 4);
+        assert_eq!(inner.sessions.lock().unwrap().len(), 1);
     }
 
     #[test]

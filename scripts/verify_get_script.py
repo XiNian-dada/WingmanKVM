@@ -234,6 +234,15 @@ class Harness:
         self.record("unsupported_architecture_rejected", not problems,
                     "; ".join(problems) or "rejected")
 
+    def check_workflow_archive_name(self) -> None:
+        """The workflow must publish the file name the clients request."""
+        workflow = (self.repo / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        clients = [(self.repo / path).read_text(encoding="utf-8")
+                   for path in ("scripts/get.sh", "deploy/wingmankvm-online-upgrade")]
+        ok = ('archive="wingmankvm-v${VERSION}-${TARGET}"' in workflow
+              and all('"wingmankvm-${VERSION}-${TARGET}.tar.gz"' in text and "v" in text for text in clients))
+        self.record("workflow_archive_name_matches_clients", ok, "release.yml vs get.sh and online upgrade")
+
     def check_online_upgrade_shares_logic(self) -> None:
         """deploy/wingmankvm-online-upgrade reuses get.sh's architecture
         detection, download and SHA256SUMS verification verbatim."""
@@ -302,6 +311,7 @@ def main() -> int:
                 harness.check_http_latest(server)
             harness.check_file_version()
             harness.check_checksum_failure()
+            harness.check_workflow_archive_name()
             harness.check_unsupported_arch()
             harness.check_online_upgrade_shares_logic()
             summary["checks"] = harness.checks

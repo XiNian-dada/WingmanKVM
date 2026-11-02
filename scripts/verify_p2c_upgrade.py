@@ -521,6 +521,125 @@ install_managed_files
         self.record("sigkill-pending-manual-recovery", not problems,
                     "; ".join(problems) or "ok", ["_tx_publish_one sends a real SIGKILL"])
 
+    @staticmethod
+    def snapshot_index(txn: Path, rel: str) -> str:
+        for line in (txn / "manifest").read_text(encoding="utf-8").splitlines():
+            fields = line.split("\t")
+            if len(fields) == 7 and fields[6].endswith("/" + rel):
+                return fields[0]
+        raise RuntimeError(f"manifest has no entry for {rel}")
+
+    def case_recover_rejects_corrupt_snapshot(self) -> None:
+        base = self.base("recover-corrupt")
+        root = self.root(base)
+        self.stubs(base)
+        old = b"old-binary\n"
+        binary = root / "usr/local/bin/wingmankvm"
+        write(binary, old, 0o755)
+        before = self.hashes(root)
+        marker = base / "published"
+        self.run(self.driver(base, self.prelude() + f"""
+tx_init "$TX_STORE" "$DEST_ROOT"
+eval "original_$(declare -f _tx_publish_one)"
+count=0
+_tx_publish_one() {{
+  original__tx_publish_one "$@"
+  count=$((count + 1))
+  [ "$count" -eq 1 ] && {{ : >"{marker}"; kill -KILL $$; }}
+}}
+install_managed_files
+"""))
+        problems: list[str] = []
+        new_bytes = (base / "fixture-binary").read_bytes()
+        store = root / "var/lib/wingmankvm-deploy"
+        txns = sorted(store.glob("txn.*")) if store.is_dir() else []
+        if not marker.exists() or not txns or not (store / "PENDING").is_file():
+            problems.append("killed transaction with PENDING not produced")
+        else:
+            txn = txns[-1]
+            recover = txn / "recover.sh"
+            snap = txn / "snapshot" / self.snapshot_index(txn, "usr/local/bin/wingmankvm")
+            digest_file = snap.with_name(snap.name + ".sha256")
+            if not digest_file.is_file() or stat.S_IMODE(digest_file.stat().st_mode) != 0o600:
+                problems.append("snapshot digest not recorded with mode 0600")
+            elif digest_file.read_text(encoding="ascii").strip() != hashlib.sha256(old).hexdigest():
+                problems.append("recorded snapshot digest does not match the old bytes")
+            if binary.read_bytes() != new_bytes:
+                problems.append("SIGKILL point did not publish the new binary")
+            snap.write_bytes(b"")  # what a power cut can leave behind
+            for label, needle in (("corrupt", "digest mismatch"), ("missing digest", "digest missing")):
+                if label == "missing digest":
+                    digest_file.unlink()
+                result = subprocess.run(
+                    ["bash", str(recover)], text=True, capture_output=True, timeout=60,
+                )
+                if result.returncode == 0:
+                    problems.append(f"recover.sh accepted a {label} snapshot")
+                if needle not in result.stderr or str(binary) not in result.stderr:
+                    problems.append(f"{label} snapshot diagnostic missing: {result.stderr.strip()}")
+                if "snapshot retained" not in result.stderr:
+                    problems.append(f"{label} snapshot failure not counted")
+                if binary.read_bytes() != new_bytes:
+                    problems.append(f"{label} snapshot overwrote the destination")
+                if not (store / "PENDING").is_file():
+                    problems.append(f"{label} snapshot recovery cleared PENDING")
+                if (txn / "ROLLED_BACK").exists():
+                    problems.append(f"{label} snapshot recovery wrote ROLLED_BACK")
+            # Repairing the snapshot and digest makes the same recovery succeed.
+            snap.write_bytes(old)
+            write(digest_file, (hashlib.sha256(old).hexdigest() + "\n").encode(), 0o600)
+            repaired = subprocess.run(
+                ["bash", str(recover)], text=True, capture_output=True, timeout=60,
+            )
+            if repaired.returncode != 0:
+                problems.append("repaired snapshot recovery failed: " + repaired.stderr.strip())
+            if (store / "PENDING").exists():
+                problems.append("repaired snapshot recovery left PENDING")
+            problems += self.tree(root, before, False)
+        self.record("recover-rejects-corrupt-snapshot", not problems,
+                    "; ".join(problems) or "ok",
+                    ["real SIGKILL, then the binary snapshot is truncated and its digest removed"])
+
+    def case_rollback_rejects_corrupt_snapshot(self) -> None:
+        base = self.base("rollback-corrupt")
+        root = self.root(base)
+        self.stubs(base)
+        binary = root / "usr/local/bin/wingmankvm"
+        write(binary, b"old-binary\n", 0o755)
+        before = self.hashes(root)
+        result = self.run(self.driver(base, self.prelude() + """
+tx_init "$TX_STORE" "$DEST_ROOT"
+eval "original_$(declare -f _tx_publish_one)"
+count=0
+_tx_publish_one() {
+  count=$((count + 1))
+  if [ "$count" -eq 2 ]; then : >"$TX_SNAPSHOT/0"; return 1; fi
+  original__tx_publish_one "$@"
+}
+install_managed_files
+"""))
+        problems: list[str] = []
+        output = result.stderr + result.stdout
+        store = root / "var/lib/wingmankvm-deploy"
+        if result.returncode == 0:
+            problems.append("rollback over a corrupt snapshot reported success")
+        if "digest mismatch" not in output:
+            problems.append("rollback digest diagnostic missing")
+        if binary.read_bytes() != (base / "fixture-binary").read_bytes():
+            problems.append("rollback overwrote the destination with a corrupt snapshot")
+        if not (store / "PENDING").is_file():
+            problems.append("failed rollback cleared PENDING")
+        if list(store.glob("txn.*/ROLLED_BACK")):
+            problems.append("failed rollback wrote ROLLED_BACK")
+        if "manual recovery command" not in output:
+            problems.append("recovery instructions absent")
+        for rel, expected in before.items():
+            if digest(root / rel) != expected:
+                problems.append(f"preserved/user data changed: {rel}")
+        self.record("rollback-rejects-corrupt-snapshot", not problems,
+                    "; ".join(problems) or "ok",
+                    ["_tx_publish_one truncates snapshot 0 and fails entry 2"])
+
     def case_health(self) -> None:
         base = self.base("health")
         root = self.root(base)
@@ -756,7 +875,9 @@ finish_no_start
         for name in (
             "case_success", "case_missing_helper", "case_partial", "case_term",
             "case_python_isolation", "case_commit_signal",
-            "case_recover_refuses_committed", "case_sigkill", "case_health",
+            "case_recover_refuses_committed", "case_sigkill",
+            "case_recover_rejects_corrupt_snapshot",
+            "case_rollback_rejects_corrupt_snapshot", "case_health",
             "case_first_install_units", "case_rollback_failure", "case_no_start",
             "case_maintenance_transaction",
         ):

@@ -1,6 +1,6 @@
 [Unit]
 Description=WingmanKVM online upgrade to the latest GitHub release (on demand)
-Documentation=file:///usr/share/doc/wingmankvm/UPGRADE_RECOVERY.md
+Documentation=https://github.com/XiNian-dada/WingmanKVM/blob/main/docs/UPGRADE_RECOVERY.md
 After=network-online.target
 Wants=network-online.target
 # Started only by /usr/local/sbin/wingmankvm-online-upgrade --start through the

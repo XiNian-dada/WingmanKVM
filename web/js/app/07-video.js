@@ -16,6 +16,17 @@ let videoGeneration = 0;
 let videoFallback = false;
 let webrtcAbort = null;
 let videoFirstFrameTimer = 0;
+// When H.264 ends (the server closed it after a settings change, or it
+// failed), MJPEG keeps the picture and H.264 is tried again after a pause
+// that doubles on every failure, so a broken encoder cannot cause a storm of
+// offers. The pause resets once H.264 has played for a while, or when the
+// user restarts video. Never retried while the user has chosen MJPEG.
+const H264_RETRY_FIRST_MS = 3000;
+const H264_RETRY_MAX_MS = 5 * 60 * 1000;
+const H264_STABLE_MS = 30000;
+let h264RetryTimer = 0;
+let h264RetryDelay = H264_RETRY_FIRST_MS;
+let h264PlayingSince = 0;
 
 function shouldVideoRun() {
   // An active Picture-in-Picture window keeps the picture visible while the
@@ -135,8 +146,36 @@ function setVideoState(state, transport = shared.activeVideoTransport) {
 function clearVideoTimers() {
   clearTimeout(reconnectTimer);
   clearTimeout(videoFirstFrameTimer);
+  clearTimeout(h264RetryTimer);
   reconnectTimer = 0;
   videoFirstFrameTimer = 0;
+  h264RetryTimer = 0;
+}
+function h264RetryAllowed() {
+  return shared.videoPreference !== 'mjpeg' && h264Available();
+}
+function scheduleH264Retry(generation) {
+  clearTimeout(h264RetryTimer);
+  h264RetryTimer = 0;
+  if (!h264RetryAllowed()) return;
+  if (h264PlayingSince && performance.now() - h264PlayingSince >= H264_STABLE_MS)
+    h264RetryDelay = H264_RETRY_FIRST_MS;
+  h264PlayingSince = 0;
+  const delay = h264RetryDelay;
+  h264RetryDelay = Math.min(h264RetryDelay * 2, H264_RETRY_MAX_MS);
+  h264RetryTimer = setTimeout(() => retryH264(generation), delay);
+}
+function retryH264(generation) {
+  h264RetryTimer = 0;
+  if (generation !== videoGeneration || !shouldVideoRun() || !h264RetryAllowed()) return;
+  // Switching surfaces would end a Picture-in-Picture window or cut a
+  // recording short; wait until neither is running.
+  if (isPipActive() || recorder) {
+    h264RetryTimer = setTimeout(() => retryH264(generation), H264_RETRY_FIRST_MS);
+    return;
+  }
+  stopVideo(false);
+  if (shouldVideoRun()) startVideo();
 }
 function closeWebrtcSession(sessionId) {
   if (!sessionId) return;
@@ -176,6 +215,7 @@ function stopVideo(showPaused = true) {
   videoGeneration++;
   clearVideoTimers();
   reconnectDelay = 500;
+  h264PlayingSince = 0;
   closePip();
   cleanupWebrtc();
   feed.onload = null;
@@ -191,12 +231,15 @@ function stopVideo(showPaused = true) {
   updateDiagnosticsCard();
 }
 function restartVideo() {
+  // An explicit restart (transport choice, reconnect button) starts afresh.
+  h264RetryDelay = H264_RETRY_FIRST_MS;
   stopVideo(false);
   if (shouldVideoRun()) startVideo();
 }
 function markVideoPlaying(generation, transport) {
   if (generation !== videoGeneration || !shouldVideoRun() || shared.activeVideoTransport !== transport) return;
   clearTimeout(videoFirstFrameTimer);
+  if (transport === 'webrtc_h264' && !h264PlayingSince) h264PlayingSince = performance.now();
   setVideoState('playing', transport);
   if (shared.latestVideoStatus?.state === 'ready') setVideoMessage('', false);
 }
@@ -265,6 +308,7 @@ function fallbackToMjpeg(generation, reason = 'H.264 连接未能建立') {
   closePip();
   cleanupWebrtc();
   startMjpeg(generation, true);
+  scheduleH264Retry(generation);
 }
 async function startWebrtc(generation) {
   if (generation !== videoGeneration || !shouldVideoRun()) return;

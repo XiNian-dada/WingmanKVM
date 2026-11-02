@@ -38,6 +38,15 @@ jobs:
       - name: Verify vendored dtls provenance and patches
         run: python3 scripts/verify_dtls_vendor.py
 
+      - name: Verify one-line installer against a loopback fake release
+        run: python3 scripts/verify_get_script.py
+
+      - name: Verify installer mDNS helpers and setup URL
+        run: python3 scripts/verify_mdns.py
+
+      - name: Verify wingmankvm-doctor against fixture trees
+        run: python3 scripts/verify_doctor.py
+
       - name: Install Node.js 22
         # Official action commit (actions/setup-node v7.1.0).
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1

@@ -8,6 +8,8 @@ export const SETTING_DEFAULTS = {
   render_pixelated: true,
   auto_expand_inspector: true,
   target_layout: 'us',
+  adaptive_bitrate: true,
+  quality_overlay: false,
 };
 export function getSetting(key, fallback = null) {
   try {

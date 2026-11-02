@@ -225,6 +225,8 @@ start_unit() {
             exit 3
             ;;
     esac
+    # The directory outlives each run; a stale outcome must not read as this one.
+    rm -f -- "$STATUS_DIR/status"
     systemctl --no-block start "$UNIT" || die "cannot start $UNIT"
     log "requested $UNIT"
 }

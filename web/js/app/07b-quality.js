@@ -205,6 +205,12 @@ function syncQualityOverlay() {
 function syncQualityButton() {
   $('#quality-toggle').setAttribute('aria-pressed', String(qualityEnabled));
 }
+function setQualityOverlayEnabled(enabled) {
+  qualityEnabled = enabled;
+  setSetting('quality_overlay', qualityEnabled);
+  syncQualityButton();
+  syncQualityOverlay();
+}
 
 // DOM wiring; main.js calls this once, in the original fragment order.
 export function init() {
@@ -214,14 +220,9 @@ export function init() {
     $('#quality-overlay').append(label, value);
     qualityRows[key] = { label, value };
   }
-  $('#quality-toggle').addEventListener('click', () => {
-    qualityEnabled = !qualityEnabled;
-    setSetting('quality_overlay', qualityEnabled);
-    syncQualityButton();
-    syncQualityOverlay();
-  });
+  $('#quality-toggle').addEventListener('click', () => setQualityOverlayEnabled(!qualityEnabled));
   document.addEventListener('visibilitychange', syncQualityOverlay);
   syncQualityButton();
 }
 
-export { connectionQuality, qualityBitrateText, renderQualityOverlay, syncQualityOverlay };
+export { connectionQuality, qualityBitrateText, renderQualityOverlay, setQualityOverlayEnabled, syncQualityOverlay };

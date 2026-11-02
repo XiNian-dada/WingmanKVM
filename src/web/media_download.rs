@@ -1,6 +1,7 @@
 use super::*;
 
 use sha2::{Digest, Sha256};
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Notify;
 
@@ -9,6 +10,127 @@ const DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_TOTAL_TIMEOUT: Duration = UPLOAD_TOTAL_TIMEOUT;
 const DOWNLOAD_MAX_REDIRECTS: usize = 5;
 const DOWNLOAD_BUSY_MESSAGE: &str = "另一个镜像上传或下载正在进行，请稍后重试";
+const DOWNLOAD_TARGET_DENIED_MESSAGE: &str =
+    "下载地址指向本机、链路本地、组播或广播地址，已拒绝；局域网地址不受影响";
+
+/// Which download targets are refused. Loopback, link-local (including the
+/// 169.254.169.254 metadata address), unspecified, multicast and broadcast
+/// addresses are always denied; private LAN and unique-local ranges stay
+/// allowed because images are commonly fetched from a NAS. Production builds
+/// have no switch at all; the only relaxation exists in test builds so local
+/// test servers bound to 127.0.0.1 stay reachable.
+#[derive(Debug, Clone, Copy, Default)]
+struct TargetPolicy {
+    #[cfg(test)]
+    allow_test_loopback: bool,
+}
+
+impl TargetPolicy {
+    fn allows(self, ip: IpAddr) -> bool {
+        #[cfg(test)]
+        if self.allow_test_loopback && ip == IpAddr::V4(Ipv4Addr::LOCALHOST) {
+            return true;
+        }
+        !is_denied_download_ip(ip)
+    }
+
+    /// Checks a URL whose host is an IP literal. Such hosts never reach the
+    /// resolver, so they must be checked here; domain names are left to
+    /// `FilteringResolver`, which checks every address it hands out.
+    fn allows_url(self, url: &reqwest::Url) -> bool {
+        let Some(host) = url.host_str() else {
+            return false;
+        };
+        let literal = host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(host);
+        match literal.parse::<IpAddr>() {
+            Ok(ip) => self.allows(ip),
+            Err(_) => true,
+        }
+    }
+}
+
+fn is_denied_download_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => is_denied_download_ipv4(ip),
+        IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
+            Some(mapped) => is_denied_download_ipv4(mapped),
+            None => is_denied_download_ipv6(ip),
+        },
+    }
+}
+
+fn is_denied_download_ipv4(ip: Ipv4Addr) -> bool {
+    // 0.0.0.0/8 covers the unspecified address; Linux connects 0.0.0.0 to
+    // the local host.
+    ip.octets()[0] == 0
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_multicast()
+        || ip.is_broadcast()
+}
+
+fn is_denied_download_ipv6(ip: Ipv6Addr) -> bool {
+    let link_local = (ip.segments()[0] & 0xffc0) == 0xfe80;
+    ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() || link_local
+}
+
+/// Marker error for a refused target. It is matched by type when mapping
+/// request errors, so the user sees a fixed message instead of resolver or
+/// connector internals.
+#[derive(Debug)]
+struct DeniedTarget;
+
+impl std::fmt::Display for DeniedTarget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(DOWNLOAD_TARGET_DENIED_MESSAGE)
+    }
+}
+
+impl std::error::Error for DeniedTarget {}
+
+/// System resolver that drops denied addresses before the connector sees
+/// them. reqwest connects only to the addresses returned here, so a hostname
+/// (including one reached through a redirect) that resolves to a denied
+/// address fails at connection level, not just at URL validation.
+struct FilteringResolver {
+    policy: TargetPolicy,
+}
+
+impl reqwest::dns::Resolve for FilteringResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let policy = self.policy;
+        let host = name.as_str().to_owned();
+        Box::pin(async move {
+            let resolved: Vec<SocketAddr> =
+                tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
+            let allowed = filter_resolved(resolved, policy)?;
+            Ok(Box::new(allowed.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+fn filter_resolved(
+    resolved: Vec<SocketAddr>,
+    policy: TargetPolicy,
+) -> Result<Vec<SocketAddr>, Box<dyn std::error::Error + Send + Sync>> {
+    if resolved.is_empty() {
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no addresses",
+        )));
+    }
+    let allowed: Vec<SocketAddr> = resolved
+        .into_iter()
+        .filter(|address| policy.allows(address.ip()))
+        .collect();
+    if allowed.is_empty() {
+        return Err(Box::new(DeniedTarget));
+    }
+    Ok(allowed)
+}
 
 #[derive(Deserialize)]
 pub(super) struct DownloadMediaRequest {
@@ -73,19 +195,38 @@ impl Cancellation {
 pub(super) struct MediaDownloadManager {
     current: Mutex<Option<Arc<DownloadJob>>>,
     client: reqwest::Client,
+    policy: TargetPolicy,
 }
 
 impl MediaDownloadManager {
     pub(super) fn new() -> anyhow::Result<Self> {
+        Self::with_policy(TargetPolicy::default())
+    }
+
+    /// Test-only constructor that additionally allows exactly 127.0.0.1, so
+    /// tests can reach local servers. Every other denied address (including
+    /// `::1` and `::ffff:127.0.0.1`) is still refused.
+    #[cfg(test)]
+    fn new_allowing_test_loopback() -> anyhow::Result<Self> {
+        Self::with_policy(TargetPolicy {
+            allow_test_loopback: true,
+        })
+    }
+
+    fn with_policy(policy: TargetPolicy) -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
             .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
             .timeout(DOWNLOAD_TOTAL_TIMEOUT)
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            .dns_resolver(Arc::new(FilteringResolver { policy }))
+            .redirect(reqwest::redirect::Policy::custom(move |attempt| {
                 if !matches!(attempt.url().scheme(), "http" | "https") {
                     return attempt.error("redirect target is not http or https");
                 }
                 if attempt.previous().len() > DOWNLOAD_MAX_REDIRECTS {
                     return attempt.error("too many redirects");
+                }
+                if !policy.allows_url(attempt.url()) {
+                    return attempt.error(DeniedTarget);
                 }
                 attempt.follow()
             }))
@@ -93,6 +234,7 @@ impl MediaDownloadManager {
         Ok(Self {
             current: Mutex::new(None),
             client,
+            policy,
         })
     }
 
@@ -109,6 +251,9 @@ impl MediaDownloadManager {
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "只支持 http 或 https 下载地址",
             ));
+        }
+        if !self.policy.allows_url(&url) {
+            return Err(denied_target_error());
         }
         let expected_sha256 = request.sha256.as_deref().map(parse_sha256).transpose()?;
         let name = match request.name {
@@ -407,8 +552,28 @@ fn parse_sha256(value: &str) -> Result<String, ApiError> {
     Ok(value.to_ascii_lowercase())
 }
 
+fn denied_target_error() -> ApiError {
+    ApiError::new(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        DOWNLOAD_TARGET_DENIED_MESSAGE,
+    )
+}
+
+fn is_denied_target(error: &reqwest::Error) -> bool {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(error) = current {
+        if error.is::<DeniedTarget>() {
+            return true;
+        }
+        current = error.source();
+    }
+    false
+}
+
 fn request_error(error: reqwest::Error) -> ApiError {
-    if error.is_timeout() {
+    if is_denied_target(&error) {
+        denied_target_error()
+    } else if error.is_timeout() {
         ApiError::new(StatusCode::GATEWAY_TIMEOUT, "下载连接超时")
     } else if error.is_redirect() {
         ApiError::new(
@@ -520,7 +685,11 @@ mod tests {
             .route("/file.iso", get(file))
             .route("/large.iso", get(large))
             .route("/chunked.iso", get(chunked))
-            .route("/slow.iso", get(slow));
+            .route("/slow.iso", get(slow))
+            .route("/to-v6-loopback.iso", get(to_v6_loopback))
+            .route("/to-mapped-loopback.iso", get(to_mapped_loopback))
+            .route("/to-other-loopback.iso", get(to_other_loopback))
+            .route("/to-allowed.iso", get(to_allowed));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let task = tokio::spawn(async move {
@@ -565,6 +734,30 @@ mod tests {
             .into_response()
     }
 
+    fn redirect_to(location: String) -> Response {
+        (StatusCode::FOUND, [(LOCATION, location)]).into_response()
+    }
+
+    // Denied redirect targets use the discard port: if the redirect check
+    // ever regressed, the follow-up request would hit a closed local port and
+    // fail with a different error instead of contacting anything real.
+    async fn to_v6_loopback() -> Response {
+        redirect_to("http://[::1]:9/file.iso".to_string())
+    }
+
+    async fn to_mapped_loopback() -> Response {
+        redirect_to("http://[::ffff:127.0.0.1]:9/file.iso".to_string())
+    }
+
+    async fn to_other_loopback() -> Response {
+        redirect_to("http://127.0.0.2:9/file.iso".to_string())
+    }
+
+    async fn to_allowed(headers: HeaderMap) -> Response {
+        let host = headers.get(HOST).unwrap().to_str().unwrap().to_owned();
+        redirect_to(format!("http://{host}/file.iso"))
+    }
+
     struct Harness {
         dir: TestDir,
         manager: Arc<MediaDownloadManager>,
@@ -574,11 +767,23 @@ mod tests {
 
     impl Harness {
         fn new(max: u64) -> Self {
+            Self::with_manager(
+                max,
+                MediaDownloadManager::new_allowing_test_loopback().unwrap(),
+            )
+        }
+
+        /// Uses the production constructor, which has no loopback allowance.
+        fn production(max: u64) -> Self {
+            Self::with_manager(max, MediaDownloadManager::new().unwrap())
+        }
+
+        fn with_manager(max: u64, manager: MediaDownloadManager) -> Self {
             let dir = TestDir::new();
             let config = test_config(dir.path(), max);
             Self {
                 dir,
-                manager: Arc::new(MediaDownloadManager::new().unwrap()),
+                manager: Arc::new(manager),
                 slot: Arc::new(AsyncMutex::new(())),
                 config: Arc::new(RwLock::new(config)),
             }
@@ -817,5 +1022,203 @@ mod tests {
             .wait_for(&status.id, &[DownloadState::Cancelled])
             .await;
         assert!(harness.slot.clone().try_lock_owned().is_ok());
+    }
+
+    const DENIED_LITERAL_URLS: &[&str] = &[
+        "http://127.0.0.1/image.iso",
+        "http://127.8.9.10:8080/image.iso",
+        "http://2130706433/image.iso",
+        "https://0x7f.1/image.iso",
+        "http://0.0.0.0/image.iso",
+        "http://0.1.2.3/image.iso",
+        "http://169.254.169.254/latest/image.iso",
+        "http://224.0.0.1/image.iso",
+        "http://239.255.255.250/image.iso",
+        "http://255.255.255.255/image.iso",
+        "http://[::1]/image.iso",
+        "http://[::]/image.iso",
+        "http://[fe80::1]/image.iso",
+        "http://[febf::1]/image.iso",
+        "http://[ff02::1]/image.iso",
+        "http://[::ffff:127.0.0.1]/image.iso",
+        "http://[::ffff:169.254.169.254]/image.iso",
+        "http://[::ffff:0.0.0.0]/image.iso",
+    ];
+
+    #[tokio::test]
+    async fn production_rejects_denied_ip_literals_before_starting() {
+        let harness = Harness::production(1024);
+        for url in DENIED_LITERAL_URLS {
+            let error = harness
+                .start(url.to_string(), None, None)
+                .await
+                .unwrap_err();
+            assert_eq!(error.status, StatusCode::UNPROCESSABLE_ENTITY, "{url}");
+            assert_eq!(error.message, DOWNLOAD_TARGET_DENIED_MESSAGE, "{url}");
+        }
+        assert!(harness.manager.status(None).is_err());
+        assert!(harness.slot.try_lock().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_loopback_allowance_covers_only_127_0_0_1() {
+        let harness = Harness::new(1024);
+        for url in DENIED_LITERAL_URLS.iter().filter(|url| {
+            // Decimal and hex forms normalize to 127.0.0.1 and are allowed here.
+            reqwest::Url::parse(url).unwrap().host_str() != Some("127.0.0.1")
+        }) {
+            let error = harness
+                .start(url.to_string(), None, None)
+                .await
+                .unwrap_err();
+            assert_eq!(error.message, DOWNLOAD_TARGET_DENIED_MESSAGE, "{url}");
+        }
+    }
+
+    #[tokio::test]
+    async fn redirect_to_a_denied_literal_fails_without_publishing() {
+        let server = spawn_server().await;
+        for path in [
+            "to-v6-loopback.iso",
+            "to-mapped-loopback.iso",
+            "to-other-loopback.iso",
+        ] {
+            let harness = Harness::new(1024);
+            let url = format!("http://{}/{path}", server.address);
+            let status = harness.start(url, None, None).await.unwrap();
+            let finished = harness
+                .wait_for(&status.id, &[DownloadState::Done, DownloadState::Failed])
+                .await;
+            assert_eq!(finished.state, DownloadState::Failed, "{path}");
+            assert_eq!(finished.code, Some(422), "{path}");
+            assert_eq!(
+                finished.error.as_deref(),
+                Some(DOWNLOAD_TARGET_DENIED_MESSAGE),
+                "{path}"
+            );
+            assert!(!harness.dir.path().join(path).exists());
+            assert!(harness.partials().is_empty());
+        }
+
+        // Redirects to an allowed target keep working.
+        let harness = Harness::new(1024);
+        let url = format!("http://{}/to-allowed.iso", server.address);
+        let status = harness.start(url, None, None).await.unwrap();
+        let finished = harness
+            .wait_for(&status.id, &[DownloadState::Done, DownloadState::Failed])
+            .await;
+        assert_eq!(finished.state, DownloadState::Done, "{:?}", finished.error);
+        assert_eq!(
+            std::fs::read(harness.dir.path().join("to-allowed.iso")).unwrap(),
+            b"wingman image contents"
+        );
+    }
+
+    #[tokio::test]
+    async fn production_refuses_a_hostname_resolving_to_loopback() {
+        // `localhost` passes the URL check (it is not an IP literal) and must
+        // be stopped by the resolver, even though a server is listening.
+        let server = spawn_server().await;
+        let harness = Harness::production(1024);
+        let url = format!("http://localhost:{}/file.iso", server.address.port());
+        let status = harness.start(url, None, None).await.unwrap();
+        let finished = harness
+            .wait_for(&status.id, &[DownloadState::Done, DownloadState::Failed])
+            .await;
+        assert_eq!(finished.state, DownloadState::Failed);
+        assert_eq!(finished.code, Some(422));
+        assert_eq!(
+            finished.error.as_deref(),
+            Some(DOWNLOAD_TARGET_DENIED_MESSAGE)
+        );
+        assert!(!harness.dir.path().join("file.iso").exists());
+        assert!(harness.partials().is_empty());
+        assert!(harness.slot.try_lock().is_ok());
+    }
+
+    #[tokio::test]
+    async fn production_resolver_rejects_localhost_directly() {
+        use reqwest::dns::Resolve as _;
+        let resolver = FilteringResolver {
+            policy: TargetPolicy::default(),
+        };
+        let name: reqwest::dns::Name = "localhost".parse().unwrap();
+        let error = match resolver.resolve(name).await {
+            Ok(addrs) => panic!("localhost resolved to {:?}", addrs.collect::<Vec<_>>()),
+            Err(error) => error,
+        };
+        assert!(error.is::<DeniedTarget>(), "{error}");
+    }
+
+    #[test]
+    fn private_lan_and_public_addresses_pass_the_policy() {
+        let policy = TargetPolicy::default();
+        for ip in [
+            "10.0.0.5",
+            "172.16.4.2",
+            "172.31.255.254",
+            "192.168.1.20",
+            "100.64.0.1",
+            "8.8.8.8",
+            "169.253.255.255",
+            "169.255.0.1",
+            "fd12:3456:789a::1",
+            "fc00::1",
+            "2001:db8::1",
+            "fec0::1",
+            "::ffff:192.168.1.20",
+        ] {
+            assert!(policy.allows(ip.parse().unwrap()), "{ip}");
+        }
+        for url in [
+            "http://192.168.1.20/image.iso",
+            "http://[fd00::20]:8080/image.iso",
+            "https://nas.local/image.iso",
+        ] {
+            assert!(
+                policy.allows_url(&reqwest::Url::parse(url).unwrap()),
+                "{url}"
+            );
+        }
+        for url in DENIED_LITERAL_URLS {
+            assert!(
+                !policy.allows_url(&reqwest::Url::parse(url).unwrap()),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolved_addresses_are_filtered_and_all_denied_is_an_error() {
+        let policy = TargetPolicy::default();
+        let mixed: Vec<SocketAddr> = vec![
+            "127.0.0.1:0".parse().unwrap(),
+            "192.168.1.2:0".parse().unwrap(),
+            "[::1]:0".parse().unwrap(),
+            "[fe80::1]:0".parse().unwrap(),
+            "[fd00::2]:0".parse().unwrap(),
+        ];
+        assert_eq!(
+            filter_resolved(mixed, policy).unwrap(),
+            vec![
+                "192.168.1.2:0".parse::<SocketAddr>().unwrap(),
+                "[fd00::2]:0".parse().unwrap(),
+            ]
+        );
+        let denied: Vec<SocketAddr> = vec![
+            "127.0.0.1:0".parse().unwrap(),
+            "[::ffff:127.0.0.1]:0".parse().unwrap(),
+            "169.254.169.254:0".parse().unwrap(),
+        ];
+        assert!(
+            filter_resolved(denied, policy)
+                .unwrap_err()
+                .is::<DeniedTarget>()
+        );
+        assert!(
+            !filter_resolved(Vec::new(), policy)
+                .unwrap_err()
+                .is::<DeniedTarget>()
+        );
     }
 }

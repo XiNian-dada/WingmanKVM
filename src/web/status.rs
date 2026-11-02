@@ -65,7 +65,8 @@ pub(super) async fn status(
         },
         "system": system,
         "runtime": state.metrics.snapshot(),
-        "notifications": { "dropped": state.notifier.dropped() },
+        "notifications": notifications_status(&state.notifier),
+        "audit": { "write_failures": state.audit.write_failures() },
         "client": {
             "ip": client.ip.to_string(),
             "port": client.port,
@@ -73,6 +74,15 @@ pub(super) async fn status(
             "proxy_protocol": config.server.proxy_protocol,
         },
     }))))
+}
+
+/// Queue drops plus per-channel delivery counters and the last error, so a
+/// revoked token shows up in the interface instead of only in the journal.
+fn notifications_status(notifier: &crate::notify::Notifier) -> serde_json::Value {
+    json!({
+        "dropped": notifier.dropped(),
+        "channels": notifier.health(),
+    })
 }
 
 #[allow(dead_code)]
@@ -161,6 +171,59 @@ mod tests {
         let gpio = capabilities(&config);
         assert!(gpio.gpio_reset);
         assert!(gpio.gpio_power_led);
+    }
+
+    #[tokio::test]
+    async fn status_reports_notification_delivery_failures_without_the_url() {
+        use axum::{Router, http::StatusCode, routing::post};
+
+        // A webhook endpoint whose credential was revoked.
+        let app = Router::new().route("/{*path}", post(|| async { StatusCode::UNAUTHORIZED }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let directory = std::env::temp_dir().join(format!(
+            "wingmankvm-status-notify-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut config = Config::default();
+        config.notifications.webhook.enabled = true;
+        config.notifications.webhook.url = Some(format!("http://{address}/hook/revoked-secret"));
+        let state = super::super::config_api::tests::test_state(
+            config.clone(),
+            directory.join("config.json"),
+        );
+        state.notifier.update_config(config.notifications.clone());
+        let _ = state
+            .notifier
+            .send_test(crate::notify::Channel::Webhook)
+            .await
+            .unwrap_err();
+
+        let connection = ClientConnection {
+            transport_peer: None,
+            client_addr: "127.0.0.1:50000".parse().unwrap(),
+        };
+        let response = status(State(state), ConnectInfo(connection), HeaderMap::new())
+            .await
+            .unwrap()
+            .into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let webhook = &value["notifications"]["channels"]["webhook"];
+        assert_eq!(webhook["failed"], 1, "{value}");
+        assert_eq!(webhook["sent"], 0);
+        assert!(webhook["last_error"].as_str().unwrap().contains("HTTP 401"), "{webhook}");
+        assert!(webhook["last_error_unix"].as_u64().is_some());
+        assert_eq!(value["notifications"]["channels"]["telegram"]["failed"], 0);
+        assert_eq!(value["notifications"]["dropped"], 0);
+        assert!(!text.contains("revoked-secret") && !text.contains("/hook"), "{text}");
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

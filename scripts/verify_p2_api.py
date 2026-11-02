@@ -12,7 +12,8 @@ from verify_p1_api import Runner  # noqa: E402
 NAMES = (
     "invalid_server_listener_rejected",
     "nonvideo_changes_do_not_probe",
-    "real_video_change_reprobes",
+    "jpeg_quality_change_does_not_probe",
+    "encoder_change_reprobes",
 )
 
 
@@ -192,20 +193,21 @@ class P2Runner(Runner):
             failures=failures,
         )
 
-    def check_real_video_change(self):
+    def check_jpeg_quality_change(self):
         if not self.cookie:
-            self.check("real_video_change_reprobes", "blocked", reason="no session")
+            self.check("jpeg_quality_change_does_not_probe", "blocked", reason="no session")
             return
         status, live, _ = self.snapshot()
         if status != 200 or not isinstance(live, dict):
             self.check(
-                "real_video_change_reprobes",
+                "jpeg_quality_change_does_not_probe",
                 "fail",
                 reason="could not read baseline configuration",
                 live_status=status,
             )
             return
 
+        # JPEG quality applies live and must not re-probe the H.264 encoder.
         current_quality = live.get("video", {}).get("jpeg_quality", 80)
         next_quality = 70 if current_quality != 70 else 71
         baseline_probes = self.probe_count()
@@ -227,20 +229,72 @@ class P2Runner(Runner):
         )
         passed = (
             status == 200
-            and after_probes == baseline_probes + 1
+            and after_probes == baseline_probes
             and live_status == 200
             and applied_quality == next_quality
         )
         self.check(
-            "real_video_change_reprobes",
+            "jpeg_quality_change_does_not_probe",
+            "pass" if passed else "fail",
+            http_status=status,
+            baseline_probes=baseline_probes,
+            probes_after=after_probes,
+            expected_probes=baseline_probes,
+            live_status=live_status,
+            applied_quality=applied_quality,
+            expected_quality=next_quality,
+        )
+
+    def check_encoder_change(self):
+        if not self.cookie:
+            self.check("encoder_change_reprobes", "blocked", reason="no session")
+            return
+        status, live, _ = self.snapshot()
+        if status != 200 or not isinstance(live, dict):
+            self.check(
+                "encoder_change_reprobes",
+                "fail",
+                reason="could not read baseline configuration",
+                live_status=status,
+            )
+            return
+
+        # An encoder setting still requires a fresh probe and session restart.
+        current_bitrate = live.get("video", {}).get("h264", {}).get("bitrate_kbps")
+        next_bitrate = 2_000 if current_bitrate != 2_000 else 2_001
+        baseline_probes = self.probe_count()
+        try:
+            status, _, _ = self.req(
+                "POST",
+                "/api/config",
+                body={"video": {"h264": {"bitrate_kbps": next_bitrate}}},
+                cookie=self.cookie,
+            )
+        except (OSError, ValueError) as error:
+            status = f"{type(error).__name__}"
+        after_probes = self.probe_count()
+        live_status, applied, _ = self.snapshot()
+        applied_bitrate = (
+            applied.get("video", {}).get("h264", {}).get("bitrate_kbps")
+            if isinstance(applied, dict)
+            else None
+        )
+        passed = (
+            status == 200
+            and after_probes == baseline_probes + 1
+            and live_status == 200
+            and applied_bitrate == next_bitrate
+        )
+        self.check(
+            "encoder_change_reprobes",
             "pass" if passed else "fail",
             http_status=status,
             baseline_probes=baseline_probes,
             probes_after=after_probes,
             expected_probes=baseline_probes + 1,
             live_status=live_status,
-            applied_quality=applied_quality,
-            expected_quality=next_quality,
+            applied_bitrate=applied_bitrate,
+            expected_bitrate=next_bitrate,
         )
 
     def run(self):
@@ -267,7 +321,8 @@ class P2Runner(Runner):
             return self.report()
         self.run_check("invalid_server_listener_rejected", self.check_invalid_server_listener)
         self.run_check("nonvideo_changes_do_not_probe", self.check_nonvideo_changes)
-        self.run_check("real_video_change_reprobes", self.check_real_video_change)
+        self.run_check("jpeg_quality_change_does_not_probe", self.check_jpeg_quality_change)
+        self.run_check("encoder_change_reprobes", self.check_encoder_change)
         return self.report()
 
     def report(self):
