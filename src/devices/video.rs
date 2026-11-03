@@ -744,16 +744,86 @@ fn encode_frame(source: &[u8], config: &VideoConfig) -> Result<Bytes, String> {
 fn transcode_jpeg(source: &[u8], quality: u8) -> Result<Bytes, String> {
     let image = image::load_from_memory_with_format(source, image::ImageFormat::Jpeg)
         .map_err(|error| error.to_string())?;
+    let width = u16::try_from(image.width()).map_err(|error| error.to_string())?;
+    let height = u16::try_from(image.height()).map_err(|error| error.to_string())?;
     let mut output = Vec::with_capacity(source.len());
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, quality.clamp(1, 100))
-        .encode_image(&image)
-        .map_err(|error| error.to_string())?;
+    let mut encoder = jpeg_encoder::Encoder::new(&mut output, quality.clamp(1, 100));
+    // Keep the existing encoder's 4:4:4 chroma precision for colored text.
+    // jpeg-encoder otherwise defaults to 4:2:0 at most quality settings.
+    encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::F_1_1);
+    match image {
+        image::DynamicImage::ImageLuma8(gray) => {
+            encoder.encode(gray.as_raw(), width, height, jpeg_encoder::ColorType::Luma)
+        }
+        other => encoder.encode(
+            other.into_rgb8().as_raw(),
+            width,
+            height,
+            jpeg_encoder::ColorType::Rgb,
+        ),
+    }
+    .map_err(|error| error.to_string())?;
     Ok(Bytes::from(output))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn faster_jpeg_encoder_preserves_dimensions_grayscale_and_text_colors() {
+        for image in [
+            image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(31, 17, |x, y| {
+                image::Rgb([(x * 8) as u8, (y * 15) as u8, (x + y) as u8])
+            })),
+            image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(31, 17, |x, _| {
+                if x % 2 == 0 {
+                    image::Rgb([255, 0, 0])
+                } else {
+                    image::Rgb([0, 0, 255])
+                }
+            })),
+            image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(31, 17, |x, y| {
+                image::Luma([(x * 5 + y * 3) as u8])
+            })),
+        ] {
+            let mut source = Vec::new();
+            let mut encoder = image::codecs::jpeg::JpegEncoder::new(&mut source);
+            match &image {
+                image::DynamicImage::ImageLuma8(gray) => encoder.encode_image(gray).unwrap(),
+                other => encoder.encode_image(other).unwrap(),
+            }
+            let decoded = image::load_from_memory(&source).unwrap();
+            let original_pixels = decoded.to_rgb8();
+            for quality in [1, 50, 81, 100] {
+                let mut reference = Vec::new();
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut reference, quality)
+                    .encode_image(&decoded)
+                    .unwrap();
+                let actual = transcode_jpeg(&source, quality).unwrap();
+                let actual = image::load_from_memory(&actual).unwrap();
+                let reference = image::load_from_memory(&reference).unwrap();
+                assert_eq!((actual.width(), actual.height()), (31, 17));
+                assert_eq!(actual.color(), decoded.color());
+                let mse = |candidate: &image::DynamicImage| -> f64 {
+                    original_pixels
+                        .as_raw()
+                        .iter()
+                        .zip(candidate.to_rgb8().as_raw())
+                        .map(|(&a, &b)| (f64::from(a) - f64::from(b)).powi(2))
+                        .sum::<f64>()
+                        / original_pixels.as_raw().len() as f64
+                };
+                // DCT rounding differs between encoders, especially at quality
+                // 1. Allow under half a dB of extra error, plus one intensity
+                // level for nearly lossless images. 4:2:0 fails the text case.
+                assert!(
+                    mse(&actual) <= mse(&reference) * 1.10 + 1.0,
+                    "quality {quality}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn frame_selection_spreads_drops_instead_of_bursting() {
