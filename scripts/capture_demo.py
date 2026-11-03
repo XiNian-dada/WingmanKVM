@@ -17,7 +17,7 @@ and the frames are assembled into looping animated WebPs with img2webp (libwebp)
 
     python3 scripts/capture_demo.py [--demo video] [--lang zh-CN] [--output-dir docs/images]
 """
-import argparse, hashlib, json, math, os, shutil, subprocess, sys, tempfile
+import argparse, hashlib, json, math, os, shutil, subprocess, sys, tempfile, urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from playwright.sync_api import sync_playwright  # noqa: E402
@@ -267,7 +267,8 @@ def record_setup(browser, port, lang, frame_dir):
     current_bootstrap = dict(F.BOOTSTRAP_SETUP)
 
     def api_route_wrapper(route):
-        if "/api/setup" in route.request.url and route.request.method == "POST":
+        path = urllib.parse.urlsplit(route.request.url).path
+        if path == "/api/setup" and route.request.method == "POST":
             current_bootstrap.clear()
             current_bootstrap.update(F.BOOTSTRAP_CONSOLE)
             route.fulfill(status=200, content_type="application/json", body='{"ok": true}')
@@ -328,7 +329,10 @@ def record_setup(browser, port, lang, frame_dir):
         rec.chapter("初始化向导 · 管理员账号设置", "Setup wizard · Admin account configuration")
         page.goto(f"http://127.0.0.1:{port}/#setup=quick-start-token", wait_until="load")
         page.wait_for_selector("#setup-form:not(.hidden)")
-        page.add_style_tag(content="#toast { visibility: hidden !important; }")
+        page.add_style_tag(content="#toast { visibility: hidden !important; } "
+                                   ".auth-panel { padding: 12px 36px !important; } "
+                                   ".auth-story { padding: 20px 32px !important; } "
+                                   ".auth-card .form-actions { margin-top: 14px !important; }")
         page.evaluate(CURSOR_JS)
         rec.pos = (640, 360)
         rec._cursor()
@@ -343,14 +347,14 @@ def record_setup(browser, port, lang, frame_dir):
 
         rec.click('#setup-form [data-setup-next]', settle=400)
         page.wait_for_selector('[data-setup-step="1"].active')
-        page.wait_for_selector('#setup-device-results .capability')
+        page.wait_for_selector('#setup-device-results .capability .status-dot.online')
 
         # ----------------------------------------------------------------------
         # Stage 3: Automatic Hardware Detection
         # ----------------------------------------------------------------------
         rec.chapter("自动硬件检测 · 采集卡与 USB HID", "Automatic hardware detection · Video & USB HID")
         rec.move_to('#setup-device-results .capability')
-        rec.hold(1300)
+        rec.hold(1400)
 
         # ----------------------------------------------------------------------
         # Stage 4: Enter Console
