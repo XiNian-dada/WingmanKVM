@@ -207,7 +207,7 @@ python3 scripts/capture_demo.py --demo video --lang en --output-dir "$SCRATCH/de
   call, the input WebSocket and `/video_feed` are mocked by `scripts/capture_fixtures.py`, and
   the picture is a synthetic terminal frame. No device is contacted.
 - Animations are split into modular, high-FPS focused categories:
-  - **Setup wizard (`setup`)**: Admin account configuration → Automatic detection of video and USB HID devices → Wiring and permission guide.
+  - **Complete installation & setup (`setup`)**: One-line terminal installer output & service start → Click setup link to open wizard → Admin account setup → Automatic hardware detection → Enter live console with working remote screen.
   - **Display modes (`video`)**: Fit / 1:1 / Fill cycle → Quality overlay (resolution, 60fps & WebRTC/MJPEG stats).
   - **Keyboard and input (`input`)**: Virtual keyboard & paste as typing (with typing progress) → Key combinations, macro management & replay.
   - **Terminal and operations (`system`)**: Web terminal (uptime execution, persistent session on tab switch) → Virtual media ISO list → Device diagnostics → Host performance popover → Dark theme.

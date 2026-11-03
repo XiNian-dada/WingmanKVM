@@ -191,54 +191,181 @@ class Recorder:
 
 
 # ==============================================================================
-# Category 1: Setup Wizard & Quick Start
+# Category 1: Complete Installation Flow (Terminal -> Setup -> Live Console)
 # ==============================================================================
+TERMINAL_HTML = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #090d16; color: #c9d1d9;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+    width: 1280px; height: 800px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .window {
+    width: 1060px; height: 620px;
+    background: #0d1117; border-radius: 12px;
+    border: 1px solid #30363d;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.7);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .titlebar {
+    height: 38px; background: #161b22;
+    border-bottom: 1px solid #30363d;
+    display: flex; align-items: center; padding: 0 16px; gap: 8px;
+  }
+  .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+  .dot-red { background: #ff5f56; }
+  .dot-yellow { background: #ffbd2e; }
+  .dot-green { background: #27c93f; }
+  .title { flex: 1; text-align: center; font-size: 13px; color: #8b949e; margin-right: 48px; }
+  .terminal {
+    flex: 1; padding: 24px;
+    font-family: Menlo, Monaco, "DejaVu Sans Mono", monospace;
+    font-size: 14px; line-height: 1.6;
+  }
+  .prompt { color: #3fb950; font-weight: 600; }
+  .path { color: #58a6ff; }
+  .ok { color: #3fb950; font-weight: 600; }
+  .box-wrap {
+    margin-top: 16px; padding: 14px 18px;
+    background: rgba(56, 139, 253, 0.08);
+    border: 1px solid rgba(56, 139, 253, 0.35);
+    border-radius: 8px;
+  }
+  .link { color: #58a6ff; text-decoration: underline; font-weight: 600; cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="window">
+  <div class="titlebar">
+    <span class="dot dot-red"></span><span class="dot dot-yellow"></span><span class="dot dot-green"></span>
+    <span class="title">ubuntu@firefly-rk3399: ~ (ssh)</span>
+  </div>
+  <div class="terminal">
+    <p><span class="prompt">ubuntu@firefly-rk3399</span>:<span class="path">~</span>$ <span id="cmd"></span><span id="term-cursor" style="display:inline-block;width:8px;height:16px;background:#58a6ff;vertical-align:middle;"></span></p>
+    <div id="output" style="display:none;">
+      <p style="color:#8b949e; margin-top: 8px;">wingmankvm-get: downloading release v2.0.0-rc.1 for aarch64...</p>
+      <p style="color:#8b949e;">wingmankvm-get: verified SHA256 checksum for release archive <span class="ok">[OK]</span></p>
+      <p style="color:#8b949e;">wingmankvm: configuring UVC video & USB OTG gadgets... <span class="ok">[OK]</span></p>
+      <p style="color:#8b949e;">wingmankvm: service installed and active (running) <span class="ok">[OK]</span></p>
+      <div class="box-wrap">
+        <p style="color:#fff; font-weight: 500;">{msg}</p>
+        <p style="margin-top: 6px;"><span id="setup-link" class="link">http://192.168.1.100:8080/#setup=quick-start-token</span></p>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>"""
+
+
 def record_setup(browser, port, lang, frame_dir):
-    context, page, _ = F.new_page(
-        browser, port, lang=lang, viewport=(1280, 820), scale=1, setup=True,
-        path="/#setup=quick-start-token"
+    current_bootstrap = dict(F.BOOTSTRAP_SETUP)
+
+    def api_route_wrapper(route):
+        if "/api/setup" in route.request.url and route.request.method == "POST":
+            current_bootstrap.clear()
+            current_bootstrap.update(F.BOOTSTRAP_CONSOLE)
+            route.fulfill(status=200, content_type="application/json", body='{"ok": true}')
+            return
+        F.api_route(route, current_bootstrap)
+
+    context = browser.new_context(
+        viewport={"width": VIEWPORT[0], "height": VIEWPORT[1]},
+        device_scale_factor=1,
+        locale=F.LOCALES.get(lang, lang),
+        timezone_id=F.TIMEZONE,
+        color_scheme="light",
     )
+    context.add_init_script(F.INIT_SCRIPT + "\n" + "".join(
+        f"localStorage.setItem({json.dumps(k)}, {json.dumps(v)});\n" for k, v in {
+            "wingman_lang": lang,
+            "wingman_theme": "light",
+            "wingman_setting_render_pixelated": "false",
+        }.items()
+    ))
+    page = context.new_page()
+    page.clock.set_fixed_time(F.FIXED_TIME)
+    page.route("**/api/**", api_route_wrapper)
+    target = F.Target(F.render_screens(browser))
+    target.attach(page)
+
     try:
-        page.add_style_tag(content="#toast { visibility: hidden !important; }")
-        rec = Recorder(page, frame_dir, lang, initial_pos=(640, 360))
-        rec.chapter("初始化向导 · 管理员账号设置", "Setup wizard · Account configuration")
+        rec = Recorder(page, frame_dir, lang, initial_pos=(640, 480))
+
+        # ----------------------------------------------------------------------
+        # Stage 1: Terminal Installation
+        # ----------------------------------------------------------------------
+        rec.chapter("一键命令行安装 · ARM 开发板", "One-line installer · ARM development board")
+        box_msg = "🎉 WingmanKVM 安装成功！请在浏览器中打开初始化链接：" if lang == "zh-CN" else "🎉 WingmanKVM installed! Open setup link in browser:"
+        page.set_content(TERMINAL_HTML.replace("{msg}", box_msg))
+        page.evaluate(CURSOR_JS)
+        rec.pos = (640, 480)
+        rec._cursor()
+        rec.hold(700)
+
+        cmd_text = "curl -fsSL https://.../get.sh | sudo bash -s -- --install-deps"
+        for end in range(4, len(cmd_text) + 4, 4):
+            chunk = cmd_text[:end]
+            page.evaluate("chunk => document.querySelector('#cmd').textContent = chunk", chunk)
+            rec.shot(40)
+        rec.hold(400)
+
+        # Output results with OK indicators and setup link
+        page.evaluate("() => { document.querySelector('#output').style.display = 'block'; document.querySelector('#term-cursor').style.display = 'none'; }")
         rec.hold(900)
 
-        # Fill username
-        rec.type_input('#setup-form input[name="username"]', "admin", chunk_size=2, step_ms=50)
-        rec.hold(300)
+        # Click the link
+        rec.click("#setup-link", settle=300)
 
-        # Fill password
-        rec.type_input('#setup-form input[name="password"]', "Admin123456!@#", chunk_size=3, step_ms=45)
-        rec.hold(300)
-
-        # Fill confirm password
-        rec.type_input('#setup-form input[name="confirm_password"]', "Admin123456!@#", chunk_size=3, step_ms=45)
+        # ----------------------------------------------------------------------
+        # Stage 2: Browser Setup Page
+        # ----------------------------------------------------------------------
+        rec.chapter("初始化向导 · 管理员账号设置", "Setup wizard · Admin account configuration")
+        page.goto(f"http://127.0.0.1:{port}/#setup=quick-start-token", wait_until="load")
+        page.wait_for_selector("#setup-form:not(.hidden)")
+        page.add_style_tag(content="#toast { visibility: hidden !important; }")
+        page.evaluate(CURSOR_JS)
+        rec.pos = (640, 360)
+        rec._cursor()
         rec.hold(600)
 
-        # Click Next (继续)
-        rec.click('#setup-form [data-setup-next]', settle=500)
+        rec.type_input('#setup-form input[name="username"]', "admin", chunk_size=2, step_ms=45)
+        rec.hold(250)
+        rec.type_input('#setup-form input[name="password"]', "Admin123456!@#", chunk_size=3, step_ms=40)
+        rec.hold(250)
+        rec.type_input('#setup-form input[name="confirm_password"]', "Admin123456!@#", chunk_size=3, step_ms=40)
+        rec.hold(500)
+
+        rec.click('#setup-form [data-setup-next]', settle=400)
         page.wait_for_selector('[data-setup-step="1"].active')
         page.wait_for_selector('#setup-device-results .capability')
 
-        # Step 2: Automatic hardware detection
+        # ----------------------------------------------------------------------
+        # Stage 3: Automatic Hardware Detection
+        # ----------------------------------------------------------------------
         rec.chapter("自动硬件检测 · 采集卡与 USB HID", "Automatic hardware detection · Video & USB HID")
-        rec.hold(1400)
+        rec.move_to('#setup-device-results .capability')
+        rec.hold(1300)
 
-        # Click wiring guide
-        rec.click('#setup-form [data-guide="video"]', settle=400)
-        rec.raise_cursor()
-        page.wait_for_selector("#auth-guide:not(.hidden)")
-        rec.chapter("设备接线与权限指引", "Device wiring & permission guide")
-        rec.hold(1500)
+        # ----------------------------------------------------------------------
+        # Stage 4: Enter Console
+        # ----------------------------------------------------------------------
+        rec.chapter("进入控制台 · 远程画面与键鼠控制", "Enter console · Remote display & input control")
+        rec.click('#setup-submit', settle=300)
+        page.wait_for_selector('#app:not(.hidden)', timeout=8000)
+        page.wait_for_function("() => document.querySelector('#status-dot')?.classList.contains('online')", timeout=8000)
 
-        # Close guide dialog
-        rec.click("#auth-guide-back", settle=400)
-        page.wait_for_selector("#auth-guide", state="hidden")
-        rec.hold(800)
+        # Focus remote console display
+        rec.move_to('#video-feed', anchor=(0.5, 0.45))
+        rec.hold(1600)
 
-        # Smoothly move back towards center for clean loop
-        rec.move_to((640, 360))
+        # Smooth return to center for clean loop
+        rec.move_to((640, 420))
         rec.hold(600)
 
         F.assert_clean(page, f"demo setup {lang}")

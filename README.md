@@ -60,7 +60,7 @@ WingmanKVM 是一个运行在 ARM 开发板上的网页 KVM。把被控机的 HD
 
 > 目前只有预发布版本 `v2.0.0-rc.1`，正式版发布前请在第 1 步的命令末尾加上 `--version v2.0.0-rc.1`。
 
-![WingmanKVM 初始化安装与设备检测向导演示](docs/images/demo-setup-zh.webp)
+![WingmanKVM 完整安装流程与初始化向导演示](docs/images/demo-setup-zh.webp)
 
 1. 在 KVM 主机上运行安装命令（自动识别架构、校验并安装，`--install-deps` 会补齐缺少的运行依赖）：
 

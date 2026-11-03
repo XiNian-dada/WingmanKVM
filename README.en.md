@@ -60,7 +60,7 @@ Browser                     <──  LAN  ────────────�
 
 > Only the `v2.0.0-rc.1` pre-release exists for now. Until the stable release, append `--version v2.0.0-rc.1` to the command in step 1.
 
-![WingmanKVM setup wizard and device detection demo](docs/images/demo-setup-en.webp)
+![WingmanKVM complete installation and setup wizard demo](docs/images/demo-setup-en.webp)
 
 1. On the KVM host, run the installer (it detects the architecture, verifies the download and installs; `--install-deps` adds missing runtime packages):
 
