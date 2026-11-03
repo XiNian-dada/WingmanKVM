@@ -359,6 +359,8 @@ pub(super) struct VideoPatch {
     pub(super) encoding: Option<VideoEncoding>,
     pub(super) jpeg_quality: Option<u8>,
     pub(super) jpeg_grayscale: Option<bool>,
+    pub(super) jpeg_backend: Option<config::JpegBackend>,
+    pub(super) jpeg_optimize_huffman: Option<bool>,
     pub(super) h264: Option<H264Patch>,
 }
 
@@ -644,6 +646,12 @@ pub(super) fn apply_video_patch(config: &mut config::VideoConfig, patch: VideoPa
     }
     if let Some(grayscale) = patch.jpeg_grayscale {
         config.jpeg_grayscale = grayscale;
+    }
+    if let Some(backend) = patch.jpeg_backend {
+        config.jpeg_backend = backend;
+    }
+    if let Some(optimize) = patch.jpeg_optimize_huffman {
+        config.jpeg_optimize_huffman = optimize;
     }
     if let Some(h264) = patch.h264 {
         if let Some(bitrate_kbps) = h264.bitrate_kbps {
@@ -1534,6 +1542,34 @@ pub(super) mod tests {
         apply_video_patch(&mut video, patch);
         assert!(video.h264.udp_bind_address.is_none());
         assert!(video.h264.public_udp_endpoint.is_none());
+    }
+
+    #[test]
+    fn jpeg_algorithm_patch_preserves_omitted_fields_and_rejects_unknown_choices() {
+        let mut video = config::VideoConfig::default();
+        apply_video_patch(
+            &mut video,
+            serde_json::from_value(json!({
+                "jpeg_backend":"coefficient","jpeg_grayscale":true,"jpeg_optimize_huffman":true
+            }))
+            .unwrap(),
+        );
+        apply_video_patch(
+            &mut video,
+            serde_json::from_value(json!({"jpeg_quality":60})).unwrap(),
+        );
+        assert_eq!(video.jpeg_backend, config::JpegBackend::Coefficient);
+        assert!(video.jpeg_grayscale && video.jpeg_optimize_huffman);
+        let saved = serde_json::to_value(&video).unwrap();
+        assert_eq!(
+            serde_json::from_value::<config::VideoConfig>(saved).unwrap(),
+            video
+        );
+        assert!(serde_json::from_value::<VideoPatch>(json!({"jpeg_backend":"unknown"})).is_err());
+        let legacy: config::VideoConfig =
+            serde_json::from_value(json!({"encoding":"transcode_jpeg"})).unwrap();
+        assert_eq!(legacy.jpeg_backend, config::JpegBackend::Screen);
+        assert!(!legacy.jpeg_grayscale && !legacy.jpeg_optimize_huffman);
     }
 
     #[test]

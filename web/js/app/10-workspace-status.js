@@ -212,7 +212,8 @@ function clampPercent(value) {
 // Service-side counters: version and uptime, live connections, and whether
 // keyboard/mouse writes are reaching the target (with the latest error).
 function renderRuntimeMetrics(runtime, webrtc) {
-  setText('#diag-version', `v${runtime.version} · ${formatUptime(runtime.uptime_seconds)}`);
+  const build = runtime.build ? ` · ${String(runtime.build).slice(0, 12)}` : '';
+  setText('#diag-version', `v${runtime.version}${build} · ${formatUptime(runtime.uptime_seconds)}`);
   setText('#diag-connections', `键鼠 ${runtime.input_sockets} · WebRTC ${webrtc?.sessions ?? 0}`);
   const hid = runtime.hid || {};
   let text = `成功 ${hid.ok ?? 0} · 失败 ${hid.failed ?? 0}`;

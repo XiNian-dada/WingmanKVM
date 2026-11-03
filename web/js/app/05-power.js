@@ -411,6 +411,8 @@ export function init() {
           encoding: value(f, 'encoding'),
           jpeg_quality: Number(value(f, 'jpeg_quality')),
           jpeg_grayscale: f.elements.jpeg_grayscale.checked,
+          jpeg_backend: value(f, 'jpeg_backend'),
+          jpeg_optimize_huffman: f.elements.jpeg_optimize_huffman.checked,
           h264: {
             bitrate_kbps: Number(value(f, 'h264_bitrate_kbps')),
             encoder: value(f, 'h264_encoder'),

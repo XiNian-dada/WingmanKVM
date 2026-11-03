@@ -158,7 +158,16 @@ static int wk_coefficient_encode(wk_context *ctx,int quality,int gray,int preser
             }
         }
     }
-    jpeg_write_coefficients(c,arrays);jpeg_finish_compress(c);jpeg_finish_decompress(d);
+    jpeg_write_coefficients(c,arrays);
+    if(preserve) {
+        for(jpeg_saved_marker_ptr marker=d->marker_list;marker;marker=marker->next) {
+            /* Keep orientation and color interpretation in preserve mode.
+             * A color ICC profile must not be attached to a grayscale image. */
+            if(gray&&marker->marker==JPEG_APP0+2)continue;
+            jpeg_write_marker(c,marker->marker,marker->data,marker->data_length);
+        }
+    }
+    jpeg_finish_compress(c);jpeg_finish_decompress(d);
     if(d->err->num_warnings)wk_fail(ctx,"Corrupt or truncated JPEG frame");
     return 1;
 }
@@ -189,7 +198,16 @@ int wk_jpeg_process(const unsigned char *input,size_t input_len,int quality,int 
     ctx->destination.pub.empty_output_buffer=wk_grow_destination;ctx->destination.pub.term_destination=wk_finish_destination;
     ctx->c.dest=&ctx->destination.pub;
     jpeg_mem_src(&ctx->d,input,(unsigned long)input_len);
+    if(mode==3) {
+        jpeg_save_markers(&ctx->d,JPEG_APP0+1,65535);
+        jpeg_save_markers(&ctx->d,JPEG_APP0+2,65535);
+    }
     if(jpeg_read_header(&ctx->d,TRUE)!=JPEG_HEADER_OK)wk_fail(ctx,"Incomplete JPEG header");
+    size_t marker_bytes=0;unsigned marker_count=0;
+    for(jpeg_saved_marker_ptr marker=ctx->d.marker_list;marker;marker=marker->next) {
+        marker_bytes+=marker->data_length;
+        if(++marker_count>128||marker_bytes>1024*1024)wk_fail(ctx,"JPEG metadata exceeds preserve limits");
+    }
     if(ctx->d.data_precision!=8||!ctx->d.image_width||!ctx->d.image_height||
        ctx->d.image_width>8192||ctx->d.image_height>8192||
        (uint64_t)ctx->d.image_width*ctx->d.image_height>WK_MAX_PIXELS)

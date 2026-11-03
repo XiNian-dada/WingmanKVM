@@ -7,6 +7,9 @@ Modes: standard accurate integer encoding, opt-in exact-flat encoding,
 coefficient-domain coarsening, and source-table preservation with optimized
 Huffman coding. Grayscale and optional entropy-table optimization are explicit
 options. Preserve mode always optimizes entropy tables and ignores quality.
+Preserve mode retains EXIF and ICC markers (up to 128 markers / 1 MiB);
+grayscale drops color ICC markers. Other modes remain capture-frame processors
+and do not preserve image metadata.
 
 Pixel encoders produce 4:4:4 color. Coefficient modes retain source sampling;
 grayscale retains luma only. Native grayscale uses JPEG luma, which can differ

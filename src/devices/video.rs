@@ -8,7 +8,7 @@ use bytes::Bytes;
 use serde::Serialize;
 use tokio::sync::watch;
 
-use crate::config::{VideoConfig, VideoEncoding};
+use crate::config::{JpegBackend, VideoConfig, VideoEncoding};
 
 /// A camera may legitimately deliver only one frame per second. Waiting five
 /// seconds for a valid JPEG therefore still tolerates a 1 fps source while
@@ -149,6 +149,8 @@ pub fn capture_change(previous: &VideoConfig, next: &VideoConfig) -> CaptureChan
     } else if previous.encoding != next.encoding
         || previous.jpeg_quality != next.jpeg_quality
         || previous.jpeg_grayscale != next.jpeg_grayscale
+        || previous.jpeg_backend != next.jpeg_backend
+        || previous.jpeg_optimize_huffman != next.jpeg_optimize_huffman
     {
         CaptureChange::Live
     } else {
@@ -739,46 +741,213 @@ fn looks_like_jpeg(bytes: &[u8]) -> bool {
 fn encode_frame(source: &[u8], config: &VideoConfig) -> Result<Bytes, String> {
     match config.encoding {
         VideoEncoding::MjpegPassthrough => Ok(Bytes::copy_from_slice(source)),
-        VideoEncoding::TranscodeJpeg => {
-            transcode_jpeg(source, config.jpeg_quality, config.jpeg_grayscale)
-        }
+        VideoEncoding::TranscodeJpeg => process_jpeg(source, config),
     }
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn transcode_jpeg(source: &[u8], quality: u8, grayscale: bool) -> Result<Bytes, String> {
-    let image = image::load_from_memory_with_format(source, image::ImageFormat::Jpeg)
+fn process_jpeg(source: &[u8], config: &VideoConfig) -> Result<Bytes, String> {
+    if matches!(
+        config.jpeg_backend,
+        JpegBackend::Compatible | JpegBackend::RustOptimized
+    ) {
+        return transcode_rust(
+            source,
+            config.jpeg_quality,
+            config.jpeg_grayscale,
+            config.jpeg_backend == JpegBackend::RustOptimized,
+            config.jpeg_optimize_huffman,
+        );
+    }
+    #[cfg(unix)]
+    {
+        use wingman_jpeg_native::{Mode, Options};
+        let mode = match config.jpeg_backend {
+            JpegBackend::Standard => Mode::Standard,
+            JpegBackend::Coefficient => Mode::Coefficient,
+            JpegBackend::Preserve => Mode::Preserve,
+            _ => Mode::Screen,
+        };
+        let mut output = Vec::new();
+        wingman_jpeg_native::transcode_into(
+            source,
+            Options {
+                quality: config.jpeg_quality,
+                grayscale: config.jpeg_grayscale,
+                mode,
+                optimize_huffman: config.jpeg_optimize_huffman,
+            },
+            &mut output,
+        )
         .map_err(|error| error.to_string())?;
+        Ok(Bytes::from(output))
+    }
+    #[cfg(not(unix))]
+    transcode_rust(
+        source,
+        config.jpeg_quality,
+        config.jpeg_grayscale,
+        true,
+        config.jpeg_optimize_huffman,
+    )
+}
+
+/// Bound both decoded geometry and encoded output on portable paths as well.
+fn transcode_rust(
+    source: &[u8],
+    quality: u8,
+    grayscale: bool,
+    optimized: bool,
+    huffman: bool,
+) -> Result<Bytes, String> {
+    use std::io::{Cursor, Write};
+    if source.len() > 32 * 1024 * 1024 {
+        return Err("JPEG 输入超过 32 MiB".into());
+    }
+    let reader = || image::ImageReader::with_format(Cursor::new(source), image::ImageFormat::Jpeg);
+    let (width, height) = reader().into_dimensions().map_err(|e| e.to_string())?;
+    if width == 0
+        || height == 0
+        || width > 8192
+        || height > 8192
+        || u64::from(width) * u64::from(height) > 33_177_600
+    {
+        return Err("JPEG 超出 8192 边长或 3300 万像素限制".into());
+    }
+    let mut decoder = reader();
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    decoder.limits(limits);
+    let image = decoder.decode().map_err(|e| e.to_string())?;
     let image = if grayscale {
         image::DynamicImage::ImageLuma8(image.into_luma8())
     } else {
         image
     };
-    let width = u16::try_from(image.width()).map_err(|error| error.to_string())?;
-    let height = u16::try_from(image.height()).map_err(|error| error.to_string())?;
-    let mut output = Vec::with_capacity(source.len());
-    let mut encoder = jpeg_encoder::Encoder::new(&mut output, quality.clamp(1, 100));
-    // Keep the existing encoder's 4:4:4 chroma precision for colored text.
-    // jpeg-encoder otherwise defaults to 4:2:0 at most quality settings.
-    encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::F_1_1);
-    match image {
-        image::DynamicImage::ImageLuma8(gray) => {
-            encoder.encode(gray.as_raw(), width, height, jpeg_encoder::ColorType::Luma)
+    struct Bounded<'a>(&'a mut Vec<u8>);
+    impl Write for Bounded<'_> {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            if data.len() > 64 * 1024 * 1024 - self.0.len() {
+                return Err(std::io::Error::other("JPEG 输出超过 64 MiB"));
+            }
+            self.0
+                .try_reserve(data.len())
+                .map_err(std::io::Error::other)?;
+            self.0.extend_from_slice(data);
+            Ok(data.len())
         }
-        other => encoder.encode(
-            other.into_rgb8().as_raw(),
-            width,
-            height,
-            jpeg_encoder::ColorType::Rgb,
-        ),
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
-    .map_err(|error| error.to_string())?;
+    let mut output = Vec::with_capacity(source.len());
+    let mut writer = Bounded(&mut output);
+    let width = width as u16;
+    let height = height as u16;
+    if optimized {
+        let mut encoder = wingman_jpeg_core::Encoder::new(&mut writer, quality);
+        encoder.set_sampling_factor(wingman_jpeg_core::SamplingFactor::F_1_1);
+        encoder.set_optimized_huffman_tables(huffman);
+        match image {
+            image::DynamicImage::ImageLuma8(gray) => encoder.encode(
+                gray.as_raw(),
+                width,
+                height,
+                wingman_jpeg_core::ColorType::Luma,
+            ),
+            other => encoder.encode(
+                other.into_rgb8().as_raw(),
+                width,
+                height,
+                wingman_jpeg_core::ColorType::Rgb,
+            ),
+        }
+        .map_err(|e| e.to_string())?;
+    } else {
+        let mut encoder = jpeg_encoder::Encoder::new(&mut writer, quality);
+        encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::F_1_1);
+        encoder.set_optimized_huffman_tables(huffman);
+        match image {
+            image::DynamicImage::ImageLuma8(gray) => {
+                encoder.encode(gray.as_raw(), width, height, jpeg_encoder::ColorType::Luma)
+            }
+            other => encoder.encode(
+                other.into_rgb8().as_raw(),
+                width,
+                height,
+                jpeg_encoder::ColorType::Rgb,
+            ),
+        }
+        .map_err(|e| e.to_string())?;
+    }
     Ok(Bytes::from(output))
+}
+
+#[cfg(test)]
+fn transcode_jpeg(source: &[u8], quality: u8, grayscale: bool) -> Result<Bytes, String> {
+    transcode_rust(source, quality, grayscale, false, false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jpeg_algorithm_and_entropy_changes_apply_without_reopening_capture() {
+        let base = VideoConfig::default();
+        for backend in [
+            JpegBackend::Standard,
+            JpegBackend::Compatible,
+            JpegBackend::RustOptimized,
+            JpegBackend::Coefficient,
+            JpegBackend::Preserve,
+        ] {
+            let mut next = base.clone();
+            next.jpeg_backend = backend;
+            assert_eq!(capture_change(&base, &next), CaptureChange::Live);
+            let mut current = base.clone();
+            assert!(apply_to_session(&mut current, next.clone()).is_none());
+            assert_eq!(current, next);
+        }
+        let mut next = base.clone();
+        next.jpeg_optimize_huffman = true;
+        assert_eq!(capture_change(&base, &next), CaptureChange::Live);
+    }
+
+    #[test]
+    fn every_jpeg_algorithm_supports_color_and_grayscale() {
+        let pixels = image::RgbImage::from_fn(37, 23, |x, y| {
+            image::Rgb([(x * 6) as u8, (y * 9) as u8, 120])
+        });
+        let mut source = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut source, 95)
+            .encode_image(&pixels)
+            .unwrap();
+        for backend in [
+            JpegBackend::Screen,
+            JpegBackend::Standard,
+            JpegBackend::Compatible,
+            JpegBackend::RustOptimized,
+            JpegBackend::Coefficient,
+            JpegBackend::Preserve,
+        ] {
+            for grayscale in [false, true] {
+                let config = VideoConfig {
+                    encoding: VideoEncoding::TranscodeJpeg,
+                    jpeg_backend: backend,
+                    jpeg_grayscale: grayscale,
+                    ..VideoConfig::default()
+                };
+                let output = encode_frame(&source, &config).unwrap();
+                let image = image::load_from_memory(&output).unwrap().into_rgb8();
+                assert_eq!(image.dimensions(), pixels.dimensions());
+                if grayscale {
+                    assert!(image.pixels().all(|p| p[0] == p[1] && p[1] == p[2]));
+                }
+            }
+        }
+    }
 
     #[test]
     fn grayscale_is_encoded_on_the_server_and_can_be_toggled_live() {

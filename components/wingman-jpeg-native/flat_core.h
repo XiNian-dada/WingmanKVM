@@ -5,7 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-#include <jpeglib.h>
+/* This header is copied beside the vendored jpeglib.h, never use host headers. */
+#include "jpeglib.h"
 #if defined(__aarch64__)
 #include <arm_neon.h>
 #endif

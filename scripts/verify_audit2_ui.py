@@ -161,10 +161,21 @@ def video_settings(browser, port, checks):
         page.locator('[data-panel-target="video"]').click()
         form = page.locator("#video-config")
         grayscale = form.locator('input[name="jpeg_grayscale"]')
+        backend = form.locator('select[name="jpeg_backend"]')
+        huffman = form.locator('input[name="jpeg_optimize_huffman"]')
+        quality = form.locator('input[name="jpeg_quality"]')
         check(checks, not grayscale.is_checked() and grayscale.is_disabled(),
               "grayscale_defaults_off_for_passthrough")
         form.locator('select[name="encoding"]').select_option("transcode_jpeg")
         check(checks, grayscale.is_enabled(), "grayscale_enabled_for_jpeg_compression")
+        check(checks, backend.is_enabled() and backend.input_value() == "screen",
+              "jpeg_backend_defaults_to_screen")
+        backend.select_option("preserve")
+        check(checks, quality.is_disabled() and not form.locator("#jpeg-huffman-control").is_visible()
+              and grayscale.is_enabled(), "preserve_disables_quality_and_keeps_grayscale")
+        backend.select_option("coefficient")
+        huffman.check()
+        check(checks, quality.is_enabled() and huffman.is_visible(), "coefficient_options_enabled")
         grayscale.check()
         form.locator('select[name="h264_bitrate_preset"]').select_option("12000")
         hidden = form.locator('input[name="h264_bitrate_kbps"]').input_value()
@@ -191,6 +202,9 @@ def video_settings(browser, port, checks):
 
         check(checks, posts[-1]["video"].get("jpeg_grayscale") is True,
               "grayscale_true_submitted", posts[-1]["video"])
+        check(checks, posts[-1]["video"].get("jpeg_backend") == "coefficient"
+              and posts[-1]["video"].get("jpeg_optimize_huffman") is True,
+              "jpeg_algorithm_options_submitted", posts[-1]["video"])
         page.reload(wait_until="load")
         page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
         classes = page.evaluate("() => document.querySelector('#console').className")
@@ -198,6 +212,8 @@ def video_settings(browser, port, checks):
               "display_preferences_survive_reload", classes)
         check(checks, grayscale.is_checked() and grayscale.is_enabled(),
               "grayscale_restored_from_saved_config")
+        check(checks, backend.input_value() == "coefficient" and huffman.is_checked(),
+              "jpeg_algorithm_options_survive_reload")
         page.locator('[data-panel-target="video"]').click()
         grayscale.uncheck()
         form.locator('button[type="submit"]').click()
@@ -206,6 +222,8 @@ def video_settings(browser, port, checks):
               "grayscale_false_submitted", posts[-1]["video"])
         form.locator('select[name="encoding"]').select_option("mjpeg_passthrough")
         check(checks, grayscale.is_disabled(), "grayscale_disabled_when_passthrough_selected")
+        check(checks, backend.is_disabled() and quality.is_disabled() and huffman.is_disabled(),
+              "jpeg_processing_options_disabled_for_passthrough")
     finally:
         context.close()
 

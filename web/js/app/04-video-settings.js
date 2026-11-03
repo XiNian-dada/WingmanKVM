@@ -141,7 +141,24 @@ function selectH264Preset(h264) {
 }
 function syncJpegControls() {
   const form = $('#video-config');
-  form.elements.jpeg_grayscale.disabled = value(form, 'encoding') !== 'transcode_jpeg';
+  const transcode = value(form, 'encoding') === 'transcode_jpeg';
+  const backend = value(form, 'jpeg_backend');
+  const descriptions = {
+    screen: '识别纯色区域并跳过重复计算，适合终端与桌面，不额外降低画质。',
+    standard: '标准高速 JPEG 编解码，适合一般画面，也可用于比较屏幕优化的效果。',
+    compatible: '兼容重编码，处理速度可能较慢，便于兼容性排查。',
+    rust_optimized: '使用整数向量优化，保持兼容编码的输出；ARM 设备可使用 NEON 加速。',
+    coefficient: '直接处理 JPEG 系数，减少像素往返；保留源采样，相同质量数值可能有不同的体积与画质。',
+    preserve: '保留原始量化表，只优化编码表；彩色时不增加二次画质损失，黑白会移除颜色。不支持的格式请选标准高速。',
+  };
+  form.elements.jpeg_backend.disabled = !transcode;
+  form.elements.jpeg_grayscale.disabled = !transcode;
+  form.elements.jpeg_quality.disabled = !transcode || backend === 'preserve';
+  form.elements.jpeg_optimize_huffman.disabled = !transcode;
+  $('#jpeg-huffman-control').classList.toggle('hidden', backend === 'preserve');
+  const help = $('#jpeg-backend-help');
+  help.classList.toggle('hidden', !transcode);
+  help.textContent = descriptions[backend] || descriptions.screen;
 }
 function selectVideoPresets(video) {
   const form = $('#video-config'),
@@ -179,6 +196,8 @@ function applyBootstrap() {
     mf = $('#media-config');
   for (const name of ['device', 'width', 'height', 'frames_per_second', 'encoding', 'jpeg_quality'])
     if (video[name] != null && vf.elements[name]) vf.elements[name].value = video[name];
+  vf.elements.jpeg_backend.value = video.jpeg_backend || 'screen';
+  vf.elements.jpeg_optimize_huffman.checked = !!video.jpeg_optimize_huffman;
   vf.elements.jpeg_grayscale.checked = !!video.jpeg_grayscale;
   syncJpegControls();
   selectVideoPresets(video);
@@ -236,6 +255,7 @@ export function init() {
   {
     const form = $('#video-config');
     form.elements.encoding.addEventListener('change', syncJpegControls);
+    form.elements.jpeg_backend.addEventListener('change', syncJpegControls);
     form.elements.h264_bitrate_preset.addEventListener('change', syncH264Preset);
     form.elements.display_scale.addEventListener('change', (e) => setDisplayScale(e.target.value, true));
     form.elements.rendering.addEventListener('change', (e) => setVideoRendering(e.target.value, true));

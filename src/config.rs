@@ -359,6 +359,19 @@ pub enum VideoEncoding {
     TranscodeJpeg,
 }
 
+/// Pixel encoders keep 4:4:4; coefficient modes retain source sampling.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JpegBackend {
+    #[default]
+    Screen,
+    Standard,
+    Compatible,
+    RustOptimized,
+    Coefficient,
+    Preserve,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum H264Encoder {
@@ -518,6 +531,8 @@ pub struct VideoConfig {
     pub jpeg_quality: u8,
     /// Only used by JPEG transcoding; passthrough always preserves source bytes.
     pub jpeg_grayscale: bool,
+    pub jpeg_backend: JpegBackend,
+    pub jpeg_optimize_huffman: bool,
     pub h264: H264Config,
 }
 
@@ -532,6 +547,8 @@ impl Default for VideoConfig {
             encoding: VideoEncoding::MjpegPassthrough,
             jpeg_quality: 80,
             jpeg_grayscale: false,
+            jpeg_backend: JpegBackend::default(),
+            jpeg_optimize_huffman: false,
             h264: H264Config::default(),
         }
     }

@@ -2,6 +2,8 @@
 
 这是离线研究，不替换系统库、不挂钩生产进程、不接入 WingmanKVM 服务。先前 Rust 核心实验在复杂图像上仍明显落后于系统库；这里直接从 libjpeg-turbo 2.1.5 出发，寻找能保留成熟 SIMD 实现的局部改进。
 
+生产实现已另外整理到 [wingman-jpeg-native](../../wingman-jpeg-native/README.md)：基于固定来源的 libjpeg-turbo 3.2.1，使用正式源码分支、错误恢复与资源限制，不把本目录的私有 ABI 挂钩程序用于服务。
+
 后续 [真实 HDMI / TTY 测试](REAL_BENCHMARKS.md)已完成：包含文字密度、近等码率画质、透传及保留系数的 Huffman 优化。桌面信号源暂缺，尚无真实桌面结论。
 
 ## 精确纯色块快捷路径

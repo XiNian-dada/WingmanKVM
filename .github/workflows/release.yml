@@ -109,7 +109,7 @@ jobs:
         run: |
           set -eu
           apt-get update
-          apt-get install -y --no-install-recommends clang libclang-dev pkg-config binutils
+          apt-get install -y --no-install-recommends clang libclang-dev pkg-config binutils cmake make
           if [ "$TARGET" = armv7-unknown-linux-gnueabihf ]; then
             apt-get install -y --no-install-recommends \
               gcc-arm-linux-gnueabihf libc6-dev-armhf-cross linux-libc-dev-armhf-cross \
@@ -121,7 +121,9 @@ jobs:
       # must not publish. armv7 is cross-compiled and shares the same code.
       - name: Run tests before publishing
         if: matrix.target == 'aarch64-unknown-linux-gnu' && github.event_name == 'push'
-        run: cargo test --locked
+        run: |
+          cargo test --locked
+          CARGO_TARGET_DIR="$PWD/target" cargo test --locked --manifest-path components/wingman-jpeg-native/Cargo.toml
 
       - name: Build release binary
         run: cargo build --locked --release --target "$TARGET"
@@ -152,6 +154,10 @@ jobs:
           install -m 0755 "target/$TARGET/release/wingmankvm" "$staging/wingmankvm"
           cp -a deploy "$staging/deploy"
           cp LICENSE README.md CHANGELOG.md docs/UPGRADE_RECOVERY.md "$staging/"
+          cp docs/JPEG_PROCESSING.md "$staging/"
+          install -d -m 0755 "$staging/licenses/jpeg-native" "$staging/licenses/jpeg-rust"
+          cp components/wingman-jpeg-native/vendor/LICENSE.md components/wingman-jpeg-native/vendor/README.ijg components/wingman-jpeg-native/THIRD_PARTY.md "$staging/licenses/jpeg-native/"
+          cp components/wingman-jpeg/core-lab/LICENSE-MIT components/wingman-jpeg/core-lab/LICENSE-APACHE components/wingman-jpeg/core-lab/LICENSE-IJG "$staging/licenses/jpeg-rust/"
           tar --owner=0 --group=0 --numeric-owner \
             -C "$staging" -czf "$RUNNER_TEMP/$archive.tar.gz" .
           ls -l "$RUNNER_TEMP/$archive.tar.gz"

@@ -53,6 +53,7 @@ impl RuntimeMetrics {
         let last = self.last_hid_error.lock().unwrap_or_else(|p| p.into_inner()).clone();
         json!({
             "version": env!("CARGO_PKG_VERSION"),
+            "build": option_env!("WINGMANKVM_BUILD_ID"),
             "uptime_seconds": self.started.get().map_or(0, |at| at.elapsed().as_secs()),
             "hid": {
                 "ok": self.hid_ok.load(Ordering::Relaxed),

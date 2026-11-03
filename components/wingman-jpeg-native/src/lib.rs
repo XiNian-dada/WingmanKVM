@@ -272,4 +272,26 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn preserve_keeps_exif_and_icc_but_drops_color_profile_for_grayscale() {
+        fn append_marker(bytes: &mut Vec<u8>, marker: u8, payload: &[u8]) {
+            bytes.extend_from_slice(&[255, marker]);
+            bytes.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+            bytes.extend_from_slice(payload);
+        }
+        let plain = fixture(31, 17, false);
+        let mut source = plain[..2].to_vec();
+        let exif = b"Exif\0\0II*\0\x08\0\0\0\0\0\0\0\0\0";
+        let profile = b"ICC_PROFILE\0\x01\x01opaque-profile-test";
+        append_marker(&mut source, 0xe1, exif);
+        append_marker(&mut source, 0xe2, profile);
+        source.extend_from_slice(&plain[2..]);
+        let color = encode(&source, Mode::Preserve, 81, false, false);
+        assert!(color.windows(exif.len()).any(|w| w == exif));
+        assert!(color.windows(profile.len()).any(|w| w == profile));
+        let gray = encode(&source, Mode::Preserve, 81, true, false);
+        assert!(gray.windows(exif.len()).any(|w| w == exif));
+        assert!(!gray.windows(profile.len()).any(|w| w == profile));
+    }
 }
