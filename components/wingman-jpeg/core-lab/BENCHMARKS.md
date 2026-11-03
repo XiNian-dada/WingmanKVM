@@ -27,3 +27,5 @@
 - `scripts/verify_dct_bounds.py` 的数学模型边界检查通过；它不代替程序测试。
 
 没有接入生产服务、发布包或修改系统库。随后直接优化系统库的实验见相邻的 [turbo-flat-lab](../turbo-flat-lab/README.md)。
+
+真实 HDMI / PVE TTY 的后续测量见 [真实帧报告](../turbo-flat-lab/REAL_BENCHMARKS.md)，包含 `examples/real_capture.rs` 对完整 Rust 处理路线的独立模型比较。合成输入与真实采集 JPEG 的解码、采样及色彩处理不同，不能直接拼接两次测量的耗时。
