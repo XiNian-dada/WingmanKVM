@@ -1,0 +1,35 @@
+[package]
+name = "wingman-jpeg-core-lab"
+version = "0.1.0"
+authors = ["Volker Ströbel <volkerstroebel@mysurdity.de>"]
+edition = "2021"
+rust-version = "1.88"
+license = "(MIT OR Apache-2.0) AND IJG"
+description = "Experimental ARM64 integer JPEG DCT fork; upstream jpeg-encoder 0.6.1"
+publish = false
+
+[lib]
+name = "jpeg_encoder"
+
+[features]
+default = ["std", "neon"]
+std = []
+# Original x86 backend, unchanged.
+simd = ["std"]
+neon = []
+benchmark = []
+
+[[example]]
+name = "deep_compare"
+required-features = ["benchmark"]
+
+[dev-dependencies]
+jpeg-decoder = { version = "0.3", default-features = false }
+jpeg-encoder-upstream = { package = "jpeg-encoder", version = "=0.6.1" }
+wingman-jpeg = { path = ".." }
+image = { version = "=0.25.10", default-features = false, features = ["jpeg"] }
+
+# Match the application's release profile for the final same-process comparison.
+[profile.release]
+lto = "thin"
+codegen-units = 1
