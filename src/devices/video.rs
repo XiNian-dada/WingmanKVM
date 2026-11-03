@@ -131,9 +131,9 @@ impl VideoStatus {
 pub enum CaptureChange {
     /// Nothing the capture uses changed (for example only the H.264 section).
     Unchanged,
-    /// Only per-frame processing changed (`encoding`, `jpeg_quality`): applied
+    /// Only per-frame processing changed (encoding, JPEG quality/grayscale): applied
     /// to the next frame without closing the device or interrupting viewers.
-    /// With MJPEG passthrough the quality is not used at all.
+    /// With MJPEG passthrough the quality and grayscale settings are unused.
     Live,
     /// The device or the format negotiated with it changed: reopen it.
     Restart,
@@ -146,7 +146,10 @@ pub fn capture_change(previous: &VideoConfig, next: &VideoConfig) -> CaptureChan
         || previous.frames_per_second != next.frames_per_second
     {
         CaptureChange::Restart
-    } else if previous.encoding != next.encoding || previous.jpeg_quality != next.jpeg_quality {
+    } else if previous.encoding != next.encoding
+        || previous.jpeg_quality != next.jpeg_quality
+        || previous.jpeg_grayscale != next.jpeg_grayscale
+    {
         CaptureChange::Live
     } else {
         CaptureChange::Unchanged
@@ -736,14 +739,21 @@ fn looks_like_jpeg(bytes: &[u8]) -> bool {
 fn encode_frame(source: &[u8], config: &VideoConfig) -> Result<Bytes, String> {
     match config.encoding {
         VideoEncoding::MjpegPassthrough => Ok(Bytes::copy_from_slice(source)),
-        VideoEncoding::TranscodeJpeg => transcode_jpeg(source, config.jpeg_quality),
+        VideoEncoding::TranscodeJpeg => {
+            transcode_jpeg(source, config.jpeg_quality, config.jpeg_grayscale)
+        }
     }
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn transcode_jpeg(source: &[u8], quality: u8) -> Result<Bytes, String> {
+fn transcode_jpeg(source: &[u8], quality: u8, grayscale: bool) -> Result<Bytes, String> {
     let image = image::load_from_memory_with_format(source, image::ImageFormat::Jpeg)
         .map_err(|error| error.to_string())?;
+    let image = if grayscale {
+        image::DynamicImage::ImageLuma8(image.into_luma8())
+    } else {
+        image
+    };
     let width = u16::try_from(image.width()).map_err(|error| error.to_string())?;
     let height = u16::try_from(image.height()).map_err(|error| error.to_string())?;
     let mut output = Vec::with_capacity(source.len());
@@ -769,6 +779,37 @@ fn transcode_jpeg(source: &[u8], quality: u8) -> Result<Bytes, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grayscale_is_encoded_on_the_server_and_can_be_toggled_live() {
+        let rgb = image::RgbImage::from_fn(96, 64, |x, y| {
+            image::Rgb([(x * 2) as u8, (y * 3) as u8, ((x + y) * 13 % 256) as u8])
+        });
+        let mut source = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut source)
+            .encode_image(&rgb)
+            .unwrap();
+        let mut config = test_config();
+        config.jpeg_grayscale = true;
+        assert_eq!(encode_frame(&source, &config).unwrap().as_ref(), source);
+
+        config.encoding = VideoEncoding::TranscodeJpeg;
+        let gray = encode_frame(&source, &config).unwrap();
+        let decoded = image::load_from_memory(&gray).unwrap();
+        assert_eq!(decoded.color(), image::ColorType::L8);
+        assert_eq!((decoded.width(), decoded.height()), (96, 64));
+
+        let mut next = config.clone();
+        next.jpeg_grayscale = false;
+        assert_eq!(capture_change(&config, &next), CaptureChange::Live);
+        assert!(apply_to_session(&mut config, next).is_none());
+        let color = encode_frame(&source, &config).unwrap();
+        assert_eq!(
+            image::load_from_memory(&color).unwrap().color(),
+            image::ColorType::Rgb8
+        );
+        assert!(gray.len() < color.len());
+    }
 
     #[test]
     fn faster_jpeg_encoder_preserves_dimensions_grayscale_and_text_colors() {
@@ -800,7 +841,7 @@ mod tests {
                 image::codecs::jpeg::JpegEncoder::new_with_quality(&mut reference, quality)
                     .encode_image(&decoded)
                     .unwrap();
-                let actual = transcode_jpeg(&source, quality).unwrap();
+                let actual = transcode_jpeg(&source, quality, false).unwrap();
                 let actual = image::load_from_memory(&actual).unwrap();
                 let reference = image::load_from_memory(&reference).unwrap();
                 assert_eq!((actual.width(), actual.height()), (31, 17));

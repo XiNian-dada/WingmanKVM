@@ -141,11 +141,31 @@ def video_settings(browser, port, checks):
     posts = []
     context, page = new_page(browser, state, port)
     try:
-        page.route("**/api/config", lambda route: (
-            posts.append(json.loads(route.request.post_data or "{}")),
-            route.fulfill(status=200, content_type="application/json", body="{}"))[-1])
+        saved = bootstrap_payload(state)["config"]
+        saved["video"]["encoding"] = "mjpeg_passthrough"
+
+        def save_config(route):
+            patch = json.loads(route.request.post_data or "{}")
+            posts.append(patch)
+            for section, values in patch.items():
+                saved.setdefault(section, {}).update(values)
+            route.fulfill(status=200, content_type="application/json", body="{}")
+
+        def bootstrap(route):
+            payload = bootstrap_payload(state)
+            payload["config"] = saved
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+
+        page.route("**/api/config", save_config)
+        page.route("**/api/bootstrap", bootstrap)
         page.locator('[data-panel-target="video"]').click()
         form = page.locator("#video-config")
+        grayscale = form.locator('input[name="jpeg_grayscale"]')
+        check(checks, not grayscale.is_checked() and grayscale.is_disabled(),
+              "grayscale_defaults_off_for_passthrough")
+        form.locator('select[name="encoding"]').select_option("transcode_jpeg")
+        check(checks, grayscale.is_enabled(), "grayscale_enabled_for_jpeg_compression")
+        grayscale.check()
         form.locator('select[name="h264_bitrate_preset"]').select_option("12000")
         hidden = form.locator('input[name="h264_bitrate_kbps"]').input_value()
         check(checks, hidden == "12000", "bitrate_preset_updates_value", hidden)
@@ -169,11 +189,23 @@ def video_settings(browser, port, checks):
         bitrate = posts and posts[-1].get("video", {}).get("h264", {}).get("bitrate_kbps")
         check(checks, bitrate == 3000, "submitted_bitrate_matches_selection", posts[-1:] if posts else posts)
 
+        check(checks, posts[-1]["video"].get("jpeg_grayscale") is True,
+              "grayscale_true_submitted", posts[-1]["video"])
         page.reload(wait_until="load")
         page.wait_for_selector("#app:not(.hidden)", state="visible", timeout=8000)
         classes = page.evaluate("() => document.querySelector('#console').className")
         check(checks, "mode-native" in classes and "render-pixelated" not in classes,
               "display_preferences_survive_reload", classes)
+        check(checks, grayscale.is_checked() and grayscale.is_enabled(),
+              "grayscale_restored_from_saved_config")
+        page.locator('[data-panel-target="video"]').click()
+        grayscale.uncheck()
+        form.locator('button[type="submit"]').click()
+        page.wait_for_timeout(300)
+        check(checks, posts[-1]["video"].get("jpeg_grayscale") is False,
+              "grayscale_false_submitted", posts[-1]["video"])
+        form.locator('select[name="encoding"]').select_option("mjpeg_passthrough")
+        check(checks, grayscale.is_disabled(), "grayscale_disabled_when_passthrough_selected")
     finally:
         context.close()
 

@@ -410,6 +410,7 @@ export function init() {
           frames_per_second: optionalNumber(value(f, 'frames_per_second')),
           encoding: value(f, 'encoding'),
           jpeg_quality: Number(value(f, 'jpeg_quality')),
+          jpeg_grayscale: f.elements.jpeg_grayscale.checked,
           h264: {
             bitrate_kbps: Number(value(f, 'h264_bitrate_kbps')),
             encoder: value(f, 'h264_encoder'),

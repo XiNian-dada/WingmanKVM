@@ -358,6 +358,7 @@ pub(super) struct VideoPatch {
     pub(super) frames_per_second: Option<Option<u32>>,
     pub(super) encoding: Option<VideoEncoding>,
     pub(super) jpeg_quality: Option<u8>,
+    pub(super) jpeg_grayscale: Option<bool>,
     pub(super) h264: Option<H264Patch>,
 }
 
@@ -640,6 +641,9 @@ pub(super) fn apply_video_patch(config: &mut config::VideoConfig, patch: VideoPa
     }
     if let Some(quality) = patch.jpeg_quality {
         config.jpeg_quality = quality;
+    }
+    if let Some(grayscale) = patch.jpeg_grayscale {
+        config.jpeg_grayscale = grayscale;
     }
     if let Some(h264) = patch.h264 {
         if let Some(bitrate_kbps) = h264.bitrate_kbps {
@@ -1460,6 +1464,11 @@ pub(super) mod tests {
         assert!(!*shutdown.borrow());
         assert_eq!(state.video.take_test_reconfigures(), [next.video.clone()]);
 
+        next.video.jpeg_grayscale = true;
+        commit_config(&state, &next).await.unwrap();
+        assert!(!*shutdown.borrow(), "grayscale must not reconnect viewers");
+        assert_eq!(state.video.take_test_reconfigures(), [next.video.clone()]);
+
         // Saving unchanged settings, or only the session limit, sends nothing.
         commit_config(&state, &next).await.unwrap();
         next.video.h264.max_sessions = 3;
@@ -1548,6 +1557,27 @@ pub(super) mod tests {
         assert_eq!(config.video.height, Some(1080));
         assert_eq!(config.video.frames_per_second, Some(60));
         assert_eq!(config.video.jpeg_quality, 75);
+    }
+
+    #[test]
+    fn grayscale_patch_preserves_omitted_setting_and_accepts_false() {
+        let mut config = config::VideoConfig {
+            jpeg_grayscale: true,
+            ..Default::default()
+        };
+        apply_video_patch(
+            &mut config,
+            serde_json::from_value(json!({"jpeg_quality": 70})).unwrap(),
+        );
+        assert!(config.jpeg_grayscale);
+        apply_video_patch(
+            &mut config,
+            serde_json::from_value(json!({"jpeg_grayscale": false})).unwrap(),
+        );
+        assert!(!config.jpeg_grayscale);
+        let restored: config::VideoConfig =
+            serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        assert_eq!(restored, config);
     }
 
     #[test]

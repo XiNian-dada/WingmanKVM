@@ -139,6 +139,10 @@ function selectH264Preset(h264) {
   form.elements.h264_max_sessions.value = String(h264?.max_sessions || 1);
   form.elements.h264_allow_software.checked = !!h264?.allow_software;
 }
+function syncJpegControls() {
+  const form = $('#video-config');
+  form.elements.jpeg_grayscale.disabled = value(form, 'encoding') !== 'transcode_jpeg';
+}
 function selectVideoPresets(video) {
   const form = $('#video-config'),
     resolution = video.width && video.height ? `${video.width}x${video.height}` : 'auto',
@@ -175,6 +179,8 @@ function applyBootstrap() {
     mf = $('#media-config');
   for (const name of ['device', 'width', 'height', 'frames_per_second', 'encoding', 'jpeg_quality'])
     if (video[name] != null && vf.elements[name]) vf.elements[name].value = video[name];
+  vf.elements.jpeg_grayscale.checked = !!video.jpeg_grayscale;
+  syncJpegControls();
   selectVideoPresets(video);
   selectH264Preset(h264);
   applyAudioConfig(config.audio || {});
@@ -229,6 +235,7 @@ export function init() {
     $('#video-config').elements[name].addEventListener('change', syncVideoPresets);
   {
     const form = $('#video-config');
+    form.elements.encoding.addEventListener('change', syncJpegControls);
     form.elements.h264_bitrate_preset.addEventListener('change', syncH264Preset);
     form.elements.display_scale.addEventListener('change', (e) => setDisplayScale(e.target.value, true));
     form.elements.rendering.addEventListener('change', (e) => setVideoRendering(e.target.value, true));

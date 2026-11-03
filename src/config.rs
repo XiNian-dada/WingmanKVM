@@ -516,6 +516,8 @@ pub struct VideoConfig {
     pub frames_per_second: Option<u32>,
     pub encoding: VideoEncoding,
     pub jpeg_quality: u8,
+    /// Only used by JPEG transcoding; passthrough always preserves source bytes.
+    pub jpeg_grayscale: bool,
     pub h264: H264Config,
 }
 
@@ -529,6 +531,7 @@ impl Default for VideoConfig {
             frames_per_second: None,
             encoding: VideoEncoding::MjpegPassthrough,
             jpeg_quality: 80,
+            jpeg_grayscale: false,
             h264: H264Config::default(),
         }
     }
@@ -1379,6 +1382,7 @@ mod tests {
         assert_eq!(config.video.h264.encoder, H264Encoder::Auto);
         assert!(!config.video.h264.allow_software);
         assert_eq!(config.video.h264.max_sessions, 1);
+        assert!(!config.video.jpeg_grayscale);
     }
 
     #[test]
