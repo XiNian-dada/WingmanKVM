@@ -39,7 +39,8 @@ for name, tree in [("stock", source), ("patched", output / "patched-source")]:
     run([sys.executable, lab / "prefix_archive.py", build / "libjpeg.a",
          output / (prefix[:-1] + "-prefixed.a"), prefix, "--tools=" + a.tool_prefix])
 for file, name, flags in [("dual_compare.c", "source-compare", []),
-                          ("test.c", "source-test", ["-DWK_SOURCE"])]:
+                          ("test.c", "source-test", ["-DWK_SOURCE"]),
+                          ("real_compare.c", "real-compare", [])]:
     run([a.tool_prefix + "gcc", "-O3", "-static", "-Wall", "-Wextra", "-Werror",
          *flags, "-I" + str(output / "stock"), "-I" + str(source), "-I" + str(lab),
          lab / file, output / "stock-prefixed.a", output / "flat-prefixed.a",
