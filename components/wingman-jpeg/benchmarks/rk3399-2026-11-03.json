@@ -1,0 +1,217 @@
+{
+  "date": "2026-11-03",
+  "hardware": "RK3399",
+  "cpu_affinity": [
+    4
+  ],
+  "max_cpu_khz": 1800000,
+  "nice": 10,
+  "kernel": "6.18.35-current-rockchip64",
+  "rustc": "1.99.1",
+  "target": "aarch64-unknown-linux-musl",
+  "width": 1920,
+  "height": 1080,
+  "iterations": 15,
+  "warmup": 1,
+  "source_quality": 95,
+  "source_sampling": "4:2:2",
+  "output_quality": 81,
+  "output_sampling": "4:4:4 color / single-channel grayscale",
+  "binary_sha256": "fc78d6457b774de1e03042c829d976d70f4641212f510ae342285d64736c6c6f",
+  "service_pid_unchanged": true,
+  "service_active": true,
+  "results": [
+    {
+      "pattern": "desktop",
+      "modes": {
+        "encode_upstream": {
+          "median_ms": 120.433,
+          "p95_ms": 120.927,
+          "min_ms": 120.19,
+          "bytes": 865003
+        },
+        "encode_bulk_scalar": {
+          "median_ms": 99.241,
+          "p95_ms": 99.592,
+          "min_ms": 99.056,
+          "bytes": 865003
+        },
+        "encode_neon_auto": {
+          "median_ms": 98.678,
+          "p95_ms": 99.24,
+          "min_ms": 98.566,
+          "bytes": 865003
+        },
+        "pipeline_original_image": {
+          "median_ms": 188.27,
+          "p95_ms": 189.416,
+          "min_ms": 187.604,
+          "bytes": 860728
+        },
+        "pipeline_current_color": {
+          "median_ms": 186.233,
+          "p95_ms": 186.977,
+          "min_ms": 185.429,
+          "bytes": 865003
+        },
+        "pipeline_optimized_color": {
+          "median_ms": 158.061,
+          "p95_ms": 158.899,
+          "min_ms": 157.228,
+          "bytes": 865003
+        },
+        "pipeline_current_gray": {
+          "median_ms": 121.27,
+          "p95_ms": 122.071,
+          "min_ms": 120.536,
+          "bytes": 533986
+        },
+        "pipeline_optimized_gray_exact": {
+          "median_ms": 109.627,
+          "p95_ms": 110.372,
+          "min_ms": 108.787,
+          "bytes": 533986
+        },
+        "pipeline_direct_luma": {
+          "median_ms": 86.923,
+          "p95_ms": 87.489,
+          "min_ms": 86.363,
+          "bytes": 539196
+        }
+      },
+      "jpeg_luma_difference_from_gray_rgb": {
+        "mse": 14.91855,
+        "psnr_db": 36.394,
+        "max_abs": 31.0
+      }
+    },
+    {
+      "pattern": "gradient",
+      "modes": {
+        "encode_upstream": {
+          "median_ms": 107.596,
+          "p95_ms": 108.138,
+          "min_ms": 107.26,
+          "bytes": 184198
+        },
+        "encode_bulk_scalar": {
+          "median_ms": 86.658,
+          "p95_ms": 87.56,
+          "min_ms": 86.257,
+          "bytes": 184198
+        },
+        "encode_neon_auto": {
+          "median_ms": 85.995,
+          "p95_ms": 86.886,
+          "min_ms": 85.58,
+          "bytes": 184198
+        },
+        "pipeline_original_image": {
+          "median_ms": 144.221,
+          "p95_ms": 145.462,
+          "min_ms": 143.406,
+          "bytes": 176221
+        },
+        "pipeline_current_color": {
+          "median_ms": 148.671,
+          "p95_ms": 149.175,
+          "min_ms": 147.953,
+          "bytes": 184198
+        },
+        "pipeline_optimized_color": {
+          "median_ms": 121.223,
+          "p95_ms": 121.854,
+          "min_ms": 120.494,
+          "bytes": 184198
+        },
+        "pipeline_current_gray": {
+          "median_ms": 88.512,
+          "p95_ms": 89.365,
+          "min_ms": 87.982,
+          "bytes": 69051
+        },
+        "pipeline_optimized_gray_exact": {
+          "median_ms": 76.716,
+          "p95_ms": 78.007,
+          "min_ms": 76.48,
+          "bytes": 69051
+        },
+        "pipeline_direct_luma": {
+          "median_ms": 54.51,
+          "p95_ms": 55.164,
+          "min_ms": 54.244,
+          "bytes": 72438
+        }
+      },
+      "jpeg_luma_difference_from_gray_rgb": {
+        "mse": 139.73439,
+        "psnr_db": 26.678,
+        "max_abs": 42.0
+      }
+    },
+    {
+      "pattern": "noise",
+      "modes": {
+        "encode_upstream": {
+          "median_ms": 175.213,
+          "p95_ms": 175.788,
+          "min_ms": 175.031,
+          "bytes": 2380656
+        },
+        "encode_bulk_scalar": {
+          "median_ms": 154.244,
+          "p95_ms": 154.593,
+          "min_ms": 153.979,
+          "bytes": 2380656
+        },
+        "encode_neon_auto": {
+          "median_ms": 153.692,
+          "p95_ms": 153.992,
+          "min_ms": 153.307,
+          "bytes": 2380656
+        },
+        "pipeline_original_image": {
+          "median_ms": 317.385,
+          "p95_ms": 318.267,
+          "min_ms": 316.49,
+          "bytes": 2374723
+        },
+        "pipeline_current_color": {
+          "median_ms": 293.693,
+          "p95_ms": 294.962,
+          "min_ms": 292.684,
+          "bytes": 2380656
+        },
+        "pipeline_optimized_color": {
+          "median_ms": 265.19,
+          "p95_ms": 267.368,
+          "min_ms": 264.137,
+          "bytes": 2380656
+        },
+        "pipeline_current_gray": {
+          "median_ms": 193.076,
+          "p95_ms": 194.453,
+          "min_ms": 192.182,
+          "bytes": 1126890
+        },
+        "pipeline_optimized_gray_exact": {
+          "median_ms": 181.001,
+          "p95_ms": 183.659,
+          "min_ms": 179.453,
+          "bytes": 1126890
+        },
+        "pipeline_direct_luma": {
+          "median_ms": 151.62,
+          "p95_ms": 152.824,
+          "min_ms": 150.414,
+          "bytes": 1112971
+        }
+      },
+      "jpeg_luma_difference_from_gray_rgb": {
+        "mse": 166.40763,
+        "psnr_db": 25.919,
+        "max_abs": 86.0
+      }
+    }
+  ]
+}
