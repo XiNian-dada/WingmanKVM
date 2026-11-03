@@ -1,0 +1,20 @@
+[package]
+name = "wingman-jpeg-native"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT AND IJG AND BSD-3-Clause AND Zlib"
+publish = false
+description = "Bounded JPEG processing with recoverable libjpeg-turbo errors"
+
+[build-dependencies]
+cc = "1"
+cmake = "0.1.58"
+sha2 = "0.10"
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
