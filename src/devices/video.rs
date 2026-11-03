@@ -15,6 +15,46 @@ use crate::config::{VideoConfig, VideoEncoding};
 /// surfacing a genuinely dead or malformed stream.
 const FRAME_STALL_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[cfg(target_os = "linux")]
+const CAPTURE_BUFFERS: u32 = 4;
+
+/// Spread discarded frames across the source sequence, including frames the
+/// driver skipped. Integer arithmetic also handles fractional rates (30000/1001)
+/// without accumulating timer drift or resetting the phase after slow encoding.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+struct FrameSelector {
+    step: u64,
+    period: u64,
+    phase: u64,
+    previous: Option<u32>,
+}
+
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+impl FrameSelector {
+    fn new(target_fps: u32, interval_numerator: u32, interval_denominator: u32) -> Self {
+        Self {
+            step: u64::from(target_fps) * u64::from(interval_numerator),
+            period: u64::from(interval_denominator),
+            phase: 0,
+            previous: None,
+        }
+    }
+
+    fn take(&mut self, sequence: u32) -> bool {
+        let previous = self.previous.replace(sequence);
+        if self.step == 0 || self.period == 0 || self.step >= self.period {
+            return true;
+        }
+        let Some(previous) = previous else {
+            return true;
+        };
+        let phase = u128::from(self.phase)
+            + u128::from(sequence.wrapping_sub(previous)) * u128::from(self.step);
+        self.phase = (phase % u128::from(self.period)) as u64;
+        phase >= u128::from(self.period)
+    }
+}
+
 /// While the capture node is missing the supervisor blocks on the hot-plug
 /// watcher in slices this long, so a reconfigure is still noticed promptly.
 #[cfg(target_os = "linux")]
@@ -541,14 +581,20 @@ fn capture_session(
                 / f64::from(actual_params.interval.numerator),
         )
     };
-    let mut stream =
-        MmapStream::with_buffers(&device, Type::VideoCapture, 4).map_err(|e| e.to_string())?;
+    let mut selector = FrameSelector::new(
+        requested_fps,
+        actual_params.interval.numerator,
+        actual_params.interval.denominator,
+    );
+    let mut stream = MmapStream::with_buffers(&device, Type::VideoCapture, CAPTURE_BUFFERS)
+        .map_err(|e| e.to_string())?;
     stream.set_timeout(Duration::from_secs(1));
+    let handle = stream.handle();
 
     let geometry = VideoGeometry {
         width: Some(actual.width),
         height: Some(actual.height),
-        fps: actual_fps,
+        fps: actual_fps.map(|fps| fps.min(f64::from(requested_fps))),
     };
     let mut health = CaptureHealth::new(Instant::now());
     publish_health(
@@ -562,6 +608,7 @@ fn capture_session(
     );
 
     let mut sequence = 0_u64;
+    let mut drained = 0;
     loop {
         match command_rx.try_recv() {
             Ok(VideoCommand::Reconfigure(next)) => {
@@ -587,13 +634,22 @@ fn capture_session(
         match stream.next() {
             Ok((buffer, metadata)) => {
                 let received_at = Instant::now();
+                let selected = selector.take(metadata.sequence);
+                // A slow JPEG encode can leave completed buffers in the V4L2
+                // FIFO. Return them without decoding/copying and work on the
+                // newest frame. Bound draining so a perpetually readable source
+                // cannot starve publication. Poll before next(): v4l's next()
+                // requeues its buffer even if a following dequeue times out.
+                let queued = drained < CAPTURE_BUFFERS - 1
+                    && handle.poll(libc::POLLIN, 0).map_err(|e| e.to_string())? > 0;
+                drained = if queued { drained + 1 } else { 0 };
                 let valid = !metadata.flags.contains(Flags::ERROR)
                     && usize::try_from(metadata.bytesused)
                         .ok()
                         .filter(|used| *used > 0 && *used <= buffer.len())
                         .map(|used| &buffer[..used])
                         .is_some_and(looks_like_jpeg);
-                if !valid {
+                if !valid || !selected || queued {
                     if health.tick(received_at) {
                         publish_health(
                             frame_tx,
@@ -698,6 +754,57 @@ fn transcode_jpeg(source: &[u8], quality: u8) -> Result<Bytes, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_selection_spreads_drops_instead_of_bursting() {
+        for (source, target) in [(30, 24), (60, 24), (30, 7), (120, 1)] {
+            let mut selector = FrameSelector::new(target, 1, source);
+            let frames: Vec<_> = (0..source * 10).filter(|&n| selector.take(n)).collect();
+            assert_eq!(frames.len(), (target * 10) as usize);
+            for gap in frames.windows(2).map(|pair| pair[1] - pair[0]) {
+                assert!(gap == source / target || gap == source.div_ceil(target));
+            }
+        }
+    }
+
+    #[test]
+    fn frame_selection_handles_fractional_rates_and_sequence_wrap() {
+        let mut selector = FrameSelector::new(24, 1001, 30000);
+        let count = (0..30000).filter(|&n| selector.take(n)).count();
+        assert_eq!(count, 24 * 1001);
+
+        let mut wrapped = FrameSelector::new(24, 1, 30);
+        let mut normal = FrameSelector::new(24, 1, 30);
+        for n in 0..60_u32 {
+            assert_eq!(
+                normal.take(n),
+                wrapped.take((u32::MAX - 10).wrapping_add(n))
+            );
+        }
+    }
+
+    #[test]
+    fn frame_selection_keeps_phase_after_capture_gaps() {
+        let mut complete = FrameSelector::new(24, 1, 30);
+        let expected: Vec<_> = (0..100).map(|n| complete.take(n)).collect();
+        let mut gapped = FrameSelector::new(24, 1, 30);
+        for n in [0, 1, 8, 9, 25, 26, 90, 91, 92, 93] {
+            let selected = gapped.take(n);
+            // After a long gap any newly crossed output interval can be used;
+            // adjacent frames must resume the original proportional cadence.
+            if [1, 9, 26, 91, 92, 93].contains(&n) {
+                assert_eq!(selected, expected[n as usize]);
+            }
+        }
+    }
+
+    #[test]
+    fn frame_selection_never_throttles_slower_or_unknown_sources() {
+        for (target, num, den) in [(30, 1, 24), (30, 1, 30), (30, 0, 30), (30, 1, 0)] {
+            let mut selector = FrameSelector::new(target, num, den);
+            assert!((0..120).all(|n| selector.take(n)));
+        }
+    }
 
     fn test_config() -> VideoConfig {
         VideoConfig {
