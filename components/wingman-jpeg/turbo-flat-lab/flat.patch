@@ -1,0 +1,61 @@
+--- a/jcdctmgr.c
++++ b/jcdctmgr.c
+@@ -21,6 +21,11 @@
+ #include "jpeglib.h"
+ #include "jdct.h"               /* Private declarations for DCT subsystem */
+ #include "jsimddct.h"
++/* Modified by WingmanKVM contributors, 2026: experimental exact flat-block
++ * shortcut. Original libjpeg-turbo licenses and notices remain applicable. */
++#if BITS_IN_JSAMPLE == 8
++#include "flat_core.h"
++#endif
+ 
+ 
+ /* Private subobject for this module */
+@@ -45,6 +50,9 @@
+ 
+ typedef struct {
+   struct jpeg_forward_dct pub;  /* public fields */
++#if BITS_IN_JSAMPLE == 8
++  wk_flat_core wk_flat;
++#endif
+ 
+   /* Pointer to the DCT routine actually in use */
+   forward_DCT_method_ptr dct;
+@@ -506,6 +514,26 @@
+ 
+   sample_data += start_row;     /* fold in the vertical offset once */
+ 
++#if BITS_IN_JSAMPLE == 8
++  if (cinfo->dct_method == JDCT_ISLOW &&
++      wk_flat_begin(&fdct->wk_flat, compptr->component_index,
++                    compptr->quant_tbl_no, num_blocks)) {
++    for (bi = 0; bi < num_blocks; bi++, start_col += DCTSIZE) {
++      JCOEF dc;
++      if (wk_flat_try(&fdct->wk_flat, compptr->component_index,
++                      compptr->quant_tbl_no, sample_data, 0, start_col, &dc)) {
++        memset(coef_blocks[bi], 0, sizeof(JBLOCK));
++        coef_blocks[bi][0] = dc;
++      } else {
++        (*do_convsamp) (sample_data, start_col, workspace);
++        (*do_dct) (workspace);
++        (*do_quantize) (coef_blocks[bi], divisors, workspace);
++      }
++    }
++    return;
++  }
++#endif
++
+   for (bi = 0; bi < num_blocks; bi++, start_col += DCTSIZE) {
+     /* Load data into workspace, applying unsigned->signed conversion */
+     (*do_convsamp) (sample_data, start_col, workspace);
+@@ -627,6 +655,9 @@
+                                 sizeof(my_fdct_controller));
+   cinfo->fdct = (struct jpeg_forward_dct *)fdct;
+   fdct->pub.start_pass = start_pass_fdctmgr;
++#if BITS_IN_JSAMPLE == 8
++  wk_flat_init(&fdct->wk_flat, cinfo, 1);
++#endif
+ 
+   /* First determine the DCT... */
+   switch (cinfo->dct_method) {

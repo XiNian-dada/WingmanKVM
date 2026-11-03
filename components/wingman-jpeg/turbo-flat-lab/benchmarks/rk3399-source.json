@@ -1,0 +1,14 @@
+{
+  "source-compare-flat-final.log": "pattern=flat mode=stock input_fnv64=89b96ede75797325 median_ms=40.119 p95_ms=40.805 bytes=57328 byte_exact=true\npattern=flat mode=flat-adaptive input_fnv64=89b96ede75797325 median_ms=23.639 p95_ms=24.506 bytes=57328 byte_exact=true\n",
+  "source-compare-sparse-final.log": "pattern=sparse mode=stock input_fnv64=143b5f75478446b9 median_ms=41.513 p95_ms=42.185 bytes=166726 byte_exact=true\npattern=sparse mode=flat-adaptive input_fnv64=143b5f75478446b9 median_ms=26.532 p95_ms=27.150 bytes=166726 byte_exact=true\n",
+  "source-compare-desktop-final.log": "pattern=desktop mode=stock input_fnv64=973087fbb0955e9d median_ms=51.219 p95_ms=51.660 bytes=912488 byte_exact=true\npattern=desktop mode=flat-adaptive input_fnv64=973087fbb0955e9d median_ms=48.111 p95_ms=48.657 bytes=912488 byte_exact=true\n",
+  "source-compare-gradient-final.log": "pattern=gradient mode=stock input_fnv64=5b48b922668a1135 median_ms=43.861 p95_ms=44.517 bytes=181903 byte_exact=true\npattern=gradient mode=flat-adaptive input_fnv64=5b48b922668a1135 median_ms=43.960 p95_ms=44.570 bytes=181903 byte_exact=true\n",
+  "source-compare-noise-final.log": "pattern=noise mode=stock input_fnv64=a35674d04adb8edd median_ms=81.051 p95_ms=81.339 bytes=2965030 byte_exact=true\npattern=noise mode=flat-adaptive input_fnv64=a35674d04adb8edd median_ms=81.492 p95_ms=81.748 bytes=2965030 byte_exact=true\n",
+  "source-test-final.log": "DC exhaustive: 65280 cases, optimized modes byte-exact\nAll 67710 cases passed against same-build stock libjpeg; no altered JPEG bytes\n",
+  "flat-test-window.log": "DC exhaustive: 65280 cases, optimized modes byte-exact\nAll 67710 cases passed against installed libjpeg; no altered JPEG bytes\n",
+  "binary_sha256": {
+    "source-compare": "9d31fd05c6cbaad8c7db92a1683f092658203fbeff6ac2f38ba9078bcecd4697",
+    "source-test": "642917ed96dcff51ca56e28fadf845e166cfe7be8748cd5252c3bbb0b6ada132"
+  },
+  "service": "MainPID=219802\nActiveState=active\n"
+}
