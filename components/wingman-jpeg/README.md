@@ -59,6 +59,8 @@ cargo run --locked --release --example compare -- noise 15 1920 1080
 
 性能实测及限制见 [BENCHMARKS.md](BENCHMARKS.md)。
 
+后续底层研究分别位于 [core-lab](core-lab/README.md)（位精确 ARM64 DCT/量化）和 [turbo-flat-lab](turbo-flat-lab/README.md)（直接优化 libjpeg-turbo、系数域重压缩）。这些是独立实验，父组件仍使用未修改的上游编码器，尚未集成或发布这些实验路径。
+
 ## 许可与来源
 
 自有代码为 MIT，见 [LICENSE](LICENSE)。第三方依赖保留各自许可与作者署名，见 [THIRD_PARTY.md](THIRD_PARTY.md)。本组件不声称拥有上游 JPEG 算法或库。

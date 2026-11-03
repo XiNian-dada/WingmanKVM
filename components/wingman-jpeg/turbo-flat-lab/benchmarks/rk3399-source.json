@@ -10,5 +10,20 @@
     "source-compare": "9d31fd05c6cbaad8c7db92a1683f092658203fbeff6ac2f38ba9078bcecd4697",
     "source-test": "642917ed96dcff51ca56e28fadf845e166cfe7be8748cd5252c3bbb0b6ada132"
   },
-  "service": "MainPID=219802\nActiveState=active\n"
+  "service": "MainPID=219802\nActiveState=active\n",
+  "flat-test-clean-parity-final.log": "DC exhaustive: 65280 cases, optimized modes byte-exact\nAll 67710 cases passed against installed libjpeg; no altered JPEG bytes\n",
+  "final_environment": {
+    "requant-neon-test-divide-final.log": "reciprocal division exhaustive numerator domain: passed\n",
+    "flat-test-clean-parity-final.log": "DC exhaustive: 65280 cases, optimized modes byte-exact\nAll 67710 cases passed against installed libjpeg; no altered JPEG bytes\n",
+    "service": "MainPID=219802\nActiveState=active\n",
+    "compiler": "cc (Debian 14.2.0-19) 14.2.0",
+    "runtime_package": "libjpeg62-turbo 1:2.1.5-4\n",
+    "cpu4_governor": "ondemand",
+    "temperature_millicelsius": "33333",
+    "header_sha256": {
+      "jpeglib.h": "b51cc0cb5ac082465004dc89422ebda439b053fdffbcf6baf8a6336a3288759f",
+      "jmorecfg.h": "28c69810f34c8bbeb1254c0998faadd5d8cb678fe0eda2384e132538618d0f8e",
+      "jconfig.h": "a2a6256e40f0fa699d3ba754af82702ff60d7051a0969b0261c8d287f9a4ac44"
+    }
+  }
 }
