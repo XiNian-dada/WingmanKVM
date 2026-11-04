@@ -1,9 +1,11 @@
 # 会话 Cookie 与 `server.public_origin`
 
 WingmanKVM 用 `wingman_session` Cookie 保存网页管理会话。Cookie 的 `Secure`
-属性只由配置项 `server.public_origin` 决定，不由任何请求头决定。
+属性由内置 TLS 状态及 `server.public_origin` 决定，不由任何请求头决定。内置 TLS 启用时始终带 `Secure`。
 
 ## 策略
+
+新安装默认启用内置 TLS，首次设置、登录和退出响应均使用 Secure Cookie。下表仅适用于 `server.tls.mode = "disabled"` 的 HTTP 监听（包括 TLS 由反向代理终止的场景）：
 
 | `server.public_origin` | 新会话 Cookie（首次设置、密码登录、Passkey 登录） | 退出登录删除 Cookie |
 | --- | --- | --- |
@@ -15,13 +17,14 @@ WingmanKVM 用 `wingman_session` Cookie 保存网页管理会话。Cookie 的 `S
 Cookie 名称、`Path=/`、`HttpOnly`、`SameSite=Strict`、有效期和认证流程保持不变。
 新会话的 `Max-Age` 为 43200；退出登录使用相同的属性并以 `Max-Age=0` 清除。
 
-服务在生成每个响应时读取当前已验证的 `server.public_origin`，不使用全局可变状态。
+服务在生成每个响应时读取当前已验证的 TLS 配置及 `server.public_origin`。
 如果内存中的值无法解析，按故障安全策略仍带 `Secure`；正常加载和保存配置时会拒绝
 无效的 origin。
 
 ## 在首次设置前配置
 
-`public_origin` 必须在创建管理员之前写入状态目录中的 `config.json`，因为首次设置
+内置 TLS 默认无需预先配置即可签发 Secure Cookie。若由反向代理终止 HTTPS，
+`public_origin` 应在创建管理员之前写入状态目录中的 `config.json`，因为首次设置
 响应本身就会签发会话 Cookie。例如：
 
 ```json
@@ -30,6 +33,7 @@ Cookie 名称、`Path=/`、`HttpOnly`、`SameSite=Strict`、有效期和认证�
   "server": {
     "listen_address": "0.0.0.0",
     "port": 8080,
+    "tls": { "mode": "disabled" },
     "public_origin": "https://kvm.example.com"
   }
 }
@@ -40,25 +44,15 @@ Cookie 名称、`Path=/`、`HttpOnly`、`SameSite=Strict`、有效期和认证�
 
 ## 直接 HTTP 调试
 
-不配置 `public_origin`，或显式配置 `http://...`，会保留直接通过 HTTP 访问的调试
+在主机配置 `server.tls.mode = "disabled"`，同时不配置 `public_origin`，或显式配置 `http://...`，会保留直接通过 HTTP 访问的调试
 兼容性：Cookie 不带 `Secure`，浏览器可以在 HTTP 页面保存会话。该模式不应作为公网
 部署方案。
 
 ## 从 HTTP 部署切换到 HTTPS
 
-把已运行的 HTTP 部署改为 HTTPS 时，修改 `public_origin` 或在前面增加 TLS 代理不会
-追溯修改浏览器中已经保存的非 Secure 会话 Cookie。旧 Cookie 仍可能保留在原域名下并
-继续被发送；只有之后新签发的 Cookie 才会带 `Secure`。
+在 **设置 → HTTPS 与证书** 启用自签模式时，服务会撤销旧会话，并在保存响应中清除当前浏览器的旧非 Secure Cookie。打开新的 HTTPS 地址后重新登录，新 Cookie 带 `Secure`。其他浏览器的旧 Cookie 即使仍存在也不再是有效会话。
 
-在把实例暴露到 HTTPS 或公网之前，必须：
-
-1. 先撤销已有会话（要求管理员退出登录，或重启服务以清空内存会话）；
-2. 确认旧的非 Secure 会话 Cookie 已从浏览器删除；
-3. 再设置 `public_origin` 为 `https://...`，并在 HTTPS 入口重新登录；
-4. 关闭 HTTP 入口，确保外部只能经 HTTPS 访问，避免旧 Cookie 继续经明文 HTTP 传输。
-
-在完成退出/重新登录（或撤销全部会话/重启）并关闭 HTTP 入口之前，不要把该实例暴露
-到公网。
+仅编辑磁盘配置不会修改客户端 Cookie；重启会清空服务端会话，应在浏览器清除旧 Cookie 后通过 HTTPS 重新登录。内置 TLS 的同端口 HTTP 请求只用于 GET/HEAD 跳转和本机健康检查，不再接受明文登录或控制请求。HTTP 请求到达服务器之前可能已经携带旧 Cookie，重定向不能把这次传输变成加密传输。
 
 ## 不信任代理请求头
 
@@ -77,11 +71,9 @@ Cookie 名称、`Path=/`、`HttpOnly`、`SameSite=Strict`、有效期和认证�
 `SameSite=Strict` 和 `Secure` 与新会话 Cookie 一致，仅值清空且 `Max-Age=0`。
 这样浏览器才能可靠匹配并删除已有会话 Cookie。
 
-## 不宣称 TLS 终止
+## TLS 监听与代理
 
-设置 `https://public_origin` 只影响 Cookie 属性，不代表 WingmanKVM 自己提供 TLS
-监听、证书管理或 TLS 终止。本服务仍按 `listen_address`/`port` 提供 HTTP；生产环境
-需要在受信任的反向代理或隧道处终止 TLS，并把 HTTPS 源站正确转发到本服务。
+`server.tls.mode` 为 `self_signed` 或 `custom` 时，WingmanKVM 在当前监听端口终止 TLS。仅设置 HTTPS `public_origin` 不会启用 TLS：`mode = "disabled"` 时仍是 HTTP 上游，需由代理终止 TLS。详见 [HTTPS 与证书](HTTPS.md)。
 
 ## 验证
 

@@ -55,7 +55,7 @@ It deploys as a single binary and needs no separate database or frontend build t
 Target machine HDMI output  ──>  HDMI capture card  ──USB──>  KVM host USB Host port
 Target machine USB port     <──  USB cable  ───────────────>  KVM host OTG port (usually Type-C)
 Target machine power pins   <──  Relay dry contacts  ──────>  KVM host GPIO (optional)
-Browser                     <──  LAN  ─────────────────────>  http://<KVM host IP>:8080
+Browser                     <──  LAN  ─────────────────────>  https://<KVM host IP>:8080
 ```
 
 ## Quick start
@@ -79,7 +79,7 @@ For pinning a version, manual downloads, a LAN name (`--mdns`) and troubleshooti
 
 WingmanKVM can directly operate the target machine; treat it as the physical console of a server:
 
-- Do not expose port 8080 directly to the public internet. For remote access, use a VPN (such as WireGuard or Tailscale), or deploy behind an HTTPS reverse proxy and configure `server.public_origin` (see [session cookie policy](docs/SESSION_COOKIES.md) (Chinese)).
+- New installations use built-in HTTPS with a self-signed certificate. Import a CA certificate in Settings → HTTPS and certificates. Port 8080 or a forwarded public port works without 443. Existing configurations retain HTTP; see [HTTPS and certificates](docs/en/HTTPS.md) for migration, trust and renewal. WireGuard/Tailscale VPN access is also supported.
 - The web terminal uses a restricted account without sudo by default; enable root maintenance explicitly only when needed, see [maintenance privilege mode](docs/MAINTENANCE_MODES.md) (Chinese).
 
 ## Documentation

@@ -167,7 +167,7 @@ sudo ./deploy/install.sh --install-deps --release /path/to/wingmankvm-v<版本>-
 
 ### 局域网域名访问（mDNS，`wingmankvm.local`）
 
-追加 `--mdns` 后，安装器会通过 avahi-daemon 在局域网内广播 `wingmankvm.local`，并在安装完成提示和 `wingmankvm-setup-url` 中优先输出 `http://wingmankvm.local:8080/...`，随后才列出 IP 地址。这样访问地址不随 IP 变化。注意：Passkey（WebAuthn）要求安全上下文，`http://*.local` 不满足，仍须通过 HTTPS 反向代理访问才能使用 Passkey。
+追加 `--mdns` 后，安装器会通过 avahi-daemon 在局域网内广播 `wingmankvm.local`，并在安装完成提示和 `wingmankvm-setup-url` 中优先输出 `https://wingmankvm.local:8080/...`，随后才列出 IP 地址。这样访问地址不随 IP 变化。注意：Passkey（WebAuthn）要求安全上下文，`http://*.local` 不满足，请使用内置 HTTPS 并建立证书信任，或通过 HTTPS 反向代理访问。旧 HTTP 配置仍输出 HTTP 地址。
 
 ```bash
 # 与 --install-deps 一起使用时会自动安装 avahi-daemon
@@ -265,7 +265,7 @@ sudo wingmankvm-setup-url
 
 该命令只能以 root 运行。首次启动时服务会把一次性令牌写入 `/var/lib/wingmankvm/setup-token`（权限 `0600`，服务账户所有）；创建管理员成功后令牌立即失效，文件也会删除。令牌不会写入服务日志。已经初始化时，命令只提示初始化已完成。
 
-打开 `http://KVM主机地址或主机名:8080/`，然后按两步向导完成设置：
+打开 `https://KVM主机地址或主机名:8080/`，然后按两步向导完成设置：
 
 1. 创建管理员账号；一次性地址会自动填入 setup token，密码至少 12 位，并包含大写字母、小写字母、数字和符号；
 2. 在“检查连接”中确认自动检测结果，选择是否启用虚拟介质；GPIO 电源控制可以跳过并在之后配置。
@@ -548,12 +548,7 @@ done
 
 ## 11. HTTPS
 
-未配置 `server.public_origin` 或显式使用 `http://...` 时，Cookie 不带 `Secure`，只适合可信管理网内调试。配置 `https://...` 后，首次设置、密码/Passkey 登录和注销响应统一使用 Secure Cookie，且不会信任转发头降级。迁移前须撤销旧会话并清除旧 Cookie，再通过 HTTPS 重新登录，同时关闭公开 HTTP 入口。详见[会话 Cookie 策略](SESSION_COOKIES.md)。生产环境建议：
-
-- 使用 WireGuard/Tailscale 等 VPN；或
-- 在 Caddy/Nginx 后终止 HTTPS，并限制来源网络。
-
-不要把控制台端口直接映射到公网。
+新安装默认在当前端口提供内置 HTTPS 自动自签证书；旧配置保留 HTTP。在 **设置 → HTTPS 与证书** 中可启用自签、导入 CA 证书、查看有效期和切换已保存证书。公网 `38319 → 设备 8080` 可直接访问 `https://域名:38319`，无需 443。证书信任、到期更换和 HTTP 迁移见 [HTTPS 与证书](HTTPS.md)；Cookie 行为见 [会话 Cookie 策略](SESSION_COOKIES.md)。
 
 ### 反向代理、内网穿透与客户端 IP
 
@@ -566,7 +561,7 @@ proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header X-Forwarded-Proto $scheme;
 ```
 
-浏览器终端 WebSocket 在升级前强制校验 `Origin`，不会信任 `X-Forwarded-Proto`、`Forwarded` 或其他转发头来决定协议。直接 HTTP 部署只接受与请求 `Host` 相同的 `http` 来源。若反向代理终止 HTTPS，必须在状态目录的 `config.json` 中配置唯一的公网来源（scheme + 主机 + 端口，默认端口可省略）：
+浏览器终端 WebSocket 在升级前强制校验 `Origin`，不会信任 `X-Forwarded-Proto`、`Forwarded` 或其他转发头来决定协议。内置 TLS 已启用时代理应转发 TLS，或在主机配置 `server.tls.mode: "disabled"` 以使用 HTTP 上游。直接 HTTP 部署只接受与请求 `Host` 相同的 `http` 来源。若反向代理终止 HTTPS，必须在状态目录的 `config.json` 中配置唯一的公网来源（scheme + 主机 + 端口，默认端口可省略）：
 
 ```json
 {
@@ -576,7 +571,7 @@ proxy_set_header X-Forwarded-Proto $scheme;
 }
 ```
 
-配置后终端只接受该精确来源，并要求请求 `Host` 与其主机和端口一致；反向代理必须像上面的 Nginx 示例一样保留浏览器访问的外部 `Host`。不要把内网直连地址当作旁路，也不要在代理改写 `Host` 后继续使用旧配置。缺失、`null`、多个、逗号分隔或格式错误的 `Origin` 都会被拒绝；未配置 `public_origin` 时 HTTPS 来源同样会被拒绝。该字段也可通过 `POST /api/config` 的 `server.public_origin` 设置，显式传入 `null` 可清除。
+配置后终端只接受该精确来源，并要求请求 `Host` 与其主机和端口一致；反向代理必须像上面的 Nginx 示例一样保留浏览器访问的外部 `Host`。不要把内网直连地址当作旁路，也不要在代理改写 `Host` 后继续使用旧配置。缺失、`null`、多个、逗号分隔或格式错误的 `Origin` 都会被拒绝；未配置 `public_origin` 时，内置 TLS 只接受与 Host 相同的 HTTPS 来源，HTTP 监听只接受 HTTP 来源。该字段也可通过 `POST /api/config` 的 `server.public_origin` 设置，显式传入 `null` 可清除。
 
 如果链路是“浏览器 → Nginx → 本机隧道端口 → 内网隧道 → KVM”，PPv2 可能只携带 Nginx 的 `127.0.0.1`，而浏览器的公网出口 IP 在 HTTP 转发头中。可在状态目录的 `config.json` 中显式配置：
 
