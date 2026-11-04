@@ -50,6 +50,8 @@ fn main() {
         ])
         .arg(format!("--host={target}"))
         .env("CC", tool.path())
+        .env("AR", cc::Build::new().get_archiver().get_program())
+        .env("RANLIB", "ranlib")
         .env("CFLAGS", cflags);
     if !target.starts_with("aarch64") && !target.starts_with("arm") {
         configure.arg("--disable-asm"); // Development builds need no NASM. ARM keeps NEON.

@@ -7,6 +7,7 @@ use std::{
 };
 #[derive(Debug)]
 pub(super) struct Program {
+    pub max_kbps: u32,
     directory: PathBuf,
     executable: PathBuf,
 }
@@ -16,7 +17,7 @@ impl Drop for Program {
         let _ = fs::remove_dir(&self.directory);
     }
 }
-pub(super) fn prepare() -> Result<EncoderSpec, String> {
+pub(super) fn prepare(max_kbps: u32) -> Result<EncoderSpec, String> {
     let mut nonce = [0u8; 16];
     getrandom::fill(&mut nonce).map_err(|e| format!("无法准备原生编码器：{e}"))?;
     let directory =
@@ -26,6 +27,7 @@ pub(super) fn prepare() -> Result<EncoderSpec, String> {
         .create(&directory)
         .map_err(|e| e.to_string())?;
     let program = Arc::new(Program {
+        max_kbps,
         executable: directory.join("encoder"),
         directory,
     });

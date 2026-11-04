@@ -3,7 +3,7 @@ mod h264;
 #[cfg(unix)]
 #[path = "native_h264.rs"]
 mod native_h264;
-pub use h264::{EncodedFrame, H264Subscription, MAX_ENCODED_FRAME};
+pub use h264::{EncodedFrame, H264Subscription, MAX_ENCODED_FRAME, EncoderTelemetry};
 use h264::{EncoderOutput, FrameWriter, H264Hub};
 
 use std::{
@@ -139,6 +139,8 @@ pub struct BitrateChange {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WebRtcStatus {
+    pub telemetry: Option<EncoderTelemetry>,
+    pub live_bitrate: bool,
     pub h264_viewers: usize,
     pub shared_encoder: bool,
     pub available: bool,
@@ -536,6 +538,8 @@ impl WebRtcManager {
             .len();
         match encoder {
             Ok(encoder) => WebRtcStatus {
+                telemetry: self.inner.h264.telemetry(),
+                live_bitrate: encoder.native,
                 h264_viewers: self.inner.h264.viewers(),
                 shared_encoder: true,
                 available: true,
@@ -547,6 +551,8 @@ impl WebRtcManager {
                 software_encoding: encoder.software,
             },
             Err(message) => WebRtcStatus {
+                telemetry: self.inner.h264.telemetry(),
+                live_bitrate: false,
                 h264_viewers: self.inner.h264.viewers(),
                 shared_encoder: true,
                 available: false,
@@ -1448,7 +1454,7 @@ fn probe_encoder_with(config: &H264Config, limits: ProbeLimits) -> Result<Encode
     config.validate_udp_mapping().map_err(str::to_owned)?;
     #[cfg(unix)]
     if config.encoder == H264Encoder::Software && config.allow_software && config.ffmpeg_path.is_none() {
-        return native_h264::prepare();
+        return native_h264::prepare(config.bitrate_kbps);
     }
     let executable = config
         .ffmpeg_path
@@ -1457,7 +1463,7 @@ fn probe_encoder_with(config: &H264Config, limits: ProbeLimits) -> Result<Encode
     let listing = run_probe_command(&executable, limits)?;
     let (codec, label, software) = select_encoder(config, &listing)?;
     #[cfg(unix)]
-    if software && config.ffmpeg_path.is_none() { return native_h264::prepare(); }
+    if software && config.ffmpeg_path.is_none() { return native_h264::prepare(config.bitrate_kbps); }
     Ok(EncoderSpec {
         executable,
         codec,
@@ -1983,6 +1989,8 @@ async fn run_encoder_process(
     let fps_text = fps.to_string();
     let mut command = TokioCommand::new(&encoder.executable);
     command.kill_on_drop(true);
+    #[cfg(unix)]
+    if let Some(program) = &encoder._program { command.arg(program.max_kbps.to_string()); }
     if !encoder.native {
     command.args([
         "-hide_banner",
@@ -2119,16 +2127,18 @@ async fn run_encoder_process(
         let mut output = FrameWriter::new(output, bitrate_kbps);
         if native {
             loop {
-                let mut header = [0u8; 8];
+                let mut header = [0u8; 12];
                 stdout.read_exact(&mut header).await.map_err(|e| e.to_string())?;
                 let length = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
-                let applied = u32::from_be_bytes(header[4..].try_into().unwrap());
+                let applied = u32::from_be_bytes(header[4..8].try_into().unwrap());
+                let processing_us = u32::from_be_bytes(header[8..].try_into().unwrap());
                 if length == 0 || length > MAX_ENCODED_FRAME || applied == 0 || applied > 100_000 {
                     return Err("Invalid native H.264 frame".to_owned());
                 }
                 let mut frame = vec![0u8; length];
                 stdout.read_exact(&mut frame).await.map_err(|e| e.to_string())?;
                 output.set_bitrate(applied);
+                output.set_processing_time(processing_us);
                 if output.write(Bytes::from(frame), frame_duration).await? { let _ = progress.try_send(()); }
             }
         }

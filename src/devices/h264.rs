@@ -6,6 +6,58 @@ use tokio::sync::broadcast;
 const FRAME_QUEUE: usize = 8;
 pub const MAX_ENCODED_FRAME: usize = 4 * 1024 * 1024;
 
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct EncoderTelemetry {
+    pub frames: u64,
+    pub epoch: u32,
+    pub restarts: u32,
+    pub bitrate_changes: u64,
+    pub bitrate_kbps: u32,
+    pub fps: Option<f64>,
+    pub processing_ms: Option<f64>,
+    pub last_frame_age_ms: Option<u64>,
+    pub max_frame_gap_ms: Option<f64>,
+}
+pub(super) struct EncoderMetrics {
+    value: EncoderTelemetry,
+    window: Instant,
+    window_frames: u64,
+    last_frame: Option<Instant>,
+}
+impl Default for EncoderMetrics {
+    fn default() -> Self { Self { value: EncoderTelemetry::default(), window: Instant::now(), window_frames: 0, last_frame: None } }
+}
+impl EncoderMetrics {
+    fn record(&mut self, epoch: u32, kbps: u32, processing_ms: Option<f64>) {
+        let now = Instant::now();
+        if let Some(last) = self.last_frame {
+            let gap = now.duration_since(last).as_secs_f64() * 1000.0;
+            self.value.max_frame_gap_ms = Some(self.value.max_frame_gap_ms.unwrap_or(0.0).max(gap));
+        }
+        if self.value.frames > 0 && self.value.bitrate_kbps != kbps { self.value.bitrate_changes += 1; }
+        self.last_frame = Some(now);
+        self.value.frames += 1;
+        self.value.epoch = epoch;
+        self.value.restarts = epoch.saturating_sub(1);
+        self.value.bitrate_kbps = kbps;
+        if let Some(ms) = processing_ms {
+            self.value.processing_ms = Some(self.value.processing_ms.map_or(ms, |before| before * 0.9 + ms * 0.1));
+        }
+        self.window_frames += 1;
+        let seconds = now.duration_since(self.window).as_secs_f64();
+        if seconds >= 1.0 {
+            self.value.fps = Some(self.window_frames as f64 / seconds);
+            self.window = now; self.window_frames = 0;
+        }
+    }
+    fn snapshot(&self) -> EncoderTelemetry {
+        let mut value = self.value.clone();
+        value.last_frame_age_ms = self.last_frame.map(|t| t.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+        if self.last_frame.is_some_and(|t| t.elapsed() > Duration::from_secs(2)) { value.fps = Some(0.0); }
+        value
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct EncodedFrame {
     pub data: Bytes,
@@ -27,6 +79,7 @@ struct HubRun {
     frames: broadcast::Sender<Arc<EncodedFrame>>,
     cancel: watch::Sender<bool>,
     done: watch::Receiver<Option<String>>,
+    metrics: Arc<Mutex<EncoderMetrics>>,
 }
 impl Drop for HubRun {
     fn drop(&mut self) {
@@ -97,6 +150,11 @@ impl Drop for H264Subscription {
     }
 }
 impl H264Hub {
+    pub fn telemetry(&self) -> Option<EncoderTelemetry> {
+        let metrics = self.0.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?.metrics.clone();
+        let snapshot = metrics.lock().unwrap_or_else(|e| e.into_inner()).snapshot();
+        Some(snapshot)
+    }
     pub fn viewers(&self) -> usize {
         self.0
             .lock()
@@ -137,12 +195,14 @@ impl H264Hub {
                     let (viewers, requests) = watch::channel(HashMap::new());
                     let (cancel, cancellation) = watch::channel(false);
                     let (finished, done) = watch::channel(None);
+                    let metrics = Arc::new(Mutex::new(EncoderMetrics::default()));
                     let output = EncoderOutput::Shared {
                         frames: frames.clone(),
                         sequence: Arc::new(AtomicU64::new(0)),
                         timestamp: Arc::new(AtomicU64::new(0)),
                         epoch: Arc::new(AtomicU64::new(0)),
                         started: Instant::now(),
+                        metrics: metrics.clone(),
                     };
                     let video = video.clone();
                     let encoder = encoder.clone();
@@ -163,6 +223,7 @@ impl H264Hub {
                         frames,
                         cancel,
                         done,
+                        metrics,
                     });
                 }
                 let run = lock.as_mut().unwrap();
@@ -270,6 +331,7 @@ pub(super) enum EncoderOutput {
         timestamp: Arc<AtomicU64>,
         epoch: Arc<AtomicU64>,
         started: Instant,
+        metrics: Arc<Mutex<EncoderMetrics>>,
     },
     #[cfg(test)]
     Track(Arc<TrackLocalStaticSample>),
@@ -288,9 +350,11 @@ pub(super) struct FrameWriter {
     codec: Option<String>,
     epoch: u32,
     kbps: u32,
+    processing_ms: Option<f64>,
 }
 impl FrameWriter {
     pub fn set_bitrate(&mut self, kbps: u32) { self.kbps = kbps; }
+    pub fn set_processing_time(&mut self, us: u32) { self.processing_ms = Some(f64::from(us) / 1000.0); }
     pub fn new(output: EncoderOutput, kbps: u32) -> Self {
         let epoch = match &output {
             EncoderOutput::Shared { epoch, .. } => epoch.fetch_add(1, Ordering::Relaxed) as u32 + 1,
@@ -304,6 +368,7 @@ impl FrameWriter {
             codec: None,
             epoch,
             kbps,
+            processing_ms: None,
         }
     }
     /// Returns whether a picture was published. Header-only units may update
@@ -368,6 +433,7 @@ impl FrameWriter {
                 sequence,
                 timestamp,
                 started,
+                metrics,
                 ..
             } => {
                 if data.len() > MAX_ENCODED_FRAME {
@@ -377,6 +443,7 @@ impl FrameWriter {
                 // Encoder restarts finish the old writer before starting another.
                 let timestamp_us = now.max(timestamp.load(Ordering::Relaxed).saturating_add(1));
                 timestamp.store(timestamp_us, Ordering::Relaxed);
+                metrics.lock().unwrap_or_else(|e| e.into_inner()).record(self.epoch, self.kbps, self.processing_ms);
                 let _ = frames.send(Arc::new(EncodedFrame {
                     data,
                     sequence: sequence.fetch_add(1, Ordering::Relaxed) + 1,
@@ -412,10 +479,11 @@ mod tests {
         let mut jpeg = Vec::new();
         image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 90).encode_image(&image).unwrap();
         let hub = H264Hub::default();
-        let encoder = native_h264::prepare().unwrap();
+        let encoder = native_h264::prepare(4000).unwrap();
         let config = H264Config { max_sessions: 2, ..H264Config::default() };
         let mut viewer = hub.subscribe(video, encoder, &config).await.unwrap();
-        for (i, kbps) in [4000, 1000, 3000, 700, 2000, 256, 4000].into_iter().enumerate() {
+        let mut codec = None;
+        for (i, kbps) in [256, 4000, 1000, 3000, 700, 2000, 4000].into_iter().enumerate() {
             viewer.set_bitrate(kbps).unwrap();
             source.send_replace(Some(Arc::new(crate::devices::video::VideoFrame {
                 jpeg: Bytes::copy_from_slice(&jpeg), sequence: i as u64 + 1,
@@ -425,8 +493,15 @@ mod tests {
             assert_eq!(frame.epoch, 1, "live bitrate changes must not restart or reset the encoder");
             assert_eq!(frame.bitrate_kbps, kbps);
             assert!(!frame.data.is_empty());
+            if i == 0 { codec = frame.codec.clone(); }
+            assert_eq!(frame.codec, codec, "a low starting bitrate must not change SPS level on a raise");
             if i == 0 { assert!(frame.key && frame.codec.is_some()); }
         }
+        let stats = hub.telemetry().unwrap();
+        assert_eq!((stats.frames, stats.restarts, stats.bitrate_changes), (7, 0, 6));
+        assert_eq!(stats.bitrate_kbps, 4000);
+        assert!(stats.processing_ms.is_some_and(|ms| ms >= 0.0));
+        assert!(stats.last_frame_age_ms.is_some());
         drop(viewer);
         hub.stop().await;
     }
@@ -439,10 +514,34 @@ mod tests {
             jpeg: Bytes::from_static(&[255, 216, 255, 217]), sequence: 1,
         })));
         let hub = H264Hub::default();
-        let mut viewer = hub.subscribe(video, native_h264::prepare().unwrap(), &H264Config::default()).await.unwrap();
+        let mut viewer = hub.subscribe(video, native_h264::prepare(4000).unwrap(), &H264Config::default()).await.unwrap();
         assert!(tokio::time::timeout(Duration::from_secs(3), viewer.next()).await.unwrap().is_err());
         drop(viewer);
         hub.stop().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_raw_jpeg_decode_handles_gray_color_and_partial_mcu_edges() {
+        for gray in [false, true] {
+            let mut jpeg = Vec::new();
+            let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85);
+            if gray {
+                encoder.encode_image(&image::GrayImage::from_fn(130, 74, |x, y| image::Luma([(x+y) as u8]))).unwrap();
+            } else {
+                encoder.encode_image(&image::RgbImage::from_fn(130, 74, |x, y| image::Rgb([x as u8, y as u8, 100]))).unwrap();
+            }
+            let (video, source) = VideoManager::test_source(VideoConfig::default());
+            source.send_replace(Some(Arc::new(crate::devices::video::VideoFrame {
+                jpeg: Bytes::copy_from_slice(&jpeg), sequence: 1,
+            })));
+            let hub = H264Hub::default();
+            let mut viewer = hub.subscribe(video, native_h264::prepare(4000).unwrap(), &H264Config::default()).await.unwrap();
+            let frame = tokio::time::timeout(Duration::from_secs(3), viewer.next()).await.unwrap().unwrap();
+            assert!(frame.key && frame.codec.is_some());
+            drop(viewer);
+            hub.stop().await;
+        }
     }
 
     #[tokio::test]
@@ -457,6 +556,7 @@ mod tests {
                 timestamp: timestamp.clone(),
                 epoch: Arc::new(AtomicU64::new(0)),
                 started: Instant::now(),
+            metrics: Arc::new(Mutex::new(EncoderMetrics::default())),
             },
             4000,
         );
@@ -516,6 +616,7 @@ mod tests {
             timestamp: Arc::new(AtomicU64::new(0)),
             epoch: Arc::new(AtomicU64::new(0)),
             started: Instant::now(),
+        metrics: Arc::new(Mutex::new(EncoderMetrics::default())),
         };
         let mut writer = FrameWriter::new(output, 4000);
         let duration = Duration::from_millis(33);
