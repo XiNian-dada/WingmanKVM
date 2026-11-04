@@ -51,6 +51,9 @@ fn loopback(fixture: &ProbeFixture, audio: AudioManager) -> Loopback {
                 codec: "libx264",
                 label: "test encoder",
                 software: true,
+                native: false,
+                #[cfg(unix)]
+                _program: None,
             })),
             sessions: Mutex::new(HashMap::new()),
             offer_lock: AsyncMutex::new(()),

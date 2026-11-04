@@ -68,6 +68,7 @@ async fn direct_stream(
     let mut in_flight: VecDeque<(u64, Instant, usize)> = VecDeque::new();
     let mut pending_bytes = 0;
     let mut epoch = 0;
+    let mut applied_bitrate = 0;
     let mut last_frame = Instant::now();
     loop {
         let deadline = in_flight
@@ -107,6 +108,11 @@ async fn direct_stream(
                         "bitrate_kbps":frame.bitrate_kbps, "max_kbps":max_kbps, "min_kbps":256});
                     if !send(&mut socket, &guard, Message::Text(config.to_string().into())).await { break; }
                     epoch = frame.epoch;
+                    applied_bitrate = frame.bitrate_kbps;
+                } else if frame.bitrate_kbps != applied_bitrate {
+                    let feedback = json!({"type":"bitrate_applied", "kbps":frame.bitrate_kbps});
+                    if !send(&mut socket, &guard, Message::Text(feedback.to_string().into())).await { break; }
+                    applied_bitrate = frame.bitrate_kbps;
                 }
                 let size = frame.data.len();
                 if !send(&mut socket, &guard, Message::Binary(packet(&frame))).await { break; }

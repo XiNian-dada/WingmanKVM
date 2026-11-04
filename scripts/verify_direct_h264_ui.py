@@ -174,7 +174,7 @@ def main():
             check(decisions["rtt"] == [] and decisions["trend"] == [[2800, 7000]], "stable_high_rtt_holds_but_rising_rtt_lowers", decisions)
             high_latency = page.evaluate("""() => {
                 const t = window.__wingmanTest; let s = t.newAdaptiveState(4000), targets=[];
-                for(let i=0;i<70;i++) { const r=t.decideAdaptiveBitrate(s,{packetLossPct:i<3?8:0,rttMs:420,jitterBufferMs:20},i*1000); s=r.state; if(r.targetKbps) targets.push(r.targetKbps); }
+                for(let i=0;i<130;i++) { const r=t.decideAdaptiveBitrate(s,{packetLossPct:i<3?8:0,rttMs:420,jitterBufferMs:20},i*1000); s=r.state; if(r.targetKbps) targets.push(r.targetKbps); }
                 return targets;
             }""")
             check(high_latency == [2800, 3500, 4000], "high_latency_link_recovers_to_maximum", high_latency)

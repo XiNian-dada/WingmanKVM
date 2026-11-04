@@ -1,0 +1,15 @@
+[package]
+name = "wingman-h264-native"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+publish = false
+description = "Embedded standalone GPL x264 encoder with live bitrate control"
+
+[dependencies]
+wingman-jpeg-native = { path = "../wingman-jpeg-native" }
+
+[build-dependencies]
+cc = "1"
+sha2 = "0.10"

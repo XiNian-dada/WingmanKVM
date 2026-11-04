@@ -7,7 +7,7 @@ Automatic playback tries **WebRTC H.264 → Direct H.264 → MJPEG**. Direct use
 - A browser with `VideoDecoder`, an H.264 decoder and a secure context. Remote domain access requires HTTPS. Unsupported clients fall back to MJPEG.
 - Enable self-signing or import a CA certificate in **Settings → HTTPS and certificates**. Establish browser trust for self-signed certificates; see [HTTPS](HTTPS.md). Existing HTTP configurations retain HTTP after an upgrade.
 - Port 443 is unnecessary: TCP `38319 → device TCP 8080` supports `https://domain:38319` and `wss://domain:38319/api/video/h264/ws`. A reverse proxy must preserve the external Host and support WebSocket upgrades. Set `server.public_origin` when TLS terminates at the proxy, using the same Origin policy as the browser terminal.
-- FFmpeg 5.1 or newer is required for `-fps_mode passthrough`, along with a working H.264 encoder. Direct cannot make unavailable hardware encoders work; explicitly select and allow software encoding when libx264 is the usable encoder.
+- Selecting and allowing software encoding uses the bundled native x264 encoder by default, without system FFmpeg. Hardware encoding and an explicit `ffmpeg_path` retain FFmpeg 5.1 or newer. Direct cannot supply missing hardware drivers.
 - Audio remains WebRTC-only. Direct and MJPEG do not carry audio. Screenshots, recording, picture-in-picture and pointer mapping use the active video surface.
 
 ## Shared encoder
@@ -18,17 +18,23 @@ The encoder uses the **lowest requested bitrate among active viewers**. A slow v
 
 ## Encoding pipeline and latency limits
 
-JPEGs reach FFmpeg as multipart packets with `Content-Length`. A small probe window retains probe frames, avoiding startup frame loss and waiting for the next JPEG to complete the current packet. `-fps_mode passthrough` preserves received pictures instead of duplicating or dropping them to match a probed frame rate. Only `h264_metadata` inserts AUDs. Only H.264 units containing pictures enter viewer queues and advance media time; separate SPS/PPS units are still cached.
+The native software path decodes JPEGs using libjpeg-turbo in a standalone process and calls x264 directly. Grayscale enters the luma plane; color YCbCr becomes I420 without an RGB intermediate. Every JPEG yields one length-delimited output frame without waiting for another AUD. Bitrate and VBV changes call `x264_encoder_reconfig` before the next frame, retaining the instance, reference pictures and timestamps.
 
-The Annex B output parser still uses the next AUD to delimit the current picture, usually adding one source frame interval during continuous streaming (about 67 ms at 15 FPS). Capture, JPEG processing, encoding load, network and display add further latency. These changes do not alter MJPEG playback.
+In the FFmpeg path, JPEGs reach FFmpeg as multipart packets with `Content-Length`. A small probe window retains probe frames, avoiding startup frame loss and waiting for the next JPEG to complete the current packet. `-fps_mode passthrough` preserves received pictures instead of duplicating or dropping them to match a probed frame rate. Only `h264_metadata` inserts AUDs. Only H.264 units containing pictures enter viewer queues and advance media time; separate SPS/PPS units are still cached.
+
+The FFmpeg Annex B output parser still uses the next AUD to delimit the current picture, usually adding one source frame interval during continuous streaming (about 67 ms at 15 FPS). Capture, JPEG processing, encoding load, network and display add further latency. These changes do not alter MJPEG playback.
 
 RK3399 silicon supports H.264 encoding, but using it requires compatible kernel drivers, MPP and FFmpeg. An `h264_v4l2m2m` entry in `ffmpeg -encoders` only confirms the interface was compiled. A V4L2 encoder node whose capture formats list only JPEG cannot encode H.264 through that node. [ffmpeg-rockchip](https://github.com/nyanmisaka/ffmpeg-rockchip) requires a Rockchip BSP/vendor kernel and MPP device access; replacing FFmpeg or integrating [MPP](https://github.com/rockchip-linux/mpp) directly cannot supply a missing driver.
 
 ## Adaptation
 
-Only fresh samples count. Three consecutive congestion samples lower bitrate; loss, buffering and RTT growth relative to the connection's lowest observed RTT are considered. Stable high RTT alone neither lowers bitrate nor prevents recovery. WebRTC samples with fewer than 20 packets do not provide a loss ratio. Direct uses decode ACK RTT and relative buffering delay without inventing a TCP packet-loss metric. These are not HDMI-to-display latency measurements.
+Only samples with new media data count. Cached reports and empty reports during encoder gaps do not advance adaptation. Recovery requires decoded frames; new packets showing congestion can still lower bitrate while decoding is stalled. A five-second settling period after changes excludes encoder and decoder warm-up. Three consecutive congestion samples lower bitrate; loss, buffering and RTT growth relative to the connection's lowest observed RTT are considered. Stable high RTT alone neither lowers bitrate nor prevents recovery. WebRTC samples with fewer than 20 packets do not provide a loss ratio. Direct uses decode ACK RTT and relative buffering delay without inventing a TCP packet-loss metric. These are not HDMI-to-display latency measurements.
 
-Recovery waits at least 30 seconds after congestion and raises bitrate gradually. Failed probes extend the wait to avoid repeated oscillation. Changing bitrate still briefly restarts FFmpeg; shared requests are coalesced with at least ten seconds between restarts (the first adjustment can be immediate). Each new encoder epoch starts with an IDR and SPS/PPS, and reconfigures the browser decoder.
+Decrease requests are at least 30 seconds apart. Recovery requires 30 consecutive healthy samples and at least 60 seconds since the last change and congestion. A decrease within 90 seconds of a raise counts as a failed probe, extending the recovery hold from 60 to 120 to 240 seconds. Ten congestion-free minutes clear the failure count.
+
+The default native software encoder changes bitrate without restarting or resetting its epoch/browser decoder. Hardware encoding and an explicit FFmpeg executable retain the following restart safeguards.
+
+Changing bitrate still briefly restarts FFmpeg. The shared encoder coalesces the latest requests across all viewers: the first decrease can be immediate, subsequent decreases are at least 30 seconds apart, and increases wait at least 60 seconds after startup or the last restart. The old bitrate keeps streaming while a change waits; reverting to the running target cancels the pending restart. Each new epoch starts with an IDR and SPS/PPS, and reconfigures the browser decoder.
 
 ## Wire protocol v1
 

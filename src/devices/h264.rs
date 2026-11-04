@@ -290,6 +290,7 @@ pub(super) struct FrameWriter {
     kbps: u32,
 }
 impl FrameWriter {
+    pub fn set_bitrate(&mut self, kbps: u32) { self.kbps = kbps; }
     pub fn new(output: EncoderOutput, kbps: u32) -> Self {
         let epoch = match &output {
             EncoderOutput::Shared { epoch, .. } => epoch.fetch_add(1, Ordering::Relaxed) as u32 + 1,
@@ -402,6 +403,47 @@ mod tests {
         1, 0x65, 1,
     ];
     const DELTA: &[u8] = &[0, 0, 0, 1, 9, 0xf0, 0, 0, 0, 1, 0x41, 1];
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_bitrate_changes_keep_one_epoch_and_publish_every_input_frame() {
+        let (video, source) = VideoManager::test_source(VideoConfig::default());
+        let image = image::RgbImage::from_fn(128, 72, |x, y| image::Rgb([x as u8, y as u8, 100]));
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 90).encode_image(&image).unwrap();
+        let hub = H264Hub::default();
+        let encoder = native_h264::prepare().unwrap();
+        let config = H264Config { max_sessions: 2, ..H264Config::default() };
+        let mut viewer = hub.subscribe(video, encoder, &config).await.unwrap();
+        for (i, kbps) in [4000, 1000, 3000, 700, 2000, 256, 4000].into_iter().enumerate() {
+            viewer.set_bitrate(kbps).unwrap();
+            source.send_replace(Some(Arc::new(crate::devices::video::VideoFrame {
+                jpeg: Bytes::copy_from_slice(&jpeg), sequence: i as u64 + 1,
+            })));
+            let frame = tokio::time::timeout(Duration::from_secs(3), viewer.next()).await.unwrap().unwrap();
+            assert_eq!(frame.sequence, i as u64 + 1);
+            assert_eq!(frame.epoch, 1, "live bitrate changes must not restart or reset the encoder");
+            assert_eq!(frame.bitrate_kbps, kbps);
+            assert!(!frame.data.is_empty());
+            if i == 0 { assert!(frame.key && frame.codec.is_some()); }
+        }
+        drop(viewer);
+        hub.stop().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_encoder_rejects_corrupt_jpeg_without_hanging_the_hub() {
+        let (video, source) = VideoManager::test_source(VideoConfig::default());
+        source.send_replace(Some(Arc::new(crate::devices::video::VideoFrame {
+            jpeg: Bytes::from_static(&[255, 216, 255, 217]), sequence: 1,
+        })));
+        let hub = H264Hub::default();
+        let mut viewer = hub.subscribe(video, native_h264::prepare().unwrap(), &H264Config::default()).await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(3), viewer.next()).await.unwrap().is_err());
+        drop(viewer);
+        hub.stop().await;
+    }
 
     #[tokio::test]
     async fn consecutive_delimiters_publish_only_pictures_and_keep_parameter_sets() {
@@ -543,6 +585,9 @@ mod tests {
             codec: "libx264",
             label: "test",
             software: true,
+            native: false,
+            #[cfg(unix)]
+            _program: None,
         };
         let hub = H264Hub::default();
         let mut first = hub

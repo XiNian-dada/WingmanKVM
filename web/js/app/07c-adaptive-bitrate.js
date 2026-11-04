@@ -24,24 +24,28 @@ const ADAPTIVE_POLICY = {
   goodLossPct: 1,
   goodJitterMs: 80,
   badSamples: 3, //   ≈3 s of consecutive bad samples before lowering
-  goodSamples: 10, // ≈10 s of consecutive good samples before raising
+  goodSamples: 30, // ≈30 s of consecutive good samples before raising
   decreaseFactor: 0.7,
   severeFactor: 0.5,
   increaseFactor: 1.25,
   // Under loss the target also never exceeds what actually arrived (+10 %).
   receivedHeadroom: 1.1,
-  cooldownMs: 10000, //     min spacing of changes; the server enforces it too
-  raiseAfterBadMs: 30000, // no raise within 30 s of the last bad sample
+  cooldownMs: 30000, // min spacing of decreases; the shared encoder enforces it too
+  increaseIntervalMs: 60000, // recovery must not restart FFmpeg every 10 s
+  settleMs: 5000, // ignore restart/decoder warm-up samples after a change
+  raiseAfterBadMs: 60000, // no raise within 60 s of the last bad sample
   // Probing at capacity: a raise followed by a decrease within
   // probeFailWindowMs is a failed probe. Each consecutive failure doubles the
   // wait after the last bad sample (raiseAfterBadMs × 2^failures, at most
   // maxRaiseAfterBadMs), so a link that sits between two steps restarts the
-  // encoder every ~4 min instead of every ~40 s. probeResetMs without any bad
+  // encoder much less often. probeResetMs without any bad
   // sample clears the count; it must exceed maxRaiseAfterBadMs, otherwise the
   // count would clear before the longest wait has passed.
-  probeFailWindowMs: 20000,
+  // Queues can take tens of seconds to build after a probe. A 20 s window
+  // missed real failures observed ~40 s after a raise.
+  probeFailWindowMs: 90000,
   maxRaiseAfterBadMs: 240000,
-  probeResetMs: 300000,
+  probeResetMs: 600000,
   stepKbps: 50,
   snapToMaxRatio: 0.95, //  a raise this close to the maximum goes all the way
 };
@@ -70,6 +74,10 @@ function decideAdaptiveBitrate(previous, sample, now, policy = ADAPTIVE_POLICY) 
     rtt = known(sample?.rttMs) ? sample.rttMs : null,
     jitter = known(sample?.jitterBufferMs) ? sample.jitterBufferMs : null,
     received = known(sample?.receivedKbps) ? sample.receivedKbps : null;
+  if (state.lastChangeAt !== null && now - state.lastChangeAt < policy.settleMs) {
+    state.badStreak = 0; state.goodStreak = 0;
+    return { state, targetKbps: null, verdict: 'settling' };
+  }
   if (loss === null && rtt === null && jitter === null) {
     state.badStreak = 0; state.goodStreak = 0;
     return { state, targetKbps: null, verdict: 'unknown' };
@@ -85,6 +93,7 @@ function decideAdaptiveBitrate(previous, sample, now, policy = ADAPTIVE_POLICY) 
       rttRising,
     good =
       !bad &&
+      (!known(sample?.decodedFps) || sample.decodedFps > 0) &&
       (loss === null || loss < policy.goodLossPct) &&
       (rtt === null || rtt <= base + Math.max(50, base * 0.25)) &&
       (jitter === null || jitter < policy.goodJitterMs);
@@ -122,6 +131,7 @@ function decideAdaptiveBitrate(previous, sample, now, policy = ADAPTIVE_POLICY) 
     good &&
     state.goodStreak >= policy.goodSamples &&
     cooled &&
+    (state.lastChangeAt === null || now - state.lastChangeAt >= policy.increaseIntervalMs) &&
     state.currentKbps < state.maxKbps &&
     (state.lastBadAt === null || now - state.lastBadAt >= raiseHoldMs)
   ) {
@@ -203,7 +213,8 @@ function adaptiveBitrateTick(now = performance.now()) {
     previousKbps = adaptive.state.currentKbps,
     { state, targetKbps } = decideAdaptiveBitrate(
       adaptive.state,
-      { packetLossPct: q.packetLossPct, rttMs: q.rttMs, jitterBufferMs: q.jitterBufferMs, receivedKbps: q.bitrateKbps },
+      { packetLossPct: q.packetLossPct, rttMs: q.rttMs, jitterBufferMs: q.jitterBufferMs,
+        receivedKbps: q.bitrateKbps, decodedFps: q.fps },
       now,
     );
   adaptive.state = state;

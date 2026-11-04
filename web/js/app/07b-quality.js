@@ -148,7 +148,11 @@ function applyWebrtcStats(report) {
   q.packetLossPct = received === null || lost === null || received + lost < 20 ? null : (lost / (received + lost)) * 100;
   q.fps = frames === null ? null : frames / seconds;
   q.jitterBufferMs = delay === null || !emitted ? null : (delay / emitted) * 1000;
-  return bytes !== null && frames !== null;
+  // A new report during an encoder gap can have unchanged media counters.
+  // Its cached RTT must not count as another healthy recovery sample.
+  // New packets can still signal loss while decoding is stalled; the policy
+  // requires decoded frames only for recovery, so severe loss can lower bitrate.
+  return bytes > 0 && frames !== null;
 }
 function applyMjpegStats() {
   const q = connectionQuality,

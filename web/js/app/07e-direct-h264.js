@@ -115,7 +115,7 @@ export function startDirectH264({ onPlaying, onFailure, onResize }) {
           ack(run.lastSequence);
           run.decoder?.close();
           run.pending.clear(); run.needsKey = true; run.epoch = message.epoch;
-          run.offset = Infinity; run.delay = null;
+          run.offset = Infinity; run.delay = null; run.rtt = null; run.sample = null;
           run.decoder = makeDecoder(config);
           run.config = config;
           run.effectiveKbps = message.bitrate_kbps;
@@ -123,7 +123,8 @@ export function startDirectH264({ onPlaying, onFailure, onResize }) {
             run.configured = true;
             resetAdaptiveBitrate(run.id, message.max_kbps, message.min_kbps, 'direct_h264');
           }
-        } else if (message.type === 'feedback') run.rtt = Number.isFinite(message.rtt_ms) ? message.rtt_ms : null;
+        } else if (message.type === 'bitrate_applied') run.effectiveKbps = message.kbps;
+        else if (message.type === 'feedback') run.rtt = Number.isFinite(message.rtt_ms) ? message.rtt_ms : null;
         else if (message.type === 'bitrate' && run.pendingBitrate) {
           clearTimeout(run.pendingBitrate.timeout);
           run.pendingBitrate.resolve(message); run.pendingBitrate = null;

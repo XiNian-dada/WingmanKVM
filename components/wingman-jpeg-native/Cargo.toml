@@ -5,6 +5,7 @@ edition = "2021"
 rust-version = "1.88"
 license = "MIT AND IJG AND BSD-3-Clause AND Zlib"
 publish = false
+links = "wingman_jpeg"
 description = "Bounded JPEG processing with recoverable libjpeg-turbo errors"
 
 [build-dependencies]

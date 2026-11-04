@@ -43,6 +43,7 @@ v4l = "0.14"
 
 [target.'cfg(unix)'.dependencies]
 wingman-jpeg-native = { path = "components/wingman-jpeg-native" }
+wingman-h264-native = { path = "components/wingman-h264-native" }
 
 [dev-dependencies]
 futures-util = { version = "0.3", features = ["sink"] }
