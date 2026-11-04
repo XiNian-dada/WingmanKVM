@@ -2,6 +2,7 @@ import { shared } from './state.js';
 import { $, feed, webrtcFeed } from './00-core.js';
 import { getSetting, setSetting } from './00-settings.js';
 import { shouldVideoRun } from './07-video.js';
+import { readDirectStats } from './07e-direct-h264.js';
 import {
   adaptiveBitrateText, adaptiveBitrateTick, adaptiveBitrateWantsStats,
 } from './07c-adaptive-bitrate.js';
@@ -54,13 +55,14 @@ function qualityBitrateText(kbps) {
 function renderQualityOverlay() {
   const q = connectionQuality,
     size = q.width && q.height ? `${q.width}×${q.height}` : '—';
-  if (q.transport === 'webrtc_h264') {
-    setQualityRow('rtt', '往返延迟', qualityNumber(q.rttMs, ' ms'));
+  if (q.transport === 'webrtc_h264' || q.transport === 'direct_h264') {
+    setQualityRow('rtt', q.transport === 'direct_h264' ? '往返延迟（含解码）' : '往返延迟', qualityNumber(q.rttMs, ' ms'));
     setQualityRow('bitrate', '接收码率', qualityBitrateText(q.bitrateKbps));
-    setQualityRow('loss', '丢包率', qualityNumber(q.packetLossPct, '%', 1));
+    setQualityRow('loss', q.transport === 'direct_h264' ? null : '丢包率', qualityNumber(q.packetLossPct, '%', 1));
     setQualityRow('fps', '解码帧率', qualityNumber(q.fps));
-    setQualityRow('jitter', '抖动缓冲', qualityNumber(q.jitterBufferMs, ' ms'));
+    setQualityRow('jitter', q.transport === 'direct_h264' ? '额外缓冲延迟' : '抖动缓冲', qualityNumber(q.jitterBufferMs, ' ms'));
     setQualityRow('adaptive', '自适应码率', adaptiveBitrateText());
+    setQualityRow('effective', q.transport === 'direct_h264' ? '共享编码码率' : null, qualityBitrateText(q.effectiveKbps));
   } else {
     setQualityRow('rtt', null);
     // The browser exposes no byte counts for a multipart <img>.
@@ -69,6 +71,7 @@ function renderQualityOverlay() {
     setQualityRow('fps', q.fpsSource === 'browser' ? '帧率（浏览器实测）' : '帧率（服务端采集）', qualityNumber(q.fps));
     setQualityRow('jitter', null);
     setQualityRow('adaptive', null);
+    setQualityRow('effective', null);
   }
   setQualityRow('size', '分辨率', size);
 }
@@ -76,6 +79,7 @@ function resetConnectionQuality(transport) {
   Object.assign(connectionQuality, {
     transport,
     updatedAt: 0,
+    effectiveKbps: null,
     rttMs: null,
     bitrateKbps: null,
     packetLossPct: null,
@@ -118,18 +122,18 @@ function applyWebrtcStats(report) {
   if (!inbound) {
     Object.assign(q, { bitrateKbps: null, packetLossPct: null, fps: null, jitterBufferMs: null });
     qualityBaseline = null;
-    return;
+    return false;
   }
   q.width = statsCounter(inbound.frameWidth) ?? (webrtcFeed.videoWidth || null);
   q.height = statsCounter(inbound.frameHeight) ?? (webrtcFeed.videoHeight || null);
   const before = qualityBaseline,
     seconds = before && before.id === inbound.id ? (inbound.timestamp - before.timestamp) / 1000 : null;
   // A browser may serve a cached report: same timestamp, keep the last rates.
-  if (seconds === 0) return;
+  if (seconds === 0) return false;
   qualityBaseline = inbound;
   if (!(seconds > 0)) {
     Object.assign(q, { bitrateKbps: null, packetLossPct: null, fps: null, jitterBufferMs: null });
-    return;
+    return false;
   }
   const bytes = counterDelta(inbound.bytesReceived, before.bytesReceived),
     received = counterDelta(inbound.packetsReceived, before.packetsReceived),
@@ -141,9 +145,10 @@ function applyWebrtcStats(report) {
     lostBefore = statsCounter(before.packetsLost),
     lost = lostNow === null || lostBefore === null ? null : Math.max(0, lostNow - lostBefore);
   q.bitrateKbps = bytes === null ? null : (bytes * 8) / seconds / 1000;
-  q.packetLossPct = received === null || lost === null || received + lost === 0 ? null : (lost / (received + lost)) * 100;
+  q.packetLossPct = received === null || lost === null || received + lost < 20 ? null : (lost / (received + lost)) * 100;
   q.fps = frames === null ? null : frames / seconds;
   q.jitterBufferMs = delay === null || !emitted ? null : (delay / emitted) * 1000;
+  return bytes !== null && frames !== null;
 }
 function applyMjpegStats() {
   const q = connectionQuality,
@@ -163,6 +168,7 @@ function applyMjpegStats() {
   }
 }
 async function sampleQuality(run) {
+  let fresh = false;
   if (shared.activeVideoTransport === 'webrtc_h264') {
     const peer = shared.webrtcPeer;
     if (peer?.connectionState === 'disconnected') resetConnectionQuality('webrtc_h264');
@@ -170,14 +176,17 @@ async function sampleQuality(run) {
       try {
         const report = await peer.getStats();
         if (run !== qualityRun || peer !== shared.webrtcPeer) return;
-        applyWebrtcStats(report);
+        fresh = applyWebrtcStats(report);
       } catch (_) {
         if (run !== qualityRun) return;
       }
     }
+  } else if (shared.activeVideoTransport === 'direct_h264') {
+    const sample = readDirectStats();
+    if (sample) { Object.assign(connectionQuality, sample); fresh = sample.fresh; }
   } else applyMjpegStats();
   connectionQuality.updatedAt = Date.now();
-  if (shared.activeVideoTransport === 'webrtc_h264') adaptiveBitrateTick();
+  if (fresh) adaptiveBitrateTick();
   renderQualityOverlay();
   qualityTimer = setTimeout(() => sampleQuality(run), QUALITY_INTERVAL_MS);
 }
@@ -188,7 +197,7 @@ function qualityShouldRun() {
     shouldVideoRun() &&
     shared.videoUiState === 'playing' &&
     shared.latestVideoStatus?.state === 'ready' &&
-    (shared.activeVideoTransport === 'webrtc_h264' || shared.activeVideoTransport === 'mjpeg')
+    ['webrtc_h264', 'direct_h264', 'mjpeg'].includes(shared.activeVideoTransport)
   );
 }
 // Called on every video state change; does nothing unless the answer changed.
@@ -214,7 +223,7 @@ function setQualityOverlayEnabled(enabled) {
 
 // DOM wiring; main.js calls this once, in the original fragment order.
 export function init() {
-  for (const key of ['rtt', 'bitrate', 'loss', 'fps', 'jitter', 'adaptive', 'size']) {
+  for (const key of ['rtt', 'bitrate', 'loss', 'fps', 'jitter', 'adaptive', 'effective', 'size']) {
     const label = document.createElement('dt'),
       value = document.createElement('dd');
     $('#quality-overlay').append(label, value);

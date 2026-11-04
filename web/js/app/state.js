@@ -21,6 +21,7 @@ export const shared = {
   videoFallbackReason: '',
   webrtcPeer: null,
   webrtcSessionId: null,
+  directSessionId: null,
   modeIndex: 0,
   mjpegLoadEvents: 0,
 

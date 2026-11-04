@@ -2343,8 +2343,8 @@ def adaptive_bitrate_decision(browser, port, checks):
               "adaptive_one_change_per_cooldown", r["cooldown"])
         check(checks, r["received"] == [[1100, 2000]], "adaptive_caps_at_received_bitrate", r["received"])
         check(checks, r["severe"] == [[2000, 2000]], "adaptive_severe_loss_halves", r["severe"])
-        check(checks, r["rtt"] == [[2800, 2000]] and r["jitter"] == [[2800, 2000]],
-              "adaptive_rtt_and_jitter_thresholds", (r["rtt"], r["jitter"]))
+        check(checks, r["rtt"] == [] and r["jitter"] == [[2800, 2000]],
+              "adaptive_stable_high_rtt_holds_and_jitter_lowers", (r["rtt"], r["jitter"]))
         check(checks, r["trend"] == [[2800, 7000]], "adaptive_rtt_rise_vs_baseline", r["trend"])
         check(checks, r["flap"] == [] and r["neutral"] == [] and r["unknown"] == [],
               "adaptive_hysteresis_band_holds", (r["flap"], r["neutral"], r["unknown"]))
@@ -2485,11 +2485,15 @@ def adaptive_bitrate_webrtc(browser, port, checks):
         # Short timings keep the scenario fast; the logic is the same.
         page.evaluate("""() => Object.assign(window.__wingmanTest.adaptivePolicy,
           {cooldownMs: 2500, raiseAfterBadMs: 3000, goodSamples: 3})""")
-        # 10 % loss at ~1 Mbps received; repeated reports keep the rates.
+        # Cached reports must not accumulate congestion samples.
         page.evaluate("(r) => { window.__statsSeq = r; }", [adaptive_stats(10000, 1, 100), adaptive_stats(11000, 2, 100)])
         page.wait_for_function("() => window.__statsCalls >= 2", timeout=4000)
         check(checks, not page.locator("#quality-overlay").is_visible(),
               "adaptive_samples_without_overlay", page.evaluate("() => window.__statsCalls"))
+        page.wait_for_timeout(3500)
+        check(checks, not sent, "adaptive_cached_stats_do_not_count_as_new", sent)
+        page.evaluate("(r) => { window.__statsSeq = r; }",
+                      [adaptive_stats(12000 + i * 1000, 3 + i, 100) for i in range(6)])
         wait_sent(2)
         page.wait_for_timeout(300)
         check(checks, [(s, k) for s, k, _ in sent] == [("s1", 1100), ("s1", 750)],
@@ -2497,7 +2501,7 @@ def adaptive_bitrate_webrtc(browser, port, checks):
         gap = sent[1][2] - sent[0][2] if len(sent) == 2 else 0
         check(checks, gap >= 2400, "adaptive_requests_respect_cooldown", gap)
 
-        page.evaluate("(r) => { window.__statsSeq = r; }", [adaptive_stats(20000, 3, 0), adaptive_stats(21000, 4, 0)])
+        page.evaluate("(r) => { window.__statsSeq = r; }", [adaptive_stats(20000 + i * 1000, 10 + i, 0) for i in range(6)])
         wait_sent(3)
         check(checks, len(sent) == 3 and sent[2][1] == 950 and sent[2][2] - sent[1][2] >= 2400,
               "adaptive_raises_after_recovery_hold", sent)

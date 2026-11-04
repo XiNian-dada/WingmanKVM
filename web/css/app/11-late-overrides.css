@@ -1,4 +1,4 @@
-#webrtc-feed {
+:is(#webrtc-feed, #direct-feed) {
   display: block;
   max-width: 100%;
   max-height: 100%;
@@ -12,14 +12,14 @@
   backface-visibility: hidden;
 }
 #video-feed.video-surface,
-#webrtc-feed.video-surface {
+:is(#webrtc-feed, #direct-feed).video-surface {
   display: block;
 }
 #video-feed.video-surface.hidden,
-#webrtc-feed.video-surface.hidden {
+:is(#webrtc-feed, #direct-feed).video-surface.hidden {
   display: none !important;
 }
-.mode-native #webrtc-feed {
+.mode-native :is(#webrtc-feed, #direct-feed) {
   width: auto;
   height: auto;
   max-width: none;
@@ -28,14 +28,14 @@
   margin: auto;
   flex-shrink: 0;
 }
-.mode-fill #webrtc-feed {
+.mode-fill :is(#webrtc-feed, #direct-feed) {
   width: 100%;
   height: 100%;
   max-width: 100%;
   max-height: 100%;
   object-fit: fill;
 }
-.render-pixelated #webrtc-feed {
+.render-pixelated :is(#webrtc-feed, #direct-feed) {
   image-rendering: pixelated;
 }
 #video-transport-label {
