@@ -11,6 +11,14 @@
 
 自签证书提供加密，但浏览器默认不信任。首次访问可能需要确认证书警告；若需要稳定使用 Passkey、WebCodecs 等安全上下文 API，应在客户端建立证书信任，或使用受信任 CA 的证书，不能把“忽略警告”等同于完整信任。自定义证书入口也不保证签发 CA 已被客户端信任。
 
+## Passkey 按钮未打开认证窗口
+
+Chromium 即使显示 `isSecureContext=true`，仍可能以 `NotAllowedError` 拒绝 WebAuthn，并返回“WebAuthn is not supported on sites with TLS certificate errors.”。此时视频、普通 HTTPS 请求可能正常，Passkey 仍不能使用。页面会在按钮下显示原因，不再静默忽略这类错误。
+
+先用密码登录，在 **设置 → HTTPS 与证书** 下载公开证书，并在使用的客户端上建立信任；例如 macOS 可将证书导入“钥匙串访问”，核对设备指纹后设置 SSL 信任，再重新打开浏览器。不同浏览器可能使用独立的证书存储。也可在设置中导入受浏览器信任的 CA 证书。
+
+Passkey 同时绑定注册时的域名。若从旧域名换成 `server.hairuosky.cn`，旧域名的凭据不能自动跨域使用；在新域名下用密码登录并重新绑定。端口不是 RP ID 的组成部分。
+
 ## 旧 HTTP 安装的迁移
 
 已有 `config.json` 缺少 `server.tls` 时保留 HTTP，以免升级后失联。在原 HTTP 页面打开设置，先保存自动自签模式，再打开页面给出的 HTTPS 地址。启用 Secure Cookie 时，服务撤销旧会话并清除当前浏览器的旧 Cookie；通过 HTTPS 重新登录后再导入正式证书。网页禁止通过明文 HTTP 上传私钥。

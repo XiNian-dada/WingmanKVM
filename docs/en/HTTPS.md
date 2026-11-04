@@ -41,3 +41,9 @@ Without `public_origin`, native TLS WebSockets accept HTTPS origins matching Hos
 ## Validation
 
 `cargo test --locked tls` covers certificate persistence, permissions, import validation, switching, real HTTPS/WSS and PPv2. `python3 scripts/verify_tls_ui.py --browser-channel chrome --output-dir output/playwright/tls-settings` checks Settings using temporary certificates and mocked APIs; it ignores browser trust errors for that fixture and does not establish trust for a real device.
+
+## Passkey does not open the authenticator
+
+Chromium can report `isSecureContext=true` while rejecting WebAuthn with `NotAllowedError: WebAuthn is not supported on sites with TLS certificate errors.` Video and ordinary HTTPS requests may still work. Explicit Passkey attempts now show the error beneath the button instead of silently ignoring it.
+
+Sign in with your password, download the public certificate from Settings → HTTPS and certificates, verify its fingerprint and trust it in the client certificate store; some browsers use their own store. Alternatively import a certificate issued by a trusted CA. Bypassing the browser warning is insufficient. Passkeys are also scoped to the registration domain: when moving to a different domain, sign in with your password and register a new credential there. The port is not part of the RP ID.
