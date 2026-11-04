@@ -333,3 +333,11 @@ Never use `--privileged`, mount the Docker socket, or mount host `/etc` or
 The scripts encode checks derived from earlier issue-specific fixes. This
 document references those existing scripts and their assertions; it does not
 claim that any old baseline commit or test suite was rerun here.
+
+## Direct H.264 browser regression
+
+```sh
+python3 scripts/verify_direct_h264_ui.py --browser-channel chrome --output-dir output/playwright/direct-h264
+```
+
+Requires local FFmpeg with libx264, OpenSSL and the existing Python Playwright harness. Generates a short H.264 fixture, serves the real UI on local HTTPS and mocks the WSS peer. Checks real WebCodecs/canvas decoding, WebRTC → Direct → MJPEG fallback, encoder epoch changes, Direct bitrate control, high-latency adaptation, pointer mapping, screenshot and manual selection. Temporary certificates and video fixtures are removed by the harness; output retains screenshots and the JSON report. This is not a production deployment or hardware throughput test.

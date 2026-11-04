@@ -11,10 +11,10 @@ It deploys as a single binary and needs no separate database or frontend build t
 ## Features
 
 **Video**
-- Automatic transport selection: WebRTC H.264 (with RK3399 hardware encoding) first, falling back to MJPEG when unavailable
+- Automatic transport selection: WebRTC H.264 → Direct H.264 (WebSocket + WebCodecs) → MJPEG; both H.264 transports share one encoder with adaptive bitrate ([guide](docs/en/DIRECT_H264.md))
 - Optional grayscale bandwidth saver: select JPEG compression in video settings, then enable grayscale to reduce encoding load and bandwidth (off by default)
 - Hot-switchable JPEG algorithms: screen optimized, standard fast, compatibility, integer SIMD, coefficient recompression and quality-preserving entropy optimization; see [JPEG configuration](docs/JPEG_PROCESSING.md)
-- Optional HDMI audio: the capture card's sound is sent as Opus over WebRTC (off by default, pages start muted, not available in MJPEG mode)
+- Optional HDMI audio: the capture card's sound is sent as Opus over WebRTC (off by default, pages start muted, not available in Direct H.264 or MJPEG mode)
 - Fit-to-window / 1:1 pixels / fill display modes; pan by dragging in 1:1 mode
 - Screenshots (PNG) and local screen recording (WebM)
 
