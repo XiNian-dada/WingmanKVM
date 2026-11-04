@@ -1980,7 +1980,9 @@ async fn run_encoder_process(
             "-profile:v",
             "baseline",
             "-x264-params",
-            "repeat-headers=1:aud=1:scenecut=0",
+            // h264_metadata inserts AUDs for every encoder below. Enabling
+            // x264's AUDs as well can produce two delimiters per picture.
+            "repeat-headers=1:scenecut=0",
         ]);
     }
     command
@@ -2047,17 +2049,19 @@ async fn run_encoder_process(
                 .map_err(|error| error.to_string())?;
             if read == 0 {
                 if let Some(access_unit) = parser.finish() {
-                    output.write(access_unit, frame_duration).await?;
-                    let _ = progress.try_send(());
+                    if output.write(access_unit, frame_duration).await? {
+                        let _ = progress.try_send(());
+                    }
                 }
                 return Ok::<(), String>(());
             }
             let access_units = parser.push(&chunk[..read])?;
             for access_unit in access_units {
-                output.write(access_unit, frame_duration).await?;
                 // Progress is recorded only after an access unit was actually
                 // published to the frame hub, never from the configured FPS alone.
-                let _ = progress.try_send(());
+                if output.write(access_unit, frame_duration).await? {
+                    let _ = progress.try_send(());
+                }
             }
         }
     });

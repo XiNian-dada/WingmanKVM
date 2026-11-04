@@ -305,21 +305,23 @@ impl FrameWriter {
             kbps,
         }
     }
-    pub async fn write(&mut self, mut data: Bytes, duration: Duration) -> Result<(), String> {
+    /// Returns whether a picture was published. Header-only units may update
+    /// parameter sets, but must not advance RTP time or occupy a viewer's queue.
+    pub async fn write(&mut self, mut data: Bytes, duration: Duration) -> Result<bool, String> {
         if data.len() > MAX_ENCODED_FRAME {
             return Err("H.264 单帧超过缓冲上限".into());
         }
-        #[cfg(test)]
-        if let EncoderOutput::Track(track) = &self.output {
-            return write_access_unit(track, data, duration).await;
-        }
         let units = annex_b_nal_units(&data);
         let mut key = false;
+        let mut has_picture = false;
         let (mut has_sps, mut has_pps) = (false, false);
         for (i, &(start, payload)) in units.iter().enumerate() {
             let end = units.get(i + 1).map_or(data.len(), |v| v.0);
             match data.get(payload).map(|b| b & 0x1f) {
-                Some(5) => key = true,
+                Some(kind @ 1..=5) => {
+                    has_picture = true;
+                    key |= kind == 5;
+                }
                 Some(7) if end >= payload + 4 => {
                     self.codec = Some(format!(
                         "avc1.{:02x}{:02x}{:02x}",
@@ -337,6 +339,9 @@ impl FrameWriter {
                 _ => {}
             }
         }
+        if !has_picture {
+            return Ok(false);
+        }
         if key && (!has_sps || !has_pps) {
             let mut prefix = Vec::new();
             if !has_sps {
@@ -351,6 +356,10 @@ impl FrameWriter {
             }
             prefix.extend_from_slice(&data);
             data = Bytes::from(prefix);
+        }
+        #[cfg(test)]
+        if let EncoderOutput::Track(track) = &self.output {
+            return write_access_unit(track, data, duration).await.map(|()| true);
         }
         match &self.output {
             EncoderOutput::Shared {
@@ -381,7 +390,7 @@ impl FrameWriter {
             #[cfg(test)]
             EncoderOutput::Track(_) => unreachable!(),
         }
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -393,6 +402,57 @@ mod tests {
         1, 0x65, 1,
     ];
     const DELTA: &[u8] = &[0, 0, 0, 1, 9, 0xf0, 0, 0, 0, 1, 0x41, 1];
+
+    #[tokio::test]
+    async fn consecutive_delimiters_publish_only_pictures_and_keep_parameter_sets() {
+        let (frames, mut receiver) = broadcast::channel(FRAME_QUEUE);
+        let sequence = Arc::new(AtomicU64::new(0));
+        let timestamp = Arc::new(AtomicU64::new(0));
+        let mut writer = FrameWriter::new(
+            EncoderOutput::Shared {
+                frames,
+                sequence: sequence.clone(),
+                timestamp: timestamp.clone(),
+                epoch: Arc::new(AtomicU64::new(0)),
+                started: Instant::now(),
+            },
+            4000,
+        );
+        let duration = Duration::from_micros(33_333);
+        let headers = &KEY[..KEY.len() - 6];
+        assert!(!writer.write(Bytes::copy_from_slice(headers), duration).await.unwrap());
+        assert_eq!(sequence.load(Ordering::Relaxed), 0);
+        assert_eq!(timestamp.load(Ordering::Relaxed), 0);
+        assert!(matches!(receiver.try_recv(), Err(broadcast::error::TryRecvError::Empty)));
+
+        let aud = &[0, 0, 0, 1, 9, 0xf0];
+        let key = &[0, 0, 0, 1, 9, 0xf0, 0, 0, 0, 1, 0x65, 1];
+        let stream = [aud.as_slice(), key.as_slice(), aud.as_slice(), DELTA, aud.as_slice()].concat();
+        let mut parser = AnnexBAccessUnitParser::default();
+        // Delimiters and NAL headers may be split across arbitrary pipe reads.
+        let mut published = 0;
+        for chunk in stream.chunks(3) {
+            for unit in parser.push(chunk).unwrap() {
+                published += usize::from(writer.write(unit, duration).await.unwrap());
+            }
+        }
+        if let Some(unit) = parser.finish() {
+            published += usize::from(writer.write(unit, duration).await.unwrap());
+        }
+        assert_eq!(published, 2);
+        assert_eq!(sequence.load(Ordering::Relaxed), 2);
+        let first = receiver.try_recv().unwrap();
+        let second = receiver.try_recv().unwrap();
+        assert_eq!((first.sequence, second.sequence), (1, 2));
+        assert!(first.key);
+        assert!(!second.key);
+        assert_eq!(first.codec.as_deref(), Some("avc1.42c01e"));
+        for kind in [7, 8] {
+            assert!(annex_b_nal_units(&first.data).iter().any(|&(_, p)| first.data[p] & 31 == kind));
+        }
+        assert_eq!((first.duration_us, second.duration_us), (33_333, 33_333));
+        assert!(matches!(receiver.try_recv(), Err(broadcast::error::TryRecvError::Empty)));
+    }
 
     #[tokio::test]
     async fn shared_frames_keep_parameter_sets_and_recover_lag_at_an_idr() {
