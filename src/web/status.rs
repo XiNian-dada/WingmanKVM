@@ -15,6 +15,7 @@ pub(super) struct Capabilities {
     pub(super) video_passthrough: bool,
     pub(super) video_transcode: bool,
     pub(super) video_webrtc_h264: bool,
+    pub(super) video_direct_h264: bool,
     /// HDMI audio is enabled; it is only ever carried by WebRTC.
     pub(super) audio: bool,
 }
@@ -123,6 +124,7 @@ pub(super) fn capabilities_with_webrtc(config: &Config, video_webrtc_h264: bool)
         video_passthrough: true,
         video_transcode: true,
         video_webrtc_h264,
+        video_direct_h264: video_webrtc_h264,
         audio: config.audio.enabled,
     }
 }

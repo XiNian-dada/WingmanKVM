@@ -2,6 +2,7 @@ mod assets;
 mod audit_api;
 mod config_api;
 mod config_validate;
+mod direct_h264;
 mod error;
 mod extract;
 mod input;
@@ -310,6 +311,7 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/video_feed", get(video_feed))
+        .route("/api/video/h264/ws", get(direct_h264::direct_h264_ws))
         .route("/api/status", get(status))
         .route("/api/system", get(system_status))
         .route("/api/devices/scan", get(scan_devices).post(scan_devices))
