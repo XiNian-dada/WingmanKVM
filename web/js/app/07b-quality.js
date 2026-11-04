@@ -47,7 +47,7 @@ function setQualityRow(key, label, value) {
   if (row.valueSource !== value) row.value.textContent = row.valueSource = value;
 }
 const qualityNumber = (value, unit = '', digits = 0) =>
-  value === null ? '—' : `${value.toFixed(digits)}${unit}`;
+  Number.isFinite(value) ? `${value.toFixed(digits)}${unit}` : '—';
 function qualityBitrateText(kbps) {
   if (kbps === null) return '—';
   return kbps < 1000 ? `${Math.round(kbps)} kbps` : `${(kbps / 1000).toFixed(2)} Mbps`;
@@ -62,7 +62,20 @@ function renderQualityOverlay() {
     setQualityRow('fps', '解码帧率', qualityNumber(q.fps));
     setQualityRow('jitter', q.transport === 'direct_h264' ? '额外缓冲延迟' : '抖动缓冲', qualityNumber(q.jitterBufferMs, ' ms'));
     setQualityRow('adaptive', '自适应码率', adaptiveBitrateText());
-    setQualityRow('effective', q.transport === 'direct_h264' ? '共享编码码率' : null, qualityBitrateText(q.effectiveKbps));
+    const server = shared.latestWebrtcStatus || shared.bootstrap?.webrtc,
+      metrics = server?.telemetry,
+      capture = shared.latestVideoStatus;
+    setQualityRow('effective', '共享编码码率', qualityBitrateText(metrics?.bitrate_kbps || q.effectiveKbps || null));
+    setQualityRow('encoder', '编码后端', server?.encoder || '—');
+    setQualityRow('pipelineFps', '采集 / 编码帧率', `${qualityNumber(capture?.frames_per_second)} / ${qualityNumber(metrics?.fps)}`);
+    setQualityRow('processing', '单帧处理耗时', qualityNumber(metrics?.processing_ms, ' ms', 1));
+    setQualityRow('age', '采集 / 编码帧龄', `${qualityNumber(capture?.last_frame_age_ms, ' ms')} / ${qualityNumber(metrics?.last_frame_age_ms, ' ms')}`);
+    setQualityRow('restarts', '编码器重启', qualityNumber(metrics?.restarts));
+    setQualityRow('changes', '码率调整次数', qualityNumber(metrics?.bitrate_changes));
+    setQualityRow('frameGap', '最大编码帧间隔', qualityNumber(metrics?.max_frame_gap_ms, ' ms'));
+    setQualityRow('queue', '解码积压 / 丢帧', `${qualityNumber(q.decodeQueue)} / ${qualityNumber(q.framesDropped)}`);
+    setQualityRow('freezes', '卡顿次数', qualityNumber(q.freezeCount));
+    setQualityRow('decoder', '浏览器解码器', q.decoder || '—');
   } else {
     setQualityRow('rtt', null);
     // The browser exposes no byte counts for a multipart <img>.
@@ -72,6 +85,8 @@ function renderQualityOverlay() {
     setQualityRow('jitter', null);
     setQualityRow('adaptive', null);
     setQualityRow('effective', null);
+    for (const key of ['encoder', 'pipelineFps', 'processing', 'age', 'restarts', 'changes', 'frameGap', 'queue', 'freezes', 'decoder'])
+      setQualityRow(key, null);
   }
   setQualityRow('size', '分辨率', size);
 }
@@ -88,6 +103,7 @@ function resetConnectionQuality(transport) {
     jitterBufferMs: null,
     width: null,
     height: null,
+    decodeQueue: null, framesDropped: null, freezeCount: null, decoder: null,
   });
   qualityBaseline = null;
 }
@@ -119,6 +135,10 @@ function applyWebrtcStats(report) {
     { inbound, rtt } = readWebrtcStats(report);
   q.rttMs = rtt === null ? null : rtt * 1000;
   q.fpsSource = 'decoder';
+  q.decodeQueue = null; // RTC stats do not expose the decoder queue depth.
+  q.framesDropped = statsCounter(inbound?.framesDropped);
+  q.freezeCount = statsCounter(inbound?.freezeCount);
+  q.decoder = typeof inbound?.decoderImplementation === 'string' ? inbound.decoderImplementation : null;
   if (!inbound) {
     Object.assign(q, { bitrateKbps: null, packetLossPct: null, fps: null, jitterBufferMs: null });
     qualityBaseline = null;
@@ -227,7 +247,8 @@ function setQualityOverlayEnabled(enabled) {
 
 // DOM wiring; main.js calls this once, in the original fragment order.
 export function init() {
-  for (const key of ['rtt', 'bitrate', 'loss', 'fps', 'jitter', 'adaptive', 'effective', 'size']) {
+  for (const key of ['rtt', 'bitrate', 'loss', 'fps', 'jitter', 'adaptive', 'effective', 'size',
+    'encoder', 'pipelineFps', 'processing', 'age', 'restarts', 'changes', 'frameGap', 'queue', 'freezes', 'decoder']) {
     const label = document.createElement('dt'),
       value = document.createElement('dd');
     $('#quality-overlay').append(label, value);

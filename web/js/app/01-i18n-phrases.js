@@ -3,6 +3,17 @@
 // entry here rather than a key threaded through the HTML.
 const PHRASES = {
   'zh-TW': {
+    "编码后端": "編碼後端",
+    "采集 / 编码帧率": "擷取 / 編碼影格率",
+    "单帧处理耗时": "單幀處理耗時",
+    "采集 / 编码帧龄": "擷取 / 編碼影格年齡",
+    "编码器重启": "編碼器重啟",
+    "码率调整次数": "位元率調整次數",
+    "最大编码帧间隔": "最大編碼影格間隔",
+    "解码积压 / 丢帧": "解碼積壓 / 丟幀",
+    "卡顿次数": "卡頓次數",
+    "浏览器解码器": "瀏覽器解碼器",
+
     "共享编码码率": "共用編碼位元率",
     "自动依次尝试 WebRTC H.264、Direct H.264 和 MJPEG。Direct H.264 通过 HTTPS 传输，需要浏览器支持 WebCodecs；音频仅支持 WebRTC。": "自動依序嘗試 WebRTC H.264、Direct H.264 和 MJPEG。Direct H.264 透過 HTTPS 傳輸，需要瀏覽器支援 WebCodecs；音訊僅支援 WebRTC。",
     "WebRTC 和 Direct H.264 共用此观看人数上限，也共用一个编码器。多个观看者取最低请求码率；MJPEG 不受此上限影响。": "WebRTC 和 Direct H.264 共用此觀看人數上限，也共用一個編碼器。多個觀看者採用最低請求位元率；MJPEG 不受此上限影響。",
@@ -819,6 +830,17 @@ const PHRASES = {
     "音频设备必须是 ALSA 设备名，例如 plughw:CARD=MS2109,DEV=0": "音訊裝置必須是 ALSA 裝置名，例如 plughw:CARD=MS2109,DEV=0",
   },
   en: {
+    "编码后端": "Encoder backend",
+    "采集 / 编码帧率": "Capture / encoded FPS",
+    "单帧处理耗时": "Frame processing time",
+    "采集 / 编码帧龄": "Capture / encoded frame age",
+    "编码器重启": "Encoder restarts",
+    "码率调整次数": "Bitrate changes",
+    "最大编码帧间隔": "Longest encoded frame gap",
+    "解码积压 / 丢帧": "Decode queue / dropped frames",
+    "卡顿次数": "Freezes",
+    "浏览器解码器": "Browser decoder",
+
     "共享编码码率": "Shared encoder bitrate",
     "自动依次尝试 WebRTC H.264、Direct H.264 和 MJPEG。Direct H.264 通过 HTTPS 传输，需要浏览器支持 WebCodecs；音频仅支持 WebRTC。": "Auto tries WebRTC H.264, Direct H.264, then MJPEG. Direct H.264 uses HTTPS and requires WebCodecs; audio requires WebRTC.",
     "WebRTC 和 Direct H.264 共用此观看人数上限，也共用一个编码器。多个观看者取最低请求码率；MJPEG 不受此上限影响。": "WebRTC and Direct H.264 share this viewer limit and one encoder. The lowest bitrate requested by any viewer is used; MJPEG has no such limit.",

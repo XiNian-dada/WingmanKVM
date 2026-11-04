@@ -48,6 +48,7 @@ class Stream:
     def __init__(self, ws, frames, codec, events):
         self.ws, self.frames, self.codec, self.events = ws, frames, codec, events
         self.seq, self.epoch, self.sent, self.acks = 0, 0, 0, []
+        self.live = False
         ws.on_message(self.message)
 
         events.append("direct")
@@ -81,7 +82,12 @@ class Stream:
             target = max(256, min(4000, message["kbps"]))
             self.events.append(("bitrate", target))
             self.ws.send(json.dumps({"type": "bitrate", "kbps": target, "max_kbps": 4000}))
-            self.restart(target)
+            if self.live:
+                self.ws.send(json.dumps({"type":"bitrate_applied", "kbps":target}))
+                self.sent = 0
+                for _ in range(4): self.send_frame()
+            else:
+                self.restart(target)
 
 
 def main():
@@ -161,14 +167,58 @@ def main():
             check(result["kbps"] == 2000, "direct_bitrate_control_acknowledged", result)
             page.wait_for_function("async () => (await import('/assets/js/07e-direct-h264.js')).readDirectStats()?.effectiveKbps === 2000")
             check(streams[0].epoch == 3, "encoder_epoch_reconfigures_decoder")
+            streams[0].live = True
+            page.evaluate("async () => (await import('/assets/js/07e-direct-h264.js')).setDirectBitrate(1200)")
+            page.wait_for_function("async () => (await import('/assets/js/07e-direct-h264.js')).readDirectStats()?.effectiveKbps === 1200")
+            check(streams[0].epoch == 3, "native_bitrate_feedback_keeps_decoder_epoch")
+            direct_stats = page.evaluate("async () => (await import('/assets/js/07e-direct-h264.js')).readDirectStats()")
+            check(direct_stats['decoder'].startswith('WebCodecs') and direct_stats['framesDropped'] == 0,
+                  "direct_reports_decoder_and_drop_diagnostics", direct_stats)
             page.wait_for_timeout(3500)
             check(events.count("offer") == 1 and "mjpeg" not in events, "stable_direct_does_not_retry_webrtc", events)
+            page.evaluate("""async () => {
+                const s = (await import('/assets/js/state.js')).shared;
+                s.latestWebrtcStatus = {encoder:'x264 (native)', live_bitrate:true,
+                    telemetry:{fps:15,processing_ms:32.1,last_frame_age_ms:8,restarts:0,
+                        bitrate_changes:6,bitrate_kbps:1200,max_frame_gap_ms:79}};
+                const q = await import('/assets/js/07b-quality.js');
+                q.setQualityOverlayEnabled(true); q.renderQualityOverlay();
+            }""")
+            def overlay_bounds():
+                return page.locator('#quality-overlay').evaluate("""e => {
+                    const b=e.getBoundingClientRect(), p=e.parentElement.getBoundingClientRect();
+                    return {inside:b.left>=p.left && b.right<=Math.min(p.right,innerWidth) && b.bottom<=p.bottom,
+                        columns:getComputedStyle(e).gridTemplateColumns.split(' ').length,
+                        pointer:getComputedStyle(e).pointerEvents};
+                }""")
+            wide = overlay_bounds()
+            check(wide['inside'] and wide['columns'] == 4 and wide['pointer'] == 'none',
+                  "direct_diagnostics_fit_wide_console_without_intercepting_input", wide)
             with page.expect_download() as download:
                 page.locator("#screenshot").click()
             if args.output_dir:
                 Path(args.output_dir).mkdir(parents=True, exist_ok=True)
                 download.value.save_as(str(Path(args.output_dir) / "direct-decoded.png"))
                 page.screenshot(path=str(Path(args.output_dir) / "direct-desktop.png"))
+            page.set_viewport_size({"width": 640, "height": 900})
+            page.wait_for_function("() => getComputedStyle(document.querySelector('#quality-overlay')).gridTemplateColumns.split(' ').length === 2")
+            page.locator('#inspector-close').click()
+            page.wait_for_function("() => !document.querySelector('#app').classList.contains('inspector-open')")
+            page.wait_for_timeout(350)  # Let the mobile sheet finish closing before the screenshot.
+            narrow = overlay_bounds()
+            check(narrow['inside'] and narrow['columns'] == 2,
+                  "direct_diagnostics_fit_narrow_console", narrow)
+            if args.output_dir:
+                page.screenshot(path=str(Path(args.output_dir) / "direct-narrow.png"))
+            page.set_viewport_size({"width": 375, "height": 900})
+            page.evaluate("async () => (await import('/assets/js/01-i18n.js')).setLanguage('en')")
+            page.wait_for_function("() => document.querySelector('#quality-overlay').textContent.includes('Encoder backend')")
+            check(overlay_bounds()['inside'], "direct_diagnostics_fit_phone_in_english", overlay_bounds())
+            if args.output_dir:
+                page.screenshot(path=str(Path(args.output_dir) / "direct-phone-en.png"))
+            page.evaluate("async () => (await import('/assets/js/01-i18n.js')).setLanguage('zh-CN')")
+            page.set_viewport_size({"width": 1280, "height": 900})
+            page.wait_for_function("() => getComputedStyle(document.querySelector('#quality-overlay')).gridTemplateColumns.split(' ').length === 4")
             check(download.value.suggested_filename.endswith(".png"), "direct_screenshot_works")
             decisions = page.evaluate(ADAPTIVE_DECISION_SCRIPT)
             check(decisions["rtt"] == [] and decisions["trend"] == [[2800, 7000]], "stable_high_rtt_holds_but_rising_rtt_lowers", decisions)
@@ -179,6 +229,7 @@ def main():
             }""")
             check(high_latency == [2800, 3500, 4000], "high_latency_link_recovers_to_maximum", high_latency)
             # The persisted manual choice bypasses WebRTC on the next connection.
+            page.locator('#inspector-toggle').click()
             page.locator('[data-panel-target="video"]').click()
             page.locator('#video-config select[name="transport"]').select_option("direct_h264")
             page.locator('#video-config button[type="submit"]').click()

@@ -27,6 +27,7 @@ export const shared = {
 
   // Latest /api/status snapshots (10-workspace-status writes them).
   latestVideoStatus: null,
+  latestWebrtcStatus: null,
   latestPowerStatus: null,
   latestSystemStatus: null,
 

@@ -1620,8 +1620,9 @@ def quality_overlay_webrtc(browser, port, checks):
         check(checks, rows.get("接收码率") == "—", "quality_first_sample_has_no_rates", rows)
         page.wait_for_function("() => document.querySelector('#quality-overlay').textContent.includes('Mbps')", timeout=4000)
         rows = overlay_rows(page)
-        check(checks, rows == {"往返延迟": "25 ms", "接收码率": "1.00 Mbps", "丢包率": "1.0%", "解码帧率": "30",
-                               "抖动缓冲": "50 ms", "自适应码率": "已关闭", "分辨率": "1920×1080"},
+        expected = {"往返延迟": "25 ms", "接收码率": "1.00 Mbps", "丢包率": "1.0%", "解码帧率": "30",
+                    "抖动缓冲": "50 ms", "自适应码率": "已关闭", "分辨率": "1920×1080"}
+        check(checks, all(rows.get(key) == value for key, value in expected.items()),
               "quality_webrtc_stats_rendered", rows)
         page.wait_for_function("() => window.__statsCalls >= 3", timeout=4000)
         page.wait_for_timeout(50)
@@ -1635,6 +1636,19 @@ def quality_overlay_webrtc(browser, port, checks):
         page.wait_for_timeout(50)
         rows = overlay_rows(page)
         check(checks, rows.get("接收码率") == "1.00 Mbps", "quality_recovers_after_reset", rows)
+        page.evaluate("""async () => {
+          const s = (await import('/assets/js/state.js')).shared;
+          s.bootstrap.webrtc = {encoder:'x264 (native)', live_bitrate:true,
+            telemetry:{fps:15,processing_ms:10.5,last_frame_age_ms:8,restarts:0,bitrate_changes:6,bitrate_kbps:2800,max_frame_gap_ms:72}};
+        }""")
+        page.wait_for_function("() => document.querySelector('#quality-overlay').textContent.includes('x264 (native)')")
+        rows = overlay_rows(page)
+        diagnostic = {"编码后端":"x264 (native)", "共享编码码率":"2.80 Mbps", "单帧处理耗时":"10.5 ms",
+                      "编码器重启":"0", "码率调整次数":"6", "最大编码帧间隔":"72 ms"}
+        check(checks, all(rows.get(key) == value for key, value in diagnostic.items()),
+              "quality_exposes_encoder_pipeline_diagnostics", rows)
+        check(checks, page.locator('#quality-overlay').evaluate("e => getComputedStyle(e).pointerEvents") == 'none',
+              "quality_diagnostics_preserve_pointer_passthrough")
 
         page.evaluate("""() => {
           Object.defineProperty(document, 'hidden', {configurable: true, get: () => true});
@@ -2331,6 +2345,8 @@ ADAPTIVE_DECISION_SCRIPT = """() => {
   res.stalledLoss = run(t.newAdaptiveState(4000), seq({...BAD, decodedFps: 0}, 0, 3)).out;
   // Good samples never push above the configured bitrate.
   res.atMax = run(t.newAdaptiveState(4000), seq(GOOD, 0, 60)).out;
+  const live = t.policyForEncoder(true);
+  res.livePolicy = [live.cooldownMs, live.settleMs, live.increaseIntervalMs];
   // Floor: never below 256 kbps, and no request once there.
   const low = {...t.newAdaptiveState(4000), currentKbps: 300};
   res.floor = run(low, seq(BAD, 0, 30)).out;
@@ -2362,6 +2378,7 @@ def adaptive_bitrate_decision(browser, port, checks):
         check(checks, r["stalledRecovery"] == [] and r["stalledLoss"] == [[2800, 2000]],
               "adaptive_stalled_decoder_cannot_raise_but_loss_can_lower", (r["stalledRecovery"], r["stalledLoss"]))
         check(checks, r["atMax"] == [], "adaptive_never_exceeds_max", r["atMax"])
+        check(checks, r["livePolicy"] == [10000, 0, 10000], "adaptive_native_does_not_wait_for_restarts", r["livePolicy"])
         check(checks, r["floor"] == [[256, 2000]], "adaptive_respects_floor", r["floor"])
     finally:
         context.close()

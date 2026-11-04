@@ -18,7 +18,7 @@ The encoder uses the **lowest requested bitrate among active viewers**. A slow v
 
 ## Encoding pipeline and latency limits
 
-The native software path decodes JPEGs using libjpeg-turbo in a standalone process and calls x264 directly. Grayscale enters the luma plane; color YCbCr becomes I420 without an RGB intermediate. Every JPEG yields one length-delimited output frame without waiting for another AUD. Bitrate and VBV changes call `x264_encoder_reconfig` before the next frame, retaining the instance, reference pictures and timestamps.
+The native software path decodes JPEGs using libjpeg-turbo in a standalone process and calls x264 directly. Grayscale enters the luma plane; common 4:4:4, 4:2:2 and 4:2:0 color JPEGs read raw components into I420 without upsampling, interleaving or an RGB intermediate. Every JPEG yields one length-delimited output frame without waiting for another AUD. Bitrate and VBV changes call `x264_encoder_reconfig` before the next frame, retaining the instance, reference pictures and timestamps.
 
 In the FFmpeg path, JPEGs reach FFmpeg as multipart packets with `Content-Length`. A small probe window retains probe frames, avoiding startup frame loss and waiting for the next JPEG to complete the current packet. `-fps_mode passthrough` preserves received pictures instead of duplicating or dropping them to match a probed frame rate. Only `h264_metadata` inserts AUDs. Only H.264 units containing pictures enter viewer queues and advance media time; separate SPS/PPS units are still cached.
 
@@ -28,13 +28,23 @@ RK3399 silicon supports H.264 encoding, but using it requires compatible kernel 
 
 ## Adaptation
 
-Only samples with new media data count. Cached reports and empty reports during encoder gaps do not advance adaptation. Recovery requires decoded frames; new packets showing congestion can still lower bitrate while decoding is stalled. A five-second settling period after changes excludes encoder and decoder warm-up. Three consecutive congestion samples lower bitrate; loss, buffering and RTT growth relative to the connection's lowest observed RTT are considered. Stable high RTT alone neither lowers bitrate nor prevents recovery. WebRTC samples with fewer than 20 packets do not provide a loss ratio. Direct uses decode ACK RTT and relative buffering delay without inventing a TCP packet-loss metric. These are not HDMI-to-display latency measurements.
+Only samples with new media data count. Cached reports and empty reports during encoder gaps do not advance adaptation. Recovery requires decoded frames; new packets showing congestion can still lower bitrate while decoding is stalled. FFmpeg changes have a five-second settling period to exclude encoder and decoder warm-up. Three consecutive congestion samples lower bitrate; loss, buffering and RTT growth relative to the connection's lowest observed RTT are considered. Stable high RTT alone neither lowers bitrate nor prevents recovery. WebRTC samples with fewer than 20 packets do not provide a loss ratio. Direct uses decode ACK RTT and relative buffering delay without inventing a TCP packet-loss metric. These are not HDMI-to-display latency measurements.
 
-Decrease requests are at least 30 seconds apart. Recovery requires 30 consecutive healthy samples and at least 60 seconds since the last change and congestion. A decrease within 90 seconds of a raise counts as a failed probe, extending the recovery hold from 60 to 120 to 240 seconds. Ten congestion-free minutes clear the failure count.
+Native software encoding uses ten-second change intervals, ten healthy samples and a 30-second post-congestion hold before recovery, without a restart settling period. The slower policy below applies to FFmpeg.
+
+FFmpeg decrease requests are at least 30 seconds apart. Recovery requires 30 consecutive healthy samples and at least 60 seconds since the last change and congestion. A decrease within 90 seconds of a raise counts as a failed probe, extending the recovery hold from 60 to 120 to 240 seconds. Ten congestion-free minutes clear the failure count.
 
 The default native software encoder changes bitrate without restarting or resetting its epoch/browser decoder. Hardware encoding and an explicit FFmpeg executable retain the following restart safeguards.
 
 Changing bitrate still briefly restarts FFmpeg. The shared encoder coalesces the latest requests across all viewers: the first decrease can be immediate, subsequent decreases are at least 30 seconds apart, and increases wait at least 60 seconds after startup or the last restart. The old bitrate keeps streaming while a change waits; reverting to the running target cancels the pending restart. Each new epoch starts with an IDR and SPS/PPS, and reconfigures the browser decoder.
+
+## Quality overlay diagnostics
+
+The overlay shows encoder backend, capture / encoded FPS, frame processing time, capture / encoded frame age, longest encoded frame gap, encoder restarts, bitrate changes, decode queue / dropped frames, freezes and browser decoder. It reuses existing status polling and remains transparent to pointer input; wide consoles use two pairs of columns.
+
+Server counters belong to the current shared encoder run. Processing time smooths native JPEG decode plus H.264 encode time, excluding network/display; FFmpeg reports no value. Encoded FPS uses real frame publication over one-second windows and becomes zero after a two-second stall. Direct counts display gaps over 500 ms; WebRTC uses browser freezeCount, with a different definition.
+
+Live native rate changes send `{"type":"bitrate_applied","kbps":2000}` without a new epoch or decoder reset.
 
 ## Wire protocol v1
 

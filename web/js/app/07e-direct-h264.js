@@ -49,6 +49,10 @@ export function readDirectStats() {
     rttMs: run.rtt, jitterBufferMs: run.delay, packetLossPct: null,
     width: directFeed.width, height: directFeed.height, fpsSource: 'decoder',
     effectiveKbps: run.effectiveKbps,
+    decodeQueue: run.pending.size,
+    framesDropped: run.dropped,
+    freezeCount: run.freezes,
+    decoder: `WebCodecs · ${run.config?.codec || 'H.264'}`,
   };
 }
 export function startDirectH264({ onPlaying, onFailure, onResize }) {
@@ -57,7 +61,8 @@ export function startDirectH264({ onPlaying, onFailure, onResize }) {
   socket.binaryType = 'arraybuffer';
   const run = { socket, decoder: null, timer: 0, epoch: 0, pending: new Map(), needsKey: true,
     bytes: 0, frames: 0, offset: Infinity, rtt: null, delay: null, sample: null, pendingBitrate: null,
-    id: `direct-${++serial}`, lastSequence: 0, effectiveKbps: null };
+    id: `direct-${++serial}`, lastSequence: 0, effectiveKbps: null,
+    dropped: 0, freezes: 0, displayedAt: null };
   active = run;
   shared.directSessionId = run.id;
   const current = () => active === run;
@@ -87,6 +92,9 @@ export function startDirectH264({ onPlaying, onFailure, onResize }) {
           directFeed.getContext('2d', { alpha: false, desynchronized: true }).drawImage(frame, 0, 0);
           run.delay = Math.max(0, performance.now() - frame.timestamp / 1000 - run.offset);
           run.frames++;
+          const now = performance.now();
+          if (run.displayedAt !== null && now - run.displayedAt > 500) run.freezes++;
+          run.displayedAt = now;
           watchdog();
           if (run.frames === 1) onPlaying();
           if (sequence !== undefined) ack(sequence);
@@ -141,10 +149,11 @@ export function startDirectH264({ onPlaying, onFailure, onResize }) {
       run.bytes += bytes.byteLength;
       run.offset = Math.min(run.offset, performance.now() - timestamp / 1000);
       if (run.decoder.decodeQueueSize > 4) {
+        run.dropped += run.pending.size;
         run.decoder.close(); run.pending.clear(); run.needsKey = true;
         run.decoder = makeDecoder(run.config);
       }
-      if (run.needsKey && !key) { ack(sequence); return; }
+      if (run.needsKey && !key) { run.dropped++; ack(sequence); return; }
       run.needsKey = false;
       run.pending.set(timestamp, sequence);
       run.decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp,

@@ -90,6 +90,7 @@ async function refreshStatus() {
     const status = await request('/api/status');
     const previousVideoReason = shared.latestVideoStatus?.reason || '';
     shared.latestVideoStatus = status.video || null;
+    shared.latestWebrtcStatus = status.webrtc || null;
     renderHotplugTransitions(previousVideoReason, shared.latestVideoStatus, status.hid);
     shared.latestPowerStatus = status.power || null;
     shared.latestSystemStatus = status.system || null;

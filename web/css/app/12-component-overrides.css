@@ -566,7 +566,9 @@
   left: 8px;
   z-index: 6;
   display: grid;
-  grid-template-columns: auto auto;
+  grid-template-columns: minmax(0, auto) minmax(0, auto);
+  max-width: calc(100% - 16px);
+  box-sizing: border-box;
   gap: 2px 10px;
   margin: 0;
   padding: 7px 10px;
@@ -588,6 +590,11 @@
 .quality-overlay dd {
   margin: 0;
   text-align: right;
+  max-width: 230px;
+  overflow-wrap: anywhere;
+}
+@container (min-width: 740px) {
+  .quality-overlay { grid-template-columns: repeat(2, minmax(0, auto) minmax(0, auto)); }
 }
 :fullscreen .quality-overlay {
   top: 8px;

@@ -8,7 +8,7 @@ import {
 
 // Adaptive H.264 bitrate uses fresh WebRTC or Direct measurements. Each
 // viewer requests a target; the shared encoder takes the lowest request.
-// FFmpeg must restart to change bitrate, so changes are deliberately rare.
+// Native x264 tunes the next frame; the FFmpeg fallback needs slower changes.
 const ADAPTIVE_POLICY = {
   // A one-second sample is "bad" when any congestion signal crosses its line:
   badLossPct: 5, //    ≥5 % of video packets lost: visible smearing/freezes
@@ -49,6 +49,10 @@ const ADAPTIVE_POLICY = {
   stepKbps: 50,
   snapToMaxRatio: 0.95, //  a raise this close to the maximum goes all the way
 };
+function policyForEncoder(live) {
+  return live ? { ...ADAPTIVE_POLICY, cooldownMs: 10000, increaseIntervalMs: 10000,
+    goodSamples: 10, settleMs: 0, raiseAfterBadMs: 30000 } : ADAPTIVE_POLICY;
+}
 function newAdaptiveState(maxKbps, minKbps = 256) {
   const max = Math.max(1, Math.round(Number(maxKbps) || 4000));
   return {
@@ -216,6 +220,7 @@ function adaptiveBitrateTick(now = performance.now()) {
       { packetLossPct: q.packetLossPct, rttMs: q.rttMs, jitterBufferMs: q.jitterBufferMs,
         receivedKbps: q.bitrateKbps, decodedFps: q.fps },
       now,
+      policyForEncoder(shared.latestWebrtcStatus?.live_bitrate ?? shared.bootstrap?.webrtc?.live_bitrate),
     );
   adaptive.state = state;
   if (targetKbps !== null) sendAdaptiveBitrate(targetKbps, previousKbps);
@@ -260,6 +265,7 @@ export function init() {
       decideAdaptiveBitrate,
       newAdaptiveState,
       adaptivePolicy: ADAPTIVE_POLICY,
+      policyForEncoder,
       adaptiveBitrate: () => (adaptive.state ? { ...adaptive.state, enabled: adaptive.enabled } : { enabled: adaptive.enabled }),
     });
 }
