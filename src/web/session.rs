@@ -278,7 +278,7 @@ mod tests {
         headers.insert("x-forwarded-ssl", HeaderValue::from_static("on"));
         headers.insert("forwarded", HeaderValue::from_static("proto=https"));
 
-        let mut server = config::ServerConfig::default();
+        let mut server = config::ServerConfig::legacy_http();
         assert!(!server.session_cookie_secure());
         assert!(
             !session_cookie_value(Some("token"), server.session_cookie_secure())

@@ -64,6 +64,7 @@ pub static APP_JS_MODULES: &[(&str, &str)] = app_js_modules![
     "12a-sessions-audit.js",
     "12b-notifications.js",
     "12c-online-update.js",
+    "12d-tls.js",
     "13-settings-boot.js",
 ];
 

@@ -32,6 +32,7 @@ pub(super) enum InputCommand {
 /// closes the socket on logout, revocation or expiry.
 pub(super) async fn input_ws(
     State(state): State<AppState>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -44,6 +45,7 @@ pub(super) async fn input_ws(
         &headers,
         ws,
         public_origin.as_deref(),
+        connection.tls,
         {
             // Counted as open for as long as the socket loop holds this closure.
             let _open = socket_guard.input_socket_opened();
@@ -70,6 +72,7 @@ pub(super) fn upgrade_input_ws<F, Fut, R, RFut>(
     headers: &HeaderMap,
     ws: WebSocketUpgrade,
     public_origin: Option<&str>,
+    transport_tls: bool,
     execute: F,
     on_close: R,
 ) -> Response
@@ -79,7 +82,7 @@ where
     R: FnOnce() -> RFut + Send + 'static,
     RFut: std::future::Future<Output = ()> + Send + 'static,
 {
-    if let Err(error) = validate_terminal_origin(headers, public_origin) {
+    if let Err(error) = validate_terminal_origin(headers, public_origin, transport_tls) {
         return error.into_response();
     }
     let Some(guard) = session_token(headers).and_then(|token| sessions.validate_guard(token)) else {
@@ -225,6 +228,7 @@ mod tests {
                 &headers,
                 ws,
                 None,
+                false,
                 |text| async move {
                     let value: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
                     json!({ "id": value["id"], "ok": true, "type": value["type"] })
@@ -333,6 +337,7 @@ mod tests {
     impl PointerDeviceServer {
         async fn start(name: &str, mode: PointerMode) -> Option<Self> {
             use std::os::unix::fs::OpenOptionsExt;
+            use axum::serve::ListenerExt;
             let dir = std::env::temp_dir().join(format!("wingman-input-ws-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
@@ -357,8 +362,11 @@ mod tests {
             let app = Router::new().route("/input", get(input_ws)).with_state(state.clone());
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.ok()?;
             let address = listener.local_addr().ok()?;
+            let listener = crate::client_ip::ClientIpListener(crate::proxy_protocol::ProxyProtocolListener::new(
+                listener, ProxyProtocolMode::Disabled,
+            ));
             let task = tokio::spawn(async move {
-                let _ = axum::serve(listener, app).await;
+                let _ = axum::serve(listener.tap_io(|_| {}), app.into_make_service_with_connect_info::<ClientConnection>()).await;
             });
             Some(Self { state, token, reader, address, task, dir })
         }

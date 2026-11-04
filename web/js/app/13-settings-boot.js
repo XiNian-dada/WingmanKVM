@@ -11,6 +11,7 @@ import { refreshPasskeys } from './12-passkey.js';
 import { refreshAudit, refreshSessions } from './12a-sessions-audit.js';
 import { refreshNotifications } from './12b-notifications.js';
 import { refreshOnlineUpdate } from './12c-online-update.js';
+import { refreshTls } from './12d-tls.js';
 
 const settingsDialog = $('#settings-dialog');
 function applyRenderPixelated(enabled) {
@@ -46,6 +47,7 @@ function openSettingsDialog() {
   refreshAudit();
   refreshNotifications();
   refreshOnlineUpdate();
+  refreshTls();
   try {
     if (typeof settingsDialog.showModal === 'function') {
       settingsDialog.showModal();

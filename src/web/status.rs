@@ -205,6 +205,7 @@ mod tests {
             .unwrap_err();
 
         let connection = ClientConnection {
+            tls: false,
             transport_peer: None,
             client_addr: "127.0.0.1:50000".parse().unwrap(),
         };

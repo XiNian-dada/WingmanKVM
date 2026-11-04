@@ -16,6 +16,7 @@ SUITES = (
     ("p1_ui", "verify_p1_ui.py"),
     ("p2_ui", "verify_p2_ui.py"),
     ("p2b_ui", "verify_p2b_ui.py"),
+    ("tls_ui", "verify_tls_ui.py"),
     ("audit2_ui", "verify_audit2_ui.py"),
 )
 

@@ -12,6 +12,7 @@ mod devices;
 mod notify;
 mod proxy_protocol;
 mod system;
+mod tls;
 mod web;
 mod web_ui;
 
@@ -79,6 +80,7 @@ async fn run() -> anyhow::Result<()> {
         .with_context(|| format!("failed to listen on {address}"))?;
     let listener = proxy_protocol::ProxyProtocolListener::with_mode_updates(listener, proxy_updates);
     let listener = client_ip::ClientIpListener(listener);
+    let listener = tls::TlsListener::new(listener, state.tls_manager())?;
 
     tracing::info!(%address, ?proxy_mode, "WingmanKVM is listening");
     let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
@@ -167,6 +169,8 @@ mod tests {
                 .unwrap()
                 .port();
             let mut config = Config::default();
+            // Shutdown tests exercise legacy HTTP streams; TLS has its own handshake tests.
+            config.server.tls = crate::config::TlsConfig::disabled();
             config.server.listen_address = "127.0.0.1".to_owned();
             config.server.port = port;
             // No keyboard node: the LED reader would compete for the FIFO.

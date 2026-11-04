@@ -437,6 +437,26 @@
               <div class="side-actions wide"><button class="primary" type="submit" data-i18n="save">保存</button></div>
             </form>
           </div>
+          <div class="settings-group" id="tls-settings">
+            <span class="settings-group-title">HTTPS 与证书</span>
+            <p class="hint">自动自签无需域名验证；也可导入 CA 签发的证书。HTTPS 可以继续使用当前端口。</p>
+            <form id="tls-config" class="side-grid">
+              <label class="field wide"><span>证书模式</span><select name="mode"><option value="self_signed">自动自签证书（默认）</option><option value="custom">自定义证书</option></select></label>
+              <label class="field wide"><span>HTTPS 访问地址</span><input name="public_origin" type="url" required placeholder="https://kvm.example.com:38319" autocomplete="off"></label>
+              <p id="tls-self-signed-hint" class="hint wide">设备自动生成并保存专属证书。自签证书默认不被浏览器信任，首次访问需要确认或安装信任证书。</p>
+              <label id="tls-regenerate-field" class="check wide"><input name="regenerate" type="checkbox"><span>重新生成自签证书（需要重新信任）</span></label>
+              <div id="tls-custom-fields" class="side-grid wide hidden">
+                <label class="field wide"><span>证书文件（PEM，包含完整证书链）</span><input name="certificate" type="file" accept=".pem,.crt,.cer"></label>
+                <label class="field wide"><span>私钥文件（PEM，未加密）</span><input name="private_key" type="file" accept=".pem,.key" autocomplete="off"></label>
+                <p id="tls-custom-hint" class="hint wide">证书与私钥必须配套。私钥不会回显，也不会随配置导出。</p>
+              </div>
+              <div id="tls-status" class="hint wide" role="status" aria-live="polite">正在读取证书状态…</div>
+              <div id="tls-fingerprint" class="hint mono wide" style="overflow-wrap:anywhere"></div>
+              <div class="side-actions wide"><button class="primary" type="submit">保存并应用 HTTPS</button><a id="tls-download" class="secondary hidden" href="/api/tls/certificate" download>下载当前证书</a></div>
+              <div id="tls-result" class="hint wide" role="status" aria-live="polite"></div>
+              <a id="tls-open" class="hint wide hidden" rel="noreferrer">打开 HTTPS 访问地址</a>
+            </form>
+          </div>
           <div class="settings-group">
             <span class="settings-group-title" data-i18n="settings_group_system">系统与重置</span>
             <div class="settings-item">

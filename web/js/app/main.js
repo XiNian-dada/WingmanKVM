@@ -37,6 +37,7 @@ import { init as initPasskey } from './12-passkey.js';
 import { init as initSessionsAudit } from './12a-sessions-audit.js';
 import { init as initNotifications } from './12b-notifications.js';
 import { init as initOnlineUpdate } from './12c-online-update.js';
+import { init as initTls } from './12d-tls.js';
 import { applyRenderPixelated, init as initSettingsBoot } from './13-settings-boot.js';
 
 initThemeLayout();
@@ -60,6 +61,7 @@ initPasskey();
 initSessionsAudit();
 initNotifications();
 initOnlineUpdate();
+initTls();
 initSettingsBoot();
 
 applyTheme(getPreferredTheme());
