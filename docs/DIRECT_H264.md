@@ -7,7 +7,7 @@
 - 浏览器支持 `VideoDecoder` 和 H.264，并运行在安全上下文中。远程域名应使用 HTTPS；可用性以浏览器能力检测为准。不支持时回退 MJPEG。
 - 在现有 **设置 → HTTPS 与证书** 中启用自动自签或导入 CA 证书。自签证书需要建立浏览器信任，详见 [HTTPS](HTTPS.md)。旧 HTTP 配置升级后不会自动改成 HTTPS。
 - 端口不必是 443。例如公网 TCP `38319 → 设备 TCP 8080`，使用 `https://域名:38319`，视频自动连接同一地址的 `wss://…/api/video/h264/ws`。反向代理需保留外部 Host 并支持 WebSocket 升级；TLS 在代理终止时配置 `server.public_origin`，与终端 WebSocket 使用相同的 Origin 校验规则。
-- FFmpeg 必须有可运行的 H.264 编码器；Direct 不能解决硬件编码器不可用的问题。若设备只能使用 libx264，在视频面板选择软件编码并允许软件编码。
+- FFmpeg 需要 5.1 或更新版本（使用 `-fps_mode passthrough`），并有可运行的 H.264 编码器；Direct 不能解决硬件编码器不可用的问题。若设备只能使用 libx264，在视频面板选择软件编码并允许软件编码。
 - 音频仍仅支持 WebRTC。Direct H.264 和 MJPEG 不传输音频；截图、画面录制、画中画和鼠标坐标映射继续使用当前视频画面。
 
 ## 共享编码与观看人数
@@ -17,6 +17,14 @@
 码率采用所有活跃观看者请求值的最小值。因此一个慢连接可能降低其他观看者的画质，不提供各自独立编码的不同清晰度。关闭自适应后，该观看者请求恢复配置上限；其他观看者仍可能请求更低码率。Direct 质量浮层分别显示本观看者请求值、共享编码码率和实际接收码率，三者含义不同。码率为编码目标，静态画面的实际带宽可以远低于目标。
 
 每个观看者有独立的 8 帧队列；落后时丢弃差分帧，从下一 IDR 恢复。WebRTC 关闭仅移除自己的订阅，最后一个观看者离开 1 秒后停止编码器。视频配置变化会重建共享编码器并让观看者重新连接。
+
+## 编码管线与延迟边界
+
+JPEG 通过带 `Content-Length` 的 multipart 输入 FFmpeg，使用小探测窗口并保留探测帧，避免启动时丢帧及等待下一张 JPEG 才完成当前包。`-fps_mode passthrough` 保留收到的图像，不按探测出的帧率补帧或丢帧。AUD 只由 `h264_metadata` 插入；只有包含图像的 H.264 单元才进入观看队列和推进媒体时间，独立 SPS/PPS 仍会缓存。
+
+输出仍以 Annex B 的下一处 AUD 确认当前帧结束，因此连续流通常还会等待一个源帧周期（15 FPS 时约 67 ms），不能视为零缓冲。采集、JPEG 处理、编码负载、网络及浏览器显示还会增加耗时；以上修改不改变 MJPEG 播放链路。
+
+RK3399 芯片具有 H.264 硬件编码能力，但能否使用取决于内核驱动、MPP 和 FFmpeg 是否配套。`ffmpeg -encoders` 列出 `h264_v4l2m2m` 只表示编译了接口；若 V4L2 编码节点的 capture 格式只有 JPEG，就不能用它编码 H.264。[ffmpeg-rockchip](https://github.com/nyanmisaka/ffmpeg-rockchip) 要求 Rockchip BSP/vendor 内核及 MPP 设备；只替换 FFmpeg 或直接接入 [MPP](https://github.com/rockchip-linux/mpp) 无法补齐缺失的驱动。
 
 ## 动态码率行为
 
@@ -57,4 +65,4 @@
 
 ## 验证范围
 
-Rust 测试覆盖共享进程、最低码率、缓冲丢帧恢复、生命周期、鉴权/Origin、ACK 窗口、超时及编码周期变化。`scripts/verify_direct_h264_ui.py` 用 FFmpeg 生成 H.264，Chrome 实际 WebCodecs 解码，在本地 HTTPS 上模拟 WSS 服务并检查回退与设置；这不等同于公网、ARM64 硬件编码和真实限速链路验证。
+Rust 测试覆盖共享进程、最低码率、缓冲丢帧恢复、生命周期、鉴权/Origin、ACK 窗口、超时及编码周期变化。`scripts/verify_direct_h264_ui.py` 通过 multipart JPEG → FFmpeg → H.264 生成 30 帧，确认没有图像丢失或 AUD 空单元，再由 Chrome 实际 WebCodecs 解码，在本地 HTTPS 上模拟 WSS 服务并检查回退与设置；这不等同于公网、ARM64 硬件编码和真实限速链路验证。

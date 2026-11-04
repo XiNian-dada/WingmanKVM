@@ -7,7 +7,7 @@ Automatic playback tries **WebRTC H.264 → Direct H.264 → MJPEG**. Direct use
 - A browser with `VideoDecoder`, an H.264 decoder and a secure context. Remote domain access requires HTTPS. Unsupported clients fall back to MJPEG.
 - Enable self-signing or import a CA certificate in **Settings → HTTPS and certificates**. Establish browser trust for self-signed certificates; see [HTTPS](HTTPS.md). Existing HTTP configurations retain HTTP after an upgrade.
 - Port 443 is unnecessary: TCP `38319 → device TCP 8080` supports `https://domain:38319` and `wss://domain:38319/api/video/h264/ws`. A reverse proxy must preserve the external Host and support WebSocket upgrades. Set `server.public_origin` when TLS terminates at the proxy, using the same Origin policy as the browser terminal.
-- FFmpeg needs a working H.264 encoder. Direct cannot make unavailable hardware encoders work; explicitly select and allow software encoding when libx264 is the usable encoder.
+- FFmpeg 5.1 or newer is required for `-fps_mode passthrough`, along with a working H.264 encoder. Direct cannot make unavailable hardware encoders work; explicitly select and allow software encoding when libx264 is the usable encoder.
 - Audio remains WebRTC-only. Direct and MJPEG do not carry audio. Screenshots, recording, picture-in-picture and pointer mapping use the active video surface.
 
 ## Shared encoder
@@ -15,6 +15,14 @@ Automatic playback tries **WebRTC H.264 → Direct H.264 → MJPEG**. Direct use
 One on-demand H.264 encoder serves both transports. `video.h264.max_sessions` limits their combined viewer count (default 1, configurable to 2–4); HID and MJPEG connections are excluded. Each viewer has an eight-frame queue. Lagging viewers discard delta frames until an IDR; the last viewer's departure stops encoding after a one-second grace period.
 
 The encoder uses the **lowest requested bitrate among active viewers**. A slow viewer can lower other viewers' picture quality; separate per-viewer renditions are not produced. Disabling adaptation restores that viewer's request to the configured maximum, while another viewer can still request less. The Direct quality overlay distinguishes the viewer's request, shared encoder target and actual received bitrate. Static images may use far less bandwidth than the target.
+
+## Encoding pipeline and latency limits
+
+JPEGs reach FFmpeg as multipart packets with `Content-Length`. A small probe window retains probe frames, avoiding startup frame loss and waiting for the next JPEG to complete the current packet. `-fps_mode passthrough` preserves received pictures instead of duplicating or dropping them to match a probed frame rate. Only `h264_metadata` inserts AUDs. Only H.264 units containing pictures enter viewer queues and advance media time; separate SPS/PPS units are still cached.
+
+The Annex B output parser still uses the next AUD to delimit the current picture, usually adding one source frame interval during continuous streaming (about 67 ms at 15 FPS). Capture, JPEG processing, encoding load, network and display add further latency. These changes do not alter MJPEG playback.
+
+RK3399 silicon supports H.264 encoding, but using it requires compatible kernel drivers, MPP and FFmpeg. An `h264_v4l2m2m` entry in `ffmpeg -encoders` only confirms the interface was compiled. A V4L2 encoder node whose capture formats list only JPEG cannot encode H.264 through that node. [ffmpeg-rockchip](https://github.com/nyanmisaka/ffmpeg-rockchip) requires a Rockchip BSP/vendor kernel and MPP device access; replacing FFmpeg or integrating [MPP](https://github.com/rockchip-linux/mpp) directly cannot supply a missing driver.
 
 ## Adaptation
 
@@ -46,4 +54,4 @@ After decode/display the client sends `{"type":"ack","sequence":N}`. Only a fram
 
 `{"type":"bitrate","kbps":2000}` changes the viewer's request; the reply reports the clamped request and maximum. The next config reports the actual shared target. Feedback RTT is measured from server send to decode ACK and includes network and decode time.
 
-Rust tests exercise shared encoding, recovery, authentication/Origin, bounded ACK windows, timeouts and epoch changes. `scripts/verify_direct_h264_ui.py` generates real H.264 with FFmpeg and decodes it in Chrome over a locally mocked HTTPS/WSS service. These checks do not establish production-network or ARM64 hardware performance.
+Rust tests exercise shared encoding, recovery, authentication/Origin, bounded ACK windows, timeouts and epoch changes. `scripts/verify_direct_h264_ui.py` generates 30 frames through multipart JPEG → FFmpeg → H.264, checks that no pictures are lost and no AUD-only units are emitted, then decodes them in Chrome over a locally mocked HTTPS/WSS service. These checks do not establish production-network or ARM64 hardware performance.

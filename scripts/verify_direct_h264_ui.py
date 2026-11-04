@@ -16,14 +16,30 @@ from verify_audit2_ui import FAKE_PEER, ADAPTIVE_DECISION_SCRIPT
 
 def fixture(root):
     path = root / "fixture.h264"
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
-                    "testsrc2=size=128x72:rate=30", "-frames:v", "30", "-threads", "1",
+    # Exercise the live pipeline's JPEG demuxer and bitstream filter too. A
+    # direct lavfi -> x264 fixture missed duplicate AUDs and probe-frame loss.
+    jpeg = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                           "testsrc2=size=128x72:rate=30", "-frames:v", "30", "-threads", "1",
+                           "-c:v", "mjpeg", "-f", "image2pipe", "pipe:1"],
+                          check=True, capture_output=True).stdout
+    pictures = [part + b"\xff\xd9" for part in jpeg.split(b"\xff\xd9") if part]
+    assert len(pictures) == 30, "JPEG fixture must contain thirty pictures"
+    multipart = b"".join(
+        f"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {len(picture)}\r\n\r\n".encode()
+        + picture + b"\r\n" for picture in pictures)
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-probesize", "32",
+                    "-analyzeduration", "0", "-f", "mpjpeg", "-r", "30", "-i", "pipe:0",
+                    "-an", "-fps_mode", "passthrough", "-vf", "format=yuv420p", "-threads", "1",
                     "-c:v", "libx264", "-profile:v", "baseline", "-preset", "ultrafast",
-                    "-tune", "zerolatency", "-g", "15", "-bf", "0", "-x264-params",
-                    "aud=1:repeat-headers=1:scenecut=0", "-f", "h264", str(path)], check=True)
+                    "-tune", "zerolatency", "-b:v", "4000k", "-maxrate", "4000k", "-bufsize", "2000k",
+                    "-g", "15", "-bf", "0", "-x264-params", "repeat-headers=1:scenecut=0",
+                    "-bsf:v", "h264_metadata=aud=insert", "-f", "h264", str(path)],
+                   input=multipart, check=True)
     data = path.read_bytes()
     starts = [match.start() for match in re.finditer(b"\x00\x00(?:\x00)?\x01\x09", data)]
     frames = [data[a:b] for a, b in zip(starts, starts[1:] + [len(data)])]
+    assert len(frames) == len(pictures), "encoder must preserve every fixture picture"
+    assert all(re.search(b"\x00\x00(?:\x00)?\x01[\x41\x65]", frame) for frame in frames), "no AUD-only frames"
     sps = re.search(b"\x00\x00(?:\x00)?\x01\x67(...)" , data, re.S).group(1)
     return frames, "avc1." + sps.hex()
 

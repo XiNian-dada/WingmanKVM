@@ -1947,15 +1947,25 @@ async fn run_encoder_process(
         "-hide_banner",
         "-loglevel",
         "warning",
-        "-fflags",
-        "nobuffer",
+        // Length-delimited JPEG packets can be decoded as soon as this frame
+        // arrives, without waiting for the next JPEG's start marker. Keep the
+        // probe packet (nobuffer would discard it) and avoid the default
+        // multi-second stream analysis; geometry comes from the first JPEG.
+        "-probesize",
+        "32",
+        "-analyzeduration",
+        "0",
         "-f",
-        "mjpeg",
-        "-framerate",
+        "mpjpeg",
+        "-r",
         &fps_text,
         "-i",
         "pipe:0",
         "-an",
+        // The capture loop already selects frames. Never synthesize/drop
+        // pictures to satisfy a frame rate inferred during probing.
+        "-fps_mode",
+        "passthrough",
         "-vf",
         "format=yuv420p",
         "-c:v",
@@ -2023,10 +2033,19 @@ async fn run_encoder_process(
         loop {
             let frame = frames.borrow_and_update().clone();
             if let Some(frame) = frame {
+                let header = format!(
+                    "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+                    frame.jpeg.len()
+                );
+                stdin
+                    .write_all(header.as_bytes())
+                    .await
+                    .map_err(|error| error.to_string())?;
                 stdin
                     .write_all(&frame.jpeg)
                     .await
                     .map_err(|error| error.to_string())?;
+                stdin.write_all(b"\r\n").await.map_err(|error| error.to_string())?;
                 stdin.flush().await.map_err(|error| error.to_string())?;
             }
             frames
