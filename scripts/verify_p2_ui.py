@@ -146,6 +146,10 @@ def api_route(route, state):
     if path == "/api/config" and route.request.method == "GET":
         return route.fulfill(status=200, headers=headers,
                              body=json.dumps(bootstrap_payload(state)["config"]))
+    if path == "/api/tls" and route.request.method == "GET":
+        return route.fulfill(status=200, headers=headers, body=json.dumps({
+            "mode": "disabled", "enabled": False, "public_origin": None,
+            "custom_configured": False, "certificate": None}))
     # Unmocked: answer like an unknown route and fail the suite (AUD3-33).
     return ui_harness.answer_unmocked(route, path)
 
