@@ -34,3 +34,7 @@ that request's temporary file is removed.
 reload. `GET /api/media/download/{id}` reads one specific job. To cancel, send
 `POST /api/media/download/cancel` with JSON `{"id":"<job id>"}`. The ID is required:
 a missing or stale ID must never cancel a newer job created by another page.
+
+Image downloads connect directly and ignore environment proxy settings. This
+keeps hostname resolution under the download address filter. Private LAN/NAS
+addresses remain supported; loopback and link-local targets remain refused.
