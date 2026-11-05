@@ -215,6 +215,8 @@ impl MediaDownloadManager {
 
     fn with_policy(policy: TargetPolicy) -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
+            // A proxy can resolve the target itself, bypassing FilteringResolver.
+            .no_proxy()
             .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
             .timeout(DOWNLOAD_TOTAL_TIMEOUT)
             .dns_resolver(Arc::new(FilteringResolver { policy }))
@@ -1034,6 +1036,37 @@ mod tests {
     fn cancel_payload_requires_a_job_id() {
         assert!(serde_json::from_value::<CancelMediaDownloadRequest>(json!({})).is_err());
         assert_eq!(serde_json::from_value::<CancelMediaDownloadRequest>(json!({"id":"job"})).unwrap().id, "job");
+    }
+
+    #[test]
+    fn environment_proxy_cannot_bypass_the_download_policy() {
+        const CHILD: &str = "WINGMANKVM_TEST_DOWNLOAD_PROXY";
+        if std::env::var_os(CHILD).is_none() {
+            // Change only a fresh test process's environment, never the other
+            // tests' proxy settings. This endpoint is deliberately unavailable.
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let proxy = format!("http://{}", listener.local_addr().unwrap());
+            drop(listener);
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child.args(["--exact", "web::media_download::tests::environment_proxy_cannot_bypass_the_download_policy", "--nocapture"])
+                .env(CHILD, "1").env_remove("REQUEST_METHOD");
+            for key in ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"] { child.env(key, &proxy); }
+            for key in ["NO_PROXY", "no_proxy"] { child.env(key, ""); }
+            assert!(child.status().unwrap().success());
+            return;
+        }
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let production = Harness::production(1024 * 1024);
+            let job = production.start("http://localhost/image.iso".into(), None, None).await.unwrap();
+            let failed = production.wait_for(&job.id, &[DownloadState::Failed, DownloadState::Done]).await;
+            assert_eq!(failed.state, DownloadState::Failed);
+            assert_eq!(failed.code, Some(StatusCode::UNPROCESSABLE_ENTITY.as_u16()));
+            assert_eq!(failed.error.as_deref(), Some(DOWNLOAD_TARGET_DENIED_MESSAGE));
+            let server = spawn_server().await;
+            let direct = Harness::new(1024 * 1024);
+            let job = direct.start(format!("http://{}/file.iso", server.address), None, None).await.unwrap();
+            assert_eq!(direct.wait_for(&job.id, &[DownloadState::Failed, DownloadState::Done]).await.state, DownloadState::Done);
+        });
     }
 
     #[tokio::test]
