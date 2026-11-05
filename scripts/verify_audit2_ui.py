@@ -4371,6 +4371,31 @@ def harness_reports_page_errors(browser, port, checks):
 
 # Every function taking (browser, port, checks) is a scenario, run in
 # definition order; new scenarios need no list edit (and no merge conflict).
+def media_pending_operation(browser, port, checks):
+    """#127: an in-flight LUN operation is busy, never detached or empty."""
+    context, page = new_page(browser, State(), port)
+    response = {"images": [], "status": {"state": "busy"}}
+    try:
+        page.route("**/api/media", lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(response)))
+        page.locator('[data-panel-target="media"]').click()
+        page.locator('#media-refresh').click()
+        page.wait_for_function("document.querySelector('#media-status').classList.contains('busy')")
+        text = page.locator('#media-list').inner_text()
+        check(checks, '暂无镜像' not in text and '正在处理' in text,
+              'pending_media_is_not_reported_as_empty', text)
+        check(checks, page.locator('.media-operation:enabled').count() == 0,
+              'pending_media_has_no_mutation_controls')
+        response.update(images=[{"name": "rescue.iso", "size": 4096, "mounted": True}],
+                        status={"state":"attached", "mounted_name":"rescue.iso", "read_only":True, "media_type":"cdrom"})
+        page.locator('#media-refresh').click()
+        page.wait_for_function("document.querySelector('#media-status').classList.contains('mounted')")
+        check(checks, 'rescue.iso' in page.locator('#media-status').inner_text(),
+              'pending_media_recovers_to_observed_mount')
+    finally:
+        context.close()
+
+
 SCENARIOS = [
     function
     for function in list(globals().values())

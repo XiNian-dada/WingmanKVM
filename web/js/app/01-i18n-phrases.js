@@ -3,6 +3,7 @@
 // entry here rather than a key threaded through the HTML.
 const PHRASES = {
   'zh-TW': {
+    "正在处理": "正在處理",
     "Wingman 简介": "Wingman 簡介",
     "随时接管。": "隨時接管。",
     "连接中": "連線中",
@@ -777,6 +778,7 @@ const PHRASES = {
     "音频设备必须是 ALSA 设备名，例如 plughw:CARD=MS2109,DEV=0": "音訊裝置必須是 ALSA 裝置名，例如 plughw:CARD=MS2109,DEV=0",
   },
   en: {
+    "正在处理": "Operation in progress",
     "Wingman 简介": "About Wingman",
     "随时接管。": "Take over, anytime.",
     "返回": "Back",
