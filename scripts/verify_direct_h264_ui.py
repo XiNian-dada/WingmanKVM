@@ -14,6 +14,34 @@ from verify_p2b_ui import State, api_route, bootstrap_payload
 from verify_audit2_ui import FAKE_PEER, ADAPTIVE_DECISION_SCRIPT
 
 
+# Keep the real decoder, but allow one scenario to pause submission to it.
+# This models a slow decoder without relying on machine speed or CPU load.
+DELAYED_DECODER = """(() => {
+    const RealDecoder = window.VideoDecoder;
+    if (!RealDecoder) return;
+    window.__holdDirectDecode = false;
+    window.__directDecoders = [];
+    window.VideoDecoder = class {
+        static isConfigSupported(config) { return RealDecoder.isConfigSupported(config); }
+        constructor(callbacks) {
+            this.inner = new RealDecoder(callbacks); this.held = [];
+            window.__directDecoders.push(this);
+        }
+        get state() { return this.inner.state; }
+        get decodeQueueSize() { return this.held.length + this.inner.decodeQueueSize; }
+        configure(config) { this.inner.configure(config); }
+        decode(chunk) {
+            if (window.__holdDirectDecode) this.held.push(chunk);
+            else this.inner.decode(chunk);
+        }
+        close() { this.held = []; this.inner.close(); }
+        release() {
+            for (const chunk of this.held.splice(0)) this.inner.decode(chunk);
+        }
+    };
+})();"""
+
+
 def fixture(root):
     path = root / "fixture.h264"
     # Exercise the live pipeline's JPEG demuxer and bitstream filter too. A
@@ -48,6 +76,8 @@ class Stream:
     def __init__(self, ws, frames, codec, events):
         self.ws, self.frames, self.codec, self.events = ws, frames, codec, events
         self.seq, self.epoch, self.sent, self.acks = 0, 0, 0, []
+        self.in_flight = []
+        self.max_in_flight = 0
         self.live = False
         ws.on_message(self.message)
 
@@ -57,25 +87,40 @@ class Stream:
     def restart(self, kbps):
         self.epoch += 1
         self.sent = 0
+        self.in_flight.clear()
         self.ws.send(json.dumps({"type": "config", "version": 1, "codec": self.codec,
                                 "epoch": self.epoch, "bitrate_kbps": kbps, "max_kbps": 4000, "min_kbps": 256}))
-        for _ in range(4):
-            self.send_frame()
+        self.send_frame()
 
-    def send_frame(self):
-        if self.sent >= len(self.frames):
+    @property
+    def drained(self):
+        return self.sent == len(self.frames) and not self.in_flight
+
+    def send_frame(self, window=1):
+        # Normal scenarios have one frame in flight, so only a decoder ACK
+        # advances them. The congestion scenario explicitly uses the real
+        # server's eight-frame window to exercise bounded queue recovery.
+        if self.sent >= len(self.frames) or len(self.in_flight) >= window:
             return
         data = self.frames[self.sent]
         key = bool(re.search(b"\x00\x00(?:\x00)?\x01[\x65]", data))
         self.seq += 1
         self.sent += 1
+        self.in_flight.append(self.seq)
+        self.max_in_flight = max(self.max_in_flight, len(self.in_flight))
         header = struct.pack(">4sB3xIQIQ", b"WK26", key, self.epoch, self.seq * 33333, 33333, self.seq)
         self.ws.send(header + data)
 
     def message(self, text):
         message = json.loads(text)
         if message["type"] == "ack":
-            self.acks.append(message["sequence"])
+            sequence = message["sequence"]
+            # Config messages may acknowledge the previous epoch again.
+            # Like the real server, ignore unknown/duplicate acknowledgements.
+            if sequence not in self.in_flight:
+                return
+            del self.in_flight[:self.in_flight.index(sequence) + 1]
+            self.acks.append(sequence)
             self.ws.send(json.dumps({"type": "feedback", "rtt_ms": 420}))
             self.send_frame()
         elif message["type"] == "bitrate":
@@ -84,8 +129,9 @@ class Stream:
             self.ws.send(json.dumps({"type": "bitrate", "kbps": target, "max_kbps": 4000}))
             if self.live:
                 self.ws.send(json.dumps({"type":"bitrate_applied", "kbps":target}))
-                self.sent = 0
-                for _ in range(4): self.send_frame()
+                if self.drained:
+                    self.sent = 0
+                    self.send_frame()
             else:
                 self.restart(target)
 
@@ -116,7 +162,7 @@ def main():
             page.on("console", lambda message: messages.append(message.text))
             state = State()
             state.video.update(state="ready", message="", last_frame_age_ms=10, frames_per_second=30)
-            page.add_init_script(FAKE_PEER + "\nRTCPeerConnection.prototype.setRemoteDescription = async function() { throw new Error('fixture ICE failure'); };" + ui_harness.TEST_HOOKS)
+            page.add_init_script(FAKE_PEER + "\nRTCPeerConnection.prototype.setRemoteDescription = async function() { throw new Error('fixture ICE failure'); };" + DELAYED_DECODER + ui_harness.TEST_HOOKS)
             page.route("**/api/**", lambda route: api_route(route, state))
             def bootstrap(route):
                 payload = bootstrap_payload(state)
@@ -167,9 +213,17 @@ def main():
             check(result["kbps"] == 2000, "direct_bitrate_control_acknowledged", result)
             page.wait_for_function("async () => (await import('/assets/js/07e-direct-h264.js')).readDirectStats()?.effectiveKbps === 2000")
             check(streams[0].epoch == 3, "encoder_epoch_reconfigures_decoder")
+            check(ui_harness.wait_until(page, lambda: streams[0].drained, timeout=5),
+                  "previous_epoch_drains_before_live_bitrate_test")
+            before_acks = len(streams[0].acks)
+            streams[0].message(json.dumps({"type":"ack", "sequence":streams[0].seq}))
+            check(len(streams[0].acks) == before_acks and streams[0].drained,
+                  "duplicate_ack_does_not_release_another_fixture_frame")
             streams[0].live = True
             page.evaluate("async () => (await import('/assets/js/07e-direct-h264.js')).setDirectBitrate(1200)")
             page.wait_for_function("async () => (await import('/assets/js/07e-direct-h264.js')).readDirectStats()?.effectiveKbps === 1200")
+            check(ui_harness.wait_until(page, lambda: streams[0].drained and len(streams[0].acks) > before_acks, timeout=5),
+                  "live_bitrate_change_delivers_new_decoded_frames")
             check(streams[0].epoch == 3, "native_bitrate_feedback_keeps_decoder_epoch")
             direct_stats = page.evaluate("async () => (await import('/assets/js/07e-direct-h264.js')).readDirectStats()")
             check(direct_stats['decoder'].startswith('WebCodecs') and direct_stats['framesDropped'] == 0,
@@ -228,6 +282,27 @@ def main():
                 return targets;
             }""")
             check(high_latency == [2800, 3500, 4000], "high_latency_link_recovers_to_maximum", high_latency)
+
+            # Congestion is a separate scenario: hold real decode submission,
+            # send within the server's bounded window, then resume at an IDR.
+            check(streams[0].drained and streams[0].max_in_flight == 1,
+                  "normal_fixture_preserves_single_frame_backpressure")
+            page.evaluate("window.__holdDirectDecode = true")
+            streams[0].sent = 0
+            for _ in range(8):
+                streams[0].send_frame(window=8)
+            page.wait_for_function("async () => (await import('/assets/js/07e-direct-h264.js')).readDirectStats()?.framesDropped > 0")
+            page.evaluate("""() => {
+                window.__holdDirectDecode = false;
+                for (const decoder of window.__directDecoders)
+                    if (decoder.state === 'configured') decoder.release();
+            }""")
+            check(ui_harness.wait_until(page, lambda: streams[0].drained, timeout=5),
+                  "decoder_backlog_recovers_and_acknowledges_new_frames")
+            recovered = page.evaluate("async () => (await import('/assets/js/07e-direct-h264.js')).readDirectStats()")
+            check(recovered['framesDropped'] > 0 and recovered['decodeQueue'] == 0
+                  and 1 < streams[0].max_in_flight <= 8 and streams[0].epoch == 3,
+                  "decoder_backlog_is_bounded_and_recovers_without_epoch_restart", recovered)
             # The persisted manual choice bypasses WebRTC on the next connection.
             page.locator('#inspector-toggle').click()
             page.locator('[data-panel-target="video"]').click()

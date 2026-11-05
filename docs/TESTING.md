@@ -341,3 +341,11 @@ python3 scripts/verify_direct_h264_ui.py --browser-channel chrome --output-dir o
 ```
 
 Requires local FFmpeg 5.1 or newer with libx264, OpenSSL and the existing Python Playwright harness. Generates 30 pictures through the live pipeline's multipart JPEG input and H.264 bitstream filter, checking for lost pictures and AUD-only units. Serves the real UI on local HTTPS and mocks the WSS peer. Checks real WebCodecs/canvas decoding, WebRTC → Direct → MJPEG fallback, encoder epoch changes, Direct bitrate control, high-latency adaptation, pointer mapping, screenshot and manual selection. Temporary certificates and video fixtures are removed by the harness; output retains screenshots and the JSON report. This is not a production deployment or hardware throughput test.
+
+This suite runs in both `verify_ui_suite.py` and the CI `verify_regressions.py`
+orchestrator. Normal playback uses one in-flight fixture frame and advances only
+on a valid decoder ACK; duplicate ACKs cannot inject additional frames. Live
+bitrate checks wait for the prior fixture to drain and verify newly decoded
+frames without drops or an epoch change. A separate scenario pauses submission
+to the real decoder, sends within an eight-frame window, and checks bounded frame
+discard plus recovery at a keyframe after decoding resumes.
