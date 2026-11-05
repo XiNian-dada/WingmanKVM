@@ -4417,6 +4417,130 @@ def harness_reports_page_errors(browser, port, checks):
 
 # Every function taking (browser, port, checks) is a scenario, run in
 # definition order; new scenarios need no list edit (and no merge conflict).
+def media_download_fixture(browser, port):
+    """Real page with one server-owned job, including session and network faults."""
+    state = State()
+    context, page = new_page(browser, state, port)
+    backend = {"job": None, "fail": False, "lost_start": False, "authenticated": True, "hold": False, "held": []}
+    requests = []
+    def reply(route, body, status=200):
+        route.fulfill(status=status, content_type="application/json", body=json.dumps(body))
+    def bootstrap(route):
+        body = bootstrap_payload(state)
+        body['authenticated'] = backend['authenticated']
+        reply(route, body)
+    def login(route):
+        backend['authenticated'] = True
+        reply(route, {"ok": True})
+    def logout(route):
+        backend['authenticated'] = False
+        reply(route, {"ok": True})
+    def download(route):
+        path = urllib.parse.urlsplit(route.request.url).path
+        method = route.request.method
+        requests.append((method, path, route.request.post_data))
+        if method == 'POST' and path == '/api/media/download':
+            if backend['job'] is not None:
+                return reply(route, {"error":"transfer busy"}, 409)
+            backend['job'] = {"id":"started", "state":"running", "received":1, "total":100, "name":"image.iso"}
+            if backend['lost_start']:
+                backend['lost_start'] = False
+                return route.abort('failed')
+            return reply(route, backend['job'], 202)
+        if backend['hold']:
+            backend['hold'] = False
+            backend['held'].append(route)
+            return
+        if backend['fail']:
+            backend['fail'] = False
+            return reply(route, {"error":"temporary failure"}, 503)
+        job = backend['job']
+        if job is None or (path != '/api/media/download' and path != '/api/media/download/' + job['id']):
+            return reply(route, {"error":"job not found"}, 404)
+        job['received'] += 1
+        reply(route, job)
+    page.route('**/api/bootstrap', bootstrap)
+    page.route('**/api/login', login)
+    page.route('**/api/logout', logout)
+    page.route('**/api/media/download**', download)
+    return context, page, backend, requests
+
+
+def media_download_recovers_after_reload_and_errors(browser, port, checks):
+    context, page, backend, requests = media_download_fixture(browser, port)
+    try:
+        backend['job'] = {"id":"existing", "state":"running", "received":1, "total":100, "name":"image.iso"}
+        page.reload(wait_until='load')
+        page.locator('[data-panel-target="media"]').click()
+        page.locator('#media-download summary').click()
+        page.wait_for_function("!document.querySelector('#media-download-cancel').classList.contains('hidden')")
+        check(checks, any(method == 'GET' and path == '/api/media/download' for method,path,_ in requests),
+              'download_reload_reconciles_current_server_job')
+        check(checks, page.locator('#media-download-form button[type="submit"]').is_disabled(),
+              'recovered_download_disables_new_transfer')
+        backend['fail'] = True
+        page.wait_for_function("document.querySelector('#media-download-stats').textContent.includes('正在重试')")
+        check(checks, page.locator('#media-download-cancel').is_visible(),
+              'download_poll_error_keeps_cancel_control')
+        page.wait_for_function("!document.querySelector('#media-download-stats').textContent.includes('正在重试')")
+        check(checks, page.locator('#media-download-cancel').is_visible(),
+              'download_poll_resumes_after_transient_error')
+        backend['job'] = {"id":"replacement", "state":"running", "received":1, "total":100, "name":"image.iso"}
+        ui_harness.wait_until(page, lambda: any(path.endswith('/replacement') for _,path,_ in requests))
+        check(checks, any(path.endswith('/replacement') for _,path,_ in requests),
+              'missing_download_id_reconciles_replacement_job')
+        backend['job'] = None
+        page.wait_for_function("document.querySelector('#media-download-cancel').classList.contains('hidden') && !document.querySelector('#media-download-form button[type=submit]').disabled")
+        check(checks, page.locator('#media-download-form button[type="submit"]').is_enabled(),
+              'download_server_restart_recovers_idle_form')
+    finally:
+        context.close()
+
+
+def media_download_recovers_start_and_session_changes(browser, port, checks):
+    context, page, backend, requests = media_download_fixture(browser, port)
+    try:
+        page.locator('[data-panel-target="media"]').click()
+        page.locator('#media-download summary').click()
+        page.wait_for_function("!document.querySelector('#media-download-form button[type=submit]').disabled")
+        form = page.locator('#media-download-form')
+        form.locator('[name="url"]').fill('https://example.invalid/image.iso')
+        backend['lost_start'] = True
+        form.locator('button[type="submit"]').click()
+        page.wait_for_function("!document.querySelector('#media-download-cancel').classList.contains('hidden')")
+        ui_harness.wait_until(page, lambda: any(path.endswith('/started') for _,path,_ in requests))
+        check(checks, backend['job']['id'] == 'started' and any(path.endswith('/started') for _,path,_ in requests),
+              'lost_start_response_recovers_created_job', requests)
+        backend['hold'] = True
+        ui_harness.wait_until(page, lambda: bool(backend['held']))
+        assert backend['held'], 'no status request to hold'
+        page.locator('#logout').click()
+        page.wait_for_selector('#login-form:not(.hidden)')
+        for held in backend['held']:
+            held.fulfill(status=200, content_type='application/json', body=json.dumps(backend['job']))
+        page.wait_for_timeout(100)
+        check(checks, page.locator('#media-download-cancel').evaluate("e=>e.classList.contains('hidden')"),
+              'late_download_status_cannot_restore_logged_out_ui')
+        page.locator('#login-form [name="username"]').fill('reviewer')
+        page.locator('#login-form [name="password"]').fill('Synthetic-login-123!')
+        page.locator('#login-form button[type="submit"]').click()
+        page.wait_for_selector('#app:not(.hidden)')
+        page.wait_for_function("!document.querySelector('#media-download-cancel').classList.contains('hidden')")
+        check(checks, backend['authenticated'] and backend['job']['state'] == 'running',
+              'login_recovers_server_owned_download')
+        backend['job'] = None
+        page.wait_for_function("!document.querySelector('#media-download-form button[type=submit]').disabled")
+        backend['job'] = {"id":"other-tab", "state":"running", "received":1, "total":100, "name":"image.iso"}
+        form.locator('[name="url"]').fill('https://example.invalid/other.iso')
+        form.locator('button[type="submit"]').click()
+        page.wait_for_function("!document.querySelector('#media-download-cancel').classList.contains('hidden')")
+        ui_harness.wait_until(page, lambda: any(path.endswith('/other-tab') for _,path,_ in requests))
+        check(checks, any(path.endswith('/other-tab') for _,path,_ in requests),
+              'start_conflict_recovers_other_tab_job')
+    finally:
+        context.close()
+
+
 def media_pending_operation(browser, port, checks):
     """#127: an in-flight LUN operation is busy, never detached or empty."""
     context, page = new_page(browser, State(), port)

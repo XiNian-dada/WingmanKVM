@@ -156,6 +156,8 @@ def check(checks, condition, name, evidence=""):
     ui_harness.check(checks, condition, name, evidence, limit=512)
 def api_route(route, state):
     path, headers = urllib.parse.urlsplit(route.request.url).path, {"content-type": "application/json"}
+    if path == "/api/media/download" and route.request.method == "GET":
+        return route.fulfill(status=404, content_type="application/json", body='{"error":"当前没有下载任务"}')
     if path == "/api/bootstrap":
         payload = dict(BOOTSTRAP); payload["authenticated"] = state.authenticated
         route.fulfill(status=200, headers=headers, body=json.dumps(payload))

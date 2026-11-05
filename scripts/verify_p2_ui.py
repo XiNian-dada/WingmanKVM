@@ -81,6 +81,8 @@ def bootstrap_payload(state):
 def api_route(route, state):
     path = urllib.parse.urlsplit(route.request.url).path
     headers = {"content-type": "application/json"}
+    if path == "/api/media/download" and route.request.method == "GET":
+        return route.fulfill(status=404, content_type="application/json", body='{"error":"当前没有下载任务"}')
     if path == "/api/bootstrap":
         if state.hang_bootstrap:
             state.hung_bootstrap.append(route)

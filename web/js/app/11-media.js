@@ -258,6 +258,9 @@ async function refreshMedia() {
 // URL downloads run as a server-side background job. Polling continues even
 // if the user closes the inspector, so the image still lands on the device.
 let mediaDownloadId = '',
+  mediaDownloadActive = false,
+  mediaDownloadGeneration = 0,
+  mediaDownloadFailures = 0,
   mediaDownloadTimer = 0,
   mediaDownloadRate = 0,
   mediaDownloadLastAt = 0,
@@ -275,13 +278,16 @@ function stopMediaDownloadPolling() {
   mediaDownloadTimer = 0;
 }
 function finishMediaDownload(state, error) {
+  mediaDownloadGeneration++;
   stopMediaDownloadPolling();
   mediaDownloadId = '';
   mediaDownloadBusy = false;
   const cancel = $('#media-download-cancel');
   cancel.classList.add('hidden');
   cancel.disabled = false;
-  if (state === 'done') {
+  if (state === 'idle') {
+    setMediaDownloadProgress(0, '');
+  } else if (state === 'done') {
     setMediaDownloadProgress(100, '');
     toast('镜像下载完成');
     $('#media-download-form').reset();
@@ -322,9 +328,21 @@ function renderMediaDownloadProgress(status) {
   }
 }
 async function pollMediaDownload() {
-  if (!mediaDownloadId) return;
+  if (!mediaDownloadActive) return;
+  stopMediaDownloadPolling();
+  const generation = mediaDownloadGeneration, id = mediaDownloadId;
   try {
-    const status = await request(`/api/media/download/${encodeURIComponent(mediaDownloadId)}`);
+    const status = await request(id ? `/api/media/download/${encodeURIComponent(id)}` : '/api/media/download');
+    if (generation !== mediaDownloadGeneration || !mediaDownloadActive) return;
+    mediaDownloadFailures = 0;
+    if (!id && status.state !== 'running') {
+      finishMediaDownload('idle');
+      return;
+    }
+    mediaDownloadId = status.id;
+    mediaDownloadBusy = true;
+    $('#media-download-cancel').classList.remove('hidden');
+    syncMediaBusy();
     renderMediaDownloadProgress(status);
     if (status.state === 'running') {
       mediaDownloadTimer = setTimeout(pollMediaDownload, 700);
@@ -332,8 +350,32 @@ async function pollMediaDownload() {
     }
     finishMediaDownload(status.state, status.error);
   } catch (error) {
-    finishMediaDownload('failed', error.message);
+    if (generation !== mediaDownloadGeneration || !mediaDownloadActive) return;
+    if (error.status === 404) {
+      if (!id) return finishMediaDownload('idle');
+      // A later job may have replaced this one. Reconcile with the current job.
+      mediaDownloadId = '';
+      $('#media-download-cancel').classList.add('hidden');
+    } else {
+      $('#media-download-stats').textContent = tr('下载状态暂时不可用，正在重试…');
+    }
+    mediaDownloadTimer = setTimeout(pollMediaDownload, Math.min(10000, 700 * 2 ** Math.min(mediaDownloadFailures++, 4)));
   }
+}
+
+export function setMediaSessionActive(active) {
+  mediaDownloadActive = active;
+  mediaDownloadGeneration++;
+  mediaDownloadFailures = 0;
+  stopMediaDownloadPolling();
+  mediaDownloadId = '';
+  mediaDownloadBusy = active;
+  $('#media-download-cancel').classList.add('hidden');
+  $('#media-download-cancel').disabled = false;
+  setMediaDownloadProgress(0, '');
+  syncMediaBusy();
+  // Downloads survive browser sessions and even a disabled media panel.
+  if (active) pollMediaDownload();
 }
 
 // DOM wiring; main.js calls this once, in the original fragment order.
@@ -420,6 +462,9 @@ export function init() {
       return;
     }
     mediaDownloadBusy = true;
+    stopMediaDownloadPolling();
+    const generation = ++mediaDownloadGeneration;
+    mediaDownloadFailures = 0;
     mediaDownloadRate = 0;
     mediaDownloadLastAt = performance.now();
     mediaDownloadLastReceived = 0;
@@ -432,6 +477,7 @@ export function init() {
         method: 'POST',
         body: JSON.stringify(payload),
       });
+      if (generation !== mediaDownloadGeneration || !mediaDownloadActive) return;
       mediaDownloadId = status.id;
       const cancel = $('#media-download-cancel');
       cancel.classList.remove('hidden');
@@ -439,7 +485,12 @@ export function init() {
       renderMediaDownloadProgress(status);
       pollMediaDownload();
     } catch (error) {
-      finishMediaDownload('failed', error.message);
+      if (generation !== mediaDownloadGeneration || !mediaDownloadActive) return;
+      if (!error.status || error.status === 409 || error.status >= 500) {
+        // A lost start response may already have created a job on the server.
+        toast(error.message, true);
+        pollMediaDownload();
+      } else finishMediaDownload('failed', error.message);
     }
   });
   $('#media-download-cancel').addEventListener('click', async (event) => {

@@ -12,7 +12,7 @@ import {
 } from './08a-input-socket.js';
 import { terminalConnect, terminalDisconnect, terminalReset } from './09-terminal.js';
 import { refreshStatus, setInspectorOpen } from './10-workspace-status.js';
-import { refreshMedia } from './11-media.js';
+import { refreshMedia, setMediaSessionActive } from './11-media.js';
 import { refreshPasskeys, updateLoginPasskeyUI } from './12-passkey.js';
 
 let toastTimer = 0;
@@ -242,6 +242,7 @@ function showState(state) {
   loginForm.classList.toggle('hidden', state !== 'login');
   authView.classList.toggle('hidden', state === 'main');
   app.classList.toggle('hidden', state !== 'main');
+  setMediaSessionActive(state === 'main');
   if (state !== 'setup') closeSetupGuide(false);
   if (state !== 'main') disconnectInputSocket();
   if (state === 'main') {

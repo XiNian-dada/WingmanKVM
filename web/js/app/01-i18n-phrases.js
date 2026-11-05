@@ -3,6 +3,7 @@
 // entry here rather than a key threaded through the HTML.
 const PHRASES = {
   'zh-TW': {
+    "下载状态暂时不可用，正在重试…": "下載狀態暫時無法取得，正在重試…",
     "正在处理": "正在處理",
     "编码后端": "編碼後端",
     "采集 / 编码帧率": "擷取 / 編碼影格率",
@@ -831,6 +832,7 @@ const PHRASES = {
     "音频设备必须是 ALSA 设备名，例如 plughw:CARD=MS2109,DEV=0": "音訊裝置必須是 ALSA 裝置名，例如 plughw:CARD=MS2109,DEV=0",
   },
   en: {
+    "下载状态暂时不可用，正在重试…": "Download status unavailable; retrying…",
     "正在处理": "Operation in progress",
     "编码后端": "Encoder backend",
     "采集 / 编码帧率": "Capture / encoded FPS",
