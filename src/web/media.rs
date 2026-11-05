@@ -223,6 +223,9 @@ pub(super) async fn attach_media(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<AttachMediaRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    // Read the target and reserve the media operation before a config update
+    // can change that target. Lock order is always config_update -> media.
+    let _config_guard = state.config_update.lock().await;
     let default_read_only = state.config.read().await.media.read_only_by_default;
     let status = state
         .media
@@ -247,6 +250,7 @@ pub(super) async fn detach_media(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<DetachMediaRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let _config_guard = state.config_update.lock().await;
     let status = state
         .media
         .detach(media_snapshot(&state).await, request.force)
