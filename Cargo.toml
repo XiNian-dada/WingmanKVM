@@ -55,3 +55,5 @@ strip = true
 # Temporary legacy-DTLS compatibility patch; provenance and removal criteria in vendor/dtls/PATCHES.md.
 [patch.crates-io]
 dtls = { path = "vendor/dtls" }
+# Limit nix to interface/socket features; see vendor/webrtc-util/PATCHES.md.
+webrtc-util = { path = "vendor/webrtc-util" }
