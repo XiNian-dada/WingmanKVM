@@ -3,6 +3,9 @@
 // entry here rather than a key threaded through the HTML.
 const PHRASES = {
   'zh-TW': {
+    '下载任务正在结束或已经结束': '下載任務正在結束或已經結束',
+    '正在完成…': '正在完成…',
+    '下载已超时，正在停止…': '下載已逾時，正在停止…',
     "下载状态暂时不可用，正在重试…": "下載狀態暫時無法取得，正在重試…",
     "正在处理": "正在處理",
     "编码后端": "編碼後端",
@@ -832,6 +835,9 @@ const PHRASES = {
     "音频设备必须是 ALSA 设备名，例如 plughw:CARD=MS2109,DEV=0": "音訊裝置必須是 ALSA 裝置名，例如 plughw:CARD=MS2109,DEV=0",
   },
   en: {
+    '下载任务正在结束或已经结束': 'The download is finishing or has already ended',
+    '正在完成…': 'Finishing…',
+    '下载已超时，正在停止…': 'Download timed out; stopping…',
     "下载状态暂时不可用，正在重试…": "Download status unavailable; retrying…",
     "正在处理": "Operation in progress",
     "编码后端": "Encoder backend",

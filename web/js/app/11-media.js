@@ -303,6 +303,15 @@ function finishMediaDownload(state, error) {
   syncMediaBusy();
 }
 function renderMediaDownloadProgress(status) {
+  const stopping = {
+    cancelling: '正在取消…',
+    timing_out: '下载已超时，正在停止…',
+    completing: '正在完成…',
+  }[status?.state];
+  if (stopping) {
+    $('#media-download-stats').textContent = tr(stopping);
+    return;
+  }
   const received = Number(status?.received) || 0,
     total = Number(status?.total) || 0,
     now = performance.now(),
@@ -327,6 +336,9 @@ function renderMediaDownloadProgress(status) {
     setMediaDownloadProgress(0, text);
   }
 }
+function downloadPending(state) {
+  return ['running', 'cancelling', 'timing_out', 'completing'].includes(state);
+}
 async function pollMediaDownload() {
   if (!mediaDownloadActive) return;
   stopMediaDownloadPolling();
@@ -335,7 +347,7 @@ async function pollMediaDownload() {
     const status = await request(id ? `/api/media/download/${encodeURIComponent(id)}` : '/api/media/download');
     if (generation !== mediaDownloadGeneration || !mediaDownloadActive) return;
     mediaDownloadFailures = 0;
-    if (!id && status.state !== 'running') {
+    if (!id && !downloadPending(status.state)) {
       finishMediaDownload('idle');
       return;
     }
@@ -343,9 +355,10 @@ async function pollMediaDownload() {
     mediaDownloadId = status.id;
     mediaDownloadBusy = true;
     $('#media-download-cancel').classList.remove('hidden');
+    if (status.state !== 'running') $('#media-download-cancel').disabled = true;
     syncMediaBusy();
     renderMediaDownloadProgress(status);
-    if (status.state === 'running') {
+    if (downloadPending(status.state)) {
       mediaDownloadTimer = setTimeout(pollMediaDownload, 700);
       return;
     }
