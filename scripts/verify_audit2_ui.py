@@ -4535,6 +4535,29 @@ def media_download_cancel_does_not_target_a_replacement(browser, port, checks):
         context.close()
 
 
+def media_download_storage_shutdown_remains_busy(browser, port, checks):
+    for phase, terminal, copy in [('cancelling', 'cancelled', '正在取消'),
+                                  ('timing_out', 'failed', '下载已超时'),
+                                  ('completing', 'done', '正在完成')]:
+        context, page, backend, requests = media_download_fixture(browser, port)
+        try:
+            backend['job'] = {"id":phase, "state":phase, "received":1, "total":100, "name":"image.iso"}
+            page.reload(wait_until='load')
+            page.locator('[data-panel-target="media"]').click()
+            page.locator('#media-download summary').click()
+            page.wait_for_function("text => document.querySelector('#media-download-stats').textContent.includes(text)", arg=copy)
+            check(checks, page.locator('#media-download-form button[type="submit"]').is_disabled()
+                  and page.locator('#media-download-cancel').is_disabled(),
+                  'download_storage_phase_blocks_new_actions_' + phase)
+            backend['job']['state'] = terminal
+            backend['job']['error'] = 'storage deadline elapsed' if terminal == 'failed' else None
+            page.wait_for_function("!document.querySelector('#media-download-form button[type=submit]').disabled")
+            check(checks, page.locator('#media-download-cancel').evaluate("e=>e.classList.contains('hidden')"),
+                  'download_storage_phase_releases_ui_only_after_terminal_' + phase)
+        finally:
+            context.close()
+
+
 def media_pending_operation(browser, port, checks):
     """#127: an in-flight LUN operation is busy, never detached or empty."""
     context, page = new_page(browser, State(), port)

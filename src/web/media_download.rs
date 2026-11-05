@@ -145,6 +145,9 @@ pub(super) struct DownloadMediaRequest {
 #[serde(rename_all = "snake_case")]
 pub(super) enum DownloadState {
     Running,
+    Cancelling,
+    TimingOut,
+    Completing,
     Done,
     Failed,
     Cancelled,
@@ -184,10 +187,15 @@ impl Cancellation {
 
     async fn cancelled(&self) {
         loop {
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            // Register before checking the flag so notify_waiters cannot race
+            // between the check and the wait (there may be multiple observers).
+            notified.as_mut().enable();
             if self.flag.load(Ordering::SeqCst) {
                 return;
             }
-            self.notify.notified().await;
+            notified.await;
         }
     }
 }
@@ -339,19 +347,25 @@ impl MediaDownloadManager {
         let job = current
             .as_ref()
             .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "当前没有下载任务"))?;
-        let status = job
+        let mut status = job
             .status
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if id.is_some_and(|id| id != status.id) {
             return Err(ApiError::new(StatusCode::NOT_FOUND, "下载任务不存在"));
         }
-        if status.state != DownloadState::Running {
-            return Err(ApiError::new(StatusCode::CONFLICT, "下载任务已经结束"));
+        if status.state == DownloadState::Cancelling {
+            return Ok(status.clone());
         }
+        if status.state != DownloadState::Running {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "下载任务正在结束或已经结束",
+            ));
+        }
+        status.state = DownloadState::Cancelling;
         job.cancel.cancel();
-        Ok(status)
+        Ok(status.clone())
     }
 
     async fn run(
@@ -363,9 +377,11 @@ impl MediaDownloadManager {
         image_dir: PathBuf,
         max_upload_bytes: u64,
     ) {
+        let deadline = Instant::now() + DOWNLOAD_TOTAL_TIMEOUT;
         let cancel = job.cancel.as_ref();
-        let result = self
-            .transfer(
+        let result = supervise_download(
+            &job,
+            self.transfer(
                 &url,
                 &name,
                 expected_sha256.as_deref(),
@@ -373,8 +389,11 @@ impl MediaDownloadManager {
                 max_upload_bytes,
                 &job,
                 cancel,
-            )
-            .await;
+                deadline,
+            ),
+            deadline,
+        )
+        .await;
         let mut status = job
             .status
             .lock()
@@ -409,6 +428,7 @@ impl MediaDownloadManager {
         max_upload_bytes: u64,
         job: &Arc<DownloadJob>,
         cancel: &Cancellation,
+        total_deadline: Instant,
     ) -> Result<u64, DownloadFailure> {
         fs::create_dir_all(image_dir)
             .await
@@ -423,7 +443,6 @@ impl MediaDownloadManager {
                 "同名镜像已经存在",
             )));
         }
-        let total_deadline = Instant::now() + DOWNLOAD_TOTAL_TIMEOUT;
         let mut response = {
             let request = self
                 .client
@@ -457,75 +476,159 @@ impl MediaDownloadManager {
             return Err(DownloadFailure::Api(too_large_error()));
         }
         update_progress(job, 0, total);
-        let mut partial =
-            PartialUpload::create(image_dir).map_err(|error| DownloadFailure::Api(error))?;
-        let mut hasher = Sha256::new();
-        let mut received = 0_u64;
-        loop {
-            let remaining = total_deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(DownloadFailure::Api(total_timeout_error()));
+        let directory = image_dir.to_owned();
+        let mut partial = tokio::task::spawn_blocking(move || PartialUpload::create(&directory))
+            .await
+            .map_err(download_worker_error)?
+            .map_err(DownloadFailure::Api)?;
+        let received_result = async {
+            let mut hasher = Sha256::new();
+            let mut received = 0_u64;
+            loop {
+                let remaining = total_deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(DownloadFailure::Api(total_timeout_error()));
+                }
+                let wait = DOWNLOAD_IDLE_TIMEOUT.min(remaining);
+                let next = tokio::select! {
+                    _ = cancel.cancelled() => return Err(DownloadFailure::Cancelled),
+                    result = tokio::time::timeout(wait, response.chunk()) => match result {
+                        Ok(result) => result,
+                        Err(_) if remaining <= DOWNLOAD_IDLE_TIMEOUT => {
+                            return Err(DownloadFailure::Api(total_timeout_error()));
+                        }
+                        Err(_) => return Err(DownloadFailure::Api(idle_timeout_error())),
+                    },
+                };
+                let chunk = next.map_err(|error| DownloadFailure::Api(request_error(error)))?;
+                let Some(chunk) = chunk else { break };
+                if chunk.is_empty() {
+                    continue;
+                }
+                let next_size = received.saturating_add(chunk.len() as u64);
+                if next_size > max_upload_bytes {
+                    return Err(DownloadFailure::Api(too_large_error()));
+                }
+                received = next_size;
+                hasher.update(&chunk);
+                partial
+                    .file_mut()
+                    .write_all(&chunk)
+                    .await
+                    .map_err(|error| DownloadFailure::Api(ApiError::internal(error)))?;
+                update_progress(job, received, total);
             }
-            let wait = DOWNLOAD_IDLE_TIMEOUT.min(remaining);
-            let next = tokio::select! {
-                _ = cancel.cancelled() => return Err(DownloadFailure::Cancelled),
-                result = tokio::time::timeout(wait, response.chunk()) => match result {
-                    Ok(result) => result,
-                    Err(_) if remaining <= DOWNLOAD_IDLE_TIMEOUT => {
-                        return Err(DownloadFailure::Api(total_timeout_error()));
-                    }
-                    Err(_) => return Err(DownloadFailure::Api(idle_timeout_error())),
-                },
-            };
-            let chunk = next.map_err(|error| DownloadFailure::Api(request_error(error)))?;
-            let Some(chunk) = chunk else { break };
-            if chunk.is_empty() {
-                continue;
+            if cancel.flag.load(Ordering::SeqCst) {
+                return Err(DownloadFailure::Cancelled);
             }
-            let next_size = received.saturating_add(chunk.len() as u64);
-            if next_size > max_upload_bytes {
-                return Err(DownloadFailure::Api(too_large_error()));
+            if let Some(expected) = expected_sha256 {
+                let actual = format!("{:x}", hasher.finalize());
+                if actual != expected {
+                    return Err(DownloadFailure::Api(ApiError::new(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "SHA256 校验失败，已删除下载的镜像",
+                    )));
+                }
             }
-            received = next_size;
-            hasher.update(&chunk);
             partial
                 .file_mut()
-                .write_all(&chunk)
+                .sync_all()
                 .await
                 .map_err(|error| DownloadFailure::Api(ApiError::internal(error)))?;
-            update_progress(job, received, total);
-        }
-        if cancel.flag.load(Ordering::SeqCst) {
-            return Err(DownloadFailure::Cancelled);
-        }
-        if let Some(expected) = expected_sha256 {
-            let actual = format!("{:x}", hasher.finalize());
-            if actual != expected {
-                return Err(DownloadFailure::Api(ApiError::new(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "SHA256 校验失败，已删除下载的镜像",
-                )));
+            if cancel.flag.load(Ordering::SeqCst) {
+                return Err(DownloadFailure::Cancelled);
             }
+            Ok::<u64, DownloadFailure>(received)
         }
-        partial
-            .file_mut()
-            .sync_all()
-            .await
-            .map_err(|error| DownloadFailure::Api(ApiError::internal(error)))?;
-        if cancel.flag.load(Ordering::SeqCst) {
-            return Err(DownloadFailure::Cancelled);
-        }
-        match partial.publish(&final_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err(DownloadFailure::Api(ApiError::new(
-                    StatusCode::CONFLICT,
-                    "同名镜像已经存在",
-                )));
+        .await;
+        let received = match received_result {
+            Ok(received) => received,
+            Err(error) => {
+                // File::write_all can accept a buffered write before its
+                // blocking syscall finishes. Drain it even on cancellation.
+                let _ = partial.file_mut().flush().await;
+                // Cleanup can also block on storage. Retain the transfer slot
+                // and keep the supervisor responsive until it really finishes.
+                tokio::task::spawn_blocking(move || drop(partial))
+                    .await
+                    .map_err(download_worker_error)?;
+                return Err(error);
             }
-            Err(error) => return Err(DownloadFailure::Api(ApiError::internal(error))),
+        };
+        let job = job.clone();
+        tokio::task::spawn_blocking(move || {
+            begin_publication(&job, total_deadline)?;
+            match partial.publish(&final_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Err(DownloadFailure::Api(ApiError::new(
+                        StatusCode::CONFLICT,
+                        "同名镜像已经存在",
+                    )));
+                }
+                Err(error) => return Err(DownloadFailure::Api(ApiError::internal(error))),
+            }
+            Ok(received)
+        })
+        .await
+        .map_err(download_worker_error)?
+    }
+}
+
+fn download_worker_error(error: tokio::task::JoinError) -> DownloadFailure {
+    DownloadFailure::Api(ApiError::internal(error))
+}
+
+/// Cancellation and publication have one decision point. Once the synced file
+/// is committing its final name, cancelling it could remove an image already
+/// observed by another request. Keep that brief phase owned and non-cancellable.
+fn begin_publication(job: &DownloadJob, deadline: Instant) -> Result<(), DownloadFailure> {
+    let mut status = job
+        .status
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if job.cancel.flag.load(Ordering::SeqCst) {
+        return Err(DownloadFailure::Cancelled);
+    }
+    if Instant::now() >= deadline {
+        return Err(DownloadFailure::Api(total_timeout_error()));
+    }
+    status.state = DownloadState::Completing;
+    Ok(())
+}
+
+/// Report interruption immediately, but do not drop a future that owns pending
+/// filesystem calls. It must drain and clean up before its transfer slot opens.
+async fn supervise_download(
+    job: &DownloadJob,
+    work: impl Future<Output = Result<u64, DownloadFailure>>,
+    deadline: Instant,
+) -> Result<u64, DownloadFailure> {
+    tokio::pin!(work);
+    tokio::select! {
+        biased;
+        _ = job.cancel.cancelled() => {
+            let _ = work.await;
+            Err(DownloadFailure::Cancelled)
         }
-        Ok(received)
+        _ = tokio::time::sleep_until(deadline.into()) => {
+            let stopping = {
+                let mut status = job.status.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if status.state == DownloadState::Completing {
+                    false
+                } else {
+                    let error = total_timeout_error();
+                    status.state = DownloadState::TimingOut;
+                    status.code = Some(error.status.as_u16());
+                    status.error = Some(error.message);
+                    job.cancel.cancel();
+                    true
+                }
+            };
+            let result = work.await;
+            if stopping { Err(DownloadFailure::Api(total_timeout_error())) } else { result }
+        }
+        result = &mut work => result,
     }
 }
 
@@ -635,7 +738,9 @@ pub(super) async fn cancel_media_download(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<CancelMediaDownloadRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Ok(no_store(Json(state.media_download.cancel(Some(&request.id))?)))
+    Ok(no_store(Json(
+        state.media_download.cancel(Some(&request.id))?,
+    )))
 }
 
 #[cfg(test)]
@@ -847,6 +952,137 @@ mod tests {
         format!("{:x}", Sha256::digest(contents))
     }
 
+    fn install_storage_job(harness: &Harness) -> Arc<DownloadJob> {
+        let job = Arc::new(DownloadJob {
+            status: Mutex::new(DownloadStatus {
+                id: "storage-job".into(),
+                state: DownloadState::Running,
+                received: 1,
+                total: Some(1),
+                error: None,
+                name: "storage.img".into(),
+                code: None,
+            }),
+            cancel: Arc::new(Cancellation::default()),
+        });
+        *harness.manager.current.lock().unwrap() = Some(job.clone());
+        job
+    }
+
+    async fn assert_storage_interruption(timed_out: bool) {
+        let harness = Harness::new(1024);
+        let job = install_storage_job(&harness);
+        let slot = harness.slot.clone().lock_owned().await;
+        let mut partial = PartialUpload::create(harness.dir.path()).unwrap();
+        partial.file_mut().write_all(b"x").await.unwrap();
+        partial.file_mut().sync_all().await.unwrap();
+        let final_path = harness.dir.path().join("storage.img");
+        let target = final_path.clone();
+        let deadline = Instant::now() + Duration::from_millis(if timed_out { 40 } else { 5000 });
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, blocked) = tokio::sync::oneshot::channel();
+        let running = tokio::spawn({
+            let job = job.clone();
+            async move {
+                let _slot = slot;
+                let worker_job = job.clone();
+                let work = async move {
+                    started.send(()).unwrap();
+                    blocked.await.unwrap();
+                    tokio::task::spawn_blocking(move || {
+                        begin_publication(&worker_job, deadline)?;
+                        partial
+                            .publish(&target)
+                            .map_err(|e| DownloadFailure::Api(ApiError::internal(e)))?;
+                        Ok(1)
+                    })
+                    .await
+                    .map_err(download_worker_error)?
+                };
+                supervise_download(&job, work, deadline).await
+            }
+        });
+        ready.await.unwrap();
+        let expected = if timed_out {
+            DownloadState::TimingOut
+        } else {
+            assert_eq!(
+                harness.manager.cancel(Some("storage-job")).unwrap().state,
+                DownloadState::Cancelling
+            );
+            DownloadState::Cancelling
+        };
+        let status = harness.wait_for("storage-job", &[expected]).await;
+        if timed_out {
+            assert_eq!(status.code, Some(408));
+        }
+        assert!(!running.is_finished());
+        assert!(harness.slot.clone().try_lock_owned().is_err());
+        assert!(!final_path.exists());
+        release.send(()).unwrap();
+        let result = running.await.unwrap();
+        if timed_out {
+            assert!(
+                matches!(result, Err(DownloadFailure::Api(error)) if error.status == StatusCode::REQUEST_TIMEOUT)
+            );
+        } else {
+            assert!(matches!(result, Err(DownloadFailure::Cancelled)));
+        }
+        assert!(!final_path.exists());
+        assert!(harness.partials().is_empty());
+        assert!(harness.slot.clone().try_lock_owned().is_ok());
+    }
+
+    #[tokio::test]
+    async fn cancellation_observes_pending_storage_without_releasing_its_slot() {
+        assert_storage_interruption(false).await;
+    }
+
+    #[tokio::test]
+    async fn total_deadline_observes_pending_storage_and_prevents_publication() {
+        assert_storage_interruption(true).await;
+    }
+
+    #[tokio::test]
+    async fn publication_admission_is_atomic_with_cancellation() {
+        let harness = Harness::new(1024);
+        let job = install_storage_job(&harness);
+        let expired = Instant::now() - Duration::from_secs(1);
+        assert!(
+            matches!(begin_publication(&job, expired), Err(DownloadFailure::Api(error)) if error.status == StatusCode::REQUEST_TIMEOUT)
+        );
+        assert_eq!(
+            harness.manager.status(None).unwrap().state,
+            DownloadState::Running
+        );
+        let deadline = Instant::now() + Duration::from_millis(30);
+        begin_publication(&job, deadline).unwrap();
+        assert_eq!(
+            harness
+                .manager
+                .cancel(Some("storage-job"))
+                .unwrap_err()
+                .status,
+            StatusCode::CONFLICT
+        );
+        let result = supervise_download(
+            &job,
+            async {
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                Ok(1)
+            },
+            deadline,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, 1);
+        assert!(!job.cancel.flag.load(Ordering::SeqCst));
+        assert_eq!(
+            harness.manager.status(None).unwrap().state,
+            DownloadState::Completing
+        );
+    }
+
     #[tokio::test]
     async fn downloads_and_publishes_with_matching_sha256() {
         let server = spawn_server().await;
@@ -1035,7 +1271,12 @@ mod tests {
     #[test]
     fn cancel_payload_requires_a_job_id() {
         assert!(serde_json::from_value::<CancelMediaDownloadRequest>(json!({})).is_err());
-        assert_eq!(serde_json::from_value::<CancelMediaDownloadRequest>(json!({"id":"job"})).unwrap().id, "job");
+        assert_eq!(
+            serde_json::from_value::<CancelMediaDownloadRequest>(json!({"id":"job"}))
+                .unwrap()
+                .id,
+            "job"
+        );
     }
 
     #[test]
@@ -1050,22 +1291,50 @@ mod tests {
             let mut child = std::process::Command::new(std::env::current_exe().unwrap());
             child.args(["--exact", "web::media_download::tests::environment_proxy_cannot_bypass_the_download_policy", "--nocapture"])
                 .env(CHILD, "1").env_remove("REQUEST_METHOD");
-            for key in ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"] { child.env(key, &proxy); }
-            for key in ["NO_PROXY", "no_proxy"] { child.env(key, ""); }
+            for key in [
+                "HTTP_PROXY",
+                "http_proxy",
+                "HTTPS_PROXY",
+                "https_proxy",
+                "ALL_PROXY",
+                "all_proxy",
+            ] {
+                child.env(key, &proxy);
+            }
+            for key in ["NO_PROXY", "no_proxy"] {
+                child.env(key, "");
+            }
             assert!(child.status().unwrap().success());
             return;
         }
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let production = Harness::production(1024 * 1024);
-            let job = production.start("http://localhost/image.iso".into(), None, None).await.unwrap();
-            let failed = production.wait_for(&job.id, &[DownloadState::Failed, DownloadState::Done]).await;
+            let job = production
+                .start("http://localhost/image.iso".into(), None, None)
+                .await
+                .unwrap();
+            let failed = production
+                .wait_for(&job.id, &[DownloadState::Failed, DownloadState::Done])
+                .await;
             assert_eq!(failed.state, DownloadState::Failed);
             assert_eq!(failed.code, Some(StatusCode::UNPROCESSABLE_ENTITY.as_u16()));
-            assert_eq!(failed.error.as_deref(), Some(DOWNLOAD_TARGET_DENIED_MESSAGE));
+            assert_eq!(
+                failed.error.as_deref(),
+                Some(DOWNLOAD_TARGET_DENIED_MESSAGE)
+            );
             let server = spawn_server().await;
             let direct = Harness::new(1024 * 1024);
-            let job = direct.start(format!("http://{}/file.iso", server.address), None, None).await.unwrap();
-            assert_eq!(direct.wait_for(&job.id, &[DownloadState::Failed, DownloadState::Done]).await.state, DownloadState::Done);
+            let job = direct
+                .start(format!("http://{}/file.iso", server.address), None, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                direct
+                    .wait_for(&job.id, &[DownloadState::Failed, DownloadState::Done])
+                    .await
+                    .state,
+                DownloadState::Done
+            );
         });
     }
 
@@ -1073,14 +1342,25 @@ mod tests {
     async fn cancelling_an_old_job_does_not_cancel_its_replacement() {
         let server = spawn_server().await;
         let harness = Harness::new(4 * 1024 * 1024);
-        let first = harness.start(format!("http://{}/file.iso", server.address), None, None).await.unwrap();
+        let first = harness
+            .start(format!("http://{}/file.iso", server.address), None, None)
+            .await
+            .unwrap();
         harness.wait_for(&first.id, &[DownloadState::Done]).await;
-        let second = harness.start(format!("http://{}/slow.iso", server.address), None, None).await.unwrap();
+        let second = harness
+            .start(format!("http://{}/slow.iso", server.address), None, None)
+            .await
+            .unwrap();
         let error = harness.manager.cancel(Some(&first.id)).unwrap_err();
         assert_eq!(error.status, StatusCode::NOT_FOUND);
-        assert_eq!(harness.manager.status(Some(&second.id)).unwrap().state, DownloadState::Running);
+        assert_eq!(
+            harness.manager.status(Some(&second.id)).unwrap().state,
+            DownloadState::Running
+        );
         harness.manager.cancel(Some(&second.id)).unwrap();
-        harness.wait_for(&second.id, &[DownloadState::Cancelled]).await;
+        harness
+            .wait_for(&second.id, &[DownloadState::Cancelled])
+            .await;
     }
 
     const DENIED_LITERAL_URLS: &[&str] = &[
