@@ -135,6 +135,7 @@ function mediaStateLabel(state) {
       attaching: '正在挂载',
       detaching: '正在弹出',
       ejecting: '正在弹出',
+      busy: '正在处理',
       error: '状态异常',
     }[state] || ''
   );

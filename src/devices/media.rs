@@ -1,6 +1,7 @@
 use std::{
     future::Future,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -8,11 +9,12 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
     fs,
-    sync::Mutex,
+    sync::{Mutex, OwnedMutexGuard},
     time::{Instant, sleep, timeout},
 };
 
 const ATTRIBUTE_IO_TIMEOUT: Duration = Duration::from_secs(1);
+const OPERATION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 const MEDIA_STATE_TIMEOUT: Duration = Duration::from_secs(2);
 const MEDIA_STATE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
@@ -36,6 +38,7 @@ pub enum MediaType {
 pub enum MediaState {
     Detached,
     Attached,
+    Busy,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,6 +64,10 @@ pub struct MediaStatus {
 pub enum MediaError {
     #[error("virtual media is not configured")]
     NotConfigured,
+    #[error("virtual media operation is still running; refresh its status before retrying")]
+    Busy,
+    #[error("virtual media response timed out; the operation is still running")]
+    OperationPending,
     #[error("invalid image name")]
     InvalidName,
     #[error("image is outside the configured storage directory")]
@@ -87,13 +94,18 @@ pub enum MediaError {
     StateTimedOut(&'static str),
     #[error("the kernel did not apply the requested LUN attribute: {0}")]
     LunAttributeRejected(&'static str),
+    #[error("{operation}; clearing the backing file also failed: {rollback}")]
+    RollbackFailed {
+        operation: Box<MediaError>,
+        rollback: Box<MediaError>,
+    },
     #[error("virtual media I/O failed: {0}")]
     Io(#[from] std::io::Error),
 }
 
 #[derive(Default)]
 pub struct MediaManager {
-    operation: Mutex<()>,
+    operation: Arc<Mutex<()>>,
 }
 
 impl MediaManager {
@@ -102,7 +114,22 @@ impl MediaManager {
         config: Option<MediaConfigSnapshot>,
     ) -> Result<(Vec<MediaImage>, MediaStatus), MediaError> {
         let config = config.ok_or(MediaError::NotConfigured)?;
-        let _guard = self.operation.lock().await;
+        let Ok(_guard) = self.operation.clone().try_lock_owned() else {
+            // Never read attributes while a timed-out mutation is still running.
+            return Ok((
+                Vec::new(),
+                MediaStatus {
+                    state: MediaState::Busy,
+                    mounted_path: None,
+                    mounted_name: None,
+                    media_type: None,
+                    read_only: None,
+                    cdrom: None,
+                    removable: None,
+                    forced_eject_supported: false,
+                },
+            ));
+        };
         io_timeout(
             "creating the image directory",
             fs::create_dir_all(&config.image_dir),
@@ -143,8 +170,26 @@ impl MediaManager {
         read_only: bool,
     ) -> Result<MediaStatus, MediaError> {
         let config = config.ok_or(MediaError::NotConfigured)?;
-        let _guard = self.operation.lock().await;
+        let guard = self
+            .operation
+            .clone()
+            .try_lock_owned()
+            .map_err(|_| MediaError::Busy)?;
+        let name = name.to_owned();
+        run_operation(
+            guard,
+            async move { Self::attach_inner(config, &name, media_type, read_only).await },
+            OPERATION_RESPONSE_TIMEOUT,
+        )
+        .await
+    }
 
+    async fn attach_inner(
+        config: MediaConfigSnapshot,
+        name: &str,
+        media_type: MediaType,
+        read_only: bool,
+    ) -> Result<MediaStatus, MediaError> {
         io_timeout(
             "creating the image directory",
             fs::create_dir_all(&config.image_dir),
@@ -204,8 +249,23 @@ impl MediaManager {
         force: bool,
     ) -> Result<MediaStatus, MediaError> {
         let config = config.ok_or(MediaError::NotConfigured)?;
-        let _guard = self.operation.lock().await;
+        let guard = self
+            .operation
+            .clone()
+            .try_lock_owned()
+            .map_err(|_| MediaError::Busy)?;
+        run_operation(
+            guard,
+            Self::detach_inner(config, force),
+            OPERATION_RESPONSE_TIMEOUT,
+        )
+        .await
+    }
 
+    async fn detach_inner(
+        config: MediaConfigSnapshot,
+        force: bool,
+    ) -> Result<MediaStatus, MediaError> {
         validate_lun_attribute(&config.lun_path, "file").await?;
         if force && !lun_attribute_exists(&config.lun_path, "forced_eject").await? {
             return Err(MediaError::ForceEjectUnsupported);
@@ -223,6 +283,24 @@ impl MediaManager {
         }
         wait_for_backing_file(&config.lun_path.join("file"), None).await?;
         read_status(&config).await
+    }
+}
+
+/// The response may time out or be dropped, but only the operation task owns
+/// the lock. In particular, tokio's blocking filesystem work cannot be aborted.
+async fn run_operation<T: Send + 'static>(
+    guard: OwnedMutexGuard<()>,
+    work: impl Future<Output = Result<T, MediaError>> + Send + 'static,
+    response_timeout: Duration,
+) -> Result<T, MediaError> {
+    let task = tokio::spawn(async move {
+        let _guard = guard;
+        work.await
+    });
+    match timeout(response_timeout, task).await {
+        Ok(result) => result.map_err(|error| std::io::Error::other(error.to_string()))?,
+        // Dropping a JoinHandle detaches the task; it does not cancel it.
+        Err(_) => Err(MediaError::OperationPending),
     }
 }
 
@@ -313,7 +391,12 @@ async fn verify_attached_status_or_rollback(
     lun_path: &Path,
 ) -> Result<(), MediaError> {
     if let Err(error) = verify_attached_status(status, cdrom, read_only) {
-        let _ = clear_backing_file(lun_path).await;
+        if let Err(rollback) = clear_backing_file(lun_path).await {
+            return Err(MediaError::RollbackFailed {
+                operation: Box::new(error),
+                rollback: Box::new(rollback),
+            });
+        }
         return Err(error);
     }
     Ok(())
@@ -439,7 +522,10 @@ async fn read_optional_attr(path: &Path) -> Result<Option<String>, MediaError> {
 }
 
 async fn write_attr(path: &Path, value: &str) -> Result<(), MediaError> {
-    io_timeout("writing a LUN attribute", fs::write(path, value.as_bytes())).await
+    // Keep the operation lock until this write actually finishes. Timing out
+    // this future would leave a blocking write running after releasing the lock.
+    fs::write(path, value.as_bytes()).await?;
+    Ok(())
 }
 
 async fn io_timeout<T>(
@@ -530,6 +616,109 @@ mod tests {
         assert!(sanitize_upload_name("disk.img").is_ok());
         assert!(sanitize_upload_name("../secret.iso").is_err());
         assert!(sanitize_upload_name("firmware.bin").is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timed_out_write_keeps_ownership_until_the_system_call_finishes() {
+        use std::io::Read;
+        let tree = TestTree::new();
+        let fifo = tree.root.join("blocked-attribute");
+        let path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let manager = MediaManager::default();
+        let guard = manager.operation.clone().try_lock_owned().unwrap();
+        let writer_path = fifo.clone();
+        let result = run_operation(
+            guard,
+            async move { write_attr(&writer_path, "late-write\n").await },
+            Duration::from_millis(30),
+        )
+        .await;
+        assert!(matches!(result, Err(MediaError::OperationPending)));
+        assert_eq!(
+            manager.list(Some(tree.config())).await.unwrap().1.state,
+            MediaState::Busy
+        );
+        assert!(matches!(
+            manager.detach(Some(tree.config()), false).await,
+            Err(MediaError::Busy)
+        ));
+        assert!(matches!(
+            manager
+                .attach(Some(tree.config()), "next.img", MediaType::Disk, false)
+                .await,
+            Err(MediaError::Busy)
+        ));
+        let received = tokio::task::spawn_blocking(move || {
+            let mut value = String::new();
+            std_fs::File::open(fifo)
+                .unwrap()
+                .read_to_string(&mut value)
+                .unwrap();
+            value
+        })
+        .await
+        .unwrap();
+        assert_eq!(received, "late-write\n");
+        drop(
+            timeout(Duration::from_secs(2), manager.operation.lock())
+                .await
+                .unwrap(),
+        );
+        tree.image("next.img", b"next-image");
+        assert!(
+            manager
+                .attach(Some(tree.config()), "next.img", MediaType::Disk, false)
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_the_caller_does_not_cancel_the_operation() {
+        let manager = MediaManager::default();
+        let guard = manager.operation.clone().try_lock_owned().unwrap();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, waiting) = tokio::sync::oneshot::channel();
+        let (done, finished) = tokio::sync::oneshot::channel();
+        let caller = tokio::spawn(run_operation(
+            guard,
+            async move {
+                started.send(()).unwrap();
+                waiting.await.unwrap();
+                done.send(()).unwrap();
+                Ok(())
+            },
+            OPERATION_RESPONSE_TIMEOUT,
+        ));
+        ready.await.unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        assert!(manager.operation.try_lock().is_err());
+        release.send(()).unwrap();
+        finished.await.unwrap();
+        drop(
+            timeout(Duration::from_secs(2), manager.operation.lock())
+                .await
+                .unwrap(),
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_rollback_is_reported_instead_of_discarded() {
+        let tree = TestTree::new();
+        let mut status = read_status(&tree.config()).await.unwrap();
+        status.read_only = Some(true);
+        status.cdrom = Some(false);
+        std_fs::remove_file(tree.lun_path.join("file")).unwrap();
+        std_fs::create_dir(tree.lun_path.join("file")).unwrap();
+        let error = verify_attached_status_or_rollback(&status, false, false, &tree.lun_path)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, MediaError::RollbackFailed { operation, .. } if matches!(*operation, MediaError::ReadOnlyFallback))
+        );
     }
 
     #[tokio::test]

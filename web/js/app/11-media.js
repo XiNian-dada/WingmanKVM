@@ -70,7 +70,7 @@ function renderMediaStatus(status, items) {
     if (stateText && stateText !== '已挂载') parts.unshift(stateText);
     // One text node per part, so each is translated as its own phrase.
     detail.append(...parts.flatMap((part, index) => (index ? [' · ', part] : [part])));
-  } else detail.textContent = state === 'error' ? '请检查 LUN 配置' : '选择镜像即可挂载';
+  } else detail.textContent = mediaServerBusy ? mediaStateLabel(state) : state === 'error' ? '请检查 LUN 配置' : '选择镜像即可挂载';
   copy.append(title, detail);
   box.append(dot, copy);
   if (mounted) {
@@ -221,7 +221,7 @@ function renderMedia(data) {
   renderMediaStatus(status, items);
   box.replaceChildren();
   if (!items.length) {
-    box.textContent = '暂无镜像';
+    box.textContent = mediaServerBusy ? mediaStateLabel(status.state) : '暂无镜像';
     syncMediaBusy();
     return;
   }

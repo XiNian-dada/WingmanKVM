@@ -68,13 +68,14 @@ pub(super) fn map_media_error(error: MediaError) -> ApiError {
         | MediaError::EmptyImage => StatusCode::UNPROCESSABLE_ENTITY,
         MediaError::ImageNotFound => StatusCode::NOT_FOUND,
         MediaError::ForceEjectUnsupported
+        | MediaError::Busy
         | MediaError::AlreadyAttached(_)
         | MediaError::ReadOnlyFallback => StatusCode::CONFLICT,
-        MediaError::IoTimedOut(_) | MediaError::StateTimedOut(_) => StatusCode::GATEWAY_TIMEOUT,
+        MediaError::IoTimedOut(_) | MediaError::StateTimedOut(_) | MediaError::OperationPending => StatusCode::GATEWAY_TIMEOUT,
         MediaError::MissingLunAttribute(_) | MediaError::LunAttributeRejected(_) => {
             StatusCode::SERVICE_UNAVAILABLE
         }
-        MediaError::Io(_) => StatusCode::SERVICE_UNAVAILABLE,
+        MediaError::Io(_) | MediaError::RollbackFailed { .. } => StatusCode::SERVICE_UNAVAILABLE,
     };
     ApiError::new(status, error.to_string())
 }

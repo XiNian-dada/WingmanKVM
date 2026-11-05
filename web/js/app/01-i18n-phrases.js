@@ -3,6 +3,7 @@
 // entry here rather than a key threaded through the HTML.
 const PHRASES = {
   'zh-TW': {
+    "正在处理": "正在處理",
     "编码后端": "編碼後端",
     "采集 / 编码帧率": "擷取 / 編碼影格率",
     "单帧处理耗时": "單幀處理耗時",
@@ -830,6 +831,7 @@ const PHRASES = {
     "音频设备必须是 ALSA 设备名，例如 plughw:CARD=MS2109,DEV=0": "音訊裝置必須是 ALSA 裝置名，例如 plughw:CARD=MS2109,DEV=0",
   },
   en: {
+    "正在处理": "Operation in progress",
     "编码后端": "Encoder backend",
     "采集 / 编码帧率": "Capture / encoded FPS",
     "单帧处理耗时": "Frame processing time",
