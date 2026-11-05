@@ -339,6 +339,7 @@ async function pollMediaDownload() {
       finishMediaDownload('idle');
       return;
     }
+    if (mediaDownloadId !== status.id) $('#media-download-cancel').disabled = false;
     mediaDownloadId = status.id;
     mediaDownloadBusy = true;
     $('#media-download-cancel').classList.remove('hidden');
@@ -495,14 +496,23 @@ export function init() {
   });
   $('#media-download-cancel').addEventListener('click', async (event) => {
     if (!mediaDownloadId) return;
+    const id = mediaDownloadId, generation = mediaDownloadGeneration;
     const button = event.currentTarget;
     button.disabled = true;
     try {
-      await request('/api/media/download/cancel', { method: 'POST' });
+      await request('/api/media/download/cancel', { method: 'POST', body: JSON.stringify({ id }) });
+      if (generation !== mediaDownloadGeneration || id !== mediaDownloadId) return;
       $('#media-download-stats').textContent = tr('正在取消…');
     } catch (error) {
+      if (generation !== mediaDownloadGeneration || id !== mediaDownloadId) return;
       button.disabled = false;
       toast(error.message, true);
+      if (error.status === 404 || error.status === 409) {
+        mediaDownloadGeneration++;
+        mediaDownloadId = '';
+        button.classList.add('hidden');
+        pollMediaDownload();
+      }
     }
   });
 

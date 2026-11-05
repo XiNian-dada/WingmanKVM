@@ -27,3 +27,10 @@ create the final name without overwriting an existing file. An existing valid
 image is never replaced or deleted, including when two uploads race. On
 disconnect, cancellation, timeout, size-limit rejection or I/O failure only
 that request's temporary file is removed.
+
+## Background URL downloads
+
+`GET /api/media/download` returns the current job, including after a browser
+reload. `GET /api/media/download/{id}` reads one specific job. To cancel, send
+`POST /api/media/download/cancel` with JSON `{"id":"<job id>"}`. The ID is required:
+a missing or stale ID must never cancel a newer job created by another page.
