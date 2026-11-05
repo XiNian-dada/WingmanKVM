@@ -27,3 +27,28 @@ create the final name without overwriting an existing file. An existing valid
 image is never replaced or deleted, including when two uploads race. On
 disconnect, cancellation, timeout, size-limit rejection or I/O failure only
 that request's temporary file is removed.
+
+## Background URL downloads
+
+`GET /api/media/download` returns the current job, including after a browser
+reload. `GET /api/media/download/{id}` reads one specific job. To cancel, send
+`POST /api/media/download/cancel` with JSON `{"id":"<job id>"}`. The ID is required:
+a missing or stale ID must never cancel a newer job created by another page.
+
+Image downloads connect directly and ignore environment proxy settings. This
+keeps hostname resolution under the download address filter. Private LAN/NAS
+addresses remain supported; loopback and link-local targets remain refused.
+
+The two-hour download deadline starts before directory preparation and includes
+network reads, file writes and the final data sync. Cancelling or reaching the
+deadline changes the observable state to `cancelling` or `timing_out` immediately.
+Pending filesystem operations cannot be forcibly cancelled: the original job
+keeps the transfer slot, drains those operations and removes its partial file
+before becoming `cancelled` or `failed`. New transfers remain busy until then.
+
+After syncing, the job checks cancellation and the deadline under the same lock
+used by cancellation requests. If publication is admitted, state becomes
+`completing`; the final name is being committed and further cancellation returns
+409. The job retains its slot until this commit finishes. A deadline or late
+cancel cannot undo a publication already admitted; the UI keeps polling this
+phase rather than presenting an idle form or prematurely claiming completion.

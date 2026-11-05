@@ -940,6 +940,15 @@ pub(super) async fn persist_config(path: &Path, config: &Config) -> Result<(), A
 pub(super) async fn commit_config(state: &AppState, config: &Config) -> Result<(), ApiError> {
     validate_config(config)?;
     let previous = state.config.read().await.clone();
+    let media_target_changed = previous.media.lun_path != config.media.lun_path
+        || previous.media.image_directory != config.media.image_directory
+        || (previous.media.enabled && !config.media.enabled);
+    // All update/import callers hold config_update. Keep this guard through
+    // persistence and the live swap; attach/detach use the same lock order.
+    let _media_guard = if media_target_changed {
+        Some(state.media.guard_reconfiguration(previous.media.lun_path.as_deref())
+            .await.map_err(map_media_error)?)
+    } else { None };
     // Saving the video form sends every field. Only what really changed may
     // disturb viewers: a JPEG quality tweak must not reopen the capture card
     // or drop everybody's H.264 session to MJPEG.
@@ -1133,6 +1142,78 @@ pub(super) mod tests {
         let imported = file.into_config().expect("valid export must import");
         assert_eq!(imported, config);
         assert!(config_changes(&config, &imported).is_empty());
+    }
+
+    fn media_config_fixture() -> (TestDirectory, AppState, PathBuf, PathBuf) {
+        let directory = TestDirectory::new();
+        let old_lun = directory.0.join("old-lun");
+        let new_lun = directory.0.join("new-lun");
+        for lun in [&old_lun, &new_lun] {
+            std::fs::create_dir(lun).unwrap();
+            for (name, value) in [("file", ""), ("ro", "0\n"), ("cdrom", "0\n"), ("removable", "1\n")] {
+                std::fs::write(lun.join(name), value).unwrap();
+            }
+        }
+        let mut config = Config::default();
+        config.media.enabled = true;
+        config.media.lun_path = Some(old_lun.clone());
+        let images = directory.0.join("images");
+        std::fs::create_dir(&images).unwrap();
+        std::fs::write(images.join("disk.img"), b"image-content").unwrap();
+        config.media.image_directory = Some(images);
+        let path = directory.0.join("config.json");
+        config.save_atomic(&path).unwrap();
+        let state = test_state(config, path);
+        (directory, state, old_lun, new_lun)
+    }
+
+    #[tokio::test]
+    async fn media_patch_put_and_import_preserve_an_attached_lun() {
+        let (_directory, state, old_lun, new_lun) = media_config_fixture();
+        std::fs::write(old_lun.join("file"), "/images/mounted.img\n").unwrap();
+        let before = state.config.read().await.clone();
+        let persisted = std::fs::read(state.config_path.as_ref()).unwrap();
+        let connection = ClientConnection { transport_peer: None, client_addr: "127.0.0.1:50000".parse().unwrap() };
+        let patch: ConfigPatch = serde_json::from_value(json!({"media":{"enabled":false}})).unwrap();
+        let error = patch_config(State(state.clone()), ConnectInfo(connection), HeaderMap::new(), ApiJson(patch)).await.err().unwrap();
+        assert_eq!(error.status, StatusCode::CONFLICT);
+        let mut changed = before.clone();
+        changed.media.lun_path = Some(new_lun);
+        let error = update_config(State(state.clone()), ConnectInfo(connection), HeaderMap::new(), ApiJson(FullConfigUpdate(changed))).await.err().unwrap();
+        assert_eq!(error.status, StatusCode::CONFLICT);
+        let mut imported = before.clone();
+        imported.media.image_directory = Some(old_lun.join("other-images"));
+        let error = import_config_with_state(state.clone(), imported).await.err().unwrap();
+        assert_eq!(error.status, StatusCode::CONFLICT);
+        assert_eq!(*state.config.read().await, before);
+        assert_eq!(std::fs::read(state.config_path.as_ref()).unwrap(), persisted);
+        assert_eq!(std::fs::read_to_string(old_lun.join("file")).unwrap(), "/images/mounted.img\n");
+        assert!(state.media.detach(media_snapshot(&state).await, false).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn media_attach_reads_the_target_after_a_concurrent_config_change() {
+        let (_directory, state, old_lun, new_lun) = media_config_fixture();
+        let guard = state.config_update.lock().await;
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let caller = tokio::spawn({
+            let state = state.clone();
+            async move {
+                started.send(()).unwrap();
+                attach_media(State(state), ApiJson(AttachMediaRequest {
+                    name: "disk.img".into(), media_type: MediaType::Disk, read_only: Some(false),
+                })).await.map(|_| ())
+            }
+        });
+        ready.await.unwrap();
+        let mut changed = state.config.read().await.clone();
+        changed.media.lun_path = Some(new_lun.clone());
+        commit_config(&state, &changed).await.unwrap();
+        assert!(!caller.is_finished());
+        drop(guard);
+        caller.await.unwrap().unwrap();
+        assert!(std::fs::read_to_string(old_lun.join("file")).unwrap().is_empty());
+        assert!(std::fs::read_to_string(new_lun.join("file")).unwrap().contains("disk.img"));
     }
 
     #[test]

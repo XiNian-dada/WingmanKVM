@@ -38,6 +38,9 @@ jobs:
       - name: Verify vendored dtls provenance and patches
         run: python3 scripts/verify_dtls_vendor.py
 
+      - name: Verify vendored WebRTC utility provenance and feature patch
+        run: python3 scripts/verify_webrtc_util_vendor.py
+
       - name: Verify one-line installer against a loopback fake release
         run: python3 scripts/verify_get_script.py
 
@@ -82,6 +85,7 @@ jobs:
           cargo test --locked
           CARGO_TARGET_DIR="$PWD/target" cargo test --locked --manifest-path components/wingman-jpeg-native/Cargo.toml
           cargo test --locked -p dtls
+          CARGO_TARGET_DIR="$PWD/target" cargo test --locked --manifest-path vendor/webrtc-util/Cargo.toml
 
       - name: Build debug binary
         run: cargo build --locked
