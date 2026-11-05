@@ -109,6 +109,26 @@ pub struct MediaManager {
 }
 
 impl MediaManager {
+    /// Call while holding the configuration update lock, and retain the guard
+    /// through the live config swap. A previous disabled config can still point
+    /// at a mounted LUN, so inspect its path regardless of its enabled flag.
+    pub async fn guard_reconfiguration(
+        &self,
+        previous_lun: Option<&Path>,
+    ) -> Result<OwnedMutexGuard<()>, MediaError> {
+        let guard = self
+            .operation
+            .clone()
+            .try_lock_owned()
+            .map_err(|_| MediaError::Busy)?;
+        if let Some(lun) = previous_lun
+            && let Some(mounted) = read_optional_attr(&lun.join("file")).await?
+        {
+            return Err(MediaError::AlreadyAttached(mounted));
+        }
+        Ok(guard)
+    }
+
     pub async fn list(
         &self,
         config: Option<MediaConfigSnapshot>,
@@ -636,6 +656,10 @@ mod tests {
         )
         .await;
         assert!(matches!(result, Err(MediaError::OperationPending)));
+        assert!(matches!(
+            manager.guard_reconfiguration(Some(&tree.lun_path)).await,
+            Err(MediaError::Busy)
+        ));
         assert_eq!(
             manager.list(Some(tree.config())).await.unwrap().1.state,
             MediaState::Busy
