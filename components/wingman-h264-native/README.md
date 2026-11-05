@@ -24,3 +24,25 @@ The executable receives the configured bitrate ceiling as its sole argument,
 so SPS level selection covers later raises even from a low starting target.
 Changing bitrate and VBV settings calls x264_encoder_reconfig before encoding
 the next frame, preserving the instance, reference frames and timestamps.
+
+## Distribution and corresponding source
+
+Release archives include this document, `ENCODER-LICENSE`, the upstream x264
+`AUTHORS` list and `SOURCE.txt` under `licenses/h264-native/`. `SOURCE.txt`
+links to the complete source archive for the exact WingmanKVM commit used to
+build that release. It includes the pinned x264 and libjpeg-turbo archives,
+the encoder program, JPEG modifications and both native build scripts.
+The x264 sources retain their upstream copyright and license notices.
+The standalone encoder wrapper is Copyright (c) 2026 WingmanKVM contributors,
+GPL-2.0-or-later; the Rust embedding/build wrapper retains its MIT license.
+The linked JPEG library's IJG, BSD and zlib notices accompany the binary under
+`licenses/jpeg-native/`.
+
+To rebuild from that complete source archive, follow `docs/DEPLOYMENT.md` for
+the platform dependencies and run `cargo build --locked --release` at its
+root. The native build also requires a C compiler, make, tar and CMake.
+`components/wingman-h264-native/build.rs` compiles the standalone executable
+in Cargo's build output directory before embedding it in the application;
+`components/wingman-jpeg-native/build.rs` applies the documented JPEG changes.
+The release workflow records the compiler and target configuration in
+`.github/workflows/release.yml`.

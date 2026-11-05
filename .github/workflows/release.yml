@@ -11,6 +11,7 @@ on:
     paths:
       - .github/workflows/release.yml
       - scripts/check_release_version.py
+      - components/wingman-h264-native/**
       - Cargo.toml
       - Cargo.lock
 
@@ -149,8 +150,8 @@ jobs:
           # get.sh and the online upgrade request wingmankvm-v<version>-<target>.
           archive="wingmankvm-v${VERSION}-${TARGET}"
           staging="$RUNNER_TEMP/package/$archive"
-          rm -rf "$RUNNER_TEMP/package"
-          install -d -m 0755 "$staging"
+          install -d -m 0755 "$RUNNER_TEMP/package"
+          mkdir -m 0755 "$staging"
           install -m 0755 "target/$TARGET/release/wingmankvm" "$staging/wingmankvm"
           cp -a deploy "$staging/deploy"
           cp LICENSE README.md CHANGELOG.md docs/UPGRADE_RECOVERY.md "$staging/"
@@ -158,8 +159,26 @@ jobs:
           install -d -m 0755 "$staging/licenses/jpeg-native" "$staging/licenses/jpeg-rust"
           cp components/wingman-jpeg-native/vendor/LICENSE.md components/wingman-jpeg-native/vendor/README.ijg components/wingman-jpeg-native/THIRD_PARTY.md "$staging/licenses/jpeg-native/"
           cp components/wingman-jpeg/core-lab/LICENSE-MIT components/wingman-jpeg/core-lab/LICENSE-APACHE components/wingman-jpeg/core-lab/LICENSE-IJG "$staging/licenses/jpeg-rust/"
+          install -d -m 0755 "$staging/licenses/h264-native"
+          cp components/wingman-h264-native/ENCODER-LICENSE components/wingman-h264-native/README.md "$staging/licenses/h264-native/"
+          tar -xOf components/wingman-h264-native/vendor/x264-31e19f92.tar.gz \
+            x264-31e19f92f00c7003fa115047ce50978bc98c3a0d/AUTHORS \
+            > "$staging/licenses/h264-native/AUTHORS"
+          source_url="https://github.com/${GITHUB_REPOSITORY}/archive/${GITHUB_SHA}.tar.gz"
+          printf '%s\n' \
+            'Complete corresponding source for this release (including pinned x264 and JPEG sources, modifications and build scripts):' \
+            "$source_url" \
+            "Source commit: $GITHUB_SHA" \
+            'See README.md here for component licenses and build instructions.' \
+            > "$staging/licenses/h264-native/SOURCE.txt"
           tar --owner=0 --group=0 --numeric-owner \
             -C "$staging" -czf "$RUNNER_TEMP/$archive.tar.gz" .
+          # Check the actual archive, so omitted distribution materials fail
+          # build-only PR runs as well as tag releases.
+          for notice in ENCODER-LICENSE README.md AUTHORS SOURCE.txt; do
+            tar -xOf "$RUNNER_TEMP/$archive.tar.gz" "./licenses/h264-native/$notice" \
+              | cmp - "$staging/licenses/h264-native/$notice"
+          done
           ls -l "$RUNNER_TEMP/$archive.tar.gz"
 
       - name: Upload release archive
