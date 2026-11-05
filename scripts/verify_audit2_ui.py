@@ -1204,6 +1204,8 @@ def media_url_download(browser, port, checks):
         page.wait_for_timeout(400)
         check(checks, started and len(cancels) == 1,
               "url_download_cancel_requested", (started, cancels))
+        check(checks, json.loads(cancels[0]) == {"id": "job-cancel"},
+              "url_download_cancel_identifies_displayed_job", cancels)
         try:
             page.wait_for_function(
                 "() => document.querySelector('#media-download-cancel').classList.contains('hidden')",
@@ -4439,6 +4441,12 @@ def media_download_fixture(browser, port):
         path = urllib.parse.urlsplit(route.request.url).path
         method = route.request.method
         requests.append((method, path, route.request.post_data))
+        if method == 'POST' and path == '/api/media/download/cancel':
+            payload = json.loads(route.request.post_data or '{}')
+            if backend['job'] is None or payload.get('id') != backend['job']['id']:
+                return reply(route, {"error":"job not found"}, 404)
+            backend['job']['state'] = 'cancelled'
+            return reply(route, backend['job'])
         if method == 'POST' and path == '/api/media/download':
             if backend['job'] is not None:
                 return reply(route, {"error":"transfer busy"}, 409)
@@ -4537,6 +4545,38 @@ def media_download_recovers_start_and_session_changes(browser, port, checks):
         ui_harness.wait_until(page, lambda: any(path.endswith('/other-tab') for _,path,_ in requests))
         check(checks, any(path.endswith('/other-tab') for _,path,_ in requests),
               'start_conflict_recovers_other_tab_job')
+    finally:
+        context.close()
+
+
+def media_download_cancel_does_not_target_a_replacement(browser, port, checks):
+    context, page, backend, requests = media_download_fixture(browser, port)
+    try:
+        backend['job'] = {"id":"old", "state":"running", "received":1, "total":100, "name":"image.iso"}
+        page.reload(wait_until='load')
+        page.locator('[data-panel-target="media"]').click()
+        page.locator('#media-download summary').click()
+        page.wait_for_function("!document.querySelector('#media-download-cancel').classList.contains('hidden')")
+        # Freeze the next status response so the button demonstrably belongs to old.
+        backend['hold'] = True
+        ui_harness.wait_until(page, lambda: bool(backend['held']))
+        assert backend['held']
+        backend['job'] = {"id":"new", "state":"running", "received":1, "total":100, "name":"image.iso"}
+        page.locator('#media-download-cancel').click()
+        ui_harness.wait_until(page, lambda: any(path.endswith('/new') for _,path,_ in requests))
+        for held in backend['held']:
+            held.fulfill(status=200, content_type='application/json', body=json.dumps({"id":"old", "state":"done", "received":100, "total":100, "name":"image.iso"}))
+        page.wait_for_timeout(100)
+        cancels = [json.loads(body) for method,path,body in requests if path.endswith('/cancel')]
+        check(checks, cancels == [{"id":"old"}] and backend['job']['state'] == 'running',
+              'old_cancel_does_not_stop_replacement', cancels)
+        check(checks, page.locator('#media-download-cancel').is_enabled(),
+              'stale_response_does_not_clear_recovered_cancel_control')
+        page.locator('#media-download-cancel').click()
+        page.wait_for_function("document.querySelector('#media-download-cancel').classList.contains('hidden')")
+        cancels = [json.loads(body) for method,path,body in requests if path.endswith('/cancel')]
+        check(checks, cancels[-1] == {"id":"new"} and backend['job']['state'] == 'cancelled',
+              'replacement_can_be_cancelled_by_its_own_id')
     finally:
         context.close()
 

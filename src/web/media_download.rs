@@ -624,10 +624,16 @@ pub(super) async fn download_media_status_by_id(
     Ok(no_store(Json(state.media_download.status(Some(&id))?)))
 }
 
+#[derive(Deserialize)]
+pub(super) struct CancelMediaDownloadRequest {
+    id: String,
+}
+
 pub(super) async fn cancel_media_download(
     State(state): State<AppState>,
+    ApiJson(request): ApiJson<CancelMediaDownloadRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Ok(no_store(Json(state.media_download.cancel(None)?)))
+    Ok(no_store(Json(state.media_download.cancel(Some(&request.id))?)))
 }
 
 #[cfg(test)]
@@ -1022,6 +1028,26 @@ mod tests {
             .wait_for(&status.id, &[DownloadState::Cancelled])
             .await;
         assert!(harness.slot.clone().try_lock_owned().is_ok());
+    }
+
+    #[test]
+    fn cancel_payload_requires_a_job_id() {
+        assert!(serde_json::from_value::<CancelMediaDownloadRequest>(json!({})).is_err());
+        assert_eq!(serde_json::from_value::<CancelMediaDownloadRequest>(json!({"id":"job"})).unwrap().id, "job");
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_old_job_does_not_cancel_its_replacement() {
+        let server = spawn_server().await;
+        let harness = Harness::new(4 * 1024 * 1024);
+        let first = harness.start(format!("http://{}/file.iso", server.address), None, None).await.unwrap();
+        harness.wait_for(&first.id, &[DownloadState::Done]).await;
+        let second = harness.start(format!("http://{}/slow.iso", server.address), None, None).await.unwrap();
+        let error = harness.manager.cancel(Some(&first.id)).unwrap_err();
+        assert_eq!(error.status, StatusCode::NOT_FOUND);
+        assert_eq!(harness.manager.status(Some(&second.id)).unwrap().state, DownloadState::Running);
+        harness.manager.cancel(Some(&second.id)).unwrap();
+        harness.wait_for(&second.id, &[DownloadState::Cancelled]).await;
     }
 
     const DENIED_LITERAL_URLS: &[&str] = &[
