@@ -14,6 +14,8 @@ use crate::proxy_protocol::{PrefixedStream, ProxyProtocolListener};
 /// Keep the transport peer even when PPv2 replaces the logical client address.
 #[derive(Clone, Copy, Debug)]
 pub struct ClientConnection {
+    /// Set only after a successful handshake by the local TLS listener.
+    pub tls: bool,
     pub transport_peer: Option<SocketAddr>,
     pub client_addr: SocketAddr,
 }
@@ -30,6 +32,7 @@ impl Listener for ClientIpListener {
         (
             stream,
             ClientConnection {
+                tls: false,
                 transport_peer,
                 client_addr,
             },
@@ -38,6 +41,7 @@ impl Listener for ClientIpListener {
 
     fn local_addr(&self) -> io::Result<Self::Addr> {
         self.0.local_addr().map(|addr| ClientConnection {
+            tls: false,
             transport_peer: Some(addr),
             client_addr: addr,
         })
@@ -162,6 +166,7 @@ mod tests {
 
     fn connection(transport: &str, client: &str) -> ClientConnection {
         ClientConnection {
+            tls: false,
             transport_peer: Some(transport.parse().unwrap()),
             client_addr: client.parse().unwrap(),
         }
@@ -274,6 +279,7 @@ mod tests {
     #[test]
     fn missing_peer_information_never_enables_header_trust() {
         let conn = ClientConnection {
+            tls: false,
             transport_peer: None,
             client_addr: "127.0.0.1:5555".parse().unwrap(),
         };

@@ -1,5 +1,5 @@
 import { shared } from './state.js';
-import { $, $$, app, consoleBox, feed, viewport, webrtcFeed } from './00-core.js';
+import { $, $$, app, consoleBox, feed, viewport, webrtcFeed, directFeed } from './00-core.js';
 import { t } from './01-i18n.js';
 import { fitConsoleToVideo, invalidateSurfaceBox } from './02-theme-layout.js';
 import { request, toast } from './03-session.js';
@@ -9,6 +9,7 @@ import { closePip, isPipActive } from './07a-pip.js';
 import { syncQualityOverlay } from './07b-quality.js';
 import { resetAdaptiveBitrate } from './07c-adaptive-bitrate.js';
 import { audioConfigured, syncAudioUi } from './07d-audio.js';
+import { directH264Available, startDirectH264, stopDirectH264 } from './07e-direct-h264.js';
 
 let reconnectTimer = 0;
 let reconnectDelay = 500;
@@ -36,6 +37,7 @@ function shouldVideoRun() {
 function showVideoSurface(kind) {
   feed.classList.toggle('hidden', kind !== 'mjpeg');
   webrtcFeed.classList.toggle('hidden', kind !== 'webrtc_h264');
+  directFeed.classList.toggle('hidden', kind !== 'direct_h264');
   invalidateSurfaceBox();
 }
 function setVideoMessage(message, visible = true) {
@@ -77,6 +79,7 @@ function renderVideoUi() {
     mode =
       shared.activeVideoTransport === 'webrtc_h264'
         ? 'H.264'
+        : shared.activeVideoTransport === 'direct_h264' ? 'Direct H.264'
         : shared.activeVideoTransport === 'mjpeg'
           ? 'MJPEG'
           : '视频';
@@ -121,7 +124,7 @@ function renderVideoUi() {
   }
   if (shared.videoUiState === 'playing' && serverReady) {
     const fps = shared.latestVideoStatus?.frames_per_second;
-    showVideoSurface(shared.activeVideoTransport === 'webrtc_h264' ? 'webrtc_h264' : 'mjpeg');
+    showVideoSurface(shared.activeVideoTransport);
     const live = `${fps ? `${Math.round(fps)} fps` : mode}`;
     setStatusLabel(videoFallback ? `回退 · ${live}` : `实时 · ${live}`, videoFallback ? 'MJPEG · H.264 回退' : `${mode} · LIVE`);
     meta.textContent = `LIVE / ${mode}`;
@@ -152,7 +155,7 @@ function clearVideoTimers() {
   h264RetryTimer = 0;
 }
 function h264RetryAllowed() {
-  return shared.videoPreference !== 'mjpeg' && h264Available();
+  return shared.videoPreference !== 'mjpeg' && (h264Available() || directH264Available());
 }
 function scheduleH264Retry(generation) {
   clearTimeout(h264RetryTimer);
@@ -179,13 +182,16 @@ function retryH264(generation) {
 }
 function closeWebrtcSession(sessionId) {
   if (!sessionId) return;
-  fetch('/api/webrtc/close', {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4000);
+  return fetch('/api/webrtc/close', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId }),
     credentials: 'same-origin',
     keepalive: true,
-  }).catch(() => {});
+    signal: controller.signal,
+  }).catch(() => {}).finally(() => clearTimeout(timer));
 }
 function cleanupWebrtc() {
   const peer = shared.webrtcPeer,
@@ -204,12 +210,13 @@ function cleanupWebrtc() {
     peer.getReceivers().forEach((receiver) => receiver.track?.stop());
     peer.close();
   }
-  if (sessionId) closeWebrtcSession(sessionId);
+  const closed = sessionId ? closeWebrtcSession(sessionId) : Promise.resolve();
   webrtcFeed.onplaying = null;
   webrtcFeed.onloadedmetadata = null;
   webrtcFeed.pause();
   webrtcFeed.srcObject = null;
   syncAudioUi();
+  return closed;
 }
 function stopVideo(showPaused = true) {
   videoGeneration++;
@@ -217,6 +224,7 @@ function stopVideo(showPaused = true) {
   reconnectDelay = 500;
   h264PlayingSince = 0;
   closePip();
+  stopDirectH264();
   cleanupWebrtc();
   feed.onload = null;
   feed.onerror = null;
@@ -301,14 +309,41 @@ function waitForIceGathering(peer, signal, timeout = 2500) {
     timer = setTimeout(() => finish(new Error('WebRTC 本地 ICE 候选收集超时')), timeout);
   });
 }
-function fallbackToMjpeg(generation, reason = 'H.264 连接未能建立') {
-  if (generation !== videoGeneration || !shouldVideoRun() || shared.activeVideoTransport !== 'webrtc_h264') return;
-  shared.videoFallbackReason = String(reason);
-  console.warn('H.264 回退到 MJPEG:', shared.videoFallbackReason);
-  closePip();
-  cleanupWebrtc();
+function directToMjpeg(generation, reason) {
+  if (generation !== videoGeneration || !shouldVideoRun()) return;
+  stopDirectH264();
+  resetAdaptiveBitrate(null);
+  shared.videoFallbackReason = reason;
   startMjpeg(generation, true);
   scheduleH264Retry(generation);
+}
+async function startDirectVideo(generation, reason = '') {
+  if (generation !== videoGeneration || !shouldVideoRun()) return;
+  closePip();
+  shared.activeVideoTransport = 'direct_h264';
+  clearVideoTimers();
+  await cleanupWebrtc();
+  if (generation !== videoGeneration || !shouldVideoRun()) return;
+  if (!directH264Available()) {
+    directToMjpeg(generation, reason || 'Direct H.264 需要受信任的 HTTPS 和 WebCodecs 支持');
+    return;
+  }
+  feed.removeAttribute('src');
+  videoFallback = false;
+  shared.videoFallbackReason = reason;
+  setVideoState('connecting', 'direct_h264');
+  showVideoSurface('direct_h264');
+  setVideoMessage('正在连接 Direct H.264…');
+  startDirectH264({
+    onPlaying: () => markVideoPlaying(generation, 'direct_h264'),
+    onFailure: error => directToMjpeg(generation, error),
+    onResize: () => { setDisplayScale(displayModes[shared.modeIndex][0]); fitConsoleToVideo(); },
+  });
+}
+function fallbackToMjpeg(generation, reason = 'H.264 连接未能建立') {
+  if (generation !== videoGeneration || !shouldVideoRun() || shared.activeVideoTransport !== 'webrtc_h264') return;
+  // A working Direct connection stays up; retries never interrupt it to probe UDP.
+  startDirectVideo(generation, reason);
 }
 async function startWebrtc(generation) {
   if (generation !== videoGeneration || !shouldVideoRun()) return;
@@ -461,8 +496,8 @@ function startVideo(force = false) {
   reconnectDelay = 500;
   showVideoSurface('none');
   setVideoMessage('正在连接视频…');
-  if (shared.videoPreference === 'mjpeg' || !canH264)
-    startMjpeg(generation, shared.videoPreference === 'webrtc_h264' && !canH264);
+  if (shared.videoPreference === 'mjpeg') startMjpeg(generation);
+  else if (shared.videoPreference === 'direct_h264' || !canH264) startDirectVideo(generation);
   else startWebrtc(generation);
 }
 async function toggleFullscreen() {
@@ -509,9 +544,9 @@ function captureStamp() {
   return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 }
 function liveVideoSize() {
-  const surface = shared.activeVideoTransport === 'webrtc_h264' ? webrtcFeed : feed;
-  const width = surface instanceof HTMLVideoElement ? surface.videoWidth : surface.naturalWidth,
-    height = surface instanceof HTMLVideoElement ? surface.videoHeight : surface.naturalHeight;
+  const surface = shared.activeVideoTransport === 'webrtc_h264' ? webrtcFeed : shared.activeVideoTransport === 'direct_h264' ? directFeed : feed;
+  const width = surface instanceof HTMLVideoElement ? surface.videoWidth : surface instanceof HTMLCanvasElement ? surface.width : surface.naturalWidth,
+    height = surface instanceof HTMLVideoElement ? surface.videoHeight : surface instanceof HTMLCanvasElement ? surface.height : surface.naturalHeight;
   return { surface, width, height };
 }
 function drawLiveFrame(canvas) {

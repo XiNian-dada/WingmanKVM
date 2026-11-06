@@ -5,6 +5,7 @@ use super::*;
 /// session is revoked, or the session deadline passes.
 pub(super) async fn terminal_ws(
     State(state): State<AppState>,
+    ConnectInfo(connection): ConnectInfo<ClientConnection>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -12,7 +13,7 @@ pub(super) async fn terminal_ws(
     // Keep the same origin and authentication ordering as the upgrade path,
     // then gate PTY creation on the persisted migration marker. The marker is
     // read from disk rather than trusted from a login reply or session state.
-    if let Err(error) = validate_terminal_origin(&headers, public_origin.as_deref()) {
+    if let Err(error) = validate_terminal_origin(&headers, public_origin.as_deref(), connection.tls) {
         return error.into_response();
     }
     if !is_authenticated(&state, &headers) {
@@ -27,6 +28,7 @@ pub(super) async fn terminal_ws(
         headers,
         ws,
         public_origin,
+        connection.tls,
         terminal_command(),
     )
     .await
@@ -53,12 +55,13 @@ pub(super) async fn terminal_ws_with_command(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
     public_origin: Option<String>,
+    transport_tls: bool,
     command: CommandBuilder,
 ) -> Response {
     // Browser Origin is checked before authentication and before on_upgrade.
     // Forwarded scheme headers are deliberately ignored: only the exact
-    // configured public origin or the direct HTTP Host can authorize a PTY.
-    if let Err(error) = validate_terminal_origin(&headers, public_origin.as_deref()) {
+    // configured public origin or the Host with the actual transport scheme can authorize a PTY.
+    if let Err(error) = validate_terminal_origin(&headers, public_origin.as_deref(), transport_tls) {
         return error.into_response();
     }
     // Re-validate under the session lock so a logout that raced the auth
@@ -76,6 +79,7 @@ pub(super) async fn terminal_ws_with_command(
 pub(super) fn validate_terminal_origin(
     headers: &HeaderMap,
     public_origin: Option<&str>,
+    transport_tls: bool,
 ) -> Result<(), ApiError> {
     let forbidden = || ApiError::new(StatusCode::FORBIDDEN, "终端 WebSocket 来源校验失败");
 
@@ -106,7 +110,7 @@ pub(super) fn validate_terminal_origin(
         if origin != expected || !expected.host_matches(host) {
             return Err(forbidden());
         }
-    } else if !origin.is_http() || !origin.host_matches(host) {
+    } else if origin.is_http() == transport_tls || !origin.host_matches(host) {
         return Err(forbidden());
     }
     Ok(())
@@ -383,6 +387,7 @@ mod tests {
             headers,
             ws,
             state.public_origin,
+            false,
             CommandBuilder::new(state.program),
         )
         .await

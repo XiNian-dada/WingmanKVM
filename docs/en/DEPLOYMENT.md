@@ -128,7 +128,7 @@ The installer verifies the contents of `SHA256SUMS` when it exists in the same d
 
 ### LAN name access (mDNS, `wingmankvm.local`)
 
-With `--mdns` the installer advertises `wingmankvm.local` on the LAN through avahi-daemon, and both the post-install output and `wingmankvm-setup-url` print `http://wingmankvm.local:8080/...` first, followed by the IP addresses. This gives a stable address when the IP changes. Note that Passkey (WebAuthn) requires a secure context, which `http://*.local` is not, so Passkey still needs access through an HTTPS reverse proxy.
+With `--mdns` the installer advertises `wingmankvm.local` on the LAN through avahi-daemon, and both the post-install output and `wingmankvm-setup-url` print `https://wingmankvm.local:8080/...` first, followed by the IP addresses. This gives a stable address when the IP changes. Note that Passkey (WebAuthn) requires a secure context, which `http://*.local` is not, so use trusted built-in HTTPS or an HTTPS reverse proxy. Existing HTTP configurations still print HTTP URLs.
 
 ```bash
 # Combined with --install-deps, avahi-daemon is installed automatically
@@ -224,7 +224,7 @@ After a normal installation, open the one-time setup address shown at the end of
 sudo wingmankvm-setup-url
 ```
 
-Open `http://KVM-host-address:8080/`, then complete setup with the two-step wizard:
+Open `https://KVM-host-address:8080/`, then complete setup with the two-step wizard:
 
 1. Create the administrator account; the one-time address fills in the setup token automatically. The password must be at least 12 characters and contain uppercase letters, lowercase letters, digits, and symbols;
 2. In "Check connection", confirm the automatic detection results and choose whether to enable virtual media; GPIO power control can be skipped and configured later.
@@ -483,12 +483,7 @@ Permissions: ALSA device nodes `/dev/snd/*` usually belong to the `audio` group.
 
 ## 11. HTTPS
 
-When `server.public_origin` is not configured or `http://...` is used explicitly, cookies do not carry `Secure` and are suitable only for debugging on a trusted management network. After configuring `https://...`, first-run setup, password/Passkey login, and logout responses uniformly use Secure cookies and do not trust forwarded headers to downgrade. Before migrating, revoke old sessions and clear old cookies, then log in again over HTTPS and close the public HTTP entry point. See [session cookie policy](../SESSION_COOKIES.md) (Chinese) for details. For production, it is recommended to:
-
-- use a VPN such as WireGuard/Tailscale; or
-- terminate HTTPS behind Caddy/Nginx and restrict the source network.
-
-Do not map the console port directly to the public internet.
+New installations serve built-in HTTPS with an automatic self-signed certificate on the existing port; older configurations retain HTTP. In **Settings → HTTPS and certificates**, enable self-signing, import CA certificates, check expiry and switch stored identities. Public `38319 → device 8080` works with `https://domain:38319` without port 443. See [HTTPS and certificates](HTTPS.md) for trust, renewal and migration, and [cookie policy](../SESSION_COOKIES.md) (Chinese).
 
 ### Reverse proxy, NAT traversal, and client IP
 
@@ -501,7 +496,7 @@ proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header X-Forwarded-Proto $scheme;
 ```
 
-The browser terminal WebSocket strictly validates `Origin` before the upgrade and does not trust `X-Forwarded-Proto`, `Forwarded`, or other forwarded headers to determine the protocol. A direct HTTP deployment accepts only `http` origins identical to the request `Host`. If a reverse proxy terminates HTTPS, configure the single public origin (scheme + host + port; the default port may be omitted) in `config.json` in the state directory:
+The browser terminal WebSocket strictly validates `Origin` before the upgrade and does not trust `X-Forwarded-Proto`, `Forwarded`, or other forwarded headers to determine the protocol. For an HTTP upstream, disable native TLS with `server.tls.mode: "disabled"` on the host. A direct HTTP deployment accepts only `http` origins identical to the request `Host`. If a reverse proxy terminates HTTPS, configure the single public origin (scheme + host + port; the default port may be omitted) in `config.json` in the state directory:
 
 ```json
 {
@@ -511,7 +506,7 @@ The browser terminal WebSocket strictly validates `Origin` before the upgrade an
 }
 ```
 
-After configuration, the terminal accepts only that exact origin and requires the request `Host` to match its host and port; the reverse proxy must preserve the external `Host` the browser used, as in the Nginx example above. Do not treat an internal direct address as a bypass, and do not keep using the old configuration after the proxy rewrites `Host`. Missing, `null`, multiple, comma-separated, or malformed `Origin` values are all rejected; when `public_origin` is not configured, HTTPS origins are likewise rejected. This field can also be set through `POST /api/config`'s `server.public_origin`; pass `null` explicitly to clear it.
+After configuration, the terminal accepts only that exact origin and requires the request `Host` to match its host and port; the reverse proxy must preserve the external `Host` the browser used, as in the Nginx example above. Do not treat an internal direct address as a bypass, and do not keep using the old configuration after the proxy rewrites `Host`. Missing, `null`, multiple, comma-separated, or malformed `Origin` values are all rejected; without `public_origin`, native TLS accepts matching HTTPS origins and plaintext transport accepts matching HTTP origins. This field can also be set through `POST /api/config`'s `server.public_origin`; pass `null` explicitly to clear it.
 
 If the path is "browser → Nginx → local tunnel port → internal tunnel → KVM", PPv2 may carry only Nginx's `127.0.0.1`, while the browser's public egress IP is in the HTTP forwarded headers. You can configure this explicitly in `config.json` in the state directory:
 
@@ -561,7 +556,7 @@ WebRTC sessions are no longer forcibly disconnected after a fixed 10 minutes. Ea
 - connected sessions are reclaimed when no written H.264 access unit appears for 60 seconds;
 - as long as encoded frames continue to be produced, a connected session can keep working beyond 10 minutes, until the login session ends or the browser closes it actively.
 
-Closing, reconfiguring, connection failure/close, and session replacement all go through the same shutdown path: first stop the encoder subprocess and pipe tasks, then remove the entry from the session table, and finally close the PeerConnection. The session table entry is removed before shutdown completes to avoid deadlocks caused by state callback reentry; shutdown waiting is bounded and never blocks the configuration API indefinitely.
+Closing, reconfiguring, connection failure/close, and session replacement all go through the same shutdown path: first stop forwarding to that viewer, then remove the session entry and close the PeerConnection. The shared encoder stops one second after its last viewer leaves, or immediately on reconfiguration. The session table entry is removed before shutdown completes to avoid deadlocks caused by state callback reentry; shutdown waiting is bounded and never blocks the configuration API indefinitely.
 
 FFmpeg encoder probing uses a separate process group and bounded supervision: the probe deadline is 3 seconds on startup or reconfiguration (reaping after abnormal termination may wait up to 2 more seconds), and stdout and stderr combined are read up to 1 MiB. On timeout, output overrun, or read failure, the entire process group is terminated first and the child process reaped; errors return only a generic diagnostic category and do not output arbitrary command content. Probe failure does not prevent HTTP/MJPEG from starting; WebRTC is shown as unavailable, and `webrtc.available` in `/api/bootstrap` is `false` with an explanation. Reconfiguration is also subject to the 3-second probe deadline and 1 MiB output limit; in extreme cases, subprocess handles that cannot be reaped in time remain in a bounded registry of at most 4 entries, subsequent probes check the reaping state first, and new probes are refused when capacity is full. This implementation depends on Unix non-blocking pipes and process groups; non-Unix platforms explicitly report WebRTC as unavailable instead of falling back to unbounded reads.
 
@@ -587,3 +582,7 @@ When upgrading, the deployment helper must be updated at the same time: it uses 
 `server.listen_address` accepts IPv4 or IPv6 literal addresses without brackets, and `server.port` ranges from 1–65535; loading and saving use the same validation. After changing the listen address or port through a full configuration PUT, the service must be restarted to rebind; such successful responses carry `X-WingmanKVM-Restart-Required: true`. The response header indicates that this submission changed the listen settings; it is not a query of the current process's listening state.
 
 HID's `write_timeout_ms` and `retry_interval_ms` are deprecated: old configuration files load with a warning, and HTTP configuration updates explicitly reject these two fields. Actual behavior still uses a fixed 500 ms deadline per report and readiness waiting; see [HID configuration migration](../HID_CONFIGURATION.md) (Chinese) for details.
+
+### Direct H.264 without UDP
+
+WebRTC failure tries HTTPS/WSS with WebCodecs before falling back to MJPEG. Select Direct H.264 in the video panel to bypass WebRTC. The encoder and viewer limit are shared across transports. See [Direct H.264 and adaptive bitrate](DIRECT_H264.md).

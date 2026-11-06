@@ -2,6 +2,7 @@ mod assets;
 mod audit_api;
 mod config_api;
 mod config_validate;
+mod direct_h264;
 mod error;
 mod extract;
 mod input;
@@ -20,6 +21,7 @@ mod setup;
 mod status;
 mod stream;
 mod terminal;
+mod tls_api;
 mod update;
 
 use self::assets::*;
@@ -43,6 +45,7 @@ use self::setup::*;
 use self::status::*;
 use self::stream::*;
 use self::terminal::*;
+use self::tls_api::*;
 use self::update::*;
 
 use std::{
@@ -114,6 +117,7 @@ use crate::{
 
 #[derive(Clone)]
 pub struct AppState {
+    tls: crate::tls::TlsManager,
     config: Arc<RwLock<Config>>,
     proxy_protocol_updates: watch::Sender<ProxyProtocolMode>,
     config_path: Arc<PathBuf>,
@@ -154,6 +158,10 @@ impl AppState {
             sweep_partial_uploads(image_dir);
         }
         let state_dir = config::state_dir();
+        let tls = crate::tls::TlsManager::new(&state_dir);
+        // State exists before generating an identity, even on the first boot.
+        std::fs::create_dir_all(&state_dir)?;
+        tls.activate(tls.prepare(&config.server)?);
         let auth = AuthStore::new(state_dir.join("auth.json"));
         let token_file = setup_token_file(&state_dir);
         let update = OnlineUpdate::new(OnlineUpdateOptions::system(state_dir.clone()));
@@ -234,6 +242,7 @@ impl AppState {
         spawn_event_sources(notifier.clone(), video.clone(), power.clone(), metrics.clone());
 
         Ok(Self {
+            tls,
             proxy_protocol_updates: watch::channel(config.server.proxy_protocol).0,
             config: Arc::new(RwLock::new(config)),
             config_path: Arc::new(config_path),
@@ -269,6 +278,8 @@ impl AppState {
         Ok(config.server.socket_address()?)
     }
 
+    pub fn tls_manager(&self) -> crate::tls::TlsManager { self.tls.clone() }
+
     pub async fn proxy_protocol_mode(&self) -> ProxyProtocolMode {
         let config = self.config.read().await;
         config.server.proxy_protocol
@@ -300,6 +311,7 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/video_feed", get(video_feed))
+        .route("/api/video/h264/ws", get(direct_h264::direct_h264_ws))
         .route("/api/status", get(status))
         .route("/api/system", get(system_status))
         .route("/api/devices/scan", get(scan_devices).post(scan_devices))
@@ -308,6 +320,8 @@ pub fn router(state: AppState) -> Router {
             get(get_config).put(update_config).post(patch_config),
         )
         .route("/api/config/export", get(export_config))
+        .route("/api/tls", get(tls_status).post(update_tls).layer(DefaultBodyLimit::max(256 * 1024)))
+        .route("/api/tls/certificate", get(download_certificate))
         .route(
             "/api/config/import/preview",
             post(preview_import_config).layer(DefaultBodyLimit::max(CONFIG_IMPORT_BODY_LIMIT)),
@@ -389,6 +403,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/passkey/login/start", post(passkey_login_start))
         .route("/api/passkey/login/finish", post(passkey_login_finish))
         .merge(protected)
+        .layer(middleware::from_fn_with_state(state.clone(), require_https))
         .with_state(state)
         .layer(middleware::from_fn(security_headers::security_headers))
 }

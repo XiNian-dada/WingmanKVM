@@ -33,9 +33,10 @@ curl -fsSL https://raw.githubusercontent.com/XiNian-dada/WingmanKVM/main/scripts
 
 ## 3. 视频与音频
 
-- [ ] H.264 和 MJPEG 都能看，WebRTC 失败时回退到 MJPEG
+- [ ] HTTPS 下 WebRTC H.264、Direct H.264 和 MJPEG 都能看；阻断 UDP 后回退 Direct，关闭 WebCodecs 后回退 MJPEG
 - [ ] 画中画、截图、录屏
-- [ ] 限速时自适应码率能降档，恢复后能升档，没有频繁卡顿
+- [ ] 两种 H.264 传输限速时自适应码率能降档，恢复后能升档；稳定高 RTT 不持续降档
+- [ ] 设置观看上限为 2，两个浏览器共用一个 H.264 FFmpeg；慢客户端和注销不影响另一个连接
 - [ ] 改 JPEG 质量等设置后，其他标签页的 H.264 不受影响或能自动恢复
 - [ ] 拔插采集卡后画面能恢复
 - [ ] 开启 HDMI 音频：声卡被识别且对应正确的采集卡，浏览器有声音，默认静音，音画同步可接受

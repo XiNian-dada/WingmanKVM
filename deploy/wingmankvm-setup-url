@@ -48,6 +48,7 @@ read_port() {
     local parsed
     if [[ ! -e $CONFIG_FILE && ! -L $CONFIG_FILE ]]; then
         PORT=8080
+        SCHEME=https
         return 0
     fi
     [[ -f $CONFIG_FILE && -r $CONFIG_FILE && ! -L $CONFIG_FILE ]] \
@@ -73,10 +74,14 @@ port = server.get("port", 8080)
 if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
     print("server.port must be an integer in 1..65535", file=sys.stderr)
     raise SystemExit(1)
-print(port)
+tls = server.get("tls", {"mode": "disabled"})
+if not isinstance(tls, dict) or tls.get("mode", "self_signed") not in ("disabled", "self_signed", "custom"):
+    print("server.tls.mode is invalid", file=sys.stderr)
+    raise SystemExit(1)
+print(port, "http" if tls.get("mode", "self_signed") == "disabled" else "https")
 PY
     ) || die "cannot read server.port from $CONFIG_FILE"
-    PORT=$parsed
+    read -r PORT SCHEME <<<"$parsed"
     if [[ ! $PORT =~ ^[0-9]+$ ]] || ((PORT < 1 || PORT > 65535)); then
         die "invalid server.port in $CONFIG_FILE"
     fi
@@ -165,9 +170,9 @@ main() {
         log "WingmanKVM 已完成初始化，无需一次性初始化地址"
         collect_mdns_host
         if [[ -n $MDNS_HOST ]]; then
-            log "打开 http://$MDNS_HOST:$PORT/ 并使用管理员账号登录"
+            log "打开 $SCHEME://$MDNS_HOST:$PORT/ 并使用管理员账号登录"
         else
-            log "打开 http://<KVM 主机 IP 或主机名>:$PORT/ 并使用管理员账号登录"
+            log "打开 $SCHEME://<KVM 主机 IP 或主机名>:$PORT/ 并使用管理员账号登录"
         fi
         return 0
     fi
@@ -185,14 +190,14 @@ main() {
     log "WingmanKVM 尚未完成初始化，请在浏览器中打开以下任一地址："
     local host
     if [[ -n $MDNS_HOST ]]; then
-        printf '  http://%s:%s/#setup=%s\n' "$MDNS_HOST" "$PORT" "$SETUP_TOKEN"
+        printf '  %s://%s:%s/#setup=%s\n' "$SCHEME" "$MDNS_HOST" "$PORT" "$SETUP_TOKEN"
     fi
     for host in "${ACCESS_HOSTS[@]}"; do
-        printf '  http://%s:%s/#setup=%s\n' "$host" "$PORT" "$SETUP_TOKEN"
+        printf '  %s://%s:%s/#setup=%s\n' "$SCHEME" "$host" "$PORT" "$SETUP_TOKEN"
     done
     for host in "${ACCESS_HOSTNAMES[@]}"; do
         [[ $host == "$MDNS_HOST" ]] && continue
-        printf '  http://%s:%s/#setup=%s\n' "$host" "$PORT" "$SETUP_TOKEN"
+        printf '  %s://%s:%s/#setup=%s\n' "$SCHEME" "$host" "$PORT" "$SETUP_TOKEN"
     done
     log "该地址包含一次性令牌；创建管理员后令牌立即失效，令牌文件也会被删除"
 }

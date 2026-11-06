@@ -312,6 +312,9 @@ fn reject_ffmpeg_path_change(previous: &Config, next: &Config) -> Result<(), Api
 /// Settings a backup must not carry onto this device: exports omit the
 /// notification credentials, and the FFmpeg path is host administration.
 fn keep_device_values(imported: &mut Config, previous: &Config) {
+    // Certificate files belong to this device and are not included in JSON exports.
+    imported.server.tls = previous.server.tls.clone();
+    imported.server.public_origin = previous.server.public_origin.clone();
     imported.notifications.inherit_secrets(&previous.notifications);
     if imported.notifications.ntfy_topic().is_none() {
         imported.notifications.ntfy.topic.clone_from(&previous.notifications.ntfy.topic);
@@ -949,6 +952,13 @@ pub(super) async fn commit_config(state: &AppState, config: &Config) -> Result<(
         Some(state.media.guard_reconfiguration(previous.media.lun_path.as_deref())
             .await.map_err(map_media_error)?)
     } else { None };
+    let tls_changed = previous.server.tls != config.server.tls
+        || previous.server.public_origin != config.server.public_origin;
+    let prepared_tls = if tls_changed {
+        let (manager, server) = (state.tls.clone(), config.server.clone());
+        Some(tokio::task::spawn_blocking(move || manager.prepare(&server)).await
+            .map_err(ApiError::internal)?.map_err(|e| ApiError::bad_request(e.to_string()))?)
+    } else { None };
     // Saving the video form sends every field. Only what really changed may
     // disturb viewers: a JPEG quality tweak must not reopen the capture card
     // or drop everybody's H.264 session to MJPEG.
@@ -975,7 +985,11 @@ pub(super) async fn commit_config(state: &AppState, config: &Config) -> Result<(
     // video pipeline above, and an unchanged setting is a no-op here.
     state.webrtc.audio().reconfigure(audio_settings(config));
     let power_led = power_led_snapshot(&config.power);
+    if !previous.server.session_cookie_secure() && config.server.session_cookie_secure() {
+        state.sessions.revoke_all();
+    }
     *state.config.write().await = config.clone();
+    if let Some(identity) = prepared_tls { state.tls.activate(identity); }
     state.proxy_protocol_updates.send_replace(config.server.proxy_protocol);
     state.power.set_power_led_config(power_led).await;
     state.hid.set_keyboard_device(config.hid.keyboard_device.clone());
@@ -1065,6 +1079,7 @@ pub(super) mod tests {
         let (video, _) = VideoManager::test_source(config.video.clone());
         let webrtc = WebRtcManager::test_stub(video.clone(), config.video.h264.clone());
         AppState {
+            tls: crate::tls::TlsManager::new(path.parent().unwrap()),
             proxy_protocol_updates: watch::channel(config.server.proxy_protocol).0,
             config: Arc::new(RwLock::new(config)),
             config_path: Arc::new(path.clone()),
@@ -1173,7 +1188,7 @@ pub(super) mod tests {
         std::fs::write(old_lun.join("file"), "/images/mounted.img\n").unwrap();
         let before = state.config.read().await.clone();
         let persisted = std::fs::read(state.config_path.as_ref()).unwrap();
-        let connection = ClientConnection { transport_peer: None, client_addr: "127.0.0.1:50000".parse().unwrap() };
+        let connection = ClientConnection { tls: false, transport_peer: None, client_addr: "127.0.0.1:50000".parse().unwrap() };
         let patch: ConfigPatch = serde_json::from_value(json!({"media":{"enabled":false}})).unwrap();
         let error = patch_config(State(state.clone()), ConnectInfo(connection), HeaderMap::new(), ApiJson(patch)).await.err().unwrap();
         assert_eq!(error.status, StatusCode::CONFLICT);

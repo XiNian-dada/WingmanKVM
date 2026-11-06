@@ -1,0 +1,51 @@
+# HTTPS 与证书
+
+在已有的 **设置 → HTTPS 与证书** 中选择模式、填写访问地址并保存。内置 TLS 使用 `server.port`，不需要开放 443。若 TCP 映射为公网 `38319 → 设备 8080`，访问地址填写 `https://你的域名:38319`，端口映射保持不变。键鼠和终端随页面使用 WSS；WebRTC 的 UDP 映射不受影响。
+
+## 两种证书模式
+
+- **自动自签（新安装默认）**：首次启动生成设备专属 ECDSA P-256 证书及私钥，保存后重启继续使用。无需域名验证或 DNS TXT 记录，有效期 3650 天。在设置中修改访问地址会生成包含新域名/IP 的证书；也可以勾选“重新生成自签证书”。重新生成后客户端需要重新信任。
+- **自定义证书**：填写证书覆盖的 HTTPS 域名，上传 PEM 完整证书链（站点证书在前）及配套的未加密 PEM 私钥。服务检查密钥匹配、有效期、域名、链顺序和签名后才保存。导入失败不改变当前证书。文件留空可重新启用之前保存的自定义证书。
+
+切换模式不会删除另一种模式的证书。保存成功后，新 TLS 连接立即使用所选证书，无需重启；已有连接继续到断开。设置页显示有效期、SHA-256 指纹，并可下载当前**公开证书**，不会下载私钥。
+
+自签证书提供加密，但浏览器默认不信任。首次访问可能需要确认证书警告；若需要稳定使用 Passkey、WebCodecs 等安全上下文 API，应在客户端建立证书信任，或使用受信任 CA 的证书，不能把“忽略警告”等同于完整信任。自定义证书入口也不保证签发 CA 已被客户端信任。
+
+## Passkey 按钮未打开认证窗口
+
+Chromium 即使显示 `isSecureContext=true`，仍可能以 `NotAllowedError` 拒绝 WebAuthn，并返回“WebAuthn is not supported on sites with TLS certificate errors.”。此时视频、普通 HTTPS 请求可能正常，Passkey 仍不能使用。页面会在按钮下显示原因，不再静默忽略这类错误。
+
+先用密码登录，在 **设置 → HTTPS 与证书** 下载公开证书，并在使用的客户端上建立信任；例如 macOS 可将证书导入“钥匙串访问”，核对设备指纹后设置 SSL 信任，再重新打开浏览器。不同浏览器可能使用独立的证书存储。也可在设置中导入受浏览器信任的 CA 证书。
+
+Passkey 同时绑定注册时的域名。若从旧域名换成 `server.hairuosky.cn`，旧域名的凭据不能自动跨域使用；在新域名下用密码登录并重新绑定。端口不是 RP ID 的组成部分。
+
+## 旧 HTTP 安装的迁移
+
+已有 `config.json` 缺少 `server.tls` 时保留 HTTP，以免升级后失联。在原 HTTP 页面打开设置，先保存自动自签模式，再打开页面给出的 HTTPS 地址。启用 Secure Cookie 时，服务撤销旧会话并清除当前浏览器的旧 Cookie；通过 HTTPS 重新登录后再导入正式证书。网页禁止通过明文 HTTP 上传私钥。
+
+TLS 启用后，同一端口的 HTTP GET/HEAD 会跳转 HTTPS，其他明文请求返回 426。安装器和诊断工具在本机访问 `/healthz` 仍可使用 HTTP；此例外要求实际 TCP 对端和 PPv2 客户端地址均为环回地址。
+
+## 有效期与保存
+
+本版本**不内置 ACME 或 DNS API 自动续期**。自定义证书到期前，需要从原签发渠道续期并在设置页重新导入。自签证书也有有效期，可在设置页重新生成；不会在每次开机或接近到期时静默换证，避免破坏客户端已建立的信任。已过期、丢失或无法读取的活动证书会阻止服务启动，不会静默降级 HTTP；需要在设备上修复证书配置后重启。
+
+文件存储在状态目录（默认 `/var/lib/wingmankvm`）的 `tls/` 下，目录权限 0700，含私钥的 PEM 文件权限 0600。配置只保存设备本地证书标识。升级和备份设备时保留该目录；网页 JSON 配置导出不包含私钥，导入配置会保留目标设备的 TLS 模式、证书标识和访问地址。
+
+## 反向代理与恢复
+
+新安装默认自行终止 TLS。若已有 Caddy/Nginx 终止 HTTPS、上游使用 HTTP，可在主机的 `config.json` 中保留或设置 `server.tls.mode` 为 `disabled`，同时设置外部 `server.public_origin` 为 HTTPS。代理必须保留外部 Host；转发头不能伪造连接已加密。证书应在终止 TLS 的代理处管理。
+
+本机恢复 HTTP 的配置片段如下。请合并到现有 `server` 对象中后重启服务，不要覆盖其他配置：
+
+```json
+{
+  "tls": { "mode": "disabled" },
+  "public_origin": null
+}
+```
+
+直接 HTTPS 且未设置 `public_origin` 时，WebSocket 接受与 Host 相同的 HTTPS 来源；配置后只接受该精确来源。详见[部署说明](DEPLOYMENT.md#11-https)和[会话 Cookie 策略](SESSION_COOKIES.md)。
+
+## 验证
+
+`cargo test --locked tls` 覆盖证书持久化、权限、导入验证、切换、真实 HTTPS/WSS 和 PPv2 链路。`python3 scripts/verify_tls_ui.py --browser-channel chrome --output-dir output/playwright/tls-settings` 使用临时证书及模拟 API 检查设置页；它对本地测试证书忽略浏览器信任错误，不证明真实客户端已信任设备。

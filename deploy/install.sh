@@ -1011,6 +1011,16 @@ mdns_access_host() {
 }
 
 show_first_run_access() {
+    local access_scheme=https
+    if [[ -f $STATE_DIR/config.json ]]; then
+        access_scheme=$(python3 -I - "$STATE_DIR/config.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    server = json.load(f).get("server", {})
+print("http" if server.get("tls", {"mode": "disabled"}).get("mode", "self_signed") == "disabled" else "https")
+PY
+        ) || access_scheme=http
+    fi
     local service_log=
     local setup_token=
     local token_file=$STATE_DIR/setup-token
@@ -1116,9 +1126,9 @@ show_first_run_access() {
     fi
     for index in "${!access_hosts[@]}"; do
         if ((index == 0)); then
-            log "open WingmanKVM: http://${access_hosts[$index]}:$port/$setup_fragment"
+            log "open WingmanKVM: $access_scheme://${access_hosts[$index]}:$port/$setup_fragment"
         else
-            log "also detected: http://${access_hosts[$index]}:$port/$setup_fragment"
+            log "also detected: $access_scheme://${access_hosts[$index]}:$port/$setup_fragment"
         fi
     done
 

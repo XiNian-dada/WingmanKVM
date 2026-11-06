@@ -147,11 +147,13 @@ class Harness:
               and "host-name=wingmankvm" in conf.read_text())
         self.record("configure_mdns_sets_name", ok, (r.stdout + r.stderr).strip()[-300:])
 
-    def run_setup_url(self, name: str, avahi_active: bool) -> subprocess.CompletedProcess[str]:
+    def run_setup_url(self, name: str, avahi_active: bool, config: dict | None = None) -> subprocess.CompletedProcess[str]:
         fake = self.fake_bin(name, avahi_active)
         state = self.scratch / f"state-{name}"
         state.mkdir()
         (state / "setup-token").write_text(TOKEN + "\n")
+        if config is not None:
+            (state / "config.json").write_text(json.dumps(config))
         conf = self.scratch / f"avahi-{name}.conf"
         conf.write_text("[server]\nhost-name=wingmankvm\n")
         env = dict(os.environ, PATH=f"{fake}:{os.environ['PATH']}",
@@ -176,15 +178,25 @@ class Harness:
                 self.checks.append({"name": name, "status": status, "detail": "bash < 4.4"})
             return
         r = self.run_setup_url("setup-on", avahi_active=True)
-        urls = [line.strip() for line in r.stdout.splitlines() if line.strip().startswith("http://")]
+        urls = [line.strip() for line in r.stdout.splitlines() if line.strip().startswith("https://")]
         ok = (r.returncode == 0 and bool(urls)
-              and urls[0] == f"http://wingmankvm.local:8080/#setup={TOKEN}"
+              and urls[0] == f"https://wingmankvm.local:8080/#setup={TOKEN}"
               and any("192.0.2.10" in u for u in urls))
         self.record("setup_url_prefers_mdns", ok, " | ".join(urls) or r.stderr.strip())
 
         r = self.run_setup_url("setup-off", avahi_active=False)
         ok = r.returncode == 0 and ".local" not in r.stdout and "192.0.2.10" in r.stdout
         self.record("setup_url_without_avahi", ok, r.stdout.strip().replace("\n", " | ")[-300:])
+        for name, server, scheme in (
+            ("legacy", {"port": 38319}, "http"),
+            ("self-signed", {"port": 38319, "tls": {"mode": "self_signed"}}, "https"),
+            ("custom", {"port": 38319, "tls": {"mode": "custom"}}, "https"),
+        ):
+            r = self.run_setup_url(f"setup-{name}", True, {"server": server})
+            expected = f"{scheme}://wingmankvm.local:38319/#setup={TOKEN}"
+            self.record(f"setup_url_{name}_scheme", r.returncode == 0 and expected in r.stdout,
+                        expected if r.returncode == 0 else r.stderr.strip())
+
 
 
 def main() -> int:

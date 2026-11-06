@@ -76,6 +76,7 @@ function updateDiagnosticsCard() {
   $('#diag-transport').textContent =
     shared.activeVideoTransport === 'webrtc_h264'
       ? 'WebRTC (H.264)'
+      : shared.activeVideoTransport === 'direct_h264' ? 'Direct H.264 (WSS)'
       : shared.activeVideoTransport === 'mjpeg'
         ? 'MJPEG'
         : '未连接';
@@ -432,7 +433,7 @@ export function init() {
     try {
       await request('/api/config', { method: 'POST', body: JSON.stringify(payload) });
       if (requestId !== videoConfigRequestId) return;
-      shared.videoPreference = ['auto', 'webrtc_h264', 'mjpeg'].includes(selectedTransport)
+      shared.videoPreference = ['auto', 'webrtc_h264', 'direct_h264', 'mjpeg'].includes(selectedTransport)
         ? selectedTransport
         : 'auto';
       saveVideoUiPreference('transport', shared.videoPreference);

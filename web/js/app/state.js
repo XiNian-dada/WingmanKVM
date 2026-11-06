@@ -21,11 +21,13 @@ export const shared = {
   videoFallbackReason: '',
   webrtcPeer: null,
   webrtcSessionId: null,
+  directSessionId: null,
   modeIndex: 0,
   mjpegLoadEvents: 0,
 
   // Latest /api/status snapshots (10-workspace-status writes them).
   latestVideoStatus: null,
+  latestWebrtcStatus: null,
   latestPowerStatus: null,
   latestSystemStatus: null,
 

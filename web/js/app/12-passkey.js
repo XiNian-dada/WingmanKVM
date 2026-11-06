@@ -30,7 +30,16 @@ function isIpAddress(hostname) {
   return /^(\d{1,3}\.){3}\d{1,3}$/.test(hostname) || hostname.startsWith('[') || hostname.includes(':');
 }
 function isPasskeySupported() {
-  return !!(window.isSecureContext && window.PublicKeyCredential);
+  return !!(window.isSecureContext && window.PublicKeyCredential && navigator.credentials?.get);
+}
+function passkeyErrorText(error) {
+  if (['NotAllowedError', 'SecurityError'].includes(error?.name)
+      && /certificate|certificat|TLS|SSL|证书|憑證/i.test(error.message || ''))
+    return t('passkey_certificate_error');
+  if (error?.name === 'NotAllowedError') return t('passkey_not_completed');
+  if (error?.name === 'SecurityError') return t('passkey_security_error');
+  if (['AbortError', 'TimeoutError'].includes(error?.name)) return t('passkey_timeout');
+  return error?.message || t('passkey_failed');
 }
 async function registerPasskey() {
   if (!isPasskeySupported()) {
@@ -111,9 +120,11 @@ async function registerPasskey() {
     toast(t('passkey_added_success'));
     await refreshPasskeys();
   } catch (err) {
-    if (err.name !== 'NotAllowedError') {
-      toast(err.message || 'Passkey 绑定失败', true);
-    }
+    const hint = $('#passkey-inspector-hint');
+    if (hint) {
+      hint.textContent = passkeyErrorText(err);
+      hint.classList.remove('hidden');
+    } else toast(passkeyErrorText(err), true);
   } finally {
     if (btn) {
       btn.disabled = false;
@@ -136,33 +147,30 @@ async function loginWithPasskey(isConditional = false) {
     return;
   }
 
+  if (explicitPasskeyBusy) return;
   const btn = $('#passkey-login-btn');
-  const errorBox = $('#login-error');
+  const label = btn?.querySelector('span');
+  const errorBox = $('#passkey-login-error') || $('#login-error');
   if (errorBox && !isConditional) errorBox.textContent = '';
 
-  if (isConditional) {
-    if (explicitPasskeyBusy) return;
-    if (conditionalAbortController) {
-      try {
-        conditionalAbortController.abort();
-      } catch (_) {}
-      conditionalAbortController = null;
-    }
-    conditionalAbortController = new AbortController();
-  } else {
-    if (explicitPasskeyBusy) return;
-    if (conditionalAbortController) {
-      try {
-        conditionalAbortController.abort();
-      } catch (_) {}
-      conditionalAbortController = null;
-    }
+  // Keep the controller local: a cancelled autofill request can settle after
+  // the explicit click, and must never clear or steal the newer request.
+  const controller = new AbortController();
+  conditionalAbortController?.abort();
+  conditionalAbortController = isConditional ? controller : null;
+  if (!isConditional) {
     explicitPasskeyBusy = true;
-    if (btn) btn.disabled = true;
+    if (btn) {
+      btn.disabled = true;
+      btn.setAttribute('aria-busy', 'true');
+    }
+    if (label) label.textContent = t('passkey_opening');
   }
+  const deadline = isConditional ? null : setTimeout(() => controller.abort(), 60000);
 
   try {
-    const startRes = await request('/api/passkey/login/start', { method: 'POST' });
+    const startRes = await request('/api/passkey/login/start', { method: 'POST', signal: controller.signal });
+    if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
     const { challenge_id, options } = startRes;
     const pk = { ...options.publicKey };
     pk.challenge = base64UrlToBuffer(pk.challenge);
@@ -175,16 +183,16 @@ async function loginWithPasskey(isConditional = false) {
       delete pk.allowCredentials;
     }
 
-    const getOptions = { publicKey: pk };
-    if (isConditional) {
-      getOptions.mediation = 'conditional';
-      if (conditionalAbortController) {
-        getOptions.signal = conditionalAbortController.signal;
-      }
+    const getOptions = { publicKey: pk, signal: controller.signal };
+    if (isConditional) getOptions.mediation = 'conditional';
+    else {
+      pk.timeout = Math.min(Number(pk.timeout) || 60000, 60000);
+      if (label) label.textContent = t('passkey_waiting');
     }
 
     const cred = await navigator.credentials.get(getOptions);
-    if (!cred) return;
+    if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    if (!cred) throw new DOMException('No credential returned', 'NotAllowedError');
 
     const credentialPayload = {
       id: cred.id,
@@ -201,27 +209,34 @@ async function loginWithPasskey(isConditional = false) {
 
     await request('/api/passkey/login/finish', {
       method: 'POST',
+      signal: controller.signal,
       body: JSON.stringify({
         challenge_id,
         credential: credentialPayload,
       }),
     });
 
-    shared.bootstrap = await request('/api/bootstrap');
+    shared.bootstrap = await request('/api/bootstrap', { signal: controller.signal });
     showState(shared.bootstrap.authenticated ? 'main' : 'login');
   } catch (err) {
-    if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
-      if (!isConditional) {
-        if (errorBox) errorBox.textContent = err.message || 'Passkey 登录失败';
-        else toast(err.message || 'Passkey 登录失败', true);
-      }
+    // Autofill is passive; an explicit click must always explain failure,
+    // including certificate rejection, cancellation and missing credentials.
+    if (!isConditional) {
+      const message = controller.signal.aborted ? t('passkey_timeout') : passkeyErrorText(err);
+      if (errorBox) errorBox.textContent = message;
+      else toast(message, true);
     }
   } finally {
+    clearTimeout(deadline);
     if (isConditional) {
-      conditionalAbortController = null;
+      if (conditionalAbortController === controller) conditionalAbortController = null;
     } else {
       explicitPasskeyBusy = false;
-      if (btn) btn.disabled = false;
+      if (btn) {
+        btn.disabled = false;
+        btn.setAttribute('aria-busy', 'false');
+      }
+      if (label) label.textContent = t('passkey_signin');
     }
   }
 }

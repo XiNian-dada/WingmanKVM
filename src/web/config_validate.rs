@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) fn validate_config(config: &Config) -> Result<(), ApiError> {
+    config.server.validate_tls().map_err(ApiError::bad_request)?;
     if config.version != CONFIG_VERSION {
         return Err(ApiError::bad_request("配置版本不受支持"));
     }

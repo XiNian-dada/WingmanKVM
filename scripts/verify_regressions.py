@@ -48,6 +48,7 @@ CASES = (
     CaseSpec("p1_ui", "scripts/verify_p1_ui.py", "ui", timeout=UI_TIMEOUT),
     CaseSpec("p2_ui", "scripts/verify_p2_ui.py", "ui", timeout=UI_TIMEOUT),
     CaseSpec("p2b_ui", "scripts/verify_p2b_ui.py", "ui", timeout=UI_TIMEOUT),
+    CaseSpec("direct_h264_ui", "scripts/verify_direct_h264_ui.py", "ui", timeout=UI_TIMEOUT),
     CaseSpec("audit2_ui", "scripts/verify_audit2_ui.py", "ui", timeout=UI_SUITE_TIMEOUT),
     CaseSpec("p2c_cookie", "scripts/verify_p2c_cookie.py", "api", optional=True),
     CaseSpec("p2c_upgrade", "scripts/verify_p2c_upgrade.py", "repo", optional=True),

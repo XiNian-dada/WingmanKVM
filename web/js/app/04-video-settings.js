@@ -7,6 +7,7 @@ import {
 import { toast, value } from './03-session.js';
 import { renderPowerLed, syncGpioControls } from './05-power.js';
 import { restartVideo } from './07-video.js';
+import { directH264Available } from './07e-direct-h264.js';
 import { applyAudioConfig } from './07d-audio.js';
 import { relativeCaptured, syncInputUi } from './08-input.js';
 
@@ -45,10 +46,11 @@ function syncTransportControl() {
   const select = $('#video-config').elements.transport,
     option = select.querySelector('option[value="webrtc_h264"]');
   option.disabled = shared.bootstrap.capabilities?.video_webrtc_h264 === false;
+  select.querySelector('option[value="direct_h264"]').disabled = !directH264Available();
   select.value = shared.videoPreference;
 }
 function setVideoPreference(value) {
-  shared.videoPreference = ['auto', 'webrtc_h264', 'mjpeg'].includes(value) ? value : 'auto';
+  shared.videoPreference = ['auto', 'webrtc_h264', 'direct_h264', 'mjpeg'].includes(value) ? value : 'auto';
   saveVideoUiPreference('transport', shared.videoPreference);
   syncTransportControl();
   restartVideo();
@@ -244,7 +246,7 @@ function applyBootstrap() {
 // DOM wiring; main.js calls this once, in the original fragment order.
 export function init() {
   shared.videoPreference = readVideoUiPreference('transport', 'auto');
-  if (!['auto', 'webrtc_h264', 'mjpeg'].includes(shared.videoPreference)) shared.videoPreference = 'auto';
+  if (!['auto', 'webrtc_h264', 'direct_h264', 'mjpeg'].includes(shared.videoPreference)) shared.videoPreference = 'auto';
   $('#pan-toggle')?.addEventListener('click', () => setPanMode(!shared.isPanActive));
   $('#pan-toggle')?.addEventListener('dblclick', () => {
     centerNativeViewport();

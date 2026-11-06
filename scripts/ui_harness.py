@@ -35,7 +35,7 @@ def read_assets(repo):
     return assets
 
 
-def serve_static(html, assets, modules=None):
+def serve_static(html, assets, modules=None, ssl_context=None):
     """Serve the page, the app ES modules and vendored xterm assets on 127.0.0.1:<random>."""
     html_bytes = html.encode("utf-8")
     files = {path: (body, MODULE_TYPE) for path, body in (modules or {}).items()}
@@ -72,6 +72,8 @@ def serve_static(html, assets, modules=None):
         do_POST = _route
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    if ssl_context is not None:
+        server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, server.server_address[1]

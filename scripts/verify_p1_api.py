@@ -36,7 +36,9 @@ class Runner:
         self.proc = self.logf = None; self.setup_status = self.cookie = None
         self.expected = {"listen_address": "127.0.0.1", "port": self.port,
                          "proxy_protocol": "disabled", "trusted_http_proxies": ["127.0.0.2"],
-                         "public_origin": self.origin}
+                         "public_origin": self.origin,
+                         "tls": {"mode": "disabled", "self_signed_certificate": None,
+                                 "custom_certificate": None}}
         self.checks = {}
     def redact(self, text):
         for secret in self.secrets:
@@ -51,7 +53,9 @@ class Runner:
         stub.write_text("#!/bin/sh\n# Test stub: discard stdin, never execute arguments.\n"
                         "/bin/cat >/dev/null 2>&1\nexit 0\n")
         stub.chmod(0o755)
-        config = {"version": 1, "server": dict(self.expected),
+        # Legacy saved HTTP configs omit TLS; setup must retain HTTP and serialize its defaults.
+        server = {key: value for key, value in self.expected.items() if key != "tls"}
+        config = {"version": 1, "server": server,
                   "video": {"auto_detect": False, "h264": {"ffmpeg_path": "/nonexistent-wingmankvm-p1-ffmpeg"}}}
         (self.state / "config.json").write_text(json.dumps(config) + "\n")
     def start(self):

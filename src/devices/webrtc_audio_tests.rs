@@ -38,6 +38,7 @@ fn loopback(fixture: &ProbeFixture, audio: AudioManager) -> Loopback {
     drop(reserved);
     let manager = WebRtcManager {
         inner: Arc::new(Inner {
+            h264: H264Hub::default(),
             video,
             audio,
             config: Mutex::new(H264Config {
@@ -50,6 +51,9 @@ fn loopback(fixture: &ProbeFixture, audio: AudioManager) -> Loopback {
                 codec: "libx264",
                 label: "test encoder",
                 software: true,
+                native: false,
+                #[cfg(unix)]
+                _program: None,
             })),
             sessions: Mutex::new(HashMap::new()),
             offer_lock: AsyncMutex::new(()),

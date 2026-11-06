@@ -1622,8 +1622,9 @@ def quality_overlay_webrtc(browser, port, checks):
         check(checks, rows.get("接收码率") == "—", "quality_first_sample_has_no_rates", rows)
         page.wait_for_function("() => document.querySelector('#quality-overlay').textContent.includes('Mbps')", timeout=4000)
         rows = overlay_rows(page)
-        check(checks, rows == {"往返延迟": "25 ms", "接收码率": "1.00 Mbps", "丢包率": "1.0%", "解码帧率": "30",
-                               "抖动缓冲": "50 ms", "自适应码率": "已关闭", "分辨率": "1920×1080"},
+        expected = {"往返延迟": "25 ms", "接收码率": "1.00 Mbps", "丢包率": "1.0%", "解码帧率": "30",
+                    "抖动缓冲": "50 ms", "自适应码率": "已关闭", "分辨率": "1920×1080"}
+        check(checks, all(rows.get(key) == value for key, value in expected.items()),
               "quality_webrtc_stats_rendered", rows)
         page.wait_for_function("() => window.__statsCalls >= 3", timeout=4000)
         page.wait_for_timeout(50)
@@ -1637,6 +1638,19 @@ def quality_overlay_webrtc(browser, port, checks):
         page.wait_for_timeout(50)
         rows = overlay_rows(page)
         check(checks, rows.get("接收码率") == "1.00 Mbps", "quality_recovers_after_reset", rows)
+        page.evaluate("""async () => {
+          const s = (await import('/assets/js/state.js')).shared;
+          s.bootstrap.webrtc = {encoder:'x264 (native)', live_bitrate:true,
+            telemetry:{fps:15,processing_ms:10.5,last_frame_age_ms:8,restarts:0,bitrate_changes:6,bitrate_kbps:2800,max_frame_gap_ms:72}};
+        }""")
+        page.wait_for_function("() => document.querySelector('#quality-overlay').textContent.includes('x264 (native)')")
+        rows = overlay_rows(page)
+        diagnostic = {"编码后端":"x264 (native)", "共享编码码率":"2.80 Mbps", "单帧处理耗时":"10.5 ms",
+                      "编码器重启":"0", "码率调整次数":"6", "最大编码帧间隔":"72 ms"}
+        check(checks, all(rows.get(key) == value for key, value in diagnostic.items()),
+              "quality_exposes_encoder_pipeline_diagnostics", rows)
+        check(checks, page.locator('#quality-overlay').evaluate("e => getComputedStyle(e).pointerEvents") == 'none',
+              "quality_diagnostics_preserve_pointer_passthrough")
 
         page.evaluate("""() => {
           Object.defineProperty(document, 'hidden', {configurable: true, get: () => true});
@@ -2305,8 +2319,8 @@ ADAPTIVE_DECISION_SCRIPT = """() => {
   res.pure = JSON.stringify(frozen) === copy;
   // Two bad samples are not enough; the third lowers by 30 %.
   res.lower = run(t.newAdaptiveState(4000), seq(BAD, 0, 3)).out;
-  // Persisting congestion: one change per 10 s cooldown, not per sample.
-  res.cooldown = run(t.newAdaptiveState(4000), seq(BAD, 0, 25)).out;
+  // Persisting congestion: one change per 30 s cooldown, not per sample.
+  res.cooldown = run(t.newAdaptiveState(4000), seq(BAD, 0, 65)).out;
   // Under loss the target never exceeds what actually arrived (+10 %).
   res.received = run(t.newAdaptiveState(4000), seq({...BAD, receivedKbps: 1000}, 0, 3)).out;
   res.severe = run(t.newAdaptiveState(4000), seq({...BAD, packetLossPct: 20}, 0, 3)).out;
@@ -2321,11 +2335,20 @@ ADAPTIVE_DECISION_SCRIPT = """() => {
   res.flap = run(t.newAdaptiveState(4000), flap).out;
   res.neutral = run(t.newAdaptiveState(4000), seq(NEUTRAL, 0, 60)).out;
   res.unknown = run(t.newAdaptiveState(4000), seq({}, 0, 10)).out;
-  // Recovery: lowered at 2 s, then good. No raise within 30 s of the last
-  // bad sample, then +25 % per 10 good samples, snapping to the maximum.
-  res.recover = run(t.newAdaptiveState(4000), [...seq(BAD, 0, 3), ...seq(GOOD, 3000, 120)]).out;
+  // Recovery: lowered at 2 s, then good. Raises are at least 60 s apart.
+  res.recover = run(t.newAdaptiveState(4000), [...seq(BAD, 0, 3), ...seq(GOOD, 3000, 180)]).out;
+  // Restart warm-up is not congestion and must not poison the RTT baseline
+  // or contribute to either streak.
+  const changed = run(t.newAdaptiveState(4000), seq(BAD, 0, 3)).state;
+  const settle = run(changed, seq({...BAD, rttMs: 1}, 3000, 4));
+  res.settle = [settle.out, settle.state.badStreak, settle.state.goodStreak,
+                settle.state.lastBadAt, settle.state.rttBaselineMs];
+  res.stalledRecovery = run(changed, seq({...GOOD, decodedFps: 0}, 3000, 180)).out;
+  res.stalledLoss = run(t.newAdaptiveState(4000), seq({...BAD, decodedFps: 0}, 0, 3)).out;
   // Good samples never push above the configured bitrate.
   res.atMax = run(t.newAdaptiveState(4000), seq(GOOD, 0, 60)).out;
+  const live = t.policyForEncoder(true);
+  res.livePolicy = [live.cooldownMs, live.settleMs, live.increaseIntervalMs];
   // Floor: never below 256 kbps, and no request once there.
   const low = {...t.newAdaptiveState(4000), currentKbps: 300};
   res.floor = run(low, seq(BAD, 0, 30)).out;
@@ -2341,18 +2364,23 @@ def adaptive_bitrate_decision(browser, port, checks):
         r = page.evaluate(ADAPTIVE_DECISION_SCRIPT)
         check(checks, r["pure"], "adaptive_decision_is_pure", r["pure"])
         check(checks, r["lower"] == [[2800, 2000]], "adaptive_lowers_after_three_bad_samples", r["lower"])
-        check(checks, r["cooldown"] == [[2800, 2000], [1950, 12000], [1350, 22000]],
+        check(checks, r["cooldown"] == [[2800, 2000], [1950, 32000], [1350, 62000]],
               "adaptive_one_change_per_cooldown", r["cooldown"])
         check(checks, r["received"] == [[1100, 2000]], "adaptive_caps_at_received_bitrate", r["received"])
         check(checks, r["severe"] == [[2000, 2000]], "adaptive_severe_loss_halves", r["severe"])
-        check(checks, r["rtt"] == [[2800, 2000]] and r["jitter"] == [[2800, 2000]],
-              "adaptive_rtt_and_jitter_thresholds", (r["rtt"], r["jitter"]))
+        check(checks, r["rtt"] == [] and r["jitter"] == [[2800, 2000]],
+              "adaptive_stable_high_rtt_holds_and_jitter_lowers", (r["rtt"], r["jitter"]))
         check(checks, r["trend"] == [[2800, 7000]], "adaptive_rtt_rise_vs_baseline", r["trend"])
         check(checks, r["flap"] == [] and r["neutral"] == [] and r["unknown"] == [],
               "adaptive_hysteresis_band_holds", (r["flap"], r["neutral"], r["unknown"]))
-        check(checks, r["recover"] == [[2800, 2000], [3500, 32000], [4000, 42000]],
+        check(checks, r["recover"] == [[2800, 2000], [3500, 62000], [4000, 122000]],
               "adaptive_recovers_gradually_to_max", r["recover"])
+        check(checks, r["settle"] == [[], 0, 0, 2000, 30],
+              "adaptive_ignores_encoder_warmup", r["settle"])
+        check(checks, r["stalledRecovery"] == [] and r["stalledLoss"] == [[2800, 2000]],
+              "adaptive_stalled_decoder_cannot_raise_but_loss_can_lower", (r["stalledRecovery"], r["stalledLoss"]))
         check(checks, r["atMax"] == [], "adaptive_never_exceeds_max", r["atMax"])
+        check(checks, r["livePolicy"] == [10000, 0, 10000], "adaptive_native_does_not_wait_for_restarts", r["livePolicy"])
         check(checks, r["floor"] == [[256, 2000]], "adaptive_respects_floor", r["floor"])
     finally:
         context.close()
@@ -2413,15 +2441,24 @@ ADAPTIVE_PROBE_SCRIPT = """() => {
   const edge = link(t.newAdaptiveState(4000), 3000, 0, 1800);
   res.waits = waits(edge.changes);
   res.restarts = edge.changes.length;
-  // The same link without backoff (the old behaviour): a probe every ~40 s.
+  // The same link without failed-probe backoff.
   const flat = link(t.newAdaptiveState(4000), 3000, 0, 1800, {...policy, maxRaiseAfterBadMs: policy.raiseAfterBadMs});
   res.flatWaits = [...new Set(waits(flat.changes))];
   res.flatRestarts = flat.changes.length;
   // Capacity frees up: sustained good quality clears the count, so the next
-  // congestion is followed by the normal 30 s hold again.
-  const clear = link(edge.state, 1e9, 1800000, 400);
+  // congestion is followed by the normal 60 s hold again.
+  const clear = link(edge.state, 1e9, 1800000, 700);
   res.cleared = [clear.state.probeFailures, clear.state.currentKbps];
-  res.again = waits(link(clear.state, 3000, 2200000, 120).changes);
+  res.again = waits(link(clear.state, 3000, 2500000, 240).changes);
+  // The board exhibited congestion ~39 s after a raise. It must still count
+  // as a failed probe, even though the old 20 s window would miss it.
+  let delayed = t.newAdaptiveState(4000), delayedChanges = [];
+  for (let at = 0; at <= 223000; at += 1000) {
+    const r = decide(delayed, at <= 2000 || (at >= 101000 && at <= 103000) ? BAD : GOOD, at);
+    delayed = r.state;
+    if (r.targetKbps !== null) delayedChanges.push([r.targetKbps, at]);
+  }
+  res.delayed = [delayed.probeFailures, delayedChanges];
   return res;
 }"""
 
@@ -2431,15 +2468,17 @@ def adaptive_probe_backoff(browser, port, checks):
     context, page = media_page(browser, State(), port, stubs=(ui_harness.TEST_HOOKS,))
     try:
         r = page.evaluate(ADAPTIVE_PROBE_SCRIPT)
-        check(checks, r["flatWaits"] == [30] and r["flatRestarts"] > 100,
-              "adaptive_edge_scenario_reproduces_40s_cycle", (r["flatWaits"], r["flatRestarts"]))
+        check(checks, r["flatWaits"] == [60] and r["flatRestarts"] > 30,
+              "adaptive_edge_without_probe_backoff", (r["flatWaits"], r["flatRestarts"]))
         waits = r["waits"]
-        check(checks, waits[:4] == [30, 60, 120, 240], "adaptive_failed_probes_back_off_exponentially", waits)
-        check(checks, len(waits) >= 7 and set(waits[3:]) == {240}, "adaptive_probe_backoff_is_capped", waits)
-        check(checks, r["restarts"] * 3 < r["flatRestarts"], "adaptive_backoff_cuts_encoder_restarts",
+        check(checks, waits[:3] == [60, 120, 240], "adaptive_failed_probes_back_off_exponentially", waits)
+        check(checks, len(waits) >= 6 and set(waits[2:]) == {240}, "adaptive_probe_backoff_is_capped", waits)
+        check(checks, r["restarts"] * 2 < r["flatRestarts"], "adaptive_backoff_cuts_encoder_restarts",
               (r["restarts"], r["flatRestarts"]))
-        check(checks, r["cleared"] == [0, 4000] and r["again"][:2] == [30, 60],
+        check(checks, r["cleared"] == [0, 4000] and r["again"][:2] == [60, 120],
               "adaptive_probe_backoff_resets_after_good_quality", (r["cleared"], r["again"]))
+        check(checks, r["delayed"] == [1, [[2800, 2000], [3500, 62000], [2450, 103000], [3050, 223000]]],
+              "adaptive_delayed_congestion_counts_as_failed_probe", r["delayed"])
     finally:
         context.close()
 
@@ -2486,12 +2525,16 @@ def adaptive_bitrate_webrtc(browser, port, checks):
         page.wait_for_function("() => /LIVE/.test(document.querySelector('#video-transport-label').textContent)", timeout=8000)
         # Short timings keep the scenario fast; the logic is the same.
         page.evaluate("""() => Object.assign(window.__wingmanTest.adaptivePolicy,
-          {cooldownMs: 2500, raiseAfterBadMs: 3000, goodSamples: 3})""")
-        # 10 % loss at ~1 Mbps received; repeated reports keep the rates.
+          {cooldownMs: 2500, increaseIntervalMs: 3000, settleMs: 500, raiseAfterBadMs: 3000, goodSamples: 3})""")
+        # Cached reports must not accumulate congestion samples.
         page.evaluate("(r) => { window.__statsSeq = r; }", [adaptive_stats(10000, 1, 100), adaptive_stats(11000, 2, 100)])
         page.wait_for_function("() => window.__statsCalls >= 2", timeout=4000)
         check(checks, not page.locator("#quality-overlay").is_visible(),
               "adaptive_samples_without_overlay", page.evaluate("() => window.__statsCalls"))
+        page.wait_for_timeout(3500)
+        check(checks, not sent, "adaptive_cached_stats_do_not_count_as_new", sent)
+        page.evaluate("(r) => { window.__statsSeq = r; }",
+                      [adaptive_stats(12000 + i * 1000, 3 + i, 100) for i in range(6)])
         wait_sent(2)
         page.wait_for_timeout(300)
         check(checks, [(s, k) for s, k, _ in sent] == [("s1", 1100), ("s1", 750)],
@@ -2499,7 +2542,10 @@ def adaptive_bitrate_webrtc(browser, port, checks):
         gap = sent[1][2] - sent[0][2] if len(sent) == 2 else 0
         check(checks, gap >= 2400, "adaptive_requests_respect_cooldown", gap)
 
-        page.evaluate("(r) => { window.__statsSeq = r; }", [adaptive_stats(20000, 3, 0), adaptive_stats(21000, 4, 0)])
+        page.evaluate("(r) => { window.__statsSeq = r; }", [adaptive_stats(20000 + i * 1000, 9, 0) for i in range(5)])
+        page.wait_for_timeout(4500)
+        check(checks, len(sent) == 2, "adaptive_encoder_gap_does_not_accumulate_good_samples", sent)
+        page.evaluate("(r) => { window.__statsSeq = r; }", [adaptive_stats(25000 + i * 1000, 10 + i, 0) for i in range(6)])
         wait_sent(3)
         check(checks, len(sent) == 3 and sent[2][1] == 950 and sent[2][2] - sent[1][2] >= 2400,
               "adaptive_raises_after_recovery_hold", sent)

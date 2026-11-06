@@ -1,5 +1,5 @@
 import { shared } from './state.js';
-import { $, $$, app, consoleBox, feed, viewport, webrtcFeed } from './00-core.js';
+import { $, $$, app, consoleBox, feed, viewport, webrtcFeed, directFeed } from './00-core.js';
 import { getSetting } from './00-settings.js';
 import { t, tr } from './01-i18n.js';
 import { invalidateSurfaceBox } from './02-theme-layout.js';
@@ -1129,13 +1129,13 @@ function absoluteMode() {
   return shared.bootstrap.capabilities?.pointer_mode === 'absolute';
 }
 function activeVideoSurface() {
-  return shared.activeVideoTransport === 'webrtc_h264' ? webrtcFeed : feed;
+  return shared.activeVideoTransport === 'webrtc_h264' ? webrtcFeed : shared.activeVideoTransport === 'direct_h264' ? directFeed : feed;
 }
 // `clamp` keeps a captured drag on the picture's edge when the pointer leaves it.
 function mapAbsolute(clientX, clientY, clamp = false) {
   const surface = activeVideoSurface(),
-    sourceWidth = surface instanceof HTMLVideoElement ? surface.videoWidth : surface.naturalWidth,
-    sourceHeight = surface instanceof HTMLVideoElement ? surface.videoHeight : surface.naturalHeight;
+    sourceWidth = surface instanceof HTMLVideoElement ? surface.videoWidth : surface instanceof HTMLCanvasElement ? surface.width : surface.naturalWidth,
+    sourceHeight = surface instanceof HTMLVideoElement ? surface.videoHeight : surface instanceof HTMLCanvasElement ? surface.height : surface.naturalHeight;
   if (!sourceWidth || !sourceHeight) return null;
   if (!shared.cachedSurfaceBox) shared.cachedSurfaceBox = surface.getBoundingClientRect();
   const box = shared.cachedSurfaceBox;

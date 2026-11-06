@@ -11,10 +11,10 @@ WingmanKVM 是一个运行在 ARM 开发板上的网页 KVM。把被控机的 HD
 ## 功能
 
 **画面**
-- 自动选择传输方式：优先 WebRTC H.264（支持 RK3399 硬件编码），不可用时回退 MJPEG
+- 自动选择传输方式：WebRTC H.264 → Direct H.264（WebSocket + WebCodecs）→ MJPEG；两种 H.264 传输共用编码器，支持自适应码率（[使用说明](docs/DIRECT_H264.md)）
 - JPEG 压缩支持可选黑白省流模式：在视频设置中选择“JPEG 压缩”后开启“黑白省流”，降低编码负载和带宽（默认关闭）
 - JPEG 算法可热切换：屏幕优化、标准高速、兼容编码、整数向量优化、系数重压缩及保真省流；可单独选择优化编码表，说明见 [JPEG 配置](docs/JPEG_PROCESSING.md)
-- 可选 HDMI 音频：采集卡声音以 Opus 随 WebRTC 传输（默认关闭，页面从静音开始，MJPEG 模式不支持）
+- 可选 HDMI 音频：采集卡声音以 Opus 随 WebRTC 传输（默认关闭，页面从静音开始，Direct H.264 和 MJPEG 模式不支持）
 - 适应窗口 / 1:1 像素 / 填满三种显示方式，1:1 下可拖动平移
 - 画面截图（PNG）与本地录屏（WebM）
 
@@ -55,7 +55,7 @@ WingmanKVM 是一个运行在 ARM 开发板上的网页 KVM。把被控机的 HD
 被控机 HDMI 输出  ──>  HDMI 采集卡  ──USB──>  KVM 主机 USB Host 口
 被控机 USB 口     <──  USB 线  ────────────>  KVM 主机 OTG 口（通常是 Type-C）
 被控机电源针脚    <──  继电器干接点  ──────>  KVM 主机 GPIO（可选）
-浏览器            <──  局域网  ────────────>  http://<KVM 主机 IP>:8080
+浏览器            <──  局域网  ────────────>  https://<KVM 主机 IP>:8080
 ```
 
 ## 快速开始
@@ -79,7 +79,7 @@ WingmanKVM 是一个运行在 ARM 开发板上的网页 KVM。把被控机的 HD
 
 WingmanKVM 能直接操作被控机，请把它当作服务器的物理控制台对待：
 
-- 不要把 8080 端口直接暴露到公网。远程访问请使用 VPN（如 WireGuard、Tailscale），或在 HTTPS 反向代理之后部署并配置 `server.public_origin`（见 [会话 Cookie 策略](docs/SESSION_COOKIES.md)）。
+- 新安装默认启用内置 HTTPS 自签证书，可在“设置 → HTTPS 与证书”导入 CA 证书；8080 或公网映射端口均可使用，无需 443。旧配置保留 HTTP，迁移、证书信任与续期说明见 [HTTPS 与证书](docs/HTTPS.md)。远程访问也可使用 WireGuard/Tailscale 等 VPN。
 - 网页终端默认使用无 sudo 权限的受限账户；需要 root 维护时再显式开启，见 [维护权限模式](docs/MAINTENANCE_MODES.md)。
 
 ## 文档

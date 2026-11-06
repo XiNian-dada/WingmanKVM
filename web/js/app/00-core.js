@@ -7,7 +7,8 @@ const authView = $('#auth-view'),
 const viewport = $('#video-viewport'),
   feed = $('#video-feed'),
   webrtcFeed = $('#webrtc-feed'),
+  directFeed = $('#direct-feed'),
   consoleBox = $('#console');
 const fieldTooltip = $('#field-tooltip');
 
-export { $, $$, app, authView, consoleBox, feed, fieldTooltip, loginForm, setupForm, viewport, webrtcFeed };
+export { $, $$, app, authView, consoleBox, feed, fieldTooltip, loginForm, setupForm, viewport, webrtcFeed, directFeed };

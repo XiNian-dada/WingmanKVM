@@ -1,3 +1,11 @@
+#[path = "h264.rs"]
+mod h264;
+#[cfg(unix)]
+#[path = "native_h264.rs"]
+mod native_h264;
+pub use h264::{EncodedFrame, H264Subscription, MAX_ENCODED_FRAME, EncoderTelemetry};
+use h264::{EncoderOutput, FrameWriter, H264Hub};
+
 use std::{
     collections::HashMap,
     future::Future,
@@ -70,9 +78,11 @@ const ENCODER_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Lowest bitrate a client may request for adaptive streaming.
 pub const MIN_ADAPTIVE_BITRATE_KBPS: u32 = 256;
-/// Minimum spacing between two encoder restarts of one session. Every change
-/// restarts FFmpeg, so a misbehaving client must not be able to thrash it.
+/// Per-session request limit. The shared encoder separately coalesces requests
+/// across transports and enforces longer restart intervals.
 const BITRATE_CHANGE_INTERVAL: Duration = Duration::from_secs(10);
+const ENCODER_BITRATE_DECREASE_INTERVAL: Duration = Duration::from_secs(30);
+const ENCODER_BITRATE_INCREASE_INTERVAL: Duration = Duration::from_secs(60);
 
 const PROBE_DEADLINE: Duration = Duration::from_secs(3);
 const PROBE_MAX_OUTPUT: usize = 1024 * 1024;
@@ -129,6 +139,10 @@ pub struct BitrateChange {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WebRtcStatus {
+    pub telemetry: Option<EncoderTelemetry>,
+    pub live_bitrate: bool,
+    pub h264_viewers: usize,
+    pub shared_encoder: bool,
     pub available: bool,
     pub encoder: Option<String>,
     pub message: Option<String>,
@@ -162,11 +176,14 @@ struct EncoderSpec {
     codec: &'static str,
     label: &'static str,
     software: bool,
+    native: bool,
+    #[cfg(unix)]
+    _program: Option<Arc<native_h264::Program>>,
 }
 
 struct Session {
     shutdown: watch::Sender<bool>,
-    /// Current encoder bitrate; changing it restarts only the FFmpeg process.
+    /// Requested bitrate. Native x264 applies it without restarting.
     bitrate: watch::Sender<u32>,
     /// Configured bitrate at offer time; clients can never exceed it.
     max_bitrate_kbps: u32,
@@ -227,6 +244,7 @@ struct UdpBinding {
 }
 
 struct Inner {
+    h264: H264Hub,
     video: VideoManager,
     /// Optional shared HDMI audio; independent of every video encoder.
     audio: AudioManager,
@@ -438,6 +456,7 @@ impl WebRtcManager {
         // a "probing" state immediately and finish the probe in the background
         // so startup can begin listening without waiting for the media stack.
         let inner = Arc::new(Inner {
+            h264: H264Hub::default(),
             video,
             audio,
             config: Mutex::new(config.clone()),
@@ -451,11 +470,27 @@ impl WebRtcManager {
         Self { inner }
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_encoder(video: VideoManager, config: H264Config, executable: PathBuf) -> Self {
+        let manager = Self::test_stub(video, config);
+        *manager.inner.encoder.lock().unwrap() = Ok(EncoderSpec {
+            executable,
+            codec: "libx264",
+            label: "fixture",
+            software: true,
+            native: false,
+            #[cfg(unix)]
+            _program: None,
+        });
+        manager
+    }
+
     /// Test-only manager with no encoder probe or hardware access.
     #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn test_stub(video: VideoManager, config: H264Config) -> Self {
         let inner = Arc::new(Inner {
+            h264: H264Hub::default(),
             video,
             audio: disabled_audio(),
             config: Mutex::new(config),
@@ -466,6 +501,16 @@ impl WebRtcManager {
             probe_epoch: AtomicU64::new(0),
         });
         Self { inner }
+    }
+
+    pub async fn subscribe_h264(&self, guard: &SessionGuard) -> Result<H264Subscription, WebRtcError> {
+        let _offer_guard = self.inner.offer_lock.lock().await;
+        if !guard.is_active() {
+            return Err(WebRtcError::Unauthorized);
+        }
+        let config = self.inner.config.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let encoder = self.inner.encoder.lock().unwrap_or_else(|e| e.into_inner()).clone().map_err(WebRtcError::Unavailable)?;
+        self.inner.h264.subscribe(self.inner.video.clone(), encoder, &config).await
     }
 
     pub fn audio(&self) -> &AudioManager {
@@ -493,6 +538,10 @@ impl WebRtcManager {
             .len();
         match encoder {
             Ok(encoder) => WebRtcStatus {
+                telemetry: self.inner.h264.telemetry(),
+                live_bitrate: encoder.native,
+                h264_viewers: self.inner.h264.viewers(),
+                shared_encoder: true,
                 available: true,
                 encoder: Some(encoder.label.to_owned()),
                 message: None,
@@ -502,6 +551,10 @@ impl WebRtcManager {
                 software_encoding: encoder.software,
             },
             Err(message) => WebRtcStatus {
+                telemetry: self.inner.h264.telemetry(),
+                live_bitrate: false,
+                h264_viewers: self.inner.h264.viewers(),
+                shared_encoder: true,
                 available: false,
                 encoder: None,
                 message: Some(message),
@@ -558,6 +611,7 @@ impl WebRtcManager {
         for session_id in session_ids {
             close_session(&self.inner, &session_id).await;
         }
+        self.inner.h264.stop().await;
         let mut binding = self.inner.udp_binding.lock().await;
         if binding
             .as_ref()
@@ -759,6 +813,7 @@ impl WebRtcManager {
             return Err(WebRtcError::Unauthorized);
         }
 
+        let subscription = self.inner.h264.subscribe(self.inner.video.clone(), encoder, &config).await?;
         let session_id = generate_session_id()?;
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (state_tx, state_rx) = watch::channel(ConnectionPhase::New);
@@ -805,7 +860,6 @@ impl WebRtcManager {
 
         let inner = Arc::downgrade(&self.inner);
         let task_session_id = session_id.clone();
-        let video = self.inner.video.clone();
         let audio = audio_track
             .clone()
             .map(|track| (self.inner.audio.clone(), track));
@@ -813,9 +867,8 @@ impl WebRtcManager {
             inner,
             task_session_id,
             peer,
-            video,
+            subscription,
             track,
-            encoder,
             bitrate_rx,
             guard,
             shutdown_rx,
@@ -913,6 +966,7 @@ impl WebRtcManager {
     pub(crate) fn for_tests() -> Self {
         Self {
             inner: Arc::new(Inner {
+                h264: H264Hub::default(),
                 video: VideoManager::new(crate::config::VideoConfig::default()),
                 audio: disabled_audio(),
                 config: Mutex::new(H264Config::default()),
@@ -1230,9 +1284,8 @@ async fn run_session_supervisor(
     inner: Weak<Inner>,
     session_id: String,
     peer: Arc<RTCPeerConnection>,
-    video: VideoManager,
+    subscription: H264Subscription,
     track: Arc<TrackLocalStaticSample>,
-    encoder: EncoderSpec,
     bitrate: watch::Receiver<u32>,
     guard: SessionGuard,
     shutdown: watch::Receiver<bool>,
@@ -1247,14 +1300,7 @@ async fn run_session_supervisor(
     let audio_forwarding = start_audio_forwarding(audio);
     let (progress_tx, progress_rx) = mpsc::channel(1);
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let encoder_future: EncoderFuture = Box::pin(run_encoder(
-        video,
-        track,
-        encoder,
-        cancel_rx,
-        bitrate,
-        progress_tx,
-    ));
+    let encoder_future: EncoderFuture = Box::pin(forward_h264(subscription, track, cancel_rx, bitrate, progress_tx));
     let end = supervise_lifecycle(
         &guard,
         shutdown,
@@ -1280,6 +1326,33 @@ async fn run_session_supervisor(
     // stops the capture process.
     drop(audio_forwarding);
     cleanup.shutdown().await;
+}
+
+async fn forward_h264(
+    mut subscription: H264Subscription,
+    track: Arc<TrackLocalStaticSample>,
+    mut cancel: watch::Receiver<bool>,
+    mut bitrate: watch::Receiver<u32>,
+    progress: mpsc::Sender<()>,
+) -> Result<(), WebRtcError> {
+    loop {
+        tokio::select! {
+            biased;
+            _ = wait_for_cancel(&mut cancel) => return Ok(()),
+            changed = bitrate.changed() => {
+                if changed.is_err() { return Ok(()); }
+                subscription.set_bitrate(*bitrate.borrow_and_update())?;
+            }
+            frame = subscription.next() => {
+                let frame = frame?;
+                tokio::select! {
+                    _ = wait_for_cancel(&mut cancel) => return Ok(()),
+                    result = write_access_unit(&track, frame.data.clone(), Duration::from_micros(u64::from(frame.duration_us))) => result.map_err(WebRtcError::Internal)?,
+                }
+                let _ = progress.try_send(());
+            }
+        }
+    }
 }
 
 async fn supervise_lifecycle(
@@ -1379,17 +1452,26 @@ fn probe_encoder(config: &H264Config) -> Result<EncoderSpec, String> {
 
 fn probe_encoder_with(config: &H264Config, limits: ProbeLimits) -> Result<EncoderSpec, String> {
     config.validate_udp_mapping().map_err(str::to_owned)?;
+    #[cfg(unix)]
+    if config.encoder == H264Encoder::Software && config.allow_software && config.ffmpeg_path.is_none() {
+        return native_h264::prepare(config.bitrate_kbps);
+    }
     let executable = config
         .ffmpeg_path
         .clone()
         .unwrap_or_else(|| PathBuf::from("ffmpeg"));
     let listing = run_probe_command(&executable, limits)?;
     let (codec, label, software) = select_encoder(config, &listing)?;
+    #[cfg(unix)]
+    if software && config.ffmpeg_path.is_none() { return native_h264::prepare(config.bitrate_kbps); }
     Ok(EncoderSpec {
         executable,
         codec,
         label,
         software,
+        native: false,
+        #[cfg(unix)]
+        _program: None,
     })
 }
 
@@ -1807,19 +1889,35 @@ enum EncoderRun {
 
 /// Wait until the requested bitrate differs from the running one. A dropped
 /// sender means the bitrate can no longer change, so this pends forever.
-async fn wait_for_bitrate_change(receiver: &mut watch::Receiver<u32>, current: u32) -> u32 {
+async fn wait_for_bitrate_change(
+    receiver: &mut watch::Receiver<u32>,
+    current: u32,
+    decrease_ready_at: Instant,
+    increase_ready_at: Instant,
+) -> u32 {
     loop {
-        if receiver.changed().await.is_err() {
-            std::future::pending::<()>().await;
-        }
         let next = *receiver.borrow_and_update();
-        if next != current {
-            return next;
+        if next == current {
+            if receiver.changed().await.is_err() { std::future::pending::<()>().await; }
+            continue;
+        }
+        let ready_at = if next < current { decrease_ready_at } else { increase_ready_at };
+        tokio::select! {
+            _ = tokio::time::sleep_until(ready_at.into()) => {
+                // Recheck both the value and its direction. An increase that
+                // replaced a queued decrease still needs the longer hold.
+                let latest = *receiver.borrow_and_update();
+                let latest_ready = if latest < current { decrease_ready_at } else { increase_ready_at };
+                if latest != current && Instant::now() >= latest_ready { return latest; }
+            }
+            changed = receiver.changed() => {
+                if changed.is_err() { std::future::pending::<()>().await; }
+            }
         }
     }
 }
 
-/// Run the per-session encoder, restarting only the FFmpeg process when the
+/// Run the shared encoder, restarting only the FFmpeg process when the
 /// adaptive bitrate changes.
 ///
 /// FFmpeg's stdin carries the MJPEG input, so its interactive commands cannot
@@ -1828,25 +1926,32 @@ async fn wait_for_bitrate_change(receiver: &mut watch::Receiver<u32>, current: u
 /// peer connection and the `TrackLocalStaticSample` stay up, so no WebRTC
 /// renegotiation happens: the new process starts with an IDR frame (with
 /// SPS/PPS in band), the browser decoder resumes from it, and the visible gap
-/// is the FFmpeg start-up time. Callers rate-limit changes.
+/// is the FFmpeg start-up time. Shared requests are coalesced between restarts:
+/// decreases wait at least 30 s, increases 60 s, across all viewers/transports.
+/// The first decrease may be immediate to relieve initial congestion.
 async fn run_encoder(
     video: VideoManager,
-    track: Arc<TrackLocalStaticSample>,
+    output: impl Into<EncoderOutput>,
     encoder: EncoderSpec,
     mut cancel: watch::Receiver<bool>,
     mut bitrate: watch::Receiver<u32>,
     progress: mpsc::Sender<()>,
 ) -> Result<(), WebRtcError> {
+    let output = output.into();
     let mut kbps = *bitrate.borrow_and_update();
+    let mut decrease_ready_at = Instant::now();
+    let mut increase_ready_at = decrease_ready_at + ENCODER_BITRATE_INCREASE_INTERVAL;
     loop {
         match run_encoder_process(
             &video,
-            track.clone(),
+            output.clone(),
             &encoder,
             kbps,
             &mut cancel,
             &mut bitrate,
             progress.clone(),
+            decrease_ready_at,
+            increase_ready_at,
         )
         .await?
         {
@@ -1854,6 +1959,9 @@ async fn run_encoder(
             EncoderRun::Restart(next) => {
                 tracing::info!(from = kbps, to = next, "restarting H.264 encoder for new bitrate");
                 kbps = next;
+                let now = Instant::now();
+                decrease_ready_at = now + ENCODER_BITRATE_DECREASE_INTERVAL;
+                increase_ready_at = now + ENCODER_BITRATE_INCREASE_INTERVAL;
             }
         }
     }
@@ -1861,12 +1969,14 @@ async fn run_encoder(
 
 async fn run_encoder_process(
     video: &VideoManager,
-    track: Arc<TrackLocalStaticSample>,
+    output: EncoderOutput,
     encoder: &EncoderSpec,
     bitrate_kbps: u32,
     cancel: &mut watch::Receiver<bool>,
     bitrate_updates: &mut watch::Receiver<u32>,
     progress: mpsc::Sender<()>,
+    decrease_ready_at: Instant,
+    increase_ready_at: Instant,
 ) -> Result<EncoderRun, WebRtcError> {
     let fps = video
         .status()
@@ -1875,22 +1985,36 @@ async fn run_encoder_process(
         .round()
         .clamp(1.0, 120.0) as u32;
     let bitrate = format!("{bitrate_kbps}k");
-    let buffer_size = format!("{}k", bitrate_kbps.saturating_mul(2));
+    let buffer_size = format!("{}k", (bitrate_kbps / 2).max(128));
     let fps_text = fps.to_string();
     let mut command = TokioCommand::new(&encoder.executable);
-    command.kill_on_drop(true).args([
+    command.kill_on_drop(true);
+    #[cfg(unix)]
+    if let Some(program) = &encoder._program { command.arg(program.max_kbps.to_string()); }
+    if !encoder.native {
+    command.args([
         "-hide_banner",
         "-loglevel",
         "warning",
-        "-fflags",
-        "nobuffer",
+        // Length-delimited JPEG packets can be decoded as soon as this frame
+        // arrives, without waiting for the next JPEG's start marker. Keep the
+        // probe packet (nobuffer would discard it) and avoid the default
+        // multi-second stream analysis; geometry comes from the first JPEG.
+        "-probesize",
+        "32",
+        "-analyzeduration",
+        "0",
         "-f",
-        "mjpeg",
-        "-framerate",
+        "mpjpeg",
+        "-r",
         &fps_text,
         "-i",
         "pipe:0",
         "-an",
+        // The capture loop already selects frames. Never synthesize/drop
+        // pictures to satisfy a frame rate inferred during probing.
+        "-fps_mode",
+        "passthrough",
         "-vf",
         "format=yuv420p",
         "-c:v",
@@ -1915,11 +2039,14 @@ async fn run_encoder_process(
             "-profile:v",
             "baseline",
             "-x264-params",
-            "repeat-headers=1:aud=1:scenecut=0",
+            // h264_metadata inserts AUDs for every encoder below. Enabling
+            // x264's AUDs as well can produce two delimiters per picture.
+            "repeat-headers=1:scenecut=0",
         ]);
     }
+    command.args(["-bsf:v", "h264_metadata=aud=insert", "-f", "h264", "pipe:1"]);
+    }
     command
-        .args(["-bsf:v", "h264_metadata=aud=insert", "-f", "h264", "pipe:1"])
         .stdin(StdStdio::piped())
         .stdout(StdStdio::piped())
         .stderr(StdStdio::piped());
@@ -1952,15 +2079,39 @@ async fn run_encoder_process(
     });
 
     let mut frames = video.subscribe();
+    let native = encoder.native;
+    let native_bitrate = bitrate_updates.clone();
     let mut writer = tokio::spawn(async move {
         loop {
             let frame = frames.borrow_and_update().clone();
             if let Some(frame) = frame {
+                if native {
+                    let length = u32::try_from(frame.jpeg.len()).map_err(|_| "JPEG frame exceeds limit")?;
+                    if length > 32 * 1024 * 1024 { return Err("JPEG frame exceeds limit".to_owned()); }
+                    let mut header = [0u8; 16];
+                    header[..4].copy_from_slice(b"WKH1");
+                    header[4..8].copy_from_slice(&native_bitrate.borrow().to_be_bytes());
+                    header[8..12].copy_from_slice(&fps.to_be_bytes());
+                    header[12..].copy_from_slice(&length.to_be_bytes());
+                    stdin.write_all(&header).await.map_err(|e| e.to_string())?;
+                    stdin.write_all(&frame.jpeg).await.map_err(|e| e.to_string())?;
+                    stdin.flush().await.map_err(|e| e.to_string())?;
+                } else {
+                let header = format!(
+                    "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+                    frame.jpeg.len()
+                );
+                stdin
+                    .write_all(header.as_bytes())
+                    .await
+                    .map_err(|error| error.to_string())?;
                 stdin
                     .write_all(&frame.jpeg)
                     .await
                     .map_err(|error| error.to_string())?;
+                stdin.write_all(b"\r\n").await.map_err(|error| error.to_string())?;
                 stdin.flush().await.map_err(|error| error.to_string())?;
+                }
             }
             frames
                 .changed()
@@ -1973,6 +2124,24 @@ async fn run_encoder_process(
     let frame_duration = Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut reader = tokio::spawn(async move {
         let mut parser = AnnexBAccessUnitParser::default();
+        let mut output = FrameWriter::new(output, bitrate_kbps);
+        if native {
+            loop {
+                let mut header = [0u8; 12];
+                stdout.read_exact(&mut header).await.map_err(|e| e.to_string())?;
+                let length = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+                let applied = u32::from_be_bytes(header[4..8].try_into().unwrap());
+                let processing_us = u32::from_be_bytes(header[8..].try_into().unwrap());
+                if length == 0 || length > MAX_ENCODED_FRAME || applied == 0 || applied > 100_000 {
+                    return Err("Invalid native H.264 frame".to_owned());
+                }
+                let mut frame = vec![0u8; length];
+                stdout.read_exact(&mut frame).await.map_err(|e| e.to_string())?;
+                output.set_bitrate(applied);
+                output.set_processing_time(processing_us);
+                if output.write(Bytes::from(frame), frame_duration).await? { let _ = progress.try_send(()); }
+            }
+        }
         let mut chunk = vec![0_u8; 64 * 1024];
         loop {
             let read = stdout
@@ -1981,17 +2150,19 @@ async fn run_encoder_process(
                 .map_err(|error| error.to_string())?;
             if read == 0 {
                 if let Some(access_unit) = parser.finish() {
-                    write_access_unit(&track, access_unit, frame_duration).await?;
-                    let _ = progress.try_send(());
+                    if output.write(access_unit, frame_duration).await? {
+                        let _ = progress.try_send(());
+                    }
                 }
                 return Ok::<(), String>(());
             }
             let access_units = parser.push(&chunk[..read])?;
             for access_unit in access_units {
-                write_access_unit(&track, access_unit, frame_duration).await?;
                 // Progress is recorded only after an access unit was actually
-                // accepted by the track, never from the configured FPS alone.
-                let _ = progress.try_send(());
+                // published to the frame hub, never from the configured FPS alone.
+                if output.write(access_unit, frame_duration).await? {
+                    let _ = progress.try_send(());
+                }
             }
         }
     });
@@ -2005,7 +2176,7 @@ async fn run_encoder_process(
     let result = tokio::select! {
         biased;
         _ = wait_for_cancel(cancel) => Ok(EncoderRun::Finished),
-        next = wait_for_bitrate_change(bitrate_updates, bitrate_kbps) => Ok(EncoderRun::Restart(next)),
+        next = wait_for_bitrate_change(bitrate_updates, bitrate_kbps, decrease_ready_at, increase_ready_at), if !native => Ok(EncoderRun::Restart(next)),
         result = &mut writer => match result {
             Ok(Ok(())) => Err(WebRtcError::Internal("FFmpeg 输入意外结束".to_owned())),
             Ok(Err(error)) => Err(WebRtcError::Internal(error)),
@@ -2513,6 +2684,7 @@ pub(crate) mod tests {
     fn test_inner() -> Arc<Inner> {
         let video = VideoManager::new(VideoConfig::default());
         Arc::new(Inner {
+            h264: H264Hub::default(),
             video,
             audio: disabled_audio(),
             config: Mutex::new(H264Config::default()),
@@ -3048,6 +3220,9 @@ pub(crate) mod tests {
             codec: "libx264",
             label: "test encoder",
             software: true,
+            native: false,
+            #[cfg(unix)]
+            _program: None,
         }
     }
 
@@ -3138,6 +3313,48 @@ pub(crate) mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn bitrate_restart_coalesces_pending_requests_and_cancels_reverted_target() {
+        let now = Instant::now();
+        let (sender, mut receiver) = watch::channel(900);
+        let change = wait_for_bitrate_change(
+            &mut receiver, 1000, now + Duration::from_millis(120), now + Duration::from_millis(400),
+        );
+        tokio::pin!(change);
+        assert!(tokio::time::timeout(Duration::from_millis(30), &mut change).await.is_err());
+        sender.send_replace(700);
+        assert_eq!(tokio::time::timeout(Duration::from_millis(300), &mut change).await.unwrap(), 700);
+
+        let now = Instant::now();
+        let (sender, mut receiver) = watch::channel(900);
+        let change = wait_for_bitrate_change(
+            &mut receiver, 1000, now + Duration::from_millis(80), now + Duration::from_millis(160),
+        );
+        tokio::pin!(change);
+        assert!(tokio::time::timeout(Duration::from_millis(20), &mut change).await.is_err());
+        sender.send_replace(1000);
+        assert!(tokio::time::timeout(Duration::from_millis(100), &mut change).await.is_err());
+        sender.send_replace(600);
+        assert_eq!(tokio::time::timeout(Duration::from_millis(100), &mut change).await.unwrap(), 600);
+    }
+
+    #[tokio::test]
+    async fn bitrate_restart_rechecks_direction_when_viewer_requests_change() {
+        let now = Instant::now();
+        let (sender, mut receiver) = watch::channel(900);
+        let change = wait_for_bitrate_change(
+            &mut receiver, 1000, now + Duration::from_millis(80), now + Duration::from_millis(300),
+        );
+        tokio::pin!(change);
+        assert!(tokio::time::timeout(Duration::from_millis(20), &mut change).await.is_err());
+        sender.send_replace(1200);
+        assert!(tokio::time::timeout(Duration::from_millis(150), &mut change).await.is_err(),
+            "a queued increase must not use the earlier decrease deadline");
+        sender.send_replace(700);
+        assert_eq!(tokio::time::timeout(Duration::from_millis(100), &mut change).await.unwrap(), 700,
+            "a decrease need not wait for the superseded increase deadline");
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     // The std guard only serialises fixture-spawning tests; it is never
@@ -3166,7 +3383,7 @@ pub(crate) mod tests {
             progress_tx,
         ));
         let first = wait_for_fixture_lines(&runs, 1).await;
-        assert!(first[0].contains("-b:v 4000k -maxrate 4000k -bufsize 8000k"), "{}", first[0]);
+        assert!(first[0].contains("-b:v 4000k -maxrate 4000k -bufsize 2000k"), "{}", first[0]);
         let first_pid: u32 = first[0].split_whitespace().next().unwrap().parse().unwrap();
 
         // Re-sending the running value must not restart FFmpeg.
@@ -3174,7 +3391,7 @@ pub(crate) mod tests {
         let _ = bitrate_tx.send_replace(1_500);
         let lines = wait_for_fixture_lines(&runs, 2).await;
         assert_eq!(lines.len(), 2, "{lines:?}");
-        assert!(lines[1].contains("-b:v 1500k -maxrate 1500k -bufsize 3000k"), "{}", lines[1]);
+        assert!(lines[1].contains("-b:v 1500k -maxrate 1500k -bufsize 750k"), "{}", lines[1]);
         wait_for_fixture_exit(first_pid).await;
         assert!(!task.is_finished(), "the session encoder must keep running");
 
@@ -3235,6 +3452,7 @@ pub(crate) mod tests {
         drop(reserved);
         let manager = WebRtcManager {
             inner: Arc::new(Inner {
+                h264: H264Hub::default(),
                 video,
                 audio: disabled_audio(),
                 config: Mutex::new(H264Config {

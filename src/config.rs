@@ -24,7 +24,7 @@ pub const PROXY_PROTOCOL_ENV: &str = "WINGMANKVM_PROXY_PROTOCOL";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     pub version: u32,
-    #[serde(default)]
+    #[serde(default = "ServerConfig::legacy_http")]
     pub server: ServerConfig,
     #[serde(default)]
     pub video: VideoConfig,
@@ -122,6 +122,7 @@ impl Config {
     }
 
     fn validate_server(&self) -> Result<(), ConfigError> {
+        self.server.validate_tls().map_err(ConfigError::InvalidTls)?;
         self.server.socket_address().map(|_| ())
     }
 }
@@ -149,6 +150,45 @@ pub struct ServerConfig {
     /// Set this behind a reverse proxy and preserve the external Host header.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_origin: Option<String>,
+    /// Older saved configurations retain HTTP until HTTPS is enabled in Settings.
+    #[serde(default = "TlsConfig::disabled")]
+    pub tls: TlsConfig,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TlsMode {
+    Disabled,
+    #[default]
+    SelfSigned,
+    Custom,
+}
+
+/// Only opaque, device-local certificate IDs; private keys never enter config exports.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TlsConfig {
+    pub mode: TlsMode,
+    pub self_signed_certificate: Option<String>,
+    pub custom_certificate: Option<String>,
+}
+
+impl TlsConfig {
+    pub fn disabled() -> Self {
+        Self { mode: TlsMode::Disabled, ..Self::default() }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        for id in [&self.self_signed_certificate, &self.custom_certificate].into_iter().flatten() {
+            if id.len() != 32 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err("证书标识无效，请在设置页重新导入证书".into());
+            }
+        }
+        if self.mode == TlsMode::Custom && self.custom_certificate.is_none() {
+            return Err("请先导入自定义证书和私钥".into());
+        }
+        Ok(())
+    }
 }
 
 impl Default for ServerConfig {
@@ -159,13 +199,29 @@ impl Default for ServerConfig {
             proxy_protocol: proxy_protocol_from_env().unwrap_or_default(),
             trusted_http_proxies: Vec::new(),
             public_origin: None,
+            tls: TlsConfig::default(),
         }
     }
 }
 
 impl ServerConfig {
+    pub fn validate_tls(&self) -> Result<(), String> {
+        self.tls.validate()?;
+        if self.tls.mode != TlsMode::Disabled {
+            if let Some(origin) = &self.public_origin {
+                if NormalizedOrigin::parse(origin)?.is_http() {
+                    return Err("启用 HTTPS 时访问地址必须以 https:// 开头".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn legacy_http() -> Self {
+        Self { tls: TlsConfig::disabled(), ..Self::default() }
+    }
     /// Whether minted and cleared session cookies must carry the `Secure`
-    /// attribute. Only the validated `public_origin` decides this; request
+    /// attribute. Native TLS or the validated `public_origin` decides this; request
     /// headers such as `Host`, `Origin` or `X-Forwarded-Proto` never do.
     ///
     /// An unset or explicit `http://` origin keeps direct HTTP debug
@@ -173,6 +229,9 @@ impl ServerConfig {
     /// `Some` value fails closed with `Secure` enabled; configuration loading
     /// and saving still reject invalid origins.
     pub fn session_cookie_secure(&self) -> bool {
+        if self.tls.mode != TlsMode::Disabled {
+            return true;
+        }
         match self.public_origin.as_deref() {
             None => false,
             Some(origin) => NormalizedOrigin::parse(origin)
@@ -259,6 +318,10 @@ impl NormalizedOrigin {
 
     pub fn is_http(&self) -> bool {
         self.scheme == OriginScheme::Http
+    }
+
+    pub fn hostname(&self) -> &str {
+        self.host.trim_start_matches('[').trim_end_matches(']')
     }
 
     pub fn host_matches(&self, value: &str) -> bool {
@@ -1070,6 +1133,8 @@ pub enum ConfigError {
     InvalidListenAddress { value: String },
     #[error("invalid server.port {port}: expected a fixed port between 1 and 65535")]
     InvalidServerPort { port: u16 },
+    #[error("invalid TLS configuration: {0}")]
+    InvalidTls(String),
     #[error("failed to obtain secure randomness for an atomic write: {0}")]
     Randomness(String),
 }
@@ -1713,7 +1778,7 @@ mod tests {
 
     #[test]
     fn session_cookie_secure_uses_only_the_configured_public_origin() {
-        let mut server = ServerConfig::default();
+        let mut server = ServerConfig::legacy_http();
         assert!(!server.session_cookie_secure());
 
         for origin in ["http://kvm.example.com", "http://127.0.0.1:8080"] {

@@ -92,8 +92,8 @@ function invalidateSurfaceBox() {
 function getVideoDimensions() {
   const surface = activeVideoSurface();
   if (!surface) return null;
-  const w = surface instanceof HTMLVideoElement ? surface.videoWidth : surface.naturalWidth;
-  const h = surface instanceof HTMLVideoElement ? surface.videoHeight : surface.naturalHeight;
+  const w = surface instanceof HTMLVideoElement ? surface.videoWidth : surface instanceof HTMLCanvasElement ? surface.width : surface.naturalWidth;
+  const h = surface instanceof HTMLVideoElement ? surface.videoHeight : surface instanceof HTMLCanvasElement ? surface.height : surface.naturalHeight;
   if (w > 0 && h > 0) return { width: w, height: h, ratio: w / h };
   return null;
 }

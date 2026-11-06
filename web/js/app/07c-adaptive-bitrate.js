@@ -1,19 +1,17 @@
 import { shared } from './state.js';
 import { getSetting, setSetting } from './00-settings.js';
 import { request } from './03-session.js';
+import { setDirectBitrate } from './07e-direct-h264.js';
 import {
   connectionQuality, qualityBitrateText, renderQualityOverlay, syncQualityOverlay,
 } from './07b-quality.js';
 
-// Adaptive WebRTC bitrate (#82). Every second the quality sampler (07b)
-// hands the latest getStats() numbers to decideAdaptiveBitrate(), a pure
-// function, and the chosen target goes to POST /api/webrtc/bitrate. The
-// server clamps it to [256 kbps, configured bitrate] and restarts only the
-// FFmpeg encoder (no renegotiation), so changes are deliberately rare.
+// Adaptive H.264 bitrate uses fresh WebRTC or Direct measurements. Each
+// viewer requests a target; the shared encoder takes the lowest request.
+// Native x264 tunes the next frame; the FFmpeg fallback needs slower changes.
 const ADAPTIVE_POLICY = {
   // A one-second sample is "bad" when any congestion signal crosses its line:
   badLossPct: 5, //    ≥5 % of video packets lost: visible smearing/freezes
-  badRttMs: 350, //    queues are building somewhere on the path
   badJitterMs: 200, // the jitter buffer holds >200 ms: delivery comes in bursts
   // RTT trend: well above the RTT seen while healthy also counts as bad,
   // which catches bufferbloat on links whose base RTT is already high.
@@ -24,30 +22,37 @@ const ADAPTIVE_POLICY = {
   // between the good and bad lines is the hysteresis band: samples inside it
   // reset both streaks and never change the bitrate.
   goodLossPct: 1,
-  goodRttMs: 150,
   goodJitterMs: 80,
   badSamples: 3, //   ≈3 s of consecutive bad samples before lowering
-  goodSamples: 10, // ≈10 s of consecutive good samples before raising
+  goodSamples: 30, // ≈30 s of consecutive good samples before raising
   decreaseFactor: 0.7,
   severeFactor: 0.5,
   increaseFactor: 1.25,
   // Under loss the target also never exceeds what actually arrived (+10 %).
   receivedHeadroom: 1.1,
-  cooldownMs: 10000, //     min spacing of changes; the server enforces it too
-  raiseAfterBadMs: 30000, // no raise within 30 s of the last bad sample
+  cooldownMs: 30000, // min spacing of decreases; the shared encoder enforces it too
+  increaseIntervalMs: 60000, // recovery must not restart FFmpeg every 10 s
+  settleMs: 5000, // ignore restart/decoder warm-up samples after a change
+  raiseAfterBadMs: 60000, // no raise within 60 s of the last bad sample
   // Probing at capacity: a raise followed by a decrease within
   // probeFailWindowMs is a failed probe. Each consecutive failure doubles the
   // wait after the last bad sample (raiseAfterBadMs × 2^failures, at most
   // maxRaiseAfterBadMs), so a link that sits between two steps restarts the
-  // encoder every ~4 min instead of every ~40 s. probeResetMs without any bad
+  // encoder much less often. probeResetMs without any bad
   // sample clears the count; it must exceed maxRaiseAfterBadMs, otherwise the
   // count would clear before the longest wait has passed.
-  probeFailWindowMs: 20000,
+  // Queues can take tens of seconds to build after a probe. A 20 s window
+  // missed real failures observed ~40 s after a raise.
+  probeFailWindowMs: 90000,
   maxRaiseAfterBadMs: 240000,
-  probeResetMs: 300000,
+  probeResetMs: 600000,
   stepKbps: 50,
   snapToMaxRatio: 0.95, //  a raise this close to the maximum goes all the way
 };
+function policyForEncoder(live) {
+  return live ? { ...ADAPTIVE_POLICY, cooldownMs: 10000, increaseIntervalMs: 10000,
+    goodSamples: 10, settleMs: 0, raiseAfterBadMs: 30000 } : ADAPTIVE_POLICY;
+}
 function newAdaptiveState(maxKbps, minKbps = 256) {
   const max = Math.max(1, Math.round(Number(maxKbps) || 4000));
   return {
@@ -73,22 +78,30 @@ function decideAdaptiveBitrate(previous, sample, now, policy = ADAPTIVE_POLICY) 
     rtt = known(sample?.rttMs) ? sample.rttMs : null,
     jitter = known(sample?.jitterBufferMs) ? sample.jitterBufferMs : null,
     received = known(sample?.receivedKbps) ? sample.receivedKbps : null;
-  if (loss === null && rtt === null && jitter === null) return { state, targetKbps: null, verdict: 'unknown' };
+  if (state.lastChangeAt !== null && now - state.lastChangeAt < policy.settleMs) {
+    state.badStreak = 0; state.goodStreak = 0;
+    return { state, targetKbps: null, verdict: 'settling' };
+  }
+  if (loss === null && rtt === null && jitter === null) {
+    state.badStreak = 0; state.goodStreak = 0;
+    return { state, targetKbps: null, verdict: 'unknown' };
+  }
+  // Distance adds stable RTT; only growth above the best observed path
+  // latency is evidence of a queue. Fixed thresholds punished healthy VPNs.
+  if (rtt !== null) state.rttBaselineMs = state.rttBaselineMs === null ? rtt : Math.min(state.rttBaselineMs, rtt);
   const base = state.rttBaselineMs,
     rttRising = rtt !== null && base !== null && rtt >= base * policy.rttRiseFactor && rtt - base >= policy.rttRiseMinMs,
     bad =
       (loss !== null && loss >= policy.badLossPct) ||
-      (rtt !== null && rtt >= policy.badRttMs) ||
       (jitter !== null && jitter >= policy.badJitterMs) ||
       rttRising,
     good =
       !bad &&
+      (!known(sample?.decodedFps) || sample.decodedFps > 0) &&
       (loss === null || loss < policy.goodLossPct) &&
-      (rtt === null || rtt < policy.goodRttMs) &&
+      (rtt === null || rtt <= base + Math.max(50, base * 0.25)) &&
       (jitter === null || jitter < policy.goodJitterMs);
   const verdict = bad ? 'bad' : good ? 'good' : 'neutral';
-  // Learn the healthy RTT only from good samples (slow EWMA).
-  if (good && rtt !== null) state.rttBaselineMs = base === null ? rtt : base * 0.9 + rtt * 0.1;
   if (bad) {
     state.badStreak = Math.min(state.badStreak + 1, policy.badSamples);
     state.goodStreak = 0;
@@ -122,6 +135,7 @@ function decideAdaptiveBitrate(previous, sample, now, policy = ADAPTIVE_POLICY) 
     good &&
     state.goodStreak >= policy.goodSamples &&
     cooled &&
+    (state.lastChangeAt === null || now - state.lastChangeAt >= policy.increaseIntervalMs) &&
     state.currentKbps < state.maxKbps &&
     (state.lastBadAt === null || now - state.lastBadAt >= raiseHoldMs)
   ) {
@@ -148,17 +162,19 @@ function decideAdaptiveBitrate(previous, sample, now, policy = ADAPTIVE_POLICY) 
 const adaptive = {
   enabled: getSetting('adaptive_bitrate', true) !== false,
   sessionId: null,
+  transport: null,
   state: null,
   pending: false,
   restoreTimer: 0,
 };
 function adaptiveBitrateWantsStats() {
-  return adaptive.enabled && shared.activeVideoTransport === 'webrtc_h264';
+  return adaptive.enabled && ['webrtc_h264', 'direct_h264'].includes(shared.activeVideoTransport);
 }
-// A new WebRTC session always starts at the configured bitrate.
-function resetAdaptiveBitrate(sessionId = null, maxKbps = null, minKbps = null) {
+// A new viewer initially requests the configured maximum bitrate.
+function resetAdaptiveBitrate(sessionId = null, maxKbps = null, minKbps = null, transport = 'webrtc_h264') {
   clearTimeout(adaptive.restoreTimer);
   adaptive.sessionId = sessionId;
+  adaptive.transport = transport;
   adaptive.pending = false;
   adaptive.state = sessionId
     ? newAdaptiveState(maxKbps ?? shared.bootstrap?.webrtc?.bitrate_kbps, minKbps ?? 256)
@@ -168,7 +184,7 @@ async function sendAdaptiveBitrate(kbps, previousKbps) {
   const sessionId = adaptive.sessionId;
   adaptive.pending = true;
   try {
-    const result = await request('/api/webrtc/bitrate', {
+    const result = adaptive.transport === 'direct_h264' ? await setDirectBitrate(kbps) : await request('/api/webrtc/bitrate', {
       method: 'POST',
       body: JSON.stringify({ session_id: sessionId, kbps }),
     });
@@ -193,15 +209,18 @@ async function sendAdaptiveBitrate(kbps, previousKbps) {
     renderQualityOverlay();
   }
 }
-// Called by sampleQuality() after each WebRTC stats sample.
+// Called by sampleQuality() only after a fresh video stats sample.
 function adaptiveBitrateTick(now = performance.now()) {
-  if (!adaptive.enabled || !adaptive.state || adaptive.pending || adaptive.sessionId !== shared.webrtcSessionId) return;
+  const liveSession = adaptive.transport === 'direct_h264' ? shared.directSessionId : shared.webrtcSessionId;
+  if (!adaptive.enabled || !adaptive.state || adaptive.pending || adaptive.sessionId !== liveSession) return;
   const q = connectionQuality,
     previousKbps = adaptive.state.currentKbps,
     { state, targetKbps } = decideAdaptiveBitrate(
       adaptive.state,
-      { packetLossPct: q.packetLossPct, rttMs: q.rttMs, jitterBufferMs: q.jitterBufferMs, receivedKbps: q.bitrateKbps },
+      { packetLossPct: q.packetLossPct, rttMs: q.rttMs, jitterBufferMs: q.jitterBufferMs,
+        receivedKbps: q.bitrateKbps, decodedFps: q.fps },
       now,
+      policyForEncoder(shared.latestWebrtcStatus?.live_bitrate ?? shared.bootstrap?.webrtc?.live_bitrate),
     );
   adaptive.state = state;
   if (targetKbps !== null) sendAdaptiveBitrate(targetKbps, previousKbps);
@@ -246,6 +265,7 @@ export function init() {
       decideAdaptiveBitrate,
       newAdaptiveState,
       adaptivePolicy: ADAPTIVE_POLICY,
+      policyForEncoder,
       adaptiveBitrate: () => (adaptive.state ? { ...adaptive.state, enabled: adaptive.enabled } : { enabled: adaptive.enabled }),
     });
 }

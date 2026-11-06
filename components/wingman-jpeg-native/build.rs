@@ -99,4 +99,7 @@ fn main() {
         built.join("build").display()
     );
     println!("cargo:rustc-link-lib=static=jpeg");
+    println!("cargo:include={}", source.join("src").display());
+    println!("cargo:config={}", built.join("build").display());
+    println!("cargo:libdir={}", built.join("build").display());
 }

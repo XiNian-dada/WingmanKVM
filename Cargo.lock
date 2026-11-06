@@ -2965,6 +2965,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-rustls"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
+dependencies = [
+ "rustls",
+ "tokio",
+]
+
+[[package]]
 name = "tokio-tungstenite"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3721,6 +3731,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
+name = "wingman-h264-native"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "sha2 0.10.9",
+ "wingman-jpeg-native",
+]
+
+[[package]]
 name = "wingman-jpeg-core-lab"
 version = "0.1.0"
 
@@ -3756,12 +3775,14 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
  "v4l",
  "webauthn-rs",
  "webrtc",
+ "wingman-h264-native",
  "wingman-jpeg-core-lab",
  "wingman-jpeg-native",
 ]

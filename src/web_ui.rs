@@ -53,6 +53,7 @@ pub static APP_JS_MODULES: &[(&str, &str)] = app_js_modules![
     "07z-keyboard-macros.js",
     "07c-adaptive-bitrate.js",
     "07d-audio.js",
+    "07e-direct-h264.js",
     "08-input.js",
     "08a-input-socket.js",
     "08b-touch.js",
@@ -64,6 +65,7 @@ pub static APP_JS_MODULES: &[(&str, &str)] = app_js_modules![
     "12a-sessions-audit.js",
     "12b-notifications.js",
     "12c-online-update.js",
+    "12d-tls.js",
     "13-settings-boot.js",
 ];
 
