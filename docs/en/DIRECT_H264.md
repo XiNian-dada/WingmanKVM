@@ -1,6 +1,6 @@
 # Direct H.264 and adaptive bitrate
 
-Automatic playback tries **WebRTC H.264 → Direct H.264 → MJPEG**. Direct uses a same-origin WebSocket and WebCodecs without UDP or ICE. A working Direct connection is not interrupted to retry WebRTC. Select Direct H.264 in the video panel and apply to bypass WebRTC.
+Automatic playback defaults to **WebRTC H.264 → Direct H.264 → MJPEG**. Under Preferences → Display and rendering → Automatic video order, drag the handles or use the arrows to change this order. It is saved in the current browser, takes effect immediately in automatic mode, and does not change manual transport choices. Failures advance to the next mode and unsupported modes are skipped; when MJPEG comes first, stable playback does not switch to H.264. Direct uses a same-origin WebSocket and WebCodecs without UDP or ICE. A working Direct connection is not interrupted to retry WebRTC. Select Direct H.264 in the video panel and apply to bypass WebRTC.
 
 ## Requirements
 

@@ -6,6 +6,7 @@ import ssl
 import struct
 import subprocess
 import tempfile
+from itertools import permutations
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 import ui_harness
@@ -134,6 +135,70 @@ class Stream:
                     self.send_frame()
             else:
                 self.restart(target)
+
+
+def automatic_transport_orders(browser, port, frames, codec, checks):
+    """Exercise all six fallback orders and successful Direct/WebRTC recovery."""
+    modes = ('webrtc_h264', 'direct_h264', 'mjpeg')
+    cases = [(list(order), 'mjpeg', True) for order in permutations(modes)]
+    cases += [(['direct_h264', 'webrtc_h264', 'mjpeg'], 'direct_h264', True),
+              (['direct_h264', 'webrtc_h264', 'mjpeg'], 'webrtc_h264', True),
+              (['mjpeg', 'direct_h264', 'webrtc_h264'], 'webrtc_h264', True),
+              (['direct_h264', 'webrtc_h264', 'mjpeg'], 'mjpeg', False)]
+    for index, (order, successful, decoder) in enumerate(cases):
+        trace = []
+        context = browser.new_context(ignore_https_errors=True)
+        page = context.new_page()
+        page.add_init_script(FAKE_PEER)
+        page.add_init_script("localStorage.setItem('wingman_setting_video_auto_order', "
+                             + json.dumps(','.join(order)) + ");")
+        if not decoder:
+            page.add_init_script("Object.defineProperty(window, 'VideoDecoder', {value:undefined, configurable:true});")
+        state = State()
+        state.video.update(state='ready', last_frame_age_ms=10, frames_per_second=30)
+        page.route('**/api/**', lambda route: api_route(route, state))
+        def bootstrap(route):
+            payload = bootstrap_payload(state)
+            payload['capabilities'].update(video_webrtc_h264=True, video_direct_h264=True)
+            payload['webrtc'].update(available=True, bitrate_kbps=4000)
+            route.fulfill(status=200, content_type='application/json', body=json.dumps(payload))
+        def offer(route):
+            trace.append('webrtc_h264')
+            result = {'type':'answer', 'session_id':'order', 'sdp':'a=rtpmap:96 H264/90000'}
+            route.fulfill(status=200 if successful == 'webrtc_h264' else 503,
+                          content_type='application/json', body=json.dumps(result))
+        def mjpeg(route):
+            trace.append('mjpeg')
+            if successful == 'mjpeg':
+                route.fulfill(status=200, content_type='image/gif', body=ui_harness.GIF)
+            else:
+                route.abort('failed')
+        def direct(ws):
+            trace.append('direct_h264')
+            if successful == 'direct_h264':
+                Stream(ws, frames, codec, trace)
+            else:
+                ws.send(b'broken-packet')
+        page.route('**/api/bootstrap', bootstrap)
+        page.route('**/api/webrtc/offer', offer)
+        page.route('**/api/webrtc/close', lambda route: route.fulfill(
+            status=200, content_type='application/json', body='{}'))
+        page.route('**/video_feed*', mjpeg)
+        page.route_web_socket('**/api/video/h264/ws', direct)
+        try:
+            page.goto(f'https://localhost:{port}/', wait_until='load')
+            page.wait_for_function('(mode) => document.querySelector("#video-transport-label").textContent.includes("LIVE / " + mode)',
+                                   arg={'mjpeg':'MJPEG', 'direct_h264':'Direct H.264', 'webrtc_h264':'H.264'}[successful], timeout=12000)
+            attempts = [mode for mode in trace if mode in modes]
+            available = [mode for mode in order if decoder or mode != 'direct_h264']
+            expected = available[:available.index(successful)+1]
+            ui_harness.check(checks, attempts == expected, f'video_order_connection_and_fallback_{index}', attempts)
+            if successful != 'mjpeg':
+                page.wait_for_timeout(3500)
+                ui_harness.check(checks, [mode for mode in trace if mode in modes] == expected,
+                                 f'video_order_stable_success_is_not_interrupted_{index}', trace)
+        finally:
+            context.close()
 
 
 def main():
@@ -322,6 +387,7 @@ def main():
             check(len(streams) == before, "unsupported_decoder_skips_direct")
             check(page.locator('#video-config option[value="direct_h264"]').evaluate("e => e.disabled"), "unsupported_direct_option_disabled", page.evaluate("typeof VideoDecoder"))
             context.close()
+            automatic_transport_orders(browser, port, frames, codec, checks)
             browser.close()
             summary["status"] = "PASS"
     except Exception as error:

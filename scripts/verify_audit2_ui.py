@@ -3359,6 +3359,49 @@ def reset_preferences_covers_all(browser, port, checks):
         context.close()
 
 
+def video_order_settings(browser, port, checks):
+    """Drag real handles, persist the preference, use arrows, and reset it."""
+    context, page = media_page(browser, State(), port)
+    order = lambda: page.locator('#setting-video-order > li').evaluate_all(
+        'rows => rows.map(row => row.dataset.videoTransport)')
+    try:
+        page.click('#settings-toggle')
+        page.locator('#setting-video-order').scroll_into_view_if_needed()
+        handle = page.locator('[data-video-transport="direct_h264"] .video-order-handle').bounding_box()
+        first = page.locator('[data-video-transport="webrtc_h264"]').bounding_box()
+        page.mouse.move(handle['x'] + handle['width']/2, handle['y'] + handle['height']/2)
+        page.mouse.down()
+        page.mouse.move(first['x'] + 20, first['y'] + 4, steps=8)
+        page.mouse.up()
+        expected = ['direct_h264', 'webrtc_h264', 'mjpeg']
+        check(checks, order() == expected and page.evaluate(
+            "localStorage.getItem('wingman_setting_video_auto_order')") == ','.join(expected),
+            'video_order_drag_updates_and_persists', order())
+        page.reload(wait_until='load')
+        page.wait_for_selector('#app:not(.hidden)')
+        page.click('#settings-toggle')
+        check(checks, order() == expected, 'video_order_survives_reload', order())
+        page.locator('[data-video-transport="webrtc_h264"] [data-video-move="-1"]').click()
+        check(checks, order() == ['webrtc_h264', 'direct_h264', 'mjpeg'],
+              'video_order_arrow_moves_one_position', order())
+        page.locator('[data-video-transport="mjpeg"] [data-video-move="-1"]').click()
+        page.on('dialog', lambda dialog: dialog.accept())
+        page.click('#setting-reset-btn')
+        check(checks, order() == ['webrtc_h264', 'direct_h264', 'mjpeg']
+              and page.evaluate("localStorage.getItem('wingman_setting_video_auto_order')") is None,
+              'video_order_reset_restores_default', order())
+        page.evaluate("localStorage.setItem('wingman_setting_video_auto_order', 'direct_h264,bad,direct_h264')")
+        page.locator('[data-settings-close]').click()
+        page.click('#settings-toggle')
+        check(checks, order() == expected, 'video_order_repairs_duplicate_and_unknown_preferences', order())
+        page.set_viewport_size({'width': 390, 'height': 844})
+        box = page.locator('#setting-video-order').bounding_box()
+        check(checks, box['x'] >= 0 and box['x'] + box['width'] <= 390,
+              'video_order_fits_phone_settings', box)
+    finally:
+        context.close()
+
+
 def escape_closes_menus(browser, port, checks):
     """AUD3-30: Esc closes an open menu, returns focus to its toggle and keeps the inspector open."""
     state = State()

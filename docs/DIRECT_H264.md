@@ -1,6 +1,6 @@
 # Direct H.264 与自适应码率
 
-自动播放依次尝试 **WebRTC H.264 → Direct H.264 → MJPEG**。Direct H.264 使用同源 WebSocket 传输、浏览器 WebCodecs 解码，不要求 UDP 或 WebRTC ICE 成功。已稳定播放的 Direct 连接不会为了重试 WebRTC 而中断。在视频面板的“播放方式”选择 Direct H.264 并应用，可以跳过 WebRTC。
+自动播放默认依次尝试 **WebRTC H.264 → Direct H.264 → MJPEG**，可在“全局偏好设置 → 画面与渲染 → 视频自动尝试顺序”拖动调整，也可使用上下箭头。顺序保存在当前浏览器中，修改后立即用于自动播放；手动指定播放方式不受影响。失败后按顺序尝试下一种，不支持的模式会跳过；将 MJPEG 放在第一位时，稳定播放期间不会自动切换到 H.264。Direct H.264 使用同源 WebSocket 传输、浏览器 WebCodecs 解码，不要求 UDP 或 WebRTC ICE 成功。已稳定播放的 Direct 连接不会为了重试 WebRTC 而中断。在视频面板的“播放方式”选择 Direct H.264 并应用，可以跳过 WebRTC。
 
 ## 使用条件
 

@@ -3,6 +3,12 @@
 // entry here rather than a key threaded through the HTML.
 const PHRASES = {
   'zh-TW': {
+    '视频自动尝试顺序': '視訊自動嘗試順序',
+    '拖动手柄或点击上下箭头调整顺序。仅影响自动播放，保存在当前浏览器中，调整后立即生效。': '拖動把手或點擊上下箭頭調整順序。僅影響自動播放，儲存在目前瀏覽器中，調整後立即生效。',
+    '拖动调整顺序': '拖動調整順序',
+    '上移': '上移',
+    '下移': '下移',
+    '自动按全局偏好设置中的顺序尝试视频模式。Direct H.264 需要 HTTPS 和 WebCodecs；音频仅支持 WebRTC。': '自動依全域偏好設定中的順序嘗試視訊模式。Direct H.264 需要 HTTPS 和 WebCodecs；音訊僅支援 WebRTC。',
     '下载任务正在结束或已经结束': '下載任務正在結束或已經結束',
     '正在完成…': '正在完成…',
     '下载已超时，正在停止…': '下載已逾時，正在停止…',
@@ -835,6 +841,12 @@ const PHRASES = {
     "音频设备必须是 ALSA 设备名，例如 plughw:CARD=MS2109,DEV=0": "音訊裝置必須是 ALSA 裝置名，例如 plughw:CARD=MS2109,DEV=0",
   },
   en: {
+    '视频自动尝试顺序': 'Automatic video order',
+    '拖动手柄或点击上下箭头调整顺序。仅影响自动播放，保存在当前浏览器中，调整后立即生效。': 'Drag the handles or use the arrows to reorder. Applies to automatic playback, is saved in this browser, and takes effect immediately.',
+    '拖动调整顺序': 'Drag to reorder',
+    '上移': 'Move up',
+    '下移': 'Move down',
+    '自动按全局偏好设置中的顺序尝试视频模式。Direct H.264 需要 HTTPS 和 WebCodecs；音频仅支持 WebRTC。': 'Automatic playback follows the order in preferences. Direct H.264 requires HTTPS and WebCodecs; audio is available only with WebRTC.',
     '下载任务正在结束或已经结束': 'The download is finishing or has already ended',
     '正在完成…': 'Finishing…',
     '下载已超时，正在停止…': 'Download timed out; stopping…',

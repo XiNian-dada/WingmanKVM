@@ -3,7 +3,7 @@ import { $, $$, app, consoleBox, feed, viewport, webrtcFeed, directFeed } from '
 import { t } from './01-i18n.js';
 import { fitConsoleToVideo, invalidateSurfaceBox } from './02-theme-layout.js';
 import { request, toast } from './03-session.js';
-import { displayModes, h264Available, setDisplayScale } from './04-video-settings.js';
+import { displayModes, h264Available, setDisplayScale, videoAutoOrder } from './04-video-settings.js';
 import { updateDiagnosticsCard } from './05-power.js';
 import { closePip, isPipActive } from './07a-pip.js';
 import { syncQualityOverlay } from './07b-quality.js';
@@ -17,6 +17,7 @@ let videoGeneration = 0;
 let videoFallback = false;
 let webrtcAbort = null;
 let videoFirstFrameTimer = 0;
+let remainingTransports = [];
 // When H.264 ends (the server closed it after a settings change, or it
 // failed), MJPEG keeps the picture and H.264 is tried again after a pause
 // that doubles on every failure, so a broken encoder cannot cause a storm of
@@ -155,7 +156,46 @@ function clearVideoTimers() {
   h264RetryTimer = 0;
 }
 function h264RetryAllowed() {
-  return shared.videoPreference !== 'mjpeg' && (h264Available() || directH264Available());
+  const order = preferredTransports();
+  return shared.activeVideoTransport === 'mjpeg'
+    && order.slice(0, order.indexOf('mjpeg')).some(transportAvailable);
+}
+function preferredTransports() {
+  if (shared.videoPreference === 'mjpeg') return ['mjpeg'];
+  if (shared.videoPreference === 'direct_h264') return ['direct_h264', 'mjpeg'];
+  if (shared.videoPreference === 'webrtc_h264') return ['webrtc_h264', 'direct_h264', 'mjpeg'];
+  return videoAutoOrder();
+}
+function transportAvailable(mode) {
+  return mode === 'mjpeg' || (mode === 'webrtc_h264' ? h264Available() : directH264Available());
+}
+async function tryNextVideo(generation, reason = '') {
+  if (generation !== videoGeneration || !shouldVideoRun()) return;
+  const delay = reconnectDelay;
+  const closed = cleanupWebrtc();
+  stopVideo(false);
+  generation = videoGeneration;
+  reconnectDelay = delay;
+  await closed;
+  if (generation !== videoGeneration || !shouldVideoRun()) return;
+  shared.videoFallbackReason = reason;
+  let mode;
+  do { mode = remainingTransports.shift(); } while (mode && !transportAvailable(mode));
+  if (mode === 'webrtc_h264') startWebrtc(generation);
+  else if (mode === 'direct_h264') startDirectVideo(generation, reason);
+  else if (mode === 'mjpeg') {
+    startMjpeg(generation, !!reason);
+    if (reason) scheduleH264Retry(generation);
+  } else {
+    setVideoState('connecting', 'none');
+    setVideoMessage('视频断开，正在重连…');
+    reconnectDelay = Math.min(delay * 2, 10000);
+    reconnectTimer = setTimeout(() => {
+      if (generation !== videoGeneration || !shouldVideoRun()) return;
+      remainingTransports = preferredTransports();
+      tryNextVideo(generation, reason);
+    }, delay);
+  }
 }
 function scheduleH264Retry(generation) {
   clearTimeout(h264RetryTimer);
@@ -275,14 +315,7 @@ function startMjpeg(generation, fallback = false) {
     feed.onload = null;
     feed.onerror = null;
     feed.removeAttribute('src');
-    setVideoState(videoFallback ? 'fallback' : 'connecting', 'mjpeg');
-    setVideoMessage('视频断开，正在重连…');
-    clearTimeout(reconnectTimer);
-    const delay = reconnectDelay;
-    reconnectTimer = setTimeout(() => {
-      if (generation === videoGeneration && shouldVideoRun()) startMjpeg(generation, videoFallback);
-    }, delay);
-    reconnectDelay = Math.min(reconnectDelay * 2, 10000);
+    tryNextVideo(generation, '视频断开，正在重连…');
   };
   feed.onload = onLoad;
   feed.onerror = onError;
@@ -309,13 +342,9 @@ function waitForIceGathering(peer, signal, timeout = 2500) {
     timer = setTimeout(() => finish(new Error('WebRTC 本地 ICE 候选收集超时')), timeout);
   });
 }
-function directToMjpeg(generation, reason) {
-  if (generation !== videoGeneration || !shouldVideoRun()) return;
-  stopDirectH264();
-  resetAdaptiveBitrate(null);
-  shared.videoFallbackReason = reason;
-  startMjpeg(generation, true);
-  scheduleH264Retry(generation);
+function fallbackFromDirect(generation, reason) {
+  if (shared.activeVideoTransport !== 'direct_h264') return;
+  tryNextVideo(generation, reason);
 }
 async function startDirectVideo(generation, reason = '') {
   if (generation !== videoGeneration || !shouldVideoRun()) return;
@@ -325,7 +354,7 @@ async function startDirectVideo(generation, reason = '') {
   await cleanupWebrtc();
   if (generation !== videoGeneration || !shouldVideoRun()) return;
   if (!directH264Available()) {
-    directToMjpeg(generation, reason || 'Direct H.264 需要受信任的 HTTPS 和 WebCodecs 支持');
+    fallbackFromDirect(generation, reason || 'Direct H.264 需要受信任的 HTTPS 和 WebCodecs 支持');
     return;
   }
   feed.removeAttribute('src');
@@ -336,14 +365,14 @@ async function startDirectVideo(generation, reason = '') {
   setVideoMessage('正在连接 Direct H.264…');
   startDirectH264({
     onPlaying: () => markVideoPlaying(generation, 'direct_h264'),
-    onFailure: error => directToMjpeg(generation, error),
+    onFailure: error => fallbackFromDirect(generation, error),
     onResize: () => { setDisplayScale(displayModes[shared.modeIndex][0]); fitConsoleToVideo(); },
   });
 }
-function fallbackToMjpeg(generation, reason = 'H.264 连接未能建立') {
+function fallbackFromWebrtc(generation, reason = 'H.264 连接未能建立') {
   if (generation !== videoGeneration || !shouldVideoRun() || shared.activeVideoTransport !== 'webrtc_h264') return;
   // A working Direct connection stays up; retries never interrupt it to probe UDP.
-  startDirectVideo(generation, reason);
+  tryNextVideo(generation, reason);
 }
 async function startWebrtc(generation) {
   if (generation !== videoGeneration || !shouldVideoRun()) return;
@@ -406,7 +435,7 @@ async function startWebrtc(generation) {
         fitConsoleToVideo();
       };
       webrtcFeed.onresize = () => fitConsoleToVideo();
-      event.track.onended = () => fallbackToMjpeg(generation, 'H.264 视频轨道已结束');
+      event.track.onended = () => fallbackFromWebrtc(generation, 'H.264 视频轨道已结束');
       showVideoSurface('webrtc_h264');
       // Muted until the user unmutes, so autoplay is always permitted. If an
       // earlier unmute is refused on reconnect, drop the sound, keep video.
@@ -421,7 +450,7 @@ async function startWebrtc(generation) {
     peer.onconnectionstatechange = () => {
       if (generation !== videoGeneration || peer !== shared.webrtcPeer) return;
       if (peer.connectionState === 'failed' || peer.connectionState === 'closed')
-        fallbackToMjpeg(generation, `WebRTC 连接状态：${peer.connectionState}`);
+        fallbackFromWebrtc(generation, `WebRTC 连接状态：${peer.connectionState}`);
       else if (peer.connectionState === 'disconnected') {
         clearTimeout(reconnectTimer);
         reconnectTimer = setTimeout(() => {
@@ -430,13 +459,13 @@ async function startWebrtc(generation) {
             peer === shared.webrtcPeer &&
             peer.connectionState === 'disconnected'
           )
-            fallbackToMjpeg(generation, 'WebRTC 媒体连接已断开');
+            fallbackFromWebrtc(generation, 'WebRTC 媒体连接已断开');
         }, 2000);
       } else clearTimeout(reconnectTimer);
     };
     peer.oniceconnectionstatechange = () => {
       if (generation !== videoGeneration || peer !== shared.webrtcPeer) return;
-      if (peer.iceConnectionState === 'failed') fallbackToMjpeg(generation, 'WebRTC ICE 连通性检查失败');
+      if (peer.iceConnectionState === 'failed') fallbackFromWebrtc(generation, 'WebRTC ICE 连通性检查失败');
     };
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
@@ -462,7 +491,7 @@ async function startWebrtc(generation) {
     clearTimeout(videoFirstFrameTimer);
     videoFirstFrameTimer = setTimeout(
       () =>
-        fallbackToMjpeg(
+        fallbackFromWebrtc(
           generation,
           `等待 H.264 首帧超时（连接：${peer.connectionState}，ICE：${peer.iceConnectionState}）`,
         ),
@@ -475,7 +504,7 @@ async function startWebrtc(generation) {
       if (peer && peer !== shared.webrtcPeer) peer.close();
       return;
     }
-    fallbackToMjpeg(
+    fallbackFromWebrtc(
       generation,
       error?.name === 'AbortError' ? 'H.264 信令请求超时' : error?.message || String(error),
     );
@@ -485,20 +514,15 @@ function startVideo(force = false) {
   if (!shouldVideoRun()) return;
   if (force) stopVideo(false);
   else if (shared.videoUiState !== 'paused') return;
-  const generation = ++videoGeneration,
-    canH264 = h264Available();
+  const generation = ++videoGeneration;
   clearVideoTimers();
   videoFallback = false;
-  shared.videoFallbackReason =
-    shared.videoPreference === 'webrtc_h264' && !canH264
-      ? shared.bootstrap.webrtc?.message || '当前浏览器不支持 H.264 WebRTC'
-      : '';
+  shared.videoFallbackReason = '';
   reconnectDelay = 500;
   showVideoSurface('none');
   setVideoMessage('正在连接视频…');
-  if (shared.videoPreference === 'mjpeg') startMjpeg(generation);
-  else if (shared.videoPreference === 'direct_h264' || !canH264) startDirectVideo(generation);
-  else startWebrtc(generation);
+  remainingTransports = preferredTransports();
+  tryNextVideo(generation);
 }
 async function toggleFullscreen() {
   try {
