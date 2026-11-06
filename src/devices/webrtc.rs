@@ -2082,6 +2082,7 @@ async fn run_encoder_process(
     let native = encoder.native;
     let native_bitrate = bitrate_updates.clone();
     let mut writer = tokio::spawn(async move {
+        let mut ramp = h264::BitrateRamp::new(bitrate_kbps, Instant::now());
         loop {
             let frame = frames.borrow_and_update().clone();
             if let Some(frame) = frame {
@@ -2090,7 +2091,8 @@ async fn run_encoder_process(
                     if length > 32 * 1024 * 1024 { return Err("JPEG frame exceeds limit".to_owned()); }
                     let mut header = [0u8; 16];
                     header[..4].copy_from_slice(b"WKH1");
-                    header[4..8].copy_from_slice(&native_bitrate.borrow().to_be_bytes());
+                    let applied = ramp.next(*native_bitrate.borrow(), Instant::now());
+                    header[4..8].copy_from_slice(&applied.to_be_bytes());
                     header[8..12].copy_from_slice(&fps.to_be_bytes());
                     header[12..].copy_from_slice(&length.to_be_bytes());
                     stdin.write_all(&header).await.map_err(|e| e.to_string())?;
