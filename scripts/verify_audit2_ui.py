@@ -2301,10 +2301,10 @@ ADAPTIVE_DECISION_SCRIPT = """() => {
   const GOOD = {packetLossPct: 0, rttMs: 30, jitterBufferMs: 40, receivedKbps: 900};
   const NEUTRAL = {packetLossPct: 2, rttMs: 30, jitterBufferMs: 40, receivedKbps: 900};
   // Feed [sample, atMs] pairs; returns every non-null target with its time.
-  const run = (state, steps) => {
+  const run = (state, steps, policy = t.adaptivePolicy) => {
     const out = [];
     for (const [sample, at] of steps) {
-      const r = decide(state, sample, at);
+      const r = decide(state, sample, at, policy);
       state = r.state;
       if (r.targetKbps !== null) out.push([r.targetKbps, at]);
     }
@@ -2349,6 +2349,10 @@ ADAPTIVE_DECISION_SCRIPT = """() => {
   res.atMax = run(t.newAdaptiveState(4000), seq(GOOD, 0, 60)).out;
   const live = t.policyForEncoder(true);
   res.livePolicy = [live.cooldownMs, live.settleMs, live.increaseIntervalMs];
+  res.nativeRecover = run(t.newAdaptiveState(4000),
+    [...seq(BAD, 0, 3), ...seq(GOOD, 3000, 180)], live).out;
+  res.nativeNearMax = run({...t.newAdaptiveState(4000), currentKbps: 3800}, seq(GOOD, 0, 10), live).out;
+  res.nativeLowRecovery = run({...t.newAdaptiveState(4000), currentKbps: 256}, seq(GOOD, 0, 10), live).out;
   // Floor: never below 256 kbps, and no request once there.
   const low = {...t.newAdaptiveState(4000), currentKbps: 300};
   res.floor = run(low, seq(BAD, 0, 30)).out;
@@ -2381,6 +2385,15 @@ def adaptive_bitrate_decision(browser, port, checks):
               "adaptive_stalled_decoder_cannot_raise_but_loss_can_lower", (r["stalledRecovery"], r["stalledLoss"]))
         check(checks, r["atMax"] == [], "adaptive_never_exceeds_max", r["atMax"])
         check(checks, r["livePolicy"] == [10000, 0, 10000], "adaptive_native_does_not_wait_for_restarts", r["livePolicy"])
+        recovery = r["nativeRecover"]
+        check(checks, recovery[0] == [2800, 2000] and recovery[-1][0] == 4000 and len(recovery) > 5
+              and all(after[0] <= before[0] * 1.05 + 1 and after[1] - before[1] >= 10000
+                      for before, after in zip(recovery, recovery[1:])),
+              "adaptive_native_recovery_uses_small_spaced_probes", recovery)
+        check(checks, r["nativeNearMax"] == [[3990, 9000]],
+              "adaptive_native_does_not_snap_to_maximum", r["nativeNearMax"])
+        check(checks, r["nativeLowRecovery"] == [[269, 9000]],
+              "adaptive_native_can_recover_from_low_bitrate", r["nativeLowRecovery"])
         check(checks, r["floor"] == [[256, 2000]], "adaptive_respects_floor", r["floor"])
     finally:
         context.close()
