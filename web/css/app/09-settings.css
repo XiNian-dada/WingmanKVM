@@ -121,6 +121,17 @@
   color: var(--muted);
   line-height: 15px;
 }
+.video-order-setting { flex-direction: column; align-items: stretch; }
+.video-order-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.video-order-list li {
+  display: flex; align-items: center; gap: 8px; padding: 6px;
+  background: var(--canvas); border: 1px solid var(--line); border-radius: 6px;
+}
+.video-order-list li > span { flex: 1; font-size: 12px; min-width: 0; }
+.video-order-list button { min-width: 32px; min-height: 32px; padding: 4px; }
+.video-order-handle { cursor: grab; touch-action: none; user-select: none; }
+.video-order-list li.dragging { border-color: var(--blue); }
+.video-order-list li.dragging .video-order-handle { cursor: grabbing; }
 .power-menu-icon {
   display: inline-block;
   vertical-align: middle;

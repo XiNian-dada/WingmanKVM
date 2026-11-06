@@ -6,6 +6,32 @@ use tokio::sync::broadcast;
 const FRAME_QUEUE: usize = 8;
 pub const MAX_ENCODED_FRAME: usize = 4 * 1024 * 1024;
 
+/// Native encoding can change on every input frame. Limit recovery even when
+/// the lowest-requesting viewer leaves or explicitly restores the ceiling.
+/// Drops apply immediately; idle time cannot accumulate a large catch-up step.
+pub(super) struct BitrateRamp {
+    current: f64,
+    last_frame: Instant,
+}
+
+impl BitrateRamp {
+    pub fn new(kbps: u32, now: Instant) -> Self {
+        Self { current: f64::from(kbps), last_frame: now }
+    }
+
+    pub fn next(&mut self, target: u32, now: Instant) -> u32 {
+        let elapsed = now.saturating_duration_since(self.last_frame).min(Duration::from_secs(1));
+        self.last_frame = now;
+        let target = f64::from(target);
+        self.current = if target <= self.current {
+            target
+        } else {
+            (self.current * 1.05_f64.powf(elapsed.as_secs_f64())).min(target)
+        };
+        self.current.floor() as u32
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct EncoderTelemetry {
     pub frames: u64,
@@ -471,6 +497,37 @@ mod tests {
     ];
     const DELTA: &[u8] = &[0, 0, 0, 1, 9, 0xf0, 0, 0, 0, 1, 0x41, 1];
 
+    #[test]
+    fn native_recovery_is_bounded_and_congestion_cancels_it_immediately() {
+        let start = Instant::now();
+        let mut ramp = BitrateRamp::new(1000, start);
+        let mut previous = 1000;
+        for i in 1..=100 {
+            let next = ramp.next(4000, start + Duration::from_millis(i * 100));
+            assert!(next >= previous && next <= 4000);
+            assert!(next <= (f64::from(previous) * 1.05_f64.powf(0.1)).ceil() as u32);
+            previous = next;
+        }
+        assert!((1628..=1629).contains(&previous), "recovery follows elapsed time");
+        assert_eq!(ramp.next(700, start + Duration::from_secs(10)), 700);
+        assert_eq!(ramp.next(3000, start + Duration::from_secs(10)), 700);
+        assert_eq!(ramp.next(700, start + Duration::from_secs(11)), 700);
+        assert_eq!(ramp.next(3000, start + Duration::from_secs(11)), 700);
+    }
+
+    #[test]
+    fn native_recovery_does_not_bank_idle_time_and_reaches_the_ceiling() {
+        let start = Instant::now();
+        let mut ramp = BitrateRamp::new(1000, start);
+        assert!(ramp.next(4000, start + Duration::from_secs(60)) <= 1050);
+        for second in 61..=90 { ramp.next(4000, start + Duration::from_secs(second)); }
+        assert_eq!(ramp.next(4000, start + Duration::from_secs(91)), 4000);
+        let mut low = BitrateRamp::new(1, start);
+        for second in 1..=20 { low.next(10, start + Duration::from_secs(second)); }
+        assert!(low.next(10, start + Duration::from_secs(21)) > 1,
+                "fractional increments must not round a low bitrate into a permanent stall");
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn native_bitrate_changes_keep_one_epoch_and_publish_every_input_frame() {
@@ -483,26 +540,75 @@ mod tests {
         let config = H264Config { max_sessions: 2, ..H264Config::default() };
         let mut viewer = hub.subscribe(video, encoder, &config).await.unwrap();
         let mut codec = None;
-        for (i, kbps) in [256, 4000, 1000, 3000, 700, 2000, 4000].into_iter().enumerate() {
+        let mut previous = 4000;
+        let mut timestamp = 0;
+        for (i, kbps) in [1000, 4000, 256, 3000, 700, 2000, 4000].into_iter().enumerate() {
             viewer.set_bitrate(kbps).unwrap();
+            if i > 0 { tokio::time::sleep(Duration::from_millis(100)).await; }
             source.send_replace(Some(Arc::new(crate::devices::video::VideoFrame {
                 jpeg: Bytes::copy_from_slice(&jpeg), sequence: i as u64 + 1,
             })));
             let frame = tokio::time::timeout(Duration::from_secs(3), viewer.next()).await.unwrap().unwrap();
             assert_eq!(frame.sequence, i as u64 + 1);
             assert_eq!(frame.epoch, 1, "live bitrate changes must not restart or reset the encoder");
-            assert_eq!(frame.bitrate_kbps, kbps);
+            if kbps <= previous {
+                assert_eq!(frame.bitrate_kbps, kbps, "drops must apply on the next input");
+            } else {
+                assert!(frame.bitrate_kbps >= previous && frame.bitrate_kbps <= (f64::from(previous) * 1.05).ceil() as u32,
+                        "a large requested raise must be ramped, not applied in one frame");
+                assert!(frame.bitrate_kbps < kbps);
+            }
+            assert!(frame.timestamp_us > timestamp);
+            timestamp = frame.timestamp_us;
+            previous = frame.bitrate_kbps;
             assert!(!frame.data.is_empty());
             if i == 0 { codec = frame.codec.clone(); }
             assert_eq!(frame.codec, codec, "a low starting bitrate must not change SPS level on a raise");
             if i == 0 { assert!(frame.key && frame.codec.is_some()); }
         }
         let stats = hub.telemetry().unwrap();
-        assert_eq!((stats.frames, stats.restarts, stats.bitrate_changes), (7, 0, 6));
-        assert_eq!(stats.bitrate_kbps, 4000);
+        assert_eq!((stats.frames, stats.restarts), (7, 0));
+        assert!(stats.bitrate_changes > 0);
+        assert_eq!(stats.bitrate_kbps, previous);
         assert!(stats.processing_ms.is_some_and(|ms| ms >= 0.0));
         assert!(stats.last_frame_age_ms.is_some());
         drop(viewer);
+        hub.stop().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_slow_viewer_departure_cannot_jump_the_shared_bitrate() {
+        let (video, source) = VideoManager::test_source(VideoConfig::default());
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 90)
+            .encode_image(&image::RgbImage::new(128, 72)).unwrap();
+        let hub = H264Hub::default();
+        let encoder = native_h264::prepare(4000).unwrap();
+        let config = H264Config { max_sessions: 2, ..H264Config::default() };
+        let mut slow = hub.subscribe(video.clone(), encoder.clone(), &config).await.unwrap();
+        slow.set_bitrate(1000).unwrap();
+        let mut fast = hub.subscribe(video, encoder, &config).await.unwrap();
+        source.send_replace(Some(Arc::new(crate::devices::video::VideoFrame {
+            jpeg: Bytes::copy_from_slice(&jpeg), sequence: 1,
+        })));
+        let first = tokio::time::timeout(Duration::from_secs(3), fast.next()).await.unwrap().unwrap();
+        assert_eq!(first.bitrate_kbps, 1000);
+        drop(slow);
+        let mut previous = first;
+        for sequence in 2..=5 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            source.send_replace(Some(Arc::new(crate::devices::video::VideoFrame {
+                jpeg: Bytes::copy_from_slice(&jpeg), sequence,
+            })));
+            let frame = tokio::time::timeout(Duration::from_secs(3), fast.next()).await.unwrap().unwrap();
+            assert_eq!(frame.epoch, previous.epoch);
+            assert!(frame.timestamp_us > previous.timestamp_us);
+            assert!(frame.bitrate_kbps >= previous.bitrate_kbps && frame.bitrate_kbps < 1100,
+                    "departure must not apply the remaining viewer's 4000 kbps in one frame");
+            previous = frame;
+        }
+        drop(fast);
         hub.stop().await;
     }
 

@@ -1,6 +1,6 @@
 # Direct H.264 and adaptive bitrate
 
-Automatic playback tries **WebRTC H.264 → Direct H.264 → MJPEG**. Direct uses a same-origin WebSocket and WebCodecs without UDP or ICE. A working Direct connection is not interrupted to retry WebRTC. Select Direct H.264 in the video panel and apply to bypass WebRTC.
+Automatic playback defaults to **WebRTC H.264 → Direct H.264 → MJPEG**. Under Preferences → Display and rendering → Automatic video order, drag the handles or use the arrows to change this order. It is saved in the current browser, takes effect immediately in automatic mode, and does not change manual transport choices. Failures advance to the next mode and unsupported modes are skipped; when MJPEG comes first, stable playback does not switch to H.264. Direct uses a same-origin WebSocket and WebCodecs without UDP or ICE. A working Direct connection is not interrupted to retry WebRTC. Select Direct H.264 in the video panel and apply to bypass WebRTC.
 
 ## Requirements
 
@@ -30,11 +30,11 @@ RK3399 silicon supports H.264 encoding, but using it requires compatible kernel 
 
 Only samples with new media data count. Cached reports and empty reports during encoder gaps do not advance adaptation. Recovery requires decoded frames; new packets showing congestion can still lower bitrate while decoding is stalled. FFmpeg changes have a five-second settling period to exclude encoder and decoder warm-up. Three consecutive congestion samples lower bitrate; loss, buffering and RTT growth relative to the connection's lowest observed RTT are considered. Stable high RTT alone neither lowers bitrate nor prevents recovery. WebRTC samples with fewer than 20 packets do not provide a loss ratio. Direct uses decode ACK RTT and relative buffering delay without inventing a TCP packet-loss metric. These are not HDMI-to-display latency measurements.
 
-Native software encoding uses ten-second change intervals, ten healthy samples and a 30-second post-congestion hold before recovery, without a restart settling period. The slower policy below applies to FFmpeg.
+Native software encoding uses ten-second change intervals, ten healthy samples and a 30-second post-congestion hold before recovery. Each recovery probe adds about 5%, rounded to 1 kbps, without snapping early to the configured ceiling or waiting for a restart settling period. The slower policy below applies to FFmpeg.
 
 FFmpeg decrease requests are at least 30 seconds apart. Recovery requires 30 consecutive healthy samples and at least 60 seconds since the last change and congestion. A decrease within 90 seconds of a raise counts as a failed probe, extending the recovery hold from 60 to 120 to 240 seconds. Ten congestion-free minutes clear the failure count.
 
-The default native software encoder changes bitrate without restarting or resetting its epoch/browser decoder. Hardware encoding and an explicit FFmpeg executable retain the following restart safeguards.
+The default native software encoder changes bitrate without restarting or resetting its epoch/browser decoder. The target sent to x264 rises by at most about 5% per second, applied gradually on input frames; decreases apply immediately. This also covers a slow viewer leaving or disabling adaptation to restore the ceiling. A frame gap contributes at most one second of recovery, so a stalled encoder cannot accumulate a large catch-up step. Requested and applied rates may differ during recovery; shared encoder telemetry and Direct `bitrate_applied` report the applied value. Hardware encoding and an explicit FFmpeg executable retain the following restart safeguards.
 
 Changing bitrate still briefly restarts FFmpeg. The shared encoder coalesces the latest requests across all viewers: the first decrease can be immediate, subsequent decreases are at least 30 seconds apart, and increases wait at least 60 seconds after startup or the last restart. The old bitrate keeps streaming while a change waits; reverting to the running target cancels the pending restart. Each new epoch starts with an IDR and SPS/PPS, and reconfigures the browser decoder.
 

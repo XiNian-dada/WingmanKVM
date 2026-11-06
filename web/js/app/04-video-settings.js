@@ -1,6 +1,6 @@
 import { shared } from './state.js';
 import { $, $$, consoleBox } from './00-core.js';
-import { setSetting } from './00-settings.js';
+import { getSetting, setSetting, SETTING_DEFAULTS } from './00-settings.js';
 import {
   centerNativeViewport, fitConsoleToVideo, invalidateSurfaceBox, setPanMode,
 } from './02-theme-layout.js';
@@ -41,6 +41,15 @@ function browserSupportsH264() {
 }
 function h264Available() {
   return shared.bootstrap.capabilities?.video_webrtc_h264 === true && browserSupportsH264();
+}
+function videoAutoOrder() {
+  const defaults = SETTING_DEFAULTS.video_auto_order.split(',');
+  const saved = String(getSetting('video_auto_order')).split(',');
+  return [...new Set([...saved, ...defaults])].filter((mode) => defaults.includes(mode));
+}
+function setVideoAutoOrder(order) {
+  setSetting('video_auto_order', order.join(','));
+  if (shared.videoPreference === 'auto') restartVideo();
 }
 function syncTransportControl() {
   const select = $('#video-config').elements.transport,
@@ -270,4 +279,5 @@ export function init() {
 export {
   applyBootstrap, displayModes, h264Available, readVideoUiPreference, renderClientInfo, saveVideoUiPreference,
   setDisplayScale, setVideoPreference, setVideoRendering, syncH264Preset, syncVideoPresets, unwrapConfig,
+  videoAutoOrder, setVideoAutoOrder,
 };

@@ -3,7 +3,8 @@ import { $, $$ } from './00-core.js';
 import { getSetting, setSetting, SETTING_DEFAULTS } from './00-settings.js';
 import { t } from './01-i18n.js';
 import { request, toast } from './03-session.js';
-import { setVideoRendering, unwrapConfig } from './04-video-settings.js';
+import { setVideoRendering, unwrapConfig, videoAutoOrder, setVideoAutoOrder } from './04-video-settings.js';
+import { restartVideo } from './07-video.js';
 import { setQualityOverlayEnabled } from './07b-quality.js';
 import { setAdaptiveBitrateEnabled } from './07c-adaptive-bitrate.js';
 import { targetLayout, updatePasteLayoutLabel } from './08-input.js';
@@ -14,11 +15,25 @@ import { refreshOnlineUpdate } from './12c-online-update.js';
 import { refreshTls } from './12d-tls.js';
 
 const settingsDialog = $('#settings-dialog');
+const videoOrderList = $('#setting-video-order');
+function syncVideoOrderUi() {
+  for (const mode of videoAutoOrder()) {
+    videoOrderList.append(videoOrderList.querySelector(`[data-video-transport="${mode}"]`));
+  }
+  syncVideoOrderButtons();
+}
+function syncVideoOrderButtons() {
+  [...videoOrderList.children].forEach((row, index, rows) => {
+    row.querySelector('[data-video-move="-1"]').disabled = index === 0;
+    row.querySelector('[data-video-move="1"]').disabled = index === rows.length - 1;
+  });
+}
 function applyRenderPixelated(enabled) {
   setVideoRendering(enabled ? 'pixelated' : 'smooth', true);
 }
 function syncSettingsDialogUi() {
   if (!settingsDialog) return;
+  syncVideoOrderUi();
   const hidCheckbox = $('#setting-suppress-hid-timeout');
   if (hidCheckbox) hidCheckbox.checked = getSetting('suppress_hid_timeout', false);
   const pulseCheckbox = $('#setting-capture-pulse');
@@ -265,6 +280,53 @@ async function applyConfigImport() {
 
 // DOM wiring; main.js calls this once, in the original fragment order.
 export function init() {
+  let dragging = null;
+  let pointer = null;
+  videoOrderList.addEventListener('pointerdown', (event) => {
+    if (dragging || !event.isPrimary || event.button !== 0 || !event.target.closest('.video-order-handle')) return;
+    dragging = event.target.closest('[data-video-transport]');
+    pointer = event.pointerId;
+    dragging.classList.add('dragging');
+    videoOrderList.setPointerCapture(pointer);
+    event.preventDefault();
+  });
+  videoOrderList.addEventListener('pointermove', (event) => {
+    if (!dragging || event.pointerId !== pointer) return;
+    const before = [...videoOrderList.children].find((row) => row !== dragging
+      && event.clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2);
+    videoOrderList.insertBefore(dragging, before || null);
+    syncVideoOrderButtons();
+  });
+  const finishOrderDrag = (event) => {
+    if (!dragging || event.pointerId !== pointer) return;
+    dragging.classList.remove('dragging');
+    dragging = null;
+    pointer = null;
+    const order = [...videoOrderList.children].map((row) => row.dataset.videoTransport);
+    if (event.type === 'pointerup' && order.join(',') !== videoAutoOrder().join(',')) setVideoAutoOrder(order);
+    syncVideoOrderUi();
+  };
+  videoOrderList.addEventListener('pointerup', finishOrderDrag);
+  videoOrderList.addEventListener('pointercancel', finishOrderDrag);
+  videoOrderList.addEventListener('lostpointercapture', finishOrderDrag);
+  settingsDialog.addEventListener('close', () => {
+    if (dragging) {
+      dragging.classList.remove('dragging');
+      dragging = null;
+      pointer = null;
+      syncVideoOrderUi();
+    }
+  });
+  videoOrderList.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-video-move]');
+    if (!button || button.disabled) return;
+    const order = videoAutoOrder();
+    const index = order.indexOf(button.closest('[data-video-transport]').dataset.videoTransport);
+    const destination = index + Number(button.dataset.videoMove);
+    [order[index], order[destination]] = [order[destination], order[index]];
+    setVideoAutoOrder(order);
+    syncVideoOrderUi();
+  });
   $('#settings-toggle')?.addEventListener('click', openSettingsDialog);
   $('#settings-inspector-btn')?.addEventListener('click', openSettingsDialog);
   $$('[data-settings-close]', settingsDialog).forEach((btn) =>
@@ -354,6 +416,7 @@ export function init() {
   });
   $('#setting-reset-btn')?.addEventListener('click', () => {
     if (!confirm(t('settings_reset_confirm', '确定要恢复所有全局偏好设置为默认值吗？'))) return;
+    const previousOrder = videoAutoOrder().join(',');
     Object.keys(SETTING_DEFAULTS).forEach((key) => {
       try {
         localStorage.removeItem(`wingman_setting_${key}`);
@@ -363,6 +426,7 @@ export function init() {
     setAdaptiveBitrateEnabled(SETTING_DEFAULTS.adaptive_bitrate);
     setQualityOverlayEnabled(SETTING_DEFAULTS.quality_overlay);
     syncSettingsDialogUi();
+    if (shared.videoPreference === 'auto' && previousOrder !== videoAutoOrder().join(',')) restartVideo();
     updatePasteLayoutLabel();
     toast(t('settings_reset_done', '已恢复默认设置'));
   });

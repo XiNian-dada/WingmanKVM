@@ -10,6 +10,7 @@ export const SETTING_DEFAULTS = {
   target_layout: 'us',
   adaptive_bitrate: true,
   quality_overlay: false,
+  video_auto_order: 'webrtc_h264,direct_h264,mjpeg',
 };
 export function getSetting(key, fallback = null) {
   try {

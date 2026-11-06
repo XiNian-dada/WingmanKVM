@@ -210,7 +210,7 @@
             </div>
             <form id="video-config" class="side-grid">
               <div class="settings-heading"><strong>Streaming</strong><span>只控制采集和网络传输，不改变被控机桌面布局。</span></div>
-              <label class="field wide"><span>播放方式 <button class="field-help" type="button" data-help="自动依次尝试 WebRTC H.264、Direct H.264 和 MJPEG。Direct H.264 通过 HTTPS 传输，需要浏览器支持 WebCodecs；音频仅支持 WebRTC。" aria-label="播放方式说明">?</button></span><select name="transport"><option value="auto">自动</option><option value="webrtc_h264">WebRTC H.264</option><option value="direct_h264">Direct H.264（WSS）</option><option value="mjpeg">兼容 MJPEG</option></select></label>
+              <label class="field wide"><span>播放方式 <button class="field-help" type="button" data-help="自动按全局偏好设置中的顺序尝试视频模式。Direct H.264 需要 HTTPS 和 WebCodecs；音频仅支持 WebRTC。" aria-label="播放方式说明">?</button></span><select name="transport"><option value="auto">自动</option><option value="webrtc_h264">WebRTC H.264</option><option value="direct_h264">Direct H.264（WSS）</option><option value="mjpeg">兼容 MJPEG</option></select></label>
               <label class="field wide"><span>H.264 码率 <button class="field-help" type="button" data-help="H.264 的目标码率。数值越高画质越好、占用带宽越大；数值越低更省带宽，但画面可能出现块状失真。" aria-label="H.264 码率说明">?</button></span><select name="h264_bitrate_preset"><option value="2000">2 Mbps</option><option value="4000">4 Mbps</option><option value="8000">8 Mbps</option><option value="12000">12 Mbps</option><option value="custom">自定义</option></select></label>
               <label class="field wide h264-bitrate-custom hidden"><span>自定义码率 · Kbps <button class="field-help" type="button" data-help="单位是 Kbps，允许范围为 256–50000。" aria-label="自定义码率说明">?</button></span><input name="h264_bitrate_kbps" type="number" min="256" max="50000"></label>
               <label class="field wide"><span>采集输出尺寸 <button class="field-help" type="button" data-help="只调整采集和网络传输的视频尺寸，不改变被控机的桌面分辨率。桌面分辨率请在被控机系统中设置；可选采集尺寸取决于采集卡支持的格式。" aria-label="采集输出尺寸说明">?</button></span><select name="resolution_preset"><option value="auto">设备默认</option><option value="3840x2160">4K · 3840 × 2160</option><option value="2560x1440">1440p · 2560 × 1440</option><option value="1920x1080">1080p · 1920 × 1080</option><option value="1280x720">720p · 1280 × 720</option><option value="720x480">480p · 720 × 480</option><option value="custom">自定义</option></select></label>
@@ -351,6 +351,17 @@
                 <span data-i18n="settings_adaptive_bitrate_desc">网络丢包或延迟升高时自动降低 H.264 码率，恢复后逐步回升，不超过视频设置中的码率</span>
               </div>
               <label class="switch"><input type="checkbox" id="setting-adaptive-bitrate" checked><i></i></label>
+            </div>
+            <div class="settings-item video-order-setting">
+              <div class="settings-item-copy">
+                <strong>视频自动尝试顺序</strong>
+                <span>拖动手柄或点击上下箭头调整顺序。仅影响自动播放，保存在当前浏览器中，调整后立即生效。</span>
+              </div>
+              <ol id="setting-video-order" class="video-order-list" aria-label="视频自动尝试顺序">
+                <li data-video-transport="webrtc_h264"><button type="button" class="video-order-handle" aria-label="拖动调整顺序">⋮⋮</button><span>WebRTC H.264</span><button type="button" data-video-move="-1" aria-label="上移">↑</button><button type="button" data-video-move="1" aria-label="下移">↓</button></li>
+                <li data-video-transport="direct_h264"><button type="button" class="video-order-handle" aria-label="拖动调整顺序">⋮⋮</button><span>Direct H.264</span><button type="button" data-video-move="-1" aria-label="上移">↑</button><button type="button" data-video-move="1" aria-label="下移">↓</button></li>
+                <li data-video-transport="mjpeg"><button type="button" class="video-order-handle" aria-label="拖动调整顺序">⋮⋮</button><span>MJPEG</span><button type="button" data-video-move="-1" aria-label="上移">↑</button><button type="button" data-video-move="1" aria-label="下移">↓</button></li>
+              </ol>
             </div>
           </div>
           <div class="settings-group">

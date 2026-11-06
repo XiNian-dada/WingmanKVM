@@ -2301,10 +2301,10 @@ ADAPTIVE_DECISION_SCRIPT = """() => {
   const GOOD = {packetLossPct: 0, rttMs: 30, jitterBufferMs: 40, receivedKbps: 900};
   const NEUTRAL = {packetLossPct: 2, rttMs: 30, jitterBufferMs: 40, receivedKbps: 900};
   // Feed [sample, atMs] pairs; returns every non-null target with its time.
-  const run = (state, steps) => {
+  const run = (state, steps, policy = t.adaptivePolicy) => {
     const out = [];
     for (const [sample, at] of steps) {
-      const r = decide(state, sample, at);
+      const r = decide(state, sample, at, policy);
       state = r.state;
       if (r.targetKbps !== null) out.push([r.targetKbps, at]);
     }
@@ -2349,6 +2349,10 @@ ADAPTIVE_DECISION_SCRIPT = """() => {
   res.atMax = run(t.newAdaptiveState(4000), seq(GOOD, 0, 60)).out;
   const live = t.policyForEncoder(true);
   res.livePolicy = [live.cooldownMs, live.settleMs, live.increaseIntervalMs];
+  res.nativeRecover = run(t.newAdaptiveState(4000),
+    [...seq(BAD, 0, 3), ...seq(GOOD, 3000, 180)], live).out;
+  res.nativeNearMax = run({...t.newAdaptiveState(4000), currentKbps: 3800}, seq(GOOD, 0, 10), live).out;
+  res.nativeLowRecovery = run({...t.newAdaptiveState(4000), currentKbps: 256}, seq(GOOD, 0, 10), live).out;
   // Floor: never below 256 kbps, and no request once there.
   const low = {...t.newAdaptiveState(4000), currentKbps: 300};
   res.floor = run(low, seq(BAD, 0, 30)).out;
@@ -2381,6 +2385,15 @@ def adaptive_bitrate_decision(browser, port, checks):
               "adaptive_stalled_decoder_cannot_raise_but_loss_can_lower", (r["stalledRecovery"], r["stalledLoss"]))
         check(checks, r["atMax"] == [], "adaptive_never_exceeds_max", r["atMax"])
         check(checks, r["livePolicy"] == [10000, 0, 10000], "adaptive_native_does_not_wait_for_restarts", r["livePolicy"])
+        recovery = r["nativeRecover"]
+        check(checks, recovery[0] == [2800, 2000] and recovery[-1][0] == 4000 and len(recovery) > 5
+              and all(after[0] <= before[0] * 1.05 + 1 and after[1] - before[1] >= 10000
+                      for before, after in zip(recovery, recovery[1:])),
+              "adaptive_native_recovery_uses_small_spaced_probes", recovery)
+        check(checks, r["nativeNearMax"] == [[3990, 9000]],
+              "adaptive_native_does_not_snap_to_maximum", r["nativeNearMax"])
+        check(checks, r["nativeLowRecovery"] == [[269, 9000]],
+              "adaptive_native_can_recover_from_low_bitrate", r["nativeLowRecovery"])
         check(checks, r["floor"] == [[256, 2000]], "adaptive_respects_floor", r["floor"])
     finally:
         context.close()
@@ -3342,6 +3355,49 @@ def reset_preferences_covers_all(browser, port, checks):
         check(checks, after["adaptive"] is True and after["overlay"] == "false"
               and after["stored"][0] != "false" and after["stored"][1] != "true",
               "reset_restores_adaptive_bitrate_and_quality_overlay", after)
+    finally:
+        context.close()
+
+
+def video_order_settings(browser, port, checks):
+    """Drag real handles, persist the preference, use arrows, and reset it."""
+    context, page = media_page(browser, State(), port)
+    order = lambda: page.locator('#setting-video-order > li').evaluate_all(
+        'rows => rows.map(row => row.dataset.videoTransport)')
+    try:
+        page.click('#settings-toggle')
+        page.locator('#setting-video-order').scroll_into_view_if_needed()
+        handle = page.locator('[data-video-transport="direct_h264"] .video-order-handle').bounding_box()
+        first = page.locator('[data-video-transport="webrtc_h264"]').bounding_box()
+        page.mouse.move(handle['x'] + handle['width']/2, handle['y'] + handle['height']/2)
+        page.mouse.down()
+        page.mouse.move(first['x'] + 20, first['y'] + 4, steps=8)
+        page.mouse.up()
+        expected = ['direct_h264', 'webrtc_h264', 'mjpeg']
+        check(checks, order() == expected and page.evaluate(
+            "localStorage.getItem('wingman_setting_video_auto_order')") == ','.join(expected),
+            'video_order_drag_updates_and_persists', order())
+        page.reload(wait_until='load')
+        page.wait_for_selector('#app:not(.hidden)')
+        page.click('#settings-toggle')
+        check(checks, order() == expected, 'video_order_survives_reload', order())
+        page.locator('[data-video-transport="webrtc_h264"] [data-video-move="-1"]').click()
+        check(checks, order() == ['webrtc_h264', 'direct_h264', 'mjpeg'],
+              'video_order_arrow_moves_one_position', order())
+        page.locator('[data-video-transport="mjpeg"] [data-video-move="-1"]').click()
+        page.on('dialog', lambda dialog: dialog.accept())
+        page.click('#setting-reset-btn')
+        check(checks, order() == ['webrtc_h264', 'direct_h264', 'mjpeg']
+              and page.evaluate("localStorage.getItem('wingman_setting_video_auto_order')") is None,
+              'video_order_reset_restores_default', order())
+        page.evaluate("localStorage.setItem('wingman_setting_video_auto_order', 'direct_h264,bad,direct_h264')")
+        page.locator('[data-settings-close]').click()
+        page.click('#settings-toggle')
+        check(checks, order() == expected, 'video_order_repairs_duplicate_and_unknown_preferences', order())
+        page.set_viewport_size({'width': 390, 'height': 844})
+        box = page.locator('#setting-video-order').bounding_box()
+        check(checks, box['x'] >= 0 and box['x'] + box['width'] <= 390,
+              'video_order_fits_phone_settings', box)
     finally:
         context.close()
 

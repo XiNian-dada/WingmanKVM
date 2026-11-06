@@ -51,7 +51,8 @@ const ADAPTIVE_POLICY = {
 };
 function policyForEncoder(live) {
   return live ? { ...ADAPTIVE_POLICY, cooldownMs: 10000, increaseIntervalMs: 10000,
-    goodSamples: 10, settleMs: 0, raiseAfterBadMs: 30000 } : ADAPTIVE_POLICY;
+    goodSamples: 10, settleMs: 0, raiseAfterBadMs: 30000,
+    increaseFactor: 1.05, stepKbps: 1, snapToMaxRatio: 1 } : ADAPTIVE_POLICY;
 }
 function newAdaptiveState(maxKbps, minKbps = 256) {
   const max = Math.max(1, Math.round(Number(maxKbps) || 4000));
