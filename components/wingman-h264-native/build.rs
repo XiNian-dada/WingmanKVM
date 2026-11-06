@@ -34,7 +34,8 @@ fn main() {
         .collect::<Vec<_>>()
         .join(" ");
     let target = env::var("TARGET").unwrap();
-    let mut configure = Command::new("sh");
+    // Upstream configure uses Bash syntax; sh is dash in Debian cross images.
+    let mut configure = Command::new("bash");
     configure
         .current_dir(&source)
         .arg("configure")
